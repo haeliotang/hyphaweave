@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":[],"id":"grant/chain-depth-8-valid","input":"container","notes":"S10/§5.5.2 step 7: the depth bound is an inclusive endpoint. Eight parent links (nine grants) from the deepest grant to the root are supported, so the chain and the record citing its deepest grant are valid.","target":"container","verdict":"valid"}

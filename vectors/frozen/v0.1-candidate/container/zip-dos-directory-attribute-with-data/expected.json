@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-dos-directory-attribute-with-data","input":"container.zip","notes":"S5/§11.9: an entry carrying the DOS directory attribute but non-zero data is not a directory entry and is E_CONTAINER_ZIP; zero-length directory entries are ignored instead.","target":"container","verdict":"invalid"}

@@ -1,1 +1,0 @@
-{"category":"ref","errors":["E_ENV_REFS"],"id":"ref/bad-hint-scheme","input":"record.json","notes":"Hints must match '^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$' (§6).","target":"record","verdict":"invalid"}
