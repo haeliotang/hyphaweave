@@ -3,23 +3,24 @@
 
 # Decided questions and remaining provisional choices
 
-> **Status: DRAFT (revision 1).** This file records the questions that the
+> **Status: DRAFT (revision 2).** This file records the questions that the
 > `weave-record/1` decision draft v0.1 (with correction v0.1.1) left open and how
-> H0 revision 1 resolved them.
+> H0 resolved them.
 >
-> **Q1–Q33 are decided** by Inceptless decision **2026-11-10 #34**. Each entry in
-> §1 is marked `decided (Inceptless decision 2026-11-10 #34)`; its normative form
-> is in [`../spec/`](../spec/), and this page only records the question, the
-> decision and the reasoning. A small number of *implementation-shape* details
-> were not decided by #34; they are listed as `PROVISIONAL` in §3.
+> **Q1–Q32 are decided** by Inceptless decision **2026-11-10 #34**; **Q33 is
+> decided** by Inceptless decision **2026-11-10 #42**. Each entry in §1 carries its
+> decision status; its normative form is in [`../spec/`](../spec/), and this page
+> only records the question, the decision and the reasoning. A small number of
+> *implementation-shape* details were not decided by #34 or #42; they are listed as
+> `PROVISIONAL` in §3. P1 and P2 were resolved by #42 and are no longer listed.
 >
 > Nothing in this file overrides the specification. Where this page and
 > [`../spec/weave-record-1.md`](../spec/weave-record-1.md) disagree, the
 > specification wins.
 >
-> H0 revision 1 replaced the earlier revision of this file, which attributed some
-> choices to integration decisions that did not exist and presented them as final.
-> Those attributions are gone; §4 lists what changed.
+> Earlier revisions of this file attributed some choices to integration decisions
+> that did not exist and presented them as final. Those attributions are gone;
+> §4 and §5 list what changed in revisions 2 and 1 respectively.
 
 ## 1. Decided questions (Q1–Q33)
 
@@ -535,116 +536,154 @@ otherwise.
 - **Where.** `spec/weave-record-1.md` §6.3, §10; `spec/kinds/weave.erasure.md`;
   `vectors/erasure/`; verifier `refs.py`, `erase.py`.
 
-### Q33. Root-key bootstrap (new in revision 1)
+### Q33. Root of trust and key bootstrap
 
-- **Status:** `decided (Inceptless decision 2026-11-10 #34)`.
-- **Question.** Every key declaration must be self-signed **and** counter-signed
-  by its owner or the previous key. The first `human` or `organization` key has
-  neither an owner nor a previous key, so how can a trust context ever start?
-- **Decision.** The **first** valid `human` or `organization` declaration in a
-  verification context may be self-signed only; the verifier must report notice
-  `N_SELF_ATTESTED_ROOT_KEY`. Every later key declaration needs a
-  counter-signature: `agent`/`program`/`device` keys need a counter-signature from
-  a key declared by `body.owner`; `human`/`organization` keys need a
-  counter-signature from another valid `human`/`organization` declaration if one
-  exists in the context. "First" is the declaration with the earliest
-  `recorded_at`, tie-broken by the lexicographically smallest record digest (see
-  §3, item 1: this exact tie-breaking rule remains PROVISIONAL).
-- **Reasoning.** Without a bootstrap exception, no offline trust context could
-  ever be constructed. The mandatory notice keeps the self-attestation visible
-  rather than silent.
-- **Where.** `spec/weave-record-1.md` §5.2, §9.1; `spec/kinds/weave.key.declared.md`;
-  `vectors/keys/`, `vectors/key-lifecycle/`; verifier `keys.py`.
+- **Status:** `decided (Inceptless decision 2026-11-10 #42)`.
+- **Question.** Every key declaration must be self-signed and counter-signed by
+  its owner or the previous key. The first `human`/`organization` key has neither
+  an owner nor a previous key, yet a verification context needs a starting point
+  for trust. How is that root established without trusting attacker-controlled
+  data?
+- **Decision.** Roots come **only from the locally supplied keyset** (the
+  `--keys` directory) — the verifier's own local trust input under E4. A keyset
+  `weave.key.declared` record whose `key_type` is `human` or `organization` and
+  which is self-signed and passes its own declaration checks is a root: it enters
+  the trusted set, needs no counter-signature, and produces **no**
+  `N_SELF_ATTESTED_ROOT_KEY`. Declarations in the container or target must chain
+  to that local trust: either the same key id is already trusted from the keyset,
+  or at least one valid counter-signature was made by a trusted
+  `human`/`organization` key. A declaration that cannot chain is **unverifiable
+  `E_KEY_UNTRUSTED`**; when its verified signatures are only its own, the verifier
+  also reports `N_SELF_ATTESTED_ROOT_KEY`. The keyset is evaluated **before** the
+  container/target declarations and its roots seed the trusted set; container
+  declarations may extend the set by iteration to a fixed point. There is **no
+  time-ordered root selection**: a claimed `recorded_at` cannot create a root, so
+  backdating a self-signed container declaration does not make it trusted.
+  An untrusted container declaration must not invalidate other declarations and
+  must never demote a keyset root; Q12's earliest-declaration rule remains a
+  declaration-resolution rule, not root selection. Without `--keys`, the trusted
+  set is empty: container/target `human`/`organization` declarations are
+  unverifiable with the notice, and agent/program/device declarations whose owner
+  is not trusted are unverifiable `E_KEY_UNTRUSTED`.
+- **Reasoning.** An attacker controls the claimed time inside a container, so a
+  time-based root selection can be backdated. The locally supplied keyset is what
+  the verifier was explicitly given, is evaluated offline, and lets two honest
+  implementations compute the same trust set. Missing local trust is
+  `unverifiable`, not `invalid`, because the information rather than the record is
+  lacking — and it must never silently upgrade other records.
+- **Where.** `spec/weave-record-1.md` §5.3, §9.1; `spec/error-codes.md`
+  (`E_KEY_UNTRUSTED`); `spec/kinds/weave.key.declared.md`;
+  `vectors/key-lifecycle/`; verifier `keys.py`.
 
 ## 2. Founder decisions still pending (outside the H0 specification)
 
-These are outside the format rules Q1–Q33. H0 does not settle them:
+These are outside the format rules Q1–Q33. H0 does not settle them. Publication
+timing was originally listed here and is now resolved: the repository is public.
 
-1. **Publication timing** of this repository: the H0 deliverable is a private
-   local repository, nothing is pushed, and publication is the founder's decision.
-2. **Offline transport extraction**: when and under which license the transport
+1. **Offline transport extraction**: when and under which license the transport
    component is extracted from its source project. It is not part of H0 and is
    deferred until after J1.
-3. **Human keys in Inceptless**: the human-key foundation is the precondition for
+2. **Human keys in Inceptless**: the human-key foundation is the precondition for
    the agent rules to be meaningful with real keys. Revision 1 reports `accepted`
    records without a declared-human signature via `N_NO_HUMAN_SIGNATURE`, but a
    notice is not a substitute for real human keys.
-4. **Governance after publication**: today changes are founder-approved and
-   recorded in the decision log (K4); an interim written charter may be needed once
-   external contributors arrive.
-5. **Formal v0.1 freeze**: the candidate regression set becomes a frozen set only
+3. **Governance after publication**: today changes are founder-approved and
+   recorded in the decision log (K4); an interim written charter may be needed
+   once external contributors arrive.
+4. **Formal v0.1 freeze**: the candidate regression set becomes a frozen set only
    after J1 and J2 acceptance. Until then, conclusions in
    `vectors/frozen/v0.1-candidate/` may still change with a new decision.
 
-Already resolved and therefore not open questions: the CLA v1.0 review and signing
-channel (decisions 2026-11-10 #27/#28, see `CLA.md` and `CONTRIBUTING.md`) and the
-licensing split (decision K2 plus 2026-11-10 #20, see `LICENSING.md`).
+Already resolved and therefore not open questions: publication timing (the
+repository is public now), the CLA v1.0 review and signing channel (decisions
+2026-11-10 #27/#28, see `CLA.md` and `CONTRIBUTING.md`), and the licensing split
+(decision K2 plus 2026-11-10 #20, see `LICENSING.md`).
 
 ## 3. Remaining PROVISIONAL implementation-shape choices
 
-The following details are **not** decided by decision 2026-11-10 #34. H0 chose the
-most conservative implementation shape for each; they are marked `PROVISIONAL` in
-the specification (Appendix A, P1–P12) and may change additively without changing
-the decided behaviours above. The identifiers match the specification's Appendix A.
+Decision **2026-11-10 #42** resolved P1 and P2. Root selection no longer uses
+claimed time, so there is no deterministic root ordering to choose and no
+root tie-break; those entries were removed from the specification's Appendix A
+and are not listed below. The remaining implementation-shape choices keep the
+specification's identifiers **P3–P12**; they are marked `PROVISIONAL` and may
+change additively without changing the decided behaviours above.
 
-1. **P1 — Deterministic root-declaration ordering for Q33.** Sort candidate
-   `human`/`organization` declarations by claimed `recorded_at`, maintaining the
-   set of established keys, and treat the first one as the self-attested root.
-   Changing this rule changes which declarations need counter-signatures.
-2. **P2 — Duplicate-declaration tie-break.** When two declarations for the same
-   key id have exactly the same claimed `recorded_at`, the declaration with the
-   lexicographically smallest record digest governs (Q12).
-3. **P3 — Delegation-chain depth.** The maximum grant delegation depth is 8. A
-   grant chain cannot contain a cycle: digest references form a DAG. The depth
-   bound applies to the delegation chain only.
-4. **P4 — Revocation-authority walk depth.** Walking `weave.key.rotated` records
-   to find a grant granter's successor for revocation authority stops at depth 8;
-   the walk order is implementation shape.
-5. **P5 — Grant-chain error-code precedence.** The delegation checks and the code
-   each step reports are fixed, in this order:
-   `E_GRANT_UNRESOLVED` → `E_GRANT_GRANTER` (parent not a grant) →
-   `E_GRANT_NOT_TRANSFERABLE` → `E_GRANT_GRANTER` (granter identity mismatch) →
-   `E_GRANT_DELEGATION_EXCEEDS` → `E_GRANT_REVOKED`/`E_GRANT_EXPIRED`. The
-   precedence among several simultaneously failing steps is an
-   implementation-shape choice pending J1/J2 experience.
-   `E_GRANT_GRANTEE_MISMATCH` is not a delegation-chain step code: it reports a
-   record whose `actor.key` differs from the grantee of the grant it references.
-6. **P6 — Timestamp renewal-chain representation.** The renewal chain is the
-   `timestamps[]` array of `signatures/manifest.sig.json`: each entry has `path`,
-   `digest` and `renews`; entries are sorted by path; the first entry's imprint is
-   the raw manifest digest, and each later entry's imprint is
-   `SHA-256(previous .tsr file bytes || manifest digest raw bytes)`.
-7. **P7 — Report field shapes.** `container.level_verified` is always `"L0"`,
-   `container.anchor_verified` is a boolean for L2, `timestamps[]` entries carry
-   `index`, `path`, `state` and `gen_time`, and the `vectors` target summary and
-   per-case layout are the shapes described in the specification.
-8. **P8 — Compromise-revocation rescue comparison.** The S2 rescue uses the
-   earliest verified `genTime_ms` of the manifest's timestamp chain, and the same
-   comparison applies to manifest signatures.
-9. **P9 — Scope subset comparison.** Delegation subset checks compare `scope` as
-   sets of strings; `scope` does not participate in record-level machine checks
-   beyond the subset relation.
-10. **P10 — Human-signature notice and unverifiable-signature precedence.**
-    `N_NO_HUMAN_SIGNATURE` is reported when an `accepted` record has no valid
-    signature by a declared human key; its precedence relative to
-    `E_SIG_UNVERIFIABLE` is implementation shape.
-11. **P11 — Specification-example classification markers.** The examples that
-    `tools/check_spec_examples.py` validates are annotated as
-    `standalone-record`, `container-context` or `illustrative`; the marking
-    convention is a non-normative tooling convention.
-12. **P12 — Delegated-granter actor classes.** Delegation is reachable only for
-    `agent` granters: a `program`/`device` grant record that would be a delegated
-    sub-grant is `unverifiable` (`E_GRANT_UNRESOLVED`) because the envelope
-    forbids `actor.grant` on those actor types, so the parent grant cannot be
-    expressed. The handling of that unreachable shape is an implementation-shape
-    choice; the restriction itself follows from the envelope rules.
+- **P3 — Delegation-chain depth.** The maximum grant delegation depth is 8. A
+  grant chain cannot contain a cycle: digest references form a DAG. The depth
+  bound applies to the delegation chain only.
+- **P4 — Revocation-authority walk depth.** Walking `weave.key.rotated` records
+  to find a grant granter's successor for revocation authority stops at depth 8;
+  the walk order is implementation shape.
+- **P5 — Grant-chain error-code precedence.** The delegation checks and the code
+  each step reports are fixed, in this order:
+  `E_GRANT_UNRESOLVED` → `E_GRANT_GRANTER` (parent not a grant) →
+  `E_GRANT_NOT_TRANSFERABLE` → `E_GRANT_GRANTER` (granter identity mismatch) →
+  `E_GRANT_DELEGATION_EXCEEDS` → `E_GRANT_REVOKED`/`E_GRANT_EXPIRED`. The
+  precedence among several simultaneously failing steps is an implementation-shape
+  choice pending J1/J2 experience. `E_GRANT_GRANTEE_MISMATCH` is not a
+  delegation-chain step code: it reports a record whose `actor.key` differs from
+  the grantee of the grant it references.
+- **P6 — Timestamp renewal-chain representation.** The renewal chain is the
+  `timestamps[]` array of `signatures/manifest.sig.json`: each entry has `path`,
+  `digest` and `renews`; entries are sorted by path; the first entry's imprint is
+  the raw manifest digest, and each later entry's imprint is
+  `SHA-256(previous .tsr file bytes || manifest digest raw bytes)`.
+- **P7 — Report field shapes.** `container.level_verified` is always `"L0"`,
+  `container.anchor_verified` is a boolean for L2, `timestamps[]` entries carry
+  `index`, `path`, `state` and `gen_time`, and the `vectors` target summary and
+  per-case layout are the shapes described in the specification.
+- **P8 — Compromise-revocation rescue comparison.** The S2 rescue requires an
+  external timestamp receipt whose `genTime + accuracy` is **strictly before** the
+  revocation's `effective_at` (a receipt without an `accuracy` field counts as
+  zero; comparison at microsecond precision, with `genTime` reduced to
+  milliseconds per the timestamp profile). The rescue exists if at least one
+  verified receipt satisfies that strict comparison; the qualifying receipt with
+  the smallest `genTime + accuracy` supplies the evidence. The mechanics of that
+  comparison are implementation shape.
+- **P9 — Scope subset comparison.** Delegation subset checks compare `scope` as
+  sets of strings; `scope` does not participate in record-level machine checks
+  beyond the subset relation.
+- **P10 — Human-signature notice and unverifiable-signature precedence.**
+  `N_NO_HUMAN_SIGNATURE` is reported when an `accepted` record has no valid
+  signature by a declared human key; its precedence relative to
+  `E_SIG_UNVERIFIABLE` is implementation shape.
+- **P11 — Specification-example classification markers.** The examples that
+  `tools/check_spec_examples.py` validates are annotated as
+  `standalone-record`, `container-context` or `illustrative`; the marking
+  convention is a non-normative tooling convention.
+- **P12 — Delegated-granter actor classes.** Delegation is reachable only for
+  `agent` granters: a `program`/`device` grant record that would be a delegated
+  sub-grant is `unverifiable` (`E_GRANT_UNRESOLVED`) because the envelope forbids
+  `actor.grant` on those actor types, so the parent grant cannot be expressed. The
+  handling of that unreachable shape is an implementation-shape choice; the
+  restriction itself follows from the envelope rules.
 
-One further candidate implementation shape was resolved by the same decision
-rather than left provisional: structural errors of the special `weave.erased`
-shape are reported with `E_KIND_BODY_SCHEMA`, while
+One further candidate implementation shape was resolved by decision #34 rather
+than left provisional: structural errors of the special `weave.erased` shape are
+reported with `E_KIND_BODY_SCHEMA`, while
 `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` apply only to normal envelopes.
 
-## 4. What changed in revision 1 of this file
+## 4. What changed in revision 2 of this file
+
+Revision 2 implements Inceptless decision **2026-11-10 #42** (focused
+re-verification):
+
+- Q33 was rewritten as `decided (Inceptless decision 2026-11-10 #42)`: trust
+  roots come only from the locally supplied keyset; a container/target
+  `human`/`organization` declaration that cannot chain to that local trust is
+  `unverifiable E_KEY_UNTRUSTED` (with `N_SELF_ATTESTED_ROOT_KEY` when only
+  self-signed); there is no time-ordered root selection; backdating cannot create
+  a root; the keyset is evaluated before the container/target declarations; and an
+  untrusted container declaration must not invalidate other declarations.
+- P1 (deterministic root ordering) and P2 (root tie-break) were resolved by
+  decision #42 and removed from the PROVISIONAL list; the remaining identifiers
+  keep their numbering P3–P12.
+- P8 now states the strict `genTime + accuracy < effective_at` comparison for the
+  compromise-revocation rescue.
+- The pre-publication status text was updated separately: the repository is
+  public, while the format remains a draft.
+
+## 5. What changed in revision 1 of this file
 
 - Q1–Q33 are now marked `decided (Inceptless decision 2026-11-10 #34)`. The
   previous revision presented several of them as PROVISIONAL choices and cited
