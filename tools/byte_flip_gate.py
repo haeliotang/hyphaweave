@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
-"""H0 FIX1 gate: exhaustive byte-level bit-flip anti-verification.
+"""H0 revision-1 gate: exhaustive byte-level bit-flip anti-verification.
 
 For **every positive vector case** (expected verdict ``valid`` or ``erased``, and
 also the frozen candidate when present) this gate flips one bit in **every byte**
@@ -38,7 +38,7 @@ Exemption classes implemented here:
 
 ``unsigned-record``
     A record-target positive deliberately carries no ``sigs`` (its purpose is to
-    prove an unsigned record can be valid; CONTRACT §5.3).  Nothing in the file
+    prove an unsigned record can be valid; spec §5.3).  Nothing in the file
     is signature-covered, so a content flip can legitimately stay valid.
 ``erased-placeholder``
     ``weave.erased`` placeholders have no ``sigs`` by format (§7.8).  A flip in

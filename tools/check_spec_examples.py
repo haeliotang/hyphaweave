@@ -177,7 +177,7 @@ def _looks_like_manifest(value: Any) -> bool:
 
 
 def _looks_like_attestation(value: Any) -> bool:
-    # The FIX1 attestation always carries ``timestamps`` (possibly empty); a
+    # The revision-1 attestation always carries ``timestamps`` (possibly empty); a
     # block missing it is still routed to the attestation schema so the schema
     # reports the missing member instead of silently treating it as illustrative.
     return _has_keys(value, ("digest", "format", "signatures"))

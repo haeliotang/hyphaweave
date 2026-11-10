@@ -47,7 +47,7 @@ DERIVATION_RELS = frozenset(
     {"derived_from", "reshaped_from", "migrated_from", "correction_of"}
 )
 
-#: Algorithm-name grammar used by ``sigs[].alg`` (FIX1 §4.3 / Q13).
+#: Algorithm-name grammar used by ``sigs[].alg`` (spec §4.3 / Q13).
 ALGORITHM_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 ALGORITHM_MAX_BYTES = 32
 

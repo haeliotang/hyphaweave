@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
-"""H0 FIX1 gate: verify a frozen-vector candidate directory.
+"""H0 revision-1 gate: verify a frozen-vector candidate directory.
 
 The frozen candidate (``vectors/frozen/v0.1-candidate/``) is *not* formally frozen
 until the v0.1 acceptance cases J1/J2 pass; it is a copied, pinned regression set.

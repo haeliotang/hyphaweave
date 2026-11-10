@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
-"""H0 FIX1 gate 3(a): true source-level mutation ablation of the verifier.
+"""H0 revision-1 gate 3(a): true source-level mutation ablation of the verifier.
 
 This replaces the old "check family ablation" (which only filtered already-produced
 error codes out of reports and was therefore a tautology - see review-a H-3).  Here
@@ -109,7 +109,7 @@ class MutationResult:
 
 #: Curated mutation catalogue.  ``check`` groups mutations by verifier check class;
 #: ``review_a_survivor`` marks the 24 survivors from review-a (they MUST all be killed
-#: by vectors once the FIX1 vectors land).
+#: by vectors once the revision-1 vectors land).
 CATALOGUE: list[Mutation] = []
 
 

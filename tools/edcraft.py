@@ -7,11 +7,11 @@
 This module is part of the *independent* tooling used to author test vectors.
 It never imports the reference verifier (``hyphaweave_verify``): the curve
 arithmetic, RFC 8032 point decoding and the verification order decided in
-``FIX1-CONTRACT.md`` §2 are implemented here in plain Python with ``hashlib``
+`spec/weave-record-1.md` §3.4 are implemented here in plain Python with ``hashlib``
 only.  It is intentionally redundant with the verifier so that crafted edge
 cases are not derived from the implementation under test.
 
-Verification order implemented by :func:`verify_structural` (FIX1 §2, decided):
+Verification order implemented by :func:`verify_structural` (spec §3.4, decided):
 
 1. ``len(signature) != 64`` -> ``E_ENV_SIG_VALUE``;
    ``len(public_key) != 32`` -> ``E_SIG_NONCANONICAL_A``.
@@ -114,7 +114,7 @@ L = 2**252 + 27742317777372353535851937790883648493
 D = (-121665 * pow(121666, P - 2, P)) % P
 SQRT_M1 = pow(2, (P - 1) // 4, P)
 
-# The eight canonical small-order point encodings (FIX1 §2 / spec §3.3).
+# The eight canonical small-order point encodings (spec §3.3).
 # Used only as a self-check oracle; the set itself is derived from the curve.
 EXPECTED_SMALL_ORDER_ENCODINGS = [
     bytes.fromhex("0000000000000000000000000000000000000000000000000000000000000000"),
@@ -301,7 +301,7 @@ def _is_identity(point) -> bool:
 
 
 def is_small_order(point) -> bool:
-    """``[8]P == identity`` (FIX1 §2 step 4/7; a *point* test, not a list)."""
+    """``[8]P == identity`` (spec §3.4 steps 4/7; a *point* test, not a list)."""
     return _is_identity(point_mul(8, point))
 
 
@@ -658,7 +658,7 @@ _CHECKS = {
 def verify_structural(
     public: bytes, message: bytes, signature: bytes, *, checks: dict | None = None
 ) -> str | None:
-    """Reference verification in the FIX1 §2 order; returns error code or None.
+    """Reference verification in the spec §3.4 order; returns error code or None.
 
     ``checks`` overrides individual rules (True = keep the check); omitting a
     check models a verifier with that rule removed and is used only to prove
