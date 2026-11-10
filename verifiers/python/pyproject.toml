@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hyphaweave-verify-python"
+version = "0.1.0"
+description = "Reference verifier for the weave-record/1 exchange format (H0 draft)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Inceptless", email = "support@inceptless.com" }]
+keywords = ["weave-record", "canonical-json", "ed25519", "verifier"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+# Pinned exactly: the verifier output must be reproducible on any machine that
+# installs these versions. See verifiers/python/README.md for the purpose of each.
+dependencies = [
+  "cryptography==46.0.5",
+  "jsonschema==4.23.0",
+  "asn1crypto==1.5.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2"]
+
+[project.scripts]
+hyphaweave-verify = "hyphaweave_verify.cli:main"
+
+[tool.setuptools]
+packages = ["hyphaweave_verify"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
