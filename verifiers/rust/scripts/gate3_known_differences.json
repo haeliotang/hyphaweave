@@ -1,0 +1,10 @@
+{
+  "_comment": [
+    "Gate 3 known-difference allow list (verifiers/rust/scripts/compare_reports.py).",
+    "Each entry must name the exact case id, say why the difference is not a defect,",
+    "and classify it as spec-ambiguous or spec-unique-answer-{Rust,Python}-bug.",
+    "The file starts empty on purpose: the first gate 3 run must fail until every",
+    "difference is understood. A stale entry (its case now matches) also fails the gate."
+  ],
+  "allowed_differences": []
+}
