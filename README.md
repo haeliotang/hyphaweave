@@ -42,11 +42,14 @@ Read this before using anything in this repository:
 - **H0 scope only.** There is no offline transport package, no project export or
   import adapter, and no network service in this repository.
 - **Revised after review.** This snapshot includes H0 revision 1 (decision
-  2026-11-10 #34) and revision 2 (decision 2026-11-10 #42); independent review
-  found wire-semantics defects, and the revisions changed the format rules, the
-  error-code registry, the trust-root model, the verifier and the vectors. The
-  regression set is a **candidate** (`vectors/frozen/v0.1-candidate/`); official
-  freeze begins only after J1/J2 acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
+  2026-11-10 #34), revision 2 (decision 2026-11-10 #42) and revision 3 (decision
+  2026-11-11 #2); independent reviews found wire-semantics defects, and the
+  revisions changed the format rules, the error-code registry, the trust-root
+  model, the resource limits, the verifier and the vectors. Revision 3 reacts to
+  the review of the second implementation and fixes ambiguities, several resource
+  limits and four reference-verifier defects. The regression set is a
+  **candidate** (`vectors/frozen/v0.1-candidate/`); official freeze begins only
+  after J1/J2 acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
 
 The Python verifier is a reference implementation, not a product: it is written
 to make the specification testable and to give a second implementer something

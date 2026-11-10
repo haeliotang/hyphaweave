@@ -180,6 +180,82 @@ changes the remaining trust-selection and timestamp-comparison behaviour:
   CONTRIBUTING, SECURITY), and Q33/P1/P2 were resolved in
   `docs/open-questions.md`.
 
+### Revision 3 (decision 2026-11-11 #2)
+
+Revision 3 implements rulings S1–S17 that followed the H1/J1a reviews of the
+second independent implementation. It is a wire-visible specification revision:
+it closes ambiguities found by two independent implementations, adds resource
+limits the earlier text lacked, fixes four reference-verifier defects, and turns
+the report's `limitations` field into a closed identifier vocabulary. The Rust
+implementation (H1-FIX1) follows in a separate change set after this revision is
+merged.
+
+- **Clarified trust and revocation state.** A key's class and validity window are
+  governed by the declaration that established its trust; a container/target
+  redeclaration cannot override them, a different-class redeclaration is invalid
+  with the new `E_KEY_CLASS_CONFLICT`, and a backdated `recorded_at` never wins
+  (S1). Key revocations from the whole verification context — keyset included —
+  take effect independently of record order; retired/other uses the earliest
+  effective time and compromise rescue uses the earliest `T` (S2).
+- **Resource limits and bounded reads.** `MAX_JSON_DEPTH` = 32 (value nesting
+  depth), `MAX_LICENCE_NESTING` = 16 and `MAX_TS_ACCURACY` = 86,400 s are new;
+  violations report `E_JSON_SIZE`, `E_ENV_LICENCE` and `E_TS_SCHEMA`
+  respectively, and nesting must never crash a verifier (S3, S11). Directory and
+  zip containers are read within per-class limits; ZIP64 must be accepted; zip
+  prefix bytes, trailing bytes and archive comments are rejected (S4, S5).
+- **Deterministic verdicts and reports.** An empty `sigs` array is structurally
+  valid and `E_SIG_REQUIRED` is applied by the §4.4 precedence (S7); an
+  unverifiable manifest signature no longer stops record processing (S7); the
+  S8 ambiguity rulings are normative (manifest multi-error reporting, missing
+  attestation file, missing `body.public_key`, `-0` token order, envelope
+  sub-order, nested-object codes, zip details, the keyset structural/semantic
+  boundary, report construction details, check-order precedence; fourteen of
+  them recorded in `docs/open-questions.md` as decided by principle); a grant
+  may be issued for future effect, a grant revocation must itself be valid, and
+  depth bounds are inclusive (S9, S10); `input` fields are `null` when their
+  identity cannot be determined within the limits (S14).
+- **Closed limitation vocabulary.** `limitations` is now a sorted, unique array
+  of ten `L_*` identifiers (S12); report construction is pinned byte-for-byte in
+  §14.6, including the serializer's `\u007f` escaping.
+- **Test-only hook hardened.** `WEAVE_VERIFY_SKIP_CHECKS` is read only with the
+  explicit global `--test-hooks` parameter, an unknown token is a usage error,
+  and a skipped check makes the CLI exit `3` (S13).
+- **Definitions and matcher semantics.** `recorded_at`/`occurred_at` are defined,
+  every `rel` has a direction, and a record's salt is fixed across exports
+  (S15). The H1 findings F1–F17 are adopted (report identity, dedicated
+  nested-object codes, envelope sub-order, unverifiable manifest continuation,
+  terminal blocking conditions, undetermined report fields, the keyset boundary,
+  input identity, report construction, inert `sigs[].alg` bytes, hook tokens,
+  command-surface details, stop rules, matcher semantics).
+- **Error registry.** New `E_KEY_CLASS_CONFLICT`; extended conditions for
+  `E_JSON_SIZE`, `E_ENV_LICENCE`, `E_TS_SCHEMA`, `E_MANIFEST_UNSIGNED`,
+  `E_MANIFEST_CHAIN`, `E_CONTAINER_ZIP`, `E_ENV_SIGS`; the envelope-level
+  `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` rows are narrowed to the top-level
+  envelope; the closed registry is **114 error codes, 14 notices and 10
+  limitation identifiers**.
+- **Schemas.** The record `sigs` array is structurally 0–16 entries (the
+  must-sign rule stays in the specification); the SPDX approximation is
+  documented as a character-alphabet check whose grammar and depth are enforced
+  by the verifier.
+- **Vectors.** The main corpus grows from **294 to 343 cases** (+49) across the
+  twelve categories, pinning every new ruling and fixed error code; the
+  expectation format gains `expected_input`, `limitations` and `notices_absent`,
+  plus exact empty-`records` assertions. The candidate regression set is
+  regenerated from the gated state: **190 cases** (179 previous, +23 selected new
+  cases, −12 previous representatives displaced by a lexicographically earlier
+  case for the same code); every change is listed in
+  `vectors/frozen/v0.1-candidate/FROZEN.md` (S17).
+- **Reference verifier.** The Python verifier implements the revision:
+  authoritative keyset declarations, order-independent revocation state, bounded
+  streaming reads, ZIP64, nesting limits, the new report and limitation
+  vocabulary, `--test-hooks`/exit 3, and the four differential-fuzz defect fixes.
+  The test suite reports **277 passed**.
+- **Tooling.** The vector generators gain the new expectation fields; the schema
+  self-check learns the new structural predicates; the true-source ablation gate
+  grows to **141 mutations (128 killed, 11 documented equivalent, 2 documented
+  redundant, 0 unpinned survivors)**; the byte-flip gate documents the
+  deliberately unsigned `proposed` positive cases.
+
 ### Explicitly not yet true in this version
 
 - **The format is not accepted.** `weave-record/1` v0.1 has **not** been

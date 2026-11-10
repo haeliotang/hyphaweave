@@ -3,16 +3,20 @@
 
 # Decided questions and remaining provisional choices
 
-> **Status: DRAFT (revision 2).** This file records the questions that the
+> **Status: DRAFT (revision 3).** This file records the questions that the
 > `weave-record/1` decision draft v0.1 (with correction v0.1.1) left open and how
 > H0 resolved them.
 >
 > **Q1–Q32 are decided** by Inceptless decision **2026-11-10 #34**; **Q33 is
-> decided** by Inceptless decision **2026-11-10 #42**. Each entry in §1 carries its
-> decision status; its normative form is in [`../spec/`](../spec/), and this page
-> only records the question, the decision and the reasoning. A small number of
-> *implementation-shape* details were not decided by #34 or #42; they are listed as
-> `PROVISIONAL` in §3. P1 and P2 were resolved by #42 and are no longer listed.
+> decided** by Inceptless decision **2026-11-10 #42**. Revision 3 records the
+> rulings S1–S17 of Inceptless decision **2026-11-11 #2**: the ambiguity classes
+> that S8 left to the reviser are listed, with their readings and rationale, in
+> §6 under `decided by principle (Inceptless decision 2026-11-11 #2)`. Each
+> entry in §1 carries its decision status; its normative form is in
+> [`../spec/`](../spec/), and this page only records the question, the decision
+> and the reasoning. A small number of *implementation-shape* details were not
+> decided by #34, #42 or #2; they are listed as `PROVISIONAL` in §3. P1 and P2
+> were resolved by #42, and P3/P10 by #2, and are no longer listed.
 >
 > Nothing in this file overrides the specification. Where this page and
 > [`../spec/weave-record-1.md`](../spec/weave-record-1.md) disagree, the
@@ -604,16 +608,17 @@ repository is public now), the CLA v1.0 review and signing channel (decisions
 Decision **2026-11-10 #42** resolved P1 and P2. Root selection no longer uses
 claimed time, so there is no deterministic root ordering to choose and no
 root tie-break; those entries were removed from the specification's Appendix A
-and are not listed below. The remaining implementation-shape choices keep the
-specification's identifiers **P3–P12**; they are marked `PROVISIONAL` and may
-change additively without changing the decided behaviours above.
+and are not listed below. Decision **2026-11-11 #2** resolved P3 (delegation-chain
+depth, now fixed by S10) and P10 (`N_NO_HUMAN_SIGNATURE` precedence, now fixed by
+F6/S8⑭), and narrowed P7. The remaining implementation-shape choices keep the
+specification's identifiers **P4–P6, P9, P11, P12**; they are marked
+`PROVISIONAL` and may change additively without changing the decided behaviours
+above.
 
-- **P3 — Delegation-chain depth.** The maximum grant delegation depth is 8. A
-  grant chain cannot contain a cycle: digest references form a DAG. The depth
-  bound applies to the delegation chain only.
-- **P4 — Revocation-authority walk depth.** Walking `weave.key.rotated` records
-  to find a grant granter's successor for revocation authority stops at depth 8;
-  the walk order is implementation shape.
+- **P4 — Revocation-authority walk order.** Walking `weave.key.rotated` records
+  to find a grant granter's successor for revocation authority is bounded at 8
+  rotation steps (fixed by S10); the walk order within that bound is
+  implementation shape.
 - **P5 — Grant-chain error-code precedence.** The delegation checks and the code
   each step reports are fixed, in this order:
   `E_GRANT_UNRESOLVED` → `E_GRANT_GRANTER` (parent not a grant) →
@@ -628,25 +633,14 @@ change additively without changing the decided behaviours above.
   `digest` and `renews`; entries are sorted by path; the first entry's imprint is
   the raw manifest digest, and each later entry's imprint is
   `SHA-256(previous .tsr file bytes || manifest digest raw bytes)`.
-- **P7 — Report field shapes.** `container.level_verified` is always `"L0"`,
-  `container.anchor_verified` is a boolean for L2, `timestamps[]` entries carry
-  `index`, `path`, `state` and `gen_time`, and the `vectors` target summary and
-  per-case layout are the shapes described in the specification.
-- **P8 — Compromise-revocation rescue comparison.** The S2 rescue requires an
-  external timestamp receipt whose `genTime + accuracy` is **strictly before** the
-  revocation's `effective_at` (a receipt without an `accuracy` field counts as
-  zero; comparison at microsecond precision, with `genTime` reduced to
-  milliseconds per the timestamp profile). The rescue exists if at least one
-  verified receipt satisfies that strict comparison; the qualifying receipt with
-  the smallest `genTime + accuracy` supplies the evidence. The mechanics of that
-  comparison are implementation shape.
+- **P7 — `vectors`-target report layout.** The record/container report field
+  shapes are now normative in specification §14.6. What remains implementation
+  shape is only the `vectors` target: its per-case result array layout and the
+  representation of the `input` identity are implementation-defined, deterministic
+  and path-free, and are not compared across implementations (F5/S8⑬).
 - **P9 — Scope subset comparison.** Delegation subset checks compare `scope` as
   sets of strings; `scope` does not participate in record-level machine checks
   beyond the subset relation.
-- **P10 — Human-signature notice and unverifiable-signature precedence.**
-  `N_NO_HUMAN_SIGNATURE` is reported when an `accepted` record has no valid
-  signature by a declared human key; its precedence relative to
-  `E_SIG_UNVERIFIABLE` is implementation shape.
 - **P11 — Specification-example classification markers.** The examples that
   `tools/check_spec_examples.py` validates are annotated as
   `standalone-record`, `container-context` or `illustrative`; the marking
@@ -657,6 +651,12 @@ change additively without changing the decided behaviours above.
   `actor.grant` on those actor types, so the parent grant cannot be expressed. The
   handling of that unreachable shape is an implementation-shape choice; the
   restriction itself follows from the envelope rules.
+
+Q27's report-shape part is updated by revision 3: the `vectors` target's
+`summary` is normative and conformance is `mismatched == 0`, while the per-case
+layout and the `vectors` input identity are explicitly implementation-defined
+(F5/S8⑬); the directory-container `input` rule is refined by S14 and decisions
+§4.7 (`null` when the manifest identity cannot be read within the limits).
 
 One further candidate implementation shape was resolved by decision #34 rather
 than left provisional: structural errors of the special `weave.erased` shape are
@@ -705,3 +705,136 @@ re-verification):
   acceptance.
 - §3 was added for the implementation-shape choices that decision #34 did not
   decide.
+
+## 6. What changed in revision 3 of this file
+
+Revision 3 implements Inceptless decision **2026-11-11 #2** and the H1/J1a review
+dispositions. Ruling S8 fixed four ambiguity classes outright (manifest multi-error
+reporting, missing attestation file, missing `body.public_key`, `-0` versus a later
+float) and left the rest to the reviser with the instruction to take the more
+conservative reading, pin it in the specification and record it here. Every entry in this
+section carries the status `decided by principle (Inceptless decision 2026-11-11 #2)`; each
+gives the two readings, the chosen one and why it is the conservative or the deterministic
+one.
+
+1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
+   the old §14.5 applies to the whole container, so one code. Reading B: the one-error
+   rule is per record (and per container stage), and the §11.6 records-listing phase
+   reports every inconsistency it detects. **Chosen B** — the input is invalid either
+   way, but reporting the complete set hides no defect and matches the replacement stop
+   rule; the container carries all detected codes in `container.errors` with
+   `records: []`. More conservative: the receiver sees every problem rather than
+   whichever check happened to run first.
+2. **Missing `signatures/manifest.sig.json` (S8②).** Readings: `E_MANIFEST_SCHEMA`
+   (the file is part of the layout) or `E_MANIFEST_UNSIGNED` (no signature evidence).
+   **Chosen `E_MANIFEST_UNSIGNED`**: the registry assigns "no signatures" to that code
+   and the manifest is unsigned either way; naming the missing signature is the single
+   informative reading.
+3. **`weave.key.declared` without `body.public_key` (S8③).** Readings:
+   `E_KEY_UNKNOWN` (the key cannot be established) or `E_KEY_PUBLIC_KEY` (the body is
+   structurally wrong). **Chosen invalid `E_KEY_PUBLIC_KEY`**: a structure error
+   precedes the trust judgement, and invalid is more conservative than unverifiable.
+4. **`-0` versus a later float (S8④).** Readings: classify canonical-form deviations
+   only after the parse, or classify `-0` at its number token. **Chosen**: number
+   classes are examined in input byte order, so `-0` is classified at its token as
+   `E_JSON_NOT_CANONICAL`; `{"a":-0,"b":1.5}` yields `E_JSON_NOT_CANONICAL` and the
+   reverse order yields `E_JSON_NUMBER_NOT_INTEGER`. The general canonical byte
+   comparison still runs after a syntactically valid parse. More deterministic: one
+   input, one code, without a cross-class ordering promise implementations would have
+   to guess.
+5. **Envelope sub-order (F3).** Readings: required-member presence first, or
+   closedness first. **Chosen** presence → closedness → per-member grammar in table
+   order, repeated inside every closed nested object. More conservative: it makes
+   "one error per record" deterministic; the alternative lets two conforming verifiers
+   report different codes for one record.
+6. **Nested closed-object codes (F2).** Readings: the envelope-level codes cover every
+   closed object, or the object's owning section names the code. **Chosen** the owning
+   section's dedicated code; `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` are top-level
+   only. More conservative: the more specific diagnosis, and it matches the explicit
+   §4.5 and §11.2 statements that the envelope codes do not apply to those objects.
+7. **Reference to an individually invalid record.** Readings: `found` because origin,
+   id and digest match, or `unverifiable`. **Chosen `unverifiable`**
+   (`N_REF_UNVERIFIABLE`), as §6.3 already states: a record that is not itself valid is
+   not evidence a reference can rely on. No text change was needed; the vector was
+   added.
+8. **Zip edge details (S5/S4/S8⑧).** Readings: tolerate a zip prefix, archive comment
+   or trailing bytes (common in self-extracting archives), or reject. **Chosen**
+   reject (`E_CONTAINER_ZIP`), with ZIP64 accepted and `readable/` never decompressed
+   or CRC-checked. More conservative: the container framing is part of the bytes the
+   verifier examined; accepting unexamined bytes weakens "the received bytes are the
+   evidence".
+9. **Keyset structural/semantic boundary (F10, S8⑨).** Readings: any keyset error is a
+   usage error (exit 2), or only structural failures are. **Chosen**: canonical form,
+   envelope structure, `sigs` presence/format and registered-kind body schema are usage
+   errors; kind-semantic, lifecycle, actor, authorisation and cryptographic failures
+   establish no trust and are not usage errors. More conservative: a malformed keyset
+   input fails closed as a usage error, while a merely untrusted record is ignored
+   instead of silently upgrading trust.
+10. **Report construction details (F12, S8⑩).** Readings: leave them
+    implementation-defined (byte comparisons then cannot be meaningful) or pin them.
+    **Chosen** pin them normatively in §14.6: `N_KEY_TOFU` placement, unknown-kind
+    notice only on a valid record, `sigs[].state`, partial `refs[]`,
+    `timestamps[].gen_time`, broken-renewal states, container defaults for undetermined
+    values, and the serializer micro-decisions (including `\u007f` escaping). More
+    conservative: the report becomes reproducible and no implementation must copy
+    another implementation's output to conform.
+11. **Check-order precedence (S8⑪).** **Chosen** the §14.5 stage order: cryptographic
+    checks before lifecycle/semantic ones, and `E_TS_FILE` before `E_TS_RENEWAL`. More
+    deterministic: a single code per defect; the reference behaviour already follows it.
+12. **`verifier` identity (F1, S8⑫).** **Chosen**: informational, excluded from
+    cross-implementation comparison; conformance is defined by §14.10. Avoids claiming
+    byte identity that cannot exist and fixes no false shared name.
+13. **`vectors` report layout (F5, S8⑬).** **Chosen**: `summary` is normative and
+    per-case layout and `vectors` input identity are implementation-defined,
+    deterministic and path-free. More conservative: no implementer has to copy an
+    unobservable shape, and conformance is `mismatched == 0`.
+14. **`N_NO_HUMAN_SIGNATURE` precedence (F6, S8⑭).** Readings: the notice also appears
+    on the unverifiable signature branches, or only on a valid accepted record.
+    **Chosen** only on a `valid` accepted record: reporting a human-signature
+    conclusion on a record whose signatures could not be checked would state something
+    the verifier did not establish.
+
+Status updates in this revision:
+
+- **Q27** (report `input` identity) is refined by S14 and the Lead's decisions §4.7:
+  the directory-container `input` is the raw `manifest.json` digest and byte size
+  whenever those bytes can be read, and `null` for both when the manifest is absent,
+  unreadable or above `MAX_MANIFEST_BYTES`; a record target above `MAX_RECORD_BYTES`
+  reports `E_JSON_SIZE` with `input` `null` because the whole file is never read. The
+  `vectors` target report shape is implementation-defined (F5/S8⑬).
+- **P3** (delegation-chain depth) and **P10** (human-signature notice precedence) are
+  resolved and removed from §3; **P7** is narrowed to the `vectors`-target layout
+  (F5).
+- **F4/F12** limitation prose is replaced by the closed identifier list of §14.9;
+  reports carry identifiers only.
+- **F13** is a property of the byte constructions (the bytes of `sigs[].alg` are not
+  covered by the record digest or signature), not an ambiguity; it is recorded as a
+  note in specification §4.3.
+- **F17** matcher semantics are stated normatively in specification §14.10 and in
+  `vectors/README.md` (the vectors area).
+
+### F1–F17 disposition (ruling S16)
+
+All seventeen findings are adopted; none is silently dropped. The normative locations
+are in the specification; the table records the disposition and, where a finding needed
+no text change, the reason (specification §14.10 and the kind pages carry the detail).
+
+| finding | disposition | normative location |
+|---|---|---|
+| F1 | adopted: `verifier` is an informational implementation identity, excluded from cross-implementation comparison | spec §0.2, §14.6 |
+| F2 | adopted (mandatory): registry rows shrink to envelope-level; closed nested objects use their owning section's code | spec §4, §4.2, registry `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` |
+| F3 | adopted: envelope sub-order presence → closedness → grammar, repeated inside nested closed objects | spec §4, §14.5 |
+| F4 | adopted via S12: `limitations` is a closed identifier list, not prose | spec §14.6, §14.9, registry `L_*` |
+| F5 | adopted: `summary` normative, per-case layout and `vectors` input identity implementation-defined; P7 narrowed | spec §14.6, §14.10; this file §3 P7 |
+| F6 | adopted: `N_NO_HUMAN_SIGNATURE` only for a valid `accepted` record; P10 resolved | spec §4.4, §14.5, §14.6 |
+| F7 | adopted: a §14.4 blocking condition is terminal for the record, like an error | spec §14.4, §14.5 |
+| F8 | adopted: timestamp verification may run before the record stage; reporting/stopping order unchanged | spec §14.5 |
+| F9 | adopted: scalar/object fields `null`, list fields `[]`, conditional fields omitted | spec §14.6 |
+| F10 | adopted: explicit keyset structural/semantic boundary | spec §14.1 |
+| F11 | adopted via S14: `input` is `null` when the manifest identity cannot be read within the limits | spec §14.6 |
+| F12 | adopted: report-construction details pinned normatively (TOFU placement, unknown-kind notice, `sigs[].state`, partial `refs[]`, `gen_time`, container defaults, broken-renewal states, serializer micro-decisions) | spec §14.6 |
+| F13 | no format change: a property of the byte constructions (`sigs[].alg` bytes are outside the record digest and signature); recorded as a note | spec §4.3, Appendix A |
+| F14 | superseded by S13: unknown skip-token is a usage error, not silently ignored | spec §14.1, §14.7 |
+| F15 | adopted: `vectors --tsa-trust` default anchor; `--previous` accepts a directory or zip; `--keys`/`--previous` not accepted on `vectors` | spec §14.1 |
+| F16 | adopted: a container invalid error stops with `records: []`; manifest signature verification is the cryptographic equation only | spec §14.5, §11.3 |
+| F17 | adopted: exact matcher semantics stated normatively | spec §14.10 and `vectors/README.md` |
