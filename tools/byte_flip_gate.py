@@ -456,10 +456,10 @@ class VerifierRunner:
         return str(Path(hyphaweave_verify.__file__).resolve())
 
     def _skipped(self) -> Any:
-        saved = os.environ.pop("WEAVE_VERIFY_SKIP_CHECKS", None)
-        if saved is not None:
-            os.environ["WEAVE_VERIFY_SKIP_CHECKS"] = saved
-        return self.cli.CheckSkipper.from_env()
+        # S13: the skip hook is available only with an explicit --test-hooks
+        # parameter, which this gate never passes; every flip is judged with all
+        # checks enabled.
+        return self.cli.CheckSkipper()
 
     def run(self, argv: list[str]) -> dict:
         namespace = self.parser.parse_args(argv)
