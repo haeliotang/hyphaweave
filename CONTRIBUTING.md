@@ -3,10 +3,12 @@
 
 # Contributing
 
-Hyphaweave is at milestone H0 and the repository is still private. Until the
-Inceptless Contributor License Agreement (CLA) is finalized, **no external
-contribution will be merged**. The rules below describe how this repository is
-built, so that the process is ready when it opens.
+Hyphaweave is at milestone H0 and the repository is still private, so it does
+not accept external contributions yet. The Inceptless Contributor License
+Agreement (CLA) is in force as version 1.0 (2026-11-10, decision #27); once the
+repository is public, every contribution must pass the CLA check before it can
+be merged. The rules below describe how this repository is built, so that the
+process is ready when it opens.
 
 ## Before you contribute: the CLA
 
@@ -15,10 +17,12 @@ version 1.0](CLA.md) **before a pull request can be merged**. The CLA allows
 Inceptless to offer the projects under other terms while keeping every accepted
 contribution available under its open-source license.
 
-- The CLA is currently a **DRAFT for legal review and is not in force**. No
-  external contribution is merged until it is published as version 1.0.
-- Signing link: **TODO(maintainer)**. Until that link exists, there is no
-  accepted signing channel and the answer to "can I contribute yet?" is no.
+- The CLA v1.0 is **in force since 2026-11-10** (decision #27). The signing
+  channel is [CLA Assistant](https://cla-assistant.io) (decision #28).
+- Signing link: **https://cla-assistant.io/haeliotang/hyphaweave**. The
+  repository is private today, so CLA Assistant is not linked to it yet;
+  linking is done when the repository is made public. Until then no external
+  contribution is accepted, and the answer to "can I contribute yet?" is no.
 - This repository does **not** use a Developer Certificate of Origin (DCO).
   A `Signed-off-by` trailer is neither required nor sufficient.
 
@@ -101,7 +105,7 @@ an open question rather than inventing an answer.
 
 ## Pull request checklist
 
-- [ ] The CLA is in force and signed (not possible yet — see above).
+- [ ] The CLA check passes (the CLA is signed; enforceable once the repository is public).
 - [ ] The change is within one area (specification, schemas, vectors, verifier,
       tooling, repository metadata) where practical.
 - [ ] New behaviour has tests, and negative test cases name their expected

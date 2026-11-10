@@ -79,9 +79,10 @@ copy of `LICENSES/Apache-2.0.txt`.
 Before any contribution can be merged, the contributor must accept the
 Inceptless Contributor License Agreement (`CLA.md`), which allows Inceptless to
 offer the projects under other terms while keeping every accepted contribution
-available under its open-source license. The CLA is currently a **draft, version
-1.0, not yet in force**, and no external contribution is merged until it is
-finalized — see `CONTRIBUTING.md`. There is no DCO sign-off in this repository.
+available under its open-source license. **CLA version 1.0 is in force since
+2026-11-10** (decision #27); signing runs through CLA Assistant (decision #28),
+and the signing link and the current private-repository status are described in
+`CONTRIBUTING.md`. There is no DCO sign-off in this repository.
 
 ## What this license does not promise
 
