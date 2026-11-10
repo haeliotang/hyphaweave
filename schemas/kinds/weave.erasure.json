@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.erasure.json",
+  "title": "weave.erasure record",
+  "description": "Registered kind weave.erasure (CONTRACT 7.7; DECISIONS G3a/G3b). Stage must be accepted and the actor must be a human. Container cross-checks (referenced placeholder digest, attestation back-reference, no live original) are verifier rules listed in schemas/README.md.",
+  "allOf": [
+    {
+      "$ref": "../envelope.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "weave.erasure"
+        },
+        "stage": {
+          "const": "accepted"
+        },
+        "actor": {
+          "properties": {
+            "type": {
+              "const": "human"
+            }
+          }
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["erased", "reason", "reason_note", "basis"],
+          "properties": {
+            "erased": {
+              "$ref": "../ref.json"
+            },
+            "reason": {
+              "enum": [
+                "data-subject-request",
+                "legal",
+                "safety",
+                "mistaken-inclusion",
+                "retention-expired",
+                "other"
+              ]
+            },
+            "reason_note": {
+              "type": ["string", "null"]
+            },
+            "basis": {
+              "oneOf": [
+                {
+                  "$ref": "../ref.json"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "executed_at": {
+              "$ref": "../manifest.json#/$defs/timestamp"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

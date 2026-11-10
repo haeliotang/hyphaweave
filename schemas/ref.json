@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inceptless.com/hyphaweave/schemas/v1/ref.json",
+  "title": "weave-record/1 reference",
+  "description": "JSON Schema Draft 2020-12 for the reference object used by refs, labels.consent, actor.grant and kind bodies (CONTRACT 6; DECISIONS B2/B4/B5). Hints are discovery aids only and never carry identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["origin", "id", "digest"],
+  "properties": {
+    "origin": {
+      "$ref": "manifest.json#/$defs/origin"
+    },
+    "id": {
+      "$ref": "manifest.json#/$defs/record_id"
+    },
+    "digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "kind": {
+      "$ref": "manifest.json#/$defs/kind_name"
+    },
+    "hints": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "maxLength": 2048,
+        "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]+$"
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "title": "reference digest",
+      "description": "Digest string of the referenced record. H0 checks sha256 strictly (exactly 64 lowercase hex characters); any other syntactically well-formed algorithm name is structurally valid but unsupported, so resolution becomes unverifiable instead of a record error (CONTRACT 3.6, DECISIONS B3, CONTRACT 22 Q13). Manifest positions, by contrast, require sha256 (CONTRACT 11.2 / 3.6).",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "string",
+          "pattern": "^(?!sha256:)(?=[a-z0-9-]{1,32}:)[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]+$"
+        }
+      ]
+    }
+  }
+}

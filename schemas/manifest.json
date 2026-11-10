@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inceptless.com/hyphaweave/schemas/v1/manifest.json",
+  "title": "weave-record/1 container manifest",
+  "description": "JSON Schema Draft 2020-12 for manifest.json of a weave-record/1 container (CONTRACT 11.2). This document also carries the shared $defs reused by envelope.json, ref.json and the kind schemas, plus $defs.manifest_attestation for signatures/manifest.sig.json (CONTRACT 11.3). Rules JSON Schema cannot express are enforced by tools/check_schemas.py and listed in schemas/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "manifest_version",
+    "origin",
+    "created_at",
+    "level",
+    "records",
+    "previous_manifest"
+  ],
+  "properties": {
+    "format": {
+      "const": "weave-record/1"
+    },
+    "manifest_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "origin": {
+      "$ref": "#/$defs/origin"
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "level": {
+      "enum": ["L0", "L1", "L2"]
+    },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100000,
+      "items": {
+        "$ref": "#/$defs/manifest_record"
+      }
+    },
+    "previous_manifest": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/previous_manifest"
+        }
+      ]
+    },
+    "chain": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/chain"
+        }
+      ]
+    },
+    "blobs": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/$defs/blob"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["level"],
+        "properties": {
+          "level": {
+            "const": "L0"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "chain": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["level"],
+        "properties": {
+          "level": {
+            "enum": ["L1", "L2"]
+          }
+        }
+      },
+      "then": {
+        "required": ["chain"],
+        "properties": {
+          "chain": {
+            "$ref": "#/$defs/chain"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "required": ["chain_index"]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "origin": {
+      "title": "origin",
+      "description": "Project slug plus the publishing instance key id (CONTRACT 5). Shared by the record envelope, references and the manifest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "instance"],
+      "properties": {
+        "project": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "maxLength": 64
+        },
+        "instance": {
+          "$ref": "#/$defs/key_id"
+        }
+      }
+    },
+    "key_id": {
+      "title": "key id",
+      "description": "ed25519: + the first 32 lowercase hex characters of SHA-256 over the 32-byte raw RFC 8032 public key (CONTRACT 3.4).",
+      "type": "string",
+      "pattern": "^ed25519:[0-9a-f]{32}$"
+    },
+    "digest": {
+      "title": "digest string",
+      "description": "sha256: followed by exactly 64 lowercase hex characters (CONTRACT 3.6). H0 only registers sha256 in structurally checked manifest positions.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "title": "timestamp literal",
+      "description": "RFC 3339 UTC with exactly three fractional digits and literal Z, years 0000-9999, seconds 00-59 (CONTRACT 0; no leap second). Calendar validity is not expressible; see schemas/README.md.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
+    },
+    "kind_name": {
+      "title": "kind name",
+      "description": "Registered or opaque kind name (CONTRACT 7): dot/dash separated lowercase segments, at most 128 ASCII bytes.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z][a-z0-9]*)*$",
+      "maxLength": 128
+    },
+    "record_id": {
+      "title": "record id",
+      "description": "1-256 Unicode scalar values, no C0/C1/DEL control characters, no leading or trailing U+0020 (CONTRACT 5). Lone surrogates cannot be rejected by JSON Schema; see schemas/README.md.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?:[^ \\u0000-\\u001F\\u007F-\\u009F](?:[^\\u0000-\\u001F\\u007F-\\u009F]*[^ \\u0000-\\u001F\\u007F-\\u009F])?)$"
+    },
+    "public_key": {
+      "title": "Ed25519 public key",
+      "description": "Unpadded base64url encoding of the 32-byte raw RFC 8032 public key: 43 characters, final character constrained to the alphabet that leaves the two unused bits zero (CONTRACT 3.5).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "signature_value": {
+      "title": "Ed25519 signature value",
+      "description": "Unpadded base64url encoding of a 64-byte Ed25519 signature: 86 characters, final character constrained to the alphabet that leaves the four unused bits zero (CONTRACT 3.5).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+    },
+    "signature": {
+      "title": "signature entry",
+      "description": "One per-record or manifest signature (CONTRACT 5.2 / 11.3). Ordering by key and per-key uniqueness are enforced by tools/check_schemas.py.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "key", "value"],
+      "properties": {
+        "alg": {
+          "const": "ed25519"
+        },
+        "key": {
+          "$ref": "#/$defs/key_id"
+        },
+        "value": {
+          "$ref": "#/$defs/signature_value"
+        }
+      }
+    },
+    "signatures": {
+      "title": "signature set",
+      "description": "Non-empty array of 1-16 signatures (CONTRACT 5.2). Sorted by key ascending with unique keys; enforced by tools/check_schemas.py.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/signature"
+      }
+    },
+    "manifest_record": {
+      "title": "manifest record entry",
+      "description": "One entry of manifest.records (CONTRACT 11.2). Entries are sorted by digest ascending and digests are unique; enforced by tools/check_schemas.py.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "digest"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/record_id"
+        },
+        "kind": {
+          "$ref": "#/$defs/kind_name"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "chain_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "previous_manifest": {
+      "title": "previous manifest reference",
+      "description": "Digest of the previous container manifest (CONTRACT 11.2 / D1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest"],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "chain": {
+      "title": "internal chain head",
+      "description": "L1/L2 internal hash-chain claim (CONTRACT 11.2 / A1c). Offline verification cannot recompute it; a verifier reports it unverified.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "head"],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "head": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "blob": {
+      "title": "blob entry",
+      "description": "One content-addressed blob entry of manifest.blobs (CONTRACT 11.2). Sorted by digest ascending with unique digests; enforced by tools/check_schemas.py.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "size"],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "manifest_timestamp": {
+      "title": "manifest timestamp entry",
+      "description": "One L2 RFC 3161 timestamp receipt listed by signatures/manifest.sig.json (CONTRACT 11.3). Sorted by path ascending; enforced by tools/check_schemas.py.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "path"],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^signatures/timestamp-[1-9][0-9]*\\.tsr$"
+        }
+      }
+    },
+    "manifest_attestation": {
+      "title": "manifest signature file",
+      "description": "Shape of signatures/manifest.sig.json (CONTRACT 11.3). The digest binds the exact manifest.json canonical bytes, never manifest.json itself. timestamps is always present (an empty array for L0/L1, at least one entry for L2); whether the list is compatible with manifest.level is a cross-file rule that JSON Schema cannot express.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "digest", "signatures", "timestamps"],
+      "properties": {
+        "format": {
+          "const": "weave-record/1"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "signatures": {
+          "$ref": "#/$defs/signatures"
+        },
+        "timestamps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/manifest_timestamp"
+          }
+        }
+      }
+    }
+  }
+}

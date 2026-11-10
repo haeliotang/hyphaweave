@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.consent.granted.json",
+  "title": "weave.consent.granted record",
+  "description": "Registered kind weave.consent.granted (CONTRACT 7.5; DECISIONS H3). Stage must be accepted and the actor must be a human or organization. Cross-field rule valid_from <= valid_until cannot be expressed by JSON Schema; see schemas/README.md.",
+  "allOf": [
+    {
+      "$ref": "../envelope.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "weave.consent.granted"
+        },
+        "stage": {
+          "const": "accepted"
+        },
+        "actor": {
+          "properties": {
+            "type": {
+              "enum": ["human", "organization"]
+            }
+          }
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["purpose", "scope", "valid_from", "valid_until", "data_subject", "terms"],
+          "properties": {
+            "purpose": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "scope": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "valid_from": {
+              "$ref": "../manifest.json#/$defs/timestamp"
+            },
+            "valid_until": {
+              "oneOf": [
+                {
+                  "$ref": "../manifest.json#/$defs/timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "data_subject": {
+              "oneOf": [
+                {
+                  "$ref": "../ref.json"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "terms": {
+              "type": ["string", "null"]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

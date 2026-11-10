@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.grant.json",
+  "title": "weave.grant record",
+  "description": "Registered kind weave.grant (CONTRACT 7.4; DECISIONS 8 rule 2). Stage must be accepted. Body.action selects exactly one of the two exact bodies: action=grant with a grant object, action=revoke with a revoke object. Authorization semantics (root vs delegated grant, transferability, delegation containment, revocation signer, revokes target) are verifier rules listed in schemas/README.md.",
+  "allOf": [
+    {
+      "$ref": "../envelope.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "weave.grant"
+        },
+        "stage": {
+          "const": "accepted"
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["action"],
+          "properties": {
+            "action": {
+              "enum": ["grant", "revoke"]
+            },
+            "grant": {
+              "$ref": "#/$defs/grant"
+            },
+            "revoke": {
+              "$ref": "#/$defs/revoke"
+            }
+          },
+          "oneOf": [
+            {
+              "required": ["grant"],
+              "properties": {
+                "action": {
+                  "const": "grant"
+                },
+                "revoke": false
+              }
+            },
+            {
+              "required": ["revoke"],
+              "properties": {
+                "action": {
+                  "const": "revoke"
+                },
+                "grant": false
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "grant": {
+      "title": "weave.grant grant body",
+      "description": "The grant body of an action=grant record (CONTRACT 7.4). All listed members are present; nullable members are present as null. Unknown members are not part of the exact body shape.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grantee",
+        "kinds",
+        "actions",
+        "scope",
+        "valid_from",
+        "valid_until",
+        "transferable",
+        "evidence",
+        "remedy"
+      ],
+      "properties": {
+        "grantee": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key"],
+          "properties": {
+            "key": {
+              "$ref": "../manifest.json#/$defs/key_id"
+            }
+          }
+        },
+        "kinds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../manifest.json#/$defs/kind_name"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["propose", "accept", "reject", "withdraw", "supersede", "erase", "grant"]
+          }
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "valid_from": {
+          "$ref": "../manifest.json#/$defs/timestamp"
+        },
+        "valid_until": {
+          "oneOf": [
+            {
+              "$ref": "../manifest.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transferable": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "oneOf": [
+            {
+              "$ref": "../ref.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remedy": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "revoke": {
+      "title": "weave.grant revoke body",
+      "description": "The revoke body of an action=revoke record (CONTRACT 7.4). The revokes target must resolve to a grant; that is a verifier rule.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revokes", "effective_at", "reason"],
+      "properties": {
+        "revokes": {
+          "$ref": "../ref.json"
+        },
+        "effective_at": {
+          "$ref": "../manifest.json#/$defs/timestamp"
+        },
+        "reason": {
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}

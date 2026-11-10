@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inceptless.com/hyphaweave/schemas/v1/envelope.json",
+  "title": "weave-record/1 record envelope",
+  "description": "JSON Schema Draft 2020-12 for a normal weave-record/1 record envelope (CONTRACT 5). An unknown-kind record body must be an object and is otherwise unconstrained here; the registered-kind schemas under kinds/ constrain it further. Rules JSON Schema cannot express (cross-field equalities, signature ordering, duplicate references, ...) are enforced by tools/check_schemas.py and listed in schemas/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "kind",
+    "origin",
+    "id",
+    "stage",
+    "actor",
+    "recorded_at",
+    "body"
+  ],
+  "properties": {
+    "format": {
+      "const": "weave-record/1"
+    },
+    "kind": {
+      "$ref": "manifest.json#/$defs/kind_name"
+    },
+    "origin": {
+      "$ref": "manifest.json#/$defs/origin"
+    },
+    "id": {
+      "$ref": "manifest.json#/$defs/record_id"
+    },
+    "stage": {
+      "$ref": "#/$defs/stage"
+    },
+    "actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "recorded_at": {
+      "$ref": "manifest.json#/$defs/timestamp"
+    },
+    "occurred_at": {
+      "$ref": "manifest.json#/$defs/timestamp"
+    },
+    "refs": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/ref_entry"
+      }
+    },
+    "labels": {
+      "$ref": "#/$defs/labels"
+    },
+    "salt": {
+      "$ref": "#/$defs/salt"
+    },
+    "body": {
+      "type": "object"
+    },
+    "sigs": {
+      "$ref": "manifest.json#/$defs/signatures"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["stage"],
+        "properties": {
+          "stage": {
+            "const": "accepted"
+          }
+        }
+      },
+      "then": {
+        "required": ["sigs"]
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "weave.key.declared",
+              "weave.key.rotated",
+              "weave.key.revoked",
+              "weave.grant",
+              "weave.consent.granted",
+              "weave.consent.revoked",
+              "weave.erasure"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": ["sigs"]
+      }
+    },
+    {
+      "if": {
+        "required": ["labels"],
+        "properties": {
+          "labels": {
+            "required": ["sensitivity"],
+            "properties": {
+              "sensitivity": {
+                "enum": ["personal", "local-only"]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["salt"]
+      }
+    },
+    {
+      "if": {
+        "required": ["kind", "actor"],
+        "properties": {
+          "kind": {
+            "not": {
+              "enum": [
+                "weave.key.declared",
+                "weave.key.rotated",
+                "weave.key.revoked"
+              ]
+            }
+          },
+          "actor": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "agent"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "required": ["model", "on_behalf_of", "grant", "idempotency_key"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "stage": {
+      "title": "record stage",
+      "description": "Closed stage vocabulary (CONTRACT 5; DECISIONS G1).",
+      "enum": ["proposed", "accepted", "rejected", "withdrawn", "superseded"]
+    },
+    "actor": {
+      "title": "record actor",
+      "description": "Closed actor object (CONTRACT 5.1). An agent must name its model, the human it acts for, its grant reference and an idempotency key, except for the three key-lifecycle kinds (CONTRACT 5.1 exception); those four members are forbidden for every other actor type. The kind-dependent agent requirement lives at the record root because it needs the sibling kind member.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "key"],
+      "properties": {
+        "type": {
+          "enum": ["human", "agent", "program", "device", "organization"]
+        },
+        "key": {
+          "$ref": "manifest.json#/$defs/key_id"
+        },
+        "model": {
+          "$ref": "#/$defs/model"
+        },
+        "on_behalf_of": {
+          "$ref": "manifest.json#/$defs/key_id"
+        },
+        "grant": {
+          "$ref": "ref.json"
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/idempotency_key"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "agent"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "model": false,
+              "on_behalf_of": false,
+              "grant": false,
+              "idempotency_key": false
+            }
+          }
+        }
+      ]
+    },
+    "model": {
+      "title": "agent model identifier",
+      "description": "provider/model@version: ASCII, 1-256 bytes (CONTRACT 5.1).",
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "idempotency_key": {
+      "title": "idempotency key",
+      "description": "1-256 Unicode scalar values, no C0/C1/DEL control characters (CONTRACT 5.1).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "rel": {
+      "title": "reference relation",
+      "description": "Closed rel vocabulary (CONTRACT 6).",
+      "enum": [
+        "derived_from",
+        "handed_off_to",
+        "receipt_of",
+        "executed_as",
+        "assessed_by",
+        "compensated_by",
+        "migrated_from",
+        "reshaped_from",
+        "supersedes",
+        "correction_of",
+        "erases",
+        "revokes"
+      ]
+    },
+    "ref_entry": {
+      "title": "record reference entry",
+      "description": "One entry of the envelope refs array (CONTRACT 5 / 6). Exact structural duplicates are rejected by uniqueItems; semantically duplicate entries (same rel and target origin/id/digest with different hints) are caught by tools/check_schemas.py.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rel", "ref"],
+      "properties": {
+        "rel": {
+          "$ref": "#/$defs/rel"
+        },
+        "ref": {
+          "$ref": "ref.json"
+        }
+      }
+    },
+    "sensitivity": {
+      "title": "sensitivity label",
+      "description": "Closed sensitivity vocabulary, ordered public < internal < personal < local-only (CONTRACT 9; DECISIONS H1).",
+      "enum": ["public", "internal", "personal", "local-only"]
+    },
+    "labels": {
+      "title": "record labels",
+      "description": "Closed labels object (CONTRACT 4.1 / 9; DECISIONS H1). labels is optional and sensitivity may be omitted (Lead ruling: absence of a sensitivity label is not a structural error; label propagation reports E_LABEL_DOWNGRADE when a resolved derived_from input is non-public). The consent member, when present, references a weave.consent.* record.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sensitivity": {
+          "$ref": "#/$defs/sensitivity"
+        },
+        "licence": {
+          "$ref": "#/$defs/spdx_expression"
+        },
+        "consent": {
+          "$ref": "ref.json"
+        }
+      }
+    },
+    "salt": {
+      "title": "record salt",
+      "description": "Unpadded base64url of exactly 16 random bytes: 22 characters, final character constrained to the alphabet that leaves the four unused bits zero (CONTRACT 3.5 / 5; DECISIONS G3c).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$"
+    },
+    "spdx_expression": {
+      "title": "SPDX licence expression",
+      "description": "SPDX licence expression, syntax-checked only (CONTRACT 9; DECISIONS H1). Approximation: identifiers [A-Za-z0-9][A-Za-z0-9.+-]*, uppercase AND/OR/WITH operators, parentheses nested at most two deep; full SPDX grammar (precedence, exception identifiers, licence-list membership) is checked by the verifier, never offline membership. See schemas/README.md.",
+      "type": "string",
+      "pattern": "^(?:(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*|\\((?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*|\\((?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*\\)))*$"
+    }
+  }
+}

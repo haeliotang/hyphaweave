@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.erased.json",
+  "title": "weave.erased placeholder",
+  "description": "Exact replacement object for an erased record (CONTRACT 7.8; DECISIONS 7). This is NOT a normal envelope: it has no stage, actor or sigs. digest is the original record digest; attestation must resolve to the weave.erasure record that erased it. The file verdict for this shape is erased, never valid.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "kind", "origin", "id", "digest", "attestation"],
+  "properties": {
+    "format": {
+      "const": "weave-record/1"
+    },
+    "kind": {
+      "const": "weave.erased"
+    },
+    "origin": {
+      "$ref": "../manifest.json#/$defs/origin"
+    },
+    "id": {
+      "$ref": "../manifest.json#/$defs/record_id"
+    },
+    "digest": {
+      "$ref": "../manifest.json#/$defs/digest"
+    },
+    "attestation": {
+      "$ref": "../ref.json"
+    }
+  }
+}
