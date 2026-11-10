@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 #
-# H0 revision-1 gates: specification, vectors, verifier and repository checks.
-# The repository is not pushed yet, so this workflow has never run on GitHub;
-# every command below also runs locally from the repository root (see
-# CONTRIBUTING.md). Dependency versions are pinned by
-# verifiers/python/constraints.txt; Python 3.12 is only covered by this
-# workflow once it actually runs.
+# H0 revision-2 gates: specification, vectors, verifier and repository checks.
+# The repository is public and this workflow is defined here; this file does not
+# claim that a particular GitHub Actions run passed, and every command below also
+# runs locally from the repository root (see CONTRIBUTING.md). Dependency
+# versions are pinned by verifiers/python/constraints.txt; Python 3.12 is
+# covered by this workflow when it runs.
 name: CI
 
 on:

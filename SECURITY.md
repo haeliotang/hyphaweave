@@ -5,17 +5,18 @@
 
 ## Status of this repository
 
-Hyphaweave is at milestone **H0 revision 1** (decision 2026-11-10 #34): a draft
-specification (`weave-record/1` v0.1), JSON Schemas, conformance vectors and one
-Python reference verifier. The format is **not stable**, the repository is **not
-published**, and nothing here runs as a network service. There is no warranty
-(see `LICENSING.md`).
+Hyphaweave is at milestone **H0 revision 2** (decisions 2026-11-10 #34 and
+#42): a draft specification (`weave-record/1` v0.1), JSON Schemas, conformance
+vectors and one Python reference verifier. The repository is **public**, but the
+format is **not stable** and the project is not yet accepted (J1/J2), and nothing
+here runs as a network service. There is no warranty (see `LICENSING.md`).
 
 ## Reporting a vulnerability
 
 Send reports to **support@inceptless.com** — the only contact address for this
-project. Do not open a public issue for a security report; the repository is
-currently private, and coordinated disclosure matters more once it is public.
+project. Do not open a public issue for a security report: the repository is
+public now, and a public issue would disclose the problem before a fix exists.
+Please report privately so we can coordinate disclosure.
 
 Please include, when possible:
 

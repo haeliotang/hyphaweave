@@ -18,9 +18,9 @@ Hyphaweave 定义 `weave-record/1`：一种在相互独立的系统之间交换�
 - **草案，未稳定。** `weave-record/1` 目前是 v0.1 草案。格式仍可能变化，在 v1.0 之前不承诺任何兼容性。
 - **尚未验收。** `weave-record/1` v0.1 **尚未**通过 J1/J2 往返验收。只有在相互独立的项目之间真正完成两次往返（导出、原样收下并核验）之后，v0.1 才算成立。H0 交付的是规范、Schema、测试向量和一个核验器，不包含往返验收。
 - **尚不能称为独立实现。** 目前只有**一个**实现：本仓库里的 Python 参考核验器。单一实现无法证明「只看规范就能实现这个格式」，因此本仓库**不**声称已有独立实现。Rust 核验器（H1 里程碑）刻意留给另一位实现者，不属于 H0。
-- **尚未发布。** 仓库目前是私有的，还没有推送到任何公开托管。CI 工作流已经写好，但从未在 GitHub 上运行；核验器也没有发布到 PyPI，只能从本仓库安装。
+- **已公开，仍是草案。** 仓库现在是公开的，但这不代表 `weave-record/1` 已稳定：它仍是草案，v1.0 仍取决于 J1/J2 验收和第二个独立实现。核验器尚未发布到 PyPI，只能从本仓库安装。`.github/workflows/ci.yml` 与本 README 下方的本地闸门一致；本 README 不声称某次 GitHub Actions 运行已经通过。
 - **范围仅限 H0。** 本仓库没有离线传输件，没有各项目的导出/导入适配器，也没有任何网络服务。
-- **经过独立复核后的修订 1。** 本快照是 H0 修订 1（决定 2026-11-10 #34）：独立复核发现了线协议语义缺陷，修订 1 改变了格式规则、错误码表、核验器与测试向量。回归集目前是**候选集**（`vectors/frozen/v0.1-candidate/`）；正式冻结在 J1/J2 验收通过后才开始。详见 [`CHANGELOG.md`](CHANGELOG.md) 的修订 1 段。
+- **经过独立复核后的修订。** 本快照包含 H0 修订 1（决定 2026-11-10 #34）与修订 2（决定 2026-11-10 #42）：独立复核发现了线协议语义缺陷，修订改变了格式规则、错误码表、信任根模型、核验器与测试向量。回归集目前是**候选集**（`vectors/frozen/v0.1-candidate/`）；正式冻结在 J1/J2 验收通过后才开始。详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 Python 核验器是参考实现，不是产品：它的用途是让规范可被测试、给第二位实现者一个对照物，并不代表格式已经定型。
 
@@ -49,7 +49,7 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
 ```
 
-H0 构建所用的精确依赖版本固定在 [`verifiers/python/constraints.txt`](verifiers/python/constraints.txt)；只有该文件与 `pyproject.toml` 中固定的版本有保证。本机开发环境是 Python 3.14，Python 3.11 与 3.12 未在本机实测；3.12 的 CI 工作流从未在 GitHub 上运行过。
+H0 构建所用的精确依赖版本固定在 [`verifiers/python/constraints.txt`](verifiers/python/constraints.txt)；只有该文件与 `pyproject.toml` 中固定的版本有保证。本机开发环境是 Python 3.14，Python 3.11 与 3.12 未在本机实测；3.12 工作流定义在 `.github/workflows/ci.yml`，本文件不声称它已在 GitHub 上通过。
 
 命令行接口如下：
 
@@ -128,10 +128,10 @@ Hyphaweave 刻意**不**做以下事情：
 - 品牌资产（`assets/`）：项目 logo 保留，标识为 `LicenseRef-Inceptless-Brand`；可用于指代本项目，但不得暗示官方地位或背书。
 - `vectors/external/` 下的外部测试数据沿用其上游来源的许可，并记录在数据旁边。
 
-完整许可分层与官方许可证原文的 SHA-256 见 [`LICENSING.md`](LICENSING.md)。贡献前须接受 Inceptless 贡献者许可协议（CLA v1.0，已于 2026-11-10 生效，决定 #27/#28）；仓库目前是私有的，暂不接受外部贡献。详见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+完整许可分层与官方许可证原文的 SHA-256 见 [`LICENSING.md`](LICENSING.md)。贡献前须接受 Inceptless 贡献者许可协议（CLA v1.0，已于 2026-11-10 生效，决定 #27/#28）；仓库现在是公开的，但只有在 CLA 签署检查对本仓库生效之后才接受外部贡献。详见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ## 安全与联系
 
 安全报告及一切联系：**support@inceptless.com** —— 这是本仓库唯一使用的联系方式。请先读 [`SECURITY.md`](SECURITY.md)：`vectors/keys/` 下的测试密钥是故意公开的测试材料，不是泄露的密钥；签名也不证明被签署的主张为真。
 
-仓库目前是私有的，因此没有公开的 issue 跟踪器。
+仓库现在是公开的；安全报告仍只发到 support@inceptless.com，而不要发到公开 issue（见 [`SECURITY.md`](SECURITY.md)）。

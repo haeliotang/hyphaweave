@@ -157,16 +157,13 @@ that wants others to implement it independently and confidently. See
 
 ## 11. Open questions
 
-The concrete open questions for this milestone — including the
-implementation-shape choices that remain `PROVISIONAL` in the specification, and
-the question of when the repository should become public — are tracked in
-[`open-questions.md`](open-questions.md). When the two documents differ, that
-file and the decision log govern.
+The concrete open questions for this milestone — in particular the
+implementation-shape choices that remain `PROVISIONAL` in the specification —
+are tracked in [`open-questions.md`](open-questions.md). When the two documents
+differ, that file and the decision log govern.
 
-Publication timing is intentionally not decided here. The case for publishing
-only after spec, vectors and the Python verifier exist as a first coherent
-version is strong; so is the case for publishing from the first commit. The
-question is recorded as an open question rather than resolved by this draft.
+The repository is public now, so publication timing is no longer an open
+question; this positioning draft did not decide it.
 
 ## 12. Adoption flow
 

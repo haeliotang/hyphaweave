@@ -3,12 +3,11 @@
 
 # Contributing
 
-Hyphaweave is at milestone H0 and the repository is still private, so it does
-not accept external contributions yet. The Inceptless Contributor License
-Agreement (CLA) is in force as version 1.0 (2026-11-10, decision #27); once the
-repository is public, every contribution must pass the CLA check before it can
-be merged. The rules below describe how this repository is built, so that the
-process is ready when it opens.
+Hyphaweave is at milestone H0 and the repository is public, but the format is
+still a draft. The Inceptless Contributor License Agreement (CLA) is in force as
+version 1.0 (2026-11-10, decision #27); every external contribution must pass
+the CLA check before it can be merged. The rules below describe how this
+repository is built and reviewed.
 
 ## Before you contribute: the CLA
 
@@ -20,9 +19,9 @@ contribution available under its open-source license.
 - The CLA v1.0 is **in force since 2026-11-10** (decision #27). The signing
   channel is [CLA Assistant](https://cla-assistant.io) (decision #28).
 - Signing link: **https://cla-assistant.io/haeliotang/hyphaweave**. The
-  repository is private today, so CLA Assistant is not linked to it yet;
-  linking is done when the repository is made public. Until then no external
-  contribution is accepted, and the answer to "can I contribute yet?" is no.
+  repository is public now; the CLA signing check is provided by CLA Assistant.
+  Until that check is active for this repository, maintainers will not merge
+  external changes, and a pull request cannot be merged.
 - This repository does **not** use a Developer Certificate of Origin (DCO).
   A `Signed-off-by` trailer is neither required nor sufficient.
 
@@ -71,8 +70,9 @@ reuse lint
 ```
 
 These are the same commands as [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-A pull request must leave all of them passing. The repository is not pushed
-yet, so the workflow has not run on GitHub; run the commands locally.
+A pull request must leave all of them passing. The workflow runs on GitHub once
+changes are pushed; this document does not claim that a particular CI run
+passed, so run the commands locally as well.
 
 ## Repository conventions
 
@@ -126,7 +126,7 @@ an open question rather than inventing an answer.
 
 ## Pull request checklist
 
-- [ ] The CLA check passes (the CLA is signed; enforceable once the repository is public).
+- [ ] The CLA check passes (the CLA is signed; the repository is public).
 - [ ] The change is within one area (specification, schemas, vectors, verifier,
       tooling, repository metadata) where practical.
 - [ ] New behaviour has tests, and negative test cases name their expected

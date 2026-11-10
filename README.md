@@ -33,17 +33,20 @@ Read this before using anything in this repository:
   alone, so this repository does **not** claim independent implementations.
   The Rust verifier (milestone H1) is deliberately left to a separate
   implementer and is not part of H0.
-- **Not published.** The repository is currently private and has not been pushed
-  to a public host. The CI workflow exists but has never run on GitHub, and the
-  verifier has not been released to PyPI. It is installed from this repository.
+- **Public, still draft.** The repository is now public, but that does not make
+  `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
+  J1/J2 acceptance cases and on a second, independent implementation. The
+  verifier has not been released to PyPI and is installed from this repository.
+  The workflow in `.github/workflows/ci.yml` mirrors the local gates below; this
+  README does not claim that a particular GitHub Actions run passed.
 - **H0 scope only.** There is no offline transport package, no project export or
   import adapter, and no network service in this repository.
-- **Revised after review.** This snapshot is H0 revision 1 (decision
-  2026-11-10 #34): independent review found wire-semantics defects, and the
-  revision changed the format rules, the error-code registry, the verifier and
-  the vectors. The regression set is a **candidate** (`vectors/frozen/
-  v0.1-candidate/`); official freeze begins only after J1/J2 acceptance. See
-  the revision-1 section of [`CHANGELOG.md`](CHANGELOG.md).
+- **Revised after review.** This snapshot includes H0 revision 1 (decision
+  2026-11-10 #34) and revision 2 (decision 2026-11-10 #42); independent review
+  found wire-semantics defects, and the revisions changed the format rules, the
+  error-code registry, the trust-root model, the verifier and the vectors. The
+  regression set is a **candidate** (`vectors/frozen/v0.1-candidate/`); official
+  freeze begins only after J1/J2 acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
 
 The Python verifier is a reference implementation, not a product: it is written
 to make the specification testable and to give a second implementer something
@@ -80,7 +83,8 @@ The exact dependency versions used for the H0 build are pinned in
 [`verifiers/python/constraints.txt`](verifiers/python/constraints.txt); only the
 versions pinned there and in `pyproject.toml` are guaranteed. Python 3.11 and
 3.12 have not been exercised locally (the build environment was Python 3.14);
-the 3.12 CI workflow has never run on GitHub.
+the 3.12 workflow is defined in `.github/workflows/ci.yml` and is not claimed
+here to have passed.
 
 The command-line surface is:
 
@@ -200,8 +204,8 @@ version.
 See [`LICENSING.md`](LICENSING.md) for the full split and the SHA-256 of the
 official license texts. Contributions require the Inceptless Contributor
 License Agreement (CLA v1.0, in force since 2026-11-10, decisions #27/#28); the
-repository is private and does not accept external contributions yet. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+repository is now public, but external contributions are accepted only once the
+CLA signing check is active for it. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Security and contact
 
@@ -210,4 +214,4 @@ address used by this repository. Please read [`SECURITY.md`](SECURITY.md) first:
 the test keys under `vectors/keys/` are deliberately public test material, not
 leaked secrets, and a signature does not prove that the signed claims are true.
 
-The repository currently has no public issue tracker because it is private.
+The repository is public now; security reports still go to support@inceptless.com rather than to a public issue (see [`SECURITY.md`](SECURITY.md)).
