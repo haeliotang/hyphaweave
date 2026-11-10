@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_SALT"],"id":"labels/salt-padded","input":"record.json","notes":"base64url salts are unpadded (§3.5).","target":"record","verdict":"invalid"}

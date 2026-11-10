@@ -1,0 +1,9 @@
+{
+  "name": "agent-1",
+  "key_id": "ed25519:b6190071e4bbc7c82afc702fa9ffa6f5",
+  "key_type": "agent",
+  "seed_file": "agent-1.seed",
+  "pub_bin_file": "agent-1.pub.bin",
+  "pub_pem_file": "agent-1.pub.pem",
+  "note": "SYNTHETIC PUBLIC TEST KEY - not a secret, not for any real use. seed = sha256('weave-record/1/test-key/' + name)[:32]"
+}

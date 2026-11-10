@@ -1,0 +1,9 @@
+{
+  "name": "key-compromised",
+  "key_id": "ed25519:d27f41bd9e715d0bf9b66ef71d09aa45",
+  "key_type": "human",
+  "seed_file": "key-compromised.seed",
+  "pub_bin_file": "key-compromised.pub.bin",
+  "pub_pem_file": "key-compromised.pub.pem",
+  "note": "SYNTHETIC PUBLIC TEST KEY - not a secret, not for any real use. seed = sha256('weave-record/1/test-key/' + name)[:32]"
+}

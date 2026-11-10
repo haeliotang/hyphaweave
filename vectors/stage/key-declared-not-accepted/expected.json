@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"stage","errors":["E_ENV_STAGE"],"id":"stage/key-declared-not-accepted","input":"record.json","notes":"weave.key.declared MUST use stage=accepted (§5.3, §7.1).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_INVALID"],"id":"sig/wrong-key-value","input":"record.json","notes":"A signature by another key does not verify under the claimed key id.","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/member-order","input":"record.json","notes":"Compact JSON in declaration order is still not WR-CJ member order.","target":"record","verdict":"invalid"}

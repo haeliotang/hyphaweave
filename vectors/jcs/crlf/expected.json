@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/crlf","input":"record.json","notes":"A CR before the trailing LF is a byte deviation.","target":"record","verdict":"invalid"}

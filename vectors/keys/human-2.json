@@ -1,0 +1,9 @@
+{
+  "name": "human-2",
+  "key_id": "ed25519:928a1e1dbe45a5d298ce5f6b5ce2eabe",
+  "key_type": "human",
+  "seed_file": "human-2.seed",
+  "pub_bin_file": "human-2.pub.bin",
+  "pub_pem_file": "human-2.pub.pem",
+  "note": "SYNTHETIC PUBLIC TEST KEY - not a secret, not for any real use. seed = sha256('weave-record/1/test-key/' + name)[:32]"
+}

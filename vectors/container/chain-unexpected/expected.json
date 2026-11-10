@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_CHAIN_UNEXPECTED"],"id":"container/chain-unexpected","input":"container","notes":"previous_manifest is null but previous/ contains a manifest: an unexpected previous container is rejected (§11.4).","target":"container","verdict":"invalid"}

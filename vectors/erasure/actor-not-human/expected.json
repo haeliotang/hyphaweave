@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"erasure","errors":["E_ERASE_ACTOR"],"id":"erasure/actor-not-human","input":"record.json","notes":"Only a human may execute an erasure (§7.7, G3a): a program actor is E_ERASE_ACTOR invalid (the record is correctly signed by its own key, so the actor rule is the defect).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_RECORDS"],"id":"container/manifest-records-unsorted","input":"container","notes":"manifest.records must be sorted by digest ascending with unique digests (§11.2); two genuinely sorted entries are reversed here.","target":"container","verdict":"invalid"}

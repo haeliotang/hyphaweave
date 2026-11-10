@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_GRANTEE_MISMATCH"],"id":"grant/grantee-mismatch","input":"container","notes":"The cited grant is issued to agent-2 but the record is authored by agent-1: agent.key must equal grantee.key (§8.3, E_GRANT_GRANTEE_MISMATCH).","target":"container","verdict":"invalid"}

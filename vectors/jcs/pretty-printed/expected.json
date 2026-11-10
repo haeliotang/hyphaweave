@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/pretty-printed","input":"record.json","notes":"Insignificant whitespace violates the canonical-bytes rule for files.","target":"record","verdict":"invalid"}

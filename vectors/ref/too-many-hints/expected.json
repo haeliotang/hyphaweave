@@ -1,0 +1,1 @@
+{"category":"ref","errors":["E_ENV_REFS"],"id":"ref/too-many-hints","input":"record.json","notes":"At most 8 hints per reference (§6, §13).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/public-no-salt","input":"record.json","notes":"A public record does not need a salt.","target":"record","verdict":"valid"}

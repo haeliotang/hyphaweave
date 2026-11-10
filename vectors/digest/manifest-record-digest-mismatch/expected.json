@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"digest","errors":["E_MANIFEST_RECORD_DIGEST"],"id":"digest/manifest-record-digest-mismatch","input":"container","notes":"A records/ file whose content no longer hashes to the manifest entry digest is a manifest/records inconsistency (§11.5).","target":"container","verdict":"invalid"}

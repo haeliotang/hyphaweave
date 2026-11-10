@@ -1,0 +1,1 @@
+{"category":"container","errors":[],"expected_container":{"level_claimed":"L0","level_verified":"L0"},"id":"container/zip-valid","input":"container.zip","notes":"Positive zip form (§11.6): the same layout, STORED entries, POSIX relative paths; must verify like the directory form.","target":"container","verdict":"valid"}

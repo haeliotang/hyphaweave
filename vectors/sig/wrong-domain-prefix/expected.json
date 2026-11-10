@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_INVALID"],"id":"sig/wrong-domain-prefix","input":"record.json","notes":"A signature made under 'weave-record/2/sig\\n' must not verify (§3).","target":"record","verdict":"invalid"}

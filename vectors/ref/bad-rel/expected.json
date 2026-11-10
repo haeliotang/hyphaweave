@@ -1,0 +1,1 @@
+{"category":"ref","errors":["E_ENV_REFS"],"id":"ref/bad-rel","input":"record.json","notes":"rel uses the closed vocabulary of §6.","target":"record","verdict":"invalid"}

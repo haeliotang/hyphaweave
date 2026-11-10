@@ -1,0 +1,12 @@
+{
+  "commit": "RFC 8032, January 2017 (immutable RFC Editor text)",
+  "files": {
+    "rfc8032.txt": "ed63657ff389301282b169b0abde9b5dd2c7e4d524fdfa5da6ff3094fc93c4c3"
+  },
+  "license": "IETF Trust Legal Provisions (BCP 78); Copyright Notice is inside rfc8032.txt",
+  "name": "RFC 8032 (Edwards-Curve Digital Signature Algorithm, EdDSA)",
+  "retrieved_at": "2026-11-10T09:39:42Z",
+  "sha256": "e9553afcebb08b043b241b2dda7f0775efb0c8193726017c21d37ca13c3fda86",
+  "sha256_scope": "SHA-256 of the stored SHA256SUMS manifest; the manifest lists the SHA-256 of every retrieved official file",
+  "url": "https://www.rfc-editor.org/rfc/rfc8032.txt"
+}

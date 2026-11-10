@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"ref","errors":["E_REF_KIND_MISMATCH"],"id":"ref/kind-mismatch","input":"container","notes":"A resolved target whose actual kind contradicts the ref's kind claim is invalid (§6).","target":"container","verdict":"invalid"}

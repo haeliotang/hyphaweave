@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"expected_resolution":["missing"],"id":"labels/propagation-unchecked","input":"record.json","notes":"An unresolvable derived_from reference only makes label propagation unchecked (notice); the record stays valid (§9.2).","notices":["N_LABEL_PROPAGATION_UNCHECKED"],"target":"record","verdict":"valid"}

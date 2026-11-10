@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"ref","errors":[],"expected_resolution":["missing","missing"],"id":"ref/two-missing","input":"record.json","notes":"Resolution states are reported per reference index.","notices":["N_REF_MISSING"],"target":"record","verdict":"valid"}

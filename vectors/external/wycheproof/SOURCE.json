@@ -1,0 +1,13 @@
+{
+  "commit": "d5f724a21e449bbf8f142e032a6bf86884f2851c",
+  "files": {
+    "LICENSE": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    "testvectors_v1/ed25519_test.json": "ea80ffebac085e21cb9d3e903e7fa2b448d96702da5b31f061d0b83b430b74b3"
+  },
+  "license": "Apache-2.0",
+  "name": "Project Wycheproof Ed25519 test vectors (testvectors_v1/ed25519_test.json)",
+  "retrieved_at": "2026-11-10T09:39:42Z",
+  "sha256": "2f4f03dfeb34b530c6cb9ea9366ee4a16d18208befbe5895601f9f7564b030d1",
+  "sha256_scope": "SHA-256 of the stored SHA256SUMS manifest; the manifest lists the SHA-256 of every retrieved official file",
+  "url": "https://github.com/C2SP/wycheproof/blob/d5f724a21e449bbf8f142e032a6bf86884f2851c/testvectors_v1/ed25519_test.json"
+}

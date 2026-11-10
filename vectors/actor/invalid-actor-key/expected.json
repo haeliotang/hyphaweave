@@ -1,0 +1,1 @@
+{"category":"actor","errors":["E_ENV_ACTOR_KEY"],"id":"actor/invalid-actor-key","input":"record.json","notes":"actor.key must be a key id (§5.1, §3.4).","target":"record","verdict":"invalid"}

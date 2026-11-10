@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_SALT"],"id":"labels/salt-wrong-length","input":"record.json","notes":"salt is exactly 16 bytes (§5, §9.1).","target":"record","verdict":"invalid"}

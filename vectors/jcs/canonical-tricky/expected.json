@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"jcs","errors":[],"id":"jcs/canonical-tricky","input":"record.json","notes":"Tricky canonical value: control escapes, literal non-ASCII including U+2028/U+2029, integer bounds (2^53-1), nested objects and arrays.","target":"record","verdict":"valid"}

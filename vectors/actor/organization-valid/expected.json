@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":[],"id":"actor/organization-valid","input":"record.json","notes":"organization is a closed-vocabulary actor type (§5.1).","target":"record","verdict":"valid"}

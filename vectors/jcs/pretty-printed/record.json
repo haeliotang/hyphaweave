@@ -1,0 +1,18 @@
+{
+  "format": "weave-record/1",
+  "kind": "example.note",
+  "origin": {
+    "project": "example",
+    "instance": "ed25519:333f90d1d9dfb653b78df977b9b13ff2"
+  },
+  "id": "jcs-10",
+  "stage": "proposed",
+  "actor": {
+    "type": "human",
+    "key": "ed25519:333f90d1d9dfb653b78df977b9b13ff2"
+  },
+  "recorded_at": "2026-11-01T00:00:00.000Z",
+  "body": {
+    "text": "synthetic test note"
+  }
+}

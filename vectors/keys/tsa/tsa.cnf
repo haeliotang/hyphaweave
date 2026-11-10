@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
+# SPDX-License-Identifier: Apache-2.0
+#
+# Local RFC 3161 test TSA configuration (OpenSSL `openssl ts`).
+# Used only to generate the committed test timestamp replies under
+# vectors/keys/tsa/fixtures/; never a real timestamp authority.
+[ tsa ]
+default_tsa = tsa_config1
+
+[ tsa_config1 ]
+crypto_device = builtin
+serial = ./serial.txt
+signer_cert = ./tsa.crt.pem
+certs = ./tsa.crt.pem
+signer_key = ./tsa.key.pem
+signer_digest = sha256
+default_policy = 1.2.3.4.1
+other_policies = 1.2.3.4.5
+digests = sha256
+accuracy = secs:1
+ordering = no
+tsa_name = yes
+ess_cert_id_chain = no
+ess_cert_id_alg = sha256

@@ -1,0 +1,1 @@
+{"category":"actor","errors":["E_ENV_ACTOR_ON_BEHALF_MISSING"],"id":"actor/agent-missing-on-behalf","input":"record.json","notes":"on_behalf_of is required iff actor.type=agent (§5.1).","target":"record","verdict":"invalid"}

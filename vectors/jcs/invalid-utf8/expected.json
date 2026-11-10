@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_INVALID"],"id":"jcs/invalid-utf8","input":"record.json","notes":"Invalid UTF-8 bytes are rejected before parsing.","target":"record","verdict":"invalid"}

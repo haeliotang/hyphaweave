@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_INVALID"],"id":"sig/signed-digest-bytes","input":"record.json","notes":"Signing only the digest string (without the domain prefix) is invalid.","target":"record","verdict":"invalid"}

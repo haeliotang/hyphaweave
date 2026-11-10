@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_LICENCE"],"id":"labels/licence-invalid","input":"record.json","notes":"A dangling SPDX operator is a licence syntax error.","target":"record","verdict":"invalid"}

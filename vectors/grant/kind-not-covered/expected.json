@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_NOT_APPLICABLE"],"id":"grant/kind-not-covered","input":"container","notes":"An agent record whose kind is not listed in the cited grant is invalid (§8.3, E_GRANT_NOT_APPLICABLE): the authorization must cover the kind.","target":"container","verdict":"invalid"}

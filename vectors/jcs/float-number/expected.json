@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NUMBER_NOT_INTEGER"],"id":"jcs/float-number","input":"record.json","notes":"WR-CJ numbers must be integers: a decimal number is rejected (§2.6).","target":"record","verdict":"invalid"}

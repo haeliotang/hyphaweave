@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"integrity-levels","errors":["E_MANIFEST_LEVEL"],"id":"integrity-levels/l0-with-timestamp","input":"container","notes":"A container that carries a timestamp must claim L2; L0 with timestamps is a level/contents contradiction (§11.2/§12, E_MANIFEST_LEVEL).","target":"container","verdict":"invalid"}

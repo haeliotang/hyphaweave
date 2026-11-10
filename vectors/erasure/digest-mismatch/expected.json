@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"erasure","errors":["E_ERASE_DIGEST_MISMATCH"],"id":"erasure/digest-mismatch","input":"container","notes":"The erasure record's erased reference names a different digest than the placeholder it attests (§7.7): E_ERASE_DIGEST_MISMATCH.","target":"container","verdict":"invalid"}

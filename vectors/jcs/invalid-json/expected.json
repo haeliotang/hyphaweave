@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_INVALID"],"id":"jcs/invalid-json","input":"record.json","notes":"Truncated JSON is a parse error.","target":"record","verdict":"invalid"}
