@@ -107,7 +107,11 @@ error; the exact code precedence is PROVISIONAL, see the parent specification Ap
    At that time: a grant or ancestor revoked (`effective_at <= recorded_at`, equality
    counts) → `E_GRANT_REVOKED` (unverifiable); a grant or ancestor outside its validity
    window → `E_GRANT_EXPIRED` (unverifiable). Any failing link makes the whole chain
-   unverifiable (R1).
+   unverifiable (R1). When the verified record is itself a grant, its **own** window and its
+   own revocation are not compared against its own `recorded_at` — only its ancestors are —
+   so a grant may be issued for future effect; a covered record is judged at its own
+   `recorded_at`, so one before the grant's `valid_from` is `E_GRANT_EXPIRED` [S9] decided
+   (Inceptless decision 2026-11-11 #2; S9).
 7. **Depth.** Up to 8 links from the grant used by a record to its root; deeper chains are
    `unverifiable` (`E_GRANT_UNRESOLVED`). A cycle is not constructible for digest
    references; the key-id rotation graph used by the revocation rule is bounded separately.
@@ -145,7 +149,10 @@ human/organization key may revoke someone else's grant [Q10/M-5] decided (Incept
 decision 2026-11-10 #34; Q10).
 
 A record using the grant with `recorded_at >= effective_at` is `unverifiable`
-(`E_GRANT_REVOKED`); earlier records are unaffected (equality counts as revoked).
+(`E_GRANT_REVOKED`); earlier records are unaffected (equality counts as revoked). A
+grant-revocation record takes effect only if the revocation record is **itself valid**: an
+invalid or unverifiable revocation record revokes nothing and cannot disable the grant
+[S10] decided (Inceptless decision 2026-11-11 #2; S10).
 
 ### Unknown-algorithm signatures
 

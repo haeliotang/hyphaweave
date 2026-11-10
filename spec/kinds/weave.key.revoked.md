@@ -48,7 +48,11 @@ Announces that a key must no longer be trusted, and why. The reason is load-bear
 ## Semantic rules
 
 1. **Effective time.** `effective_at` **MUST** be less than or equal to `recorded_at`
-   (`E_KEY_REVOKE_EFFECTIVE`, invalid) [E5].
+   (`E_KEY_REVOKE_EFFECTIVE`, invalid) [E5]. When several valid revocations of one key exist
+   in the verification context (keyset records included), the effect is order-independent:
+   `retired`/`other` revocations apply from the earliest `effective_at`, and an existing
+   `key-compromise` revocation takes precedence with the earliest `T` used for the rescue
+   bound [S2] decided (Inceptless decision 2026-11-11 #2; S2).
 2. **Retired / other.** A signature by the revoked key whose claimed `recorded_at` is at or
    after `effective_at` is invalid (`E_KEY_REVOKED`); a signature claimed earlier is
    unaffected. The boundary belongs to revocation (equality counts as revoked) [Q11][M-2]

@@ -76,9 +76,12 @@ permitted (additive evolution, K3, parent specification §7.5).
    - a keyset `weave.key.declared` of class `human`/`organization` that passes its own
      checks is a trusted root; it needs no cosignature and produces no
      `N_SELF_ATTESTED_ROOT_KEY` (the keyset is the local trust statement);
-   - a container/target declaration of class `human`/`organization` is valid when its key is
-     already trusted (for example the same key is trusted from the keyset) or when it
-     carries a valid cosignature by a trusted human/organization key; otherwise it is
+   - a container/target declaration of class `human`/`organization` is valid only when its
+     key is already trusted **as the same class** (for example the same key is trusted from
+     the keyset) or when it carries a valid cosignature by a trusted human/organization key;
+     a declaration for a key that already has a governing trusted class and claims a
+     different class is invalid with `E_KEY_CLASS_CONFLICT` (same-class redeclarations are
+     valid but never override the governing class or validity window). Otherwise it is
      `unverifiable` with `E_KEY_UNTRUSTED`, plus `N_SELF_ATTESTED_ROOT_KEY` when its only
      signature is its own. An untrusted declaration must not make any other declaration
      invalid and never becomes trusted;
@@ -98,7 +101,10 @@ permitted (additive evolution, K3, parent specification §7.5).
 6. **Multiple declarations.** When a context contains several valid declarations for one
    key id, the earliest claimed `recorded_at` (tie: lexicographically smallest record
    digest) governs; this is declaration resolution, not root selection [Q12] decided
-   (Inceptless decision 2026-11-10 #34; Q12).
+   (Inceptless decision 2026-11-10 #34; Q12). A keyset declaration is authoritative for its
+   key's class and validity window and is never displaced by a container or target
+   declaration, however early the latter's claimed `recorded_at`; a backdated redeclaration
+   has no effect [S1] decided (Inceptless decision 2026-11-11 #2; S1).
 7. **No point claims.** A declaration does not prove that the key belongs to a particular
    real-world party, only that its holder published it or that the verifier trusted it from
    the local keyset [E4].
