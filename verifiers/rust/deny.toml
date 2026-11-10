@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
+# SPDX-License-Identifier: Apache-2.0
+#
+# cargo-deny configuration for the H1 Rust verifier (workspace under
+# verifiers/rust/). Run from this directory:
+#
+#     cargo deny check
+#
+# The dependency tree is locked by Cargo.lock; the allowed licence set below is
+# intentionally narrow. Keep it in sync when a dependency is added or replaced,
+# instead of disabling the licence check.
+
+[graph]
+# Check the default targets of the host platform. The verifier has no platform
+# specific requirements of its own, but `getrandom`/`wasi` appear in the locked
+# graph for non-host targets; their licences are covered by the allow list.
+all-features = true
+
+[advisories]
+# Keep the RustSec advisory check active. The defaults (database fetched from
+# the official RustSec advisory-database, yanked crates reported as warnings)
+# are used deliberately. Ignored advisories must name the advisory and the
+# reason, and must be revisited when the dependency changes:
+#
+#   RUSTSEC-2023-0071 (rsa 0.9.x "Marvin Attack": timing side channel in
+#   private-key operations). The verifier only performs RSA signature
+#   *verification* with public keys (RFC 3161 CMS / X.509 profile, §12.2); the
+#   private-key operations the advisory concerns (signing/decryption) are never
+#   performed, and no private key material is present. Remove this ignore as
+#   soon as `rsa` 0.10 or later enters the tree.
+#
+#   RUSTSEC-2026-0387 (crypto-bigint 0.5.x: secret-dependent branches in
+#   constant-time primitives). It reaches the tree only through
+#   elliptic-curve/ecdsa/p256/p384, which the verifier uses exclusively to
+#   *verify* ECDSA signatures (RFC 3161 CMS profile). Signature verification
+#   operates on public values (signature, public key, digest); no secret scalar
+#   is handled, so the leaking operations described by the advisory are not on
+#   an attack surface here. Remove this ignore when the elliptic-curve family is
+#   upgraded to a crypto-bigint >= 0.7.6 line.
+version = 2
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0387"]
+
+[licenses]
+# Every licence that is *required* by at least one crate in the locked tree:
+#   Apache-2.0    - most of the RustCrypto crates, miniz_oxide, ...
+#   MIT           - generic-array, libm, spin, ...
+#   BSD-3-Clause  - curve25519-dalek, subtle (required, not an OR alternative)
+#   Unicode-3.0   - unicode-ident: "(MIT OR Apache-2.0) AND Unicode-3.0"
+# Alternatives inside OR expressions (0BSD in adler2, BSD-1-Clause in
+# fiat-crypto, BSD-2-Clause in zerocopy, Zlib in miniz_oxide) are resolved by
+# the allowed branch and are therefore not allow-listed on their own. Add an
+# identifier here with a comment only when a crate requires it (a crate whose
+# only licence is that identifier, or an ANDed term).
+version = 2
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+# Fail on licence metadata cargo-deny cannot classify confidently instead of
+# guessing.
+confidence-threshold = 0.9
+
+[bans]
+# The verifier uses one implementation of each primitive family; duplicate
+# versions are a maintenance smell, not a failure. Warn so a review notices
+# them, but do not fail the gate on a transitive minor bump.
+multiple-versions = "warn"
+# `*` version requirements make the locked tree meaningless; the workspace uses
+# exact-ish requirements for every registry dependency. The one wildcard is the
+# implicit `*` of the workspace-internal path dependency
+# `hyphaweave-verify-rs -> hyphaweave-verify`, whose version is pinned by this
+# workspace itself. cargo-deny rejects path dependencies in publishable crates
+# (`allow-wildcard-paths` does not apply), so this lint warns: a future review
+# that adds a wildcard for a crates.io dependency still sees it, without the
+# gate failing on the workspace's own two-crate layout.
+wildcards = "warn"
+# No crate is allowed to depend on a library with an unsound or forbidden
+# public API; all crates come from crates.io (see [sources]).
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# crates.io only: no unknown registries, no git dependencies, no path
+# dependencies outside this workspace. A vendor directory or a fork must be
+# proposed explicitly (change the allow list in the same commit).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

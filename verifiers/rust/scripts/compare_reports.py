@@ -413,9 +413,16 @@ class Case:
         self.case_dir = case_dir
         self.expected = expected
         self.case_id = str(expected.get("id", case_dir.parent.name + "/" + case_dir.name))
+        # Gate bookkeeping id: the main corpus uses the case id from
+        # expected.json; any other set (for example the frozen candidate set,
+        # whose cases repeat the main corpus ids) is prefixed with the set name
+        # so allow-list entries stay unambiguous.
+        self.gate_id = (
+            self.case_id if set_name == "vectors" else f"{set_name}/{self.case_id}"
+        )
 
     def __repr__(self) -> str:
-        return f"Case({self.set_name}:{self.case_id})"
+        return f"Case({self.gate_id})"
 
 
 def discover_cases(set_name: str, set_root: Path) -> list[Case]:
@@ -430,7 +437,7 @@ def discover_cases(set_name: str, set_root: Path) -> list[Case]:
         cases.append(Case(set_name, set_root, expected_path.parent, expected))
     if not cases:
         raise GateError(f"{set_root}: no <category>/<case>/expected.json cases found")
-    cases.sort(key=lambda case: (case.set_name, case.case_id))
+    cases.sort(key=lambda case: case.gate_id)
     return cases
 
 
@@ -452,38 +459,45 @@ def reproduce_argv(case: Case) -> list[str]:
     """Reproduce the case's documented verifier arguments (§vectors/README.md)."""
     target = case.expected.get("target")
     if target not in ("record", "container"):
-        raise GateError(f"{case.case_id}: unsupported target {target!r}")
+        raise GateError(f"{case.gate_id}: unsupported target {target!r}")
     input_rel = case.expected.get("input")
     if not isinstance(input_rel, str):
-        raise GateError(f"{case.case_id}: expected.json has no string 'input'")
+        raise GateError(f"{case.gate_id}: expected.json has no string 'input'")
     input_path = case.case_dir / input_rel
     if not input_path.exists():
-        raise GateError(f"{case.case_id}: input {input_path} does not exist")
-    keyset = find_keyset(case.set_root)
+        raise GateError(f"{case.gate_id}: input {input_path} does not exist")
+    keyset: Path | None = None
+
+    def resolve_keyset() -> Path:
+        nonlocal keyset
+        if keyset is None:
+            keyset = find_keyset(case.set_root)
+        return keyset
+
     argv = [target, str(input_path)]
     tokens = case.expected.get("args", [])
     if not isinstance(tokens, list):
-        raise GateError(f"{case.case_id}: 'args' is not an array")
+        raise GateError(f"{case.gate_id}: 'args' is not an array")
     index = 0
     while index < len(tokens):
         token = tokens[index]
         if not isinstance(token, str):
-            raise GateError(f"{case.case_id}: non-string token in 'args'")
+            raise GateError(f"{case.gate_id}: non-string token in 'args'")
         if token in FLAGS_WITH_PATH_VALUE:
             argv.append(token)
             index += 1
             if index >= len(tokens):
-                raise GateError(f"{case.case_id}: {token} has no value")
+                raise GateError(f"{case.gate_id}: {token} has no value")
             value = tokens[index]
             if value == "@keyset":
-                argv.append(str(keyset))
+                argv.append(str(resolve_keyset()))
             elif value == "@case":
                 argv.append(str(case.case_dir))
             else:
                 value_path = Path(value)
                 argv.append(str(value_path if value_path.is_absolute() else case.case_dir / value))
         elif token == "@keyset":
-            argv.append(str(keyset))
+            argv.append(str(resolve_keyset()))
         elif token == "@case":
             argv.append(str(case.case_dir))
         elif token.startswith("-"):
@@ -775,13 +789,19 @@ def main(argv: list[str] | None = None) -> int:
         cases.extend(discover_cases(set_name, set_root))
     if arguments.case:
         wanted = set(arguments.case)
-        unknown = wanted - {case.case_id for case in cases}
+        unknown = wanted - {
+            case.gate_id for case in cases
+        } - {case.case_id for case in cases}
         if unknown:
             raise GateError(f"--case id(s) not found in the selected sets: {sorted(unknown)}")
-        cases = [case for case in cases if case.case_id in wanted]
+        cases = [
+            case
+            for case in cases
+            if case.gate_id in wanted or case.case_id in wanted
+        ]
         # A focused debugging run compares a subset: allow-list entries for
         # cases outside the selection are simply not part of this run.
-        compared_ids = {case.case_id for case in cases}
+        compared_ids = {case.gate_id for case in cases}
         allow_entries = [entry for entry in allow_entries if entry["case"] in compared_ids]
     if not cases:
         raise GateError("no cases selected")
@@ -828,7 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         if same_bytes and same_exit:
             identical += 1
             if arguments.verbose:
-                print(f"  IDENTICAL {case.case_id}")
+                print(f"  IDENTICAL {case.gate_id}")
             continue
 
         python_report = _parse_report(python_result.stdout)
@@ -873,16 +893,16 @@ def main(argv: list[str] | None = None) -> int:
                 for line in render_diff(python_normalized, rust_normalized, arguments.max_diff_lines)
             )
         differences.append((case, notes, classification))
-        print(f"DIFFERENT {case.case_id} [{classification}] {detail}")
+        print(f"DIFFERENT {case.gate_id} [{classification}] {detail}")
         for note in notes:
             print(f"    {note}")
 
-    differing_cases = [case.case_id for case, _, _ in differences]
+    differing_cases = [case.gate_id for case, _, _ in differences]
     gate_problems: list[str] = []
     unlisted = [case_id for case_id in differing_cases if case_id not in allow_cases]
     if unlisted:
         gate_problems.append(f"difference(s) not in the allow list: {', '.join(unlisted)}")
-    discovered_ids = {case.case_id for case in cases}
+    discovered_ids = {case.gate_id for case in cases}
     unknown_allowed = sorted(allow_cases - discovered_ids)
     if unknown_allowed:
         gate_problems.append(

@@ -6,5 +6,26 @@
     "The file starts empty on purpose: the first gate 3 run must fail until every",
     "difference is understood. A stale entry (its case now matches) also fails the gate."
   ],
-  "allowed_differences": []
+  "allowed_differences": [
+    {
+      "case": "container/manifest-missing",
+      "classification": "spec-ambiguous",
+      "reason": "F11: Q27 fixes a directory container's input identity as the manifest digest and byte size; manifest.json is absent, so the reference directory-snapshot fallback hash is undocumented and not a conformance requirement."
+    },
+    {
+      "case": "container/unknown-top-level-entry",
+      "classification": "spec-ambiguous",
+      "reason": "F11: same undocumented directory-snapshot fallback used by the reference verifier for a manifest-less container; conclusions match and only input.sha256/size differ."
+    },
+    {
+      "case": "v0.1-candidate/container/manifest-missing",
+      "classification": "spec-ambiguous",
+      "reason": "F11: Q27 fixes a directory container's input identity as the manifest digest and byte size; manifest.json is absent, so the reference directory-snapshot fallback hash is undocumented and not a conformance requirement. (frozen copy of the same case.)"
+    },
+    {
+      "case": "v0.1-candidate/container/unknown-top-level-entry",
+      "classification": "spec-ambiguous",
+      "reason": "F11: same undocumented directory-snapshot fallback used by the reference verifier for a manifest-less container; conclusions match and only input.sha256/size differ. (frozen copy of the same case.)"
+    }
+  ]
 }

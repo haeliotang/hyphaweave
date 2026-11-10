@@ -27,12 +27,14 @@ Read this before using anything in this repository:
   projects are actually performed, v0.1 is not valid. H0 produces the
   specification, schemas, vectors and one verifier; it does not perform the
   round trips.
-- **Not independently implemented yet.** Only **one** implementation exists:
-  the Python reference verifier in this repository. A single implementation
-  cannot demonstrate that the format is implementable from the specification
-  alone, so this repository does **not** claim independent implementations.
-  The Rust verifier (milestone H1) is deliberately left to a separate
-  implementer and is not part of H0.
+- **Two implementations, not yet externally reviewed.** Two independent
+  verifiers now exist: the Python reference verifier in this repository and the
+  Rust verifier added in milestone H1 (`verifiers/rust/`), which was written
+  from the specification and the conformance vectors only. The Rust verifier
+  has **not** yet been externally reviewed, and passing the same vectors is
+  necessary but not sufficient to demonstrate that the format is implementable
+  from the specification alone, so this repository does **not** claim a
+  completed independent-implementation review.
 - **Public, still draft.** The repository is now public, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
   J1/J2 acceptance cases and on a second, independent implementation. The

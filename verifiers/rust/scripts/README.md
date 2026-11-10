@@ -49,7 +49,12 @@ Useful options: `--vectors DIR` (repeatable; default `vectors/`), `--case ID`
 (repeatable), `--rust-binary PATH` (default: auto-detected cargo target),
 `--python-cli "CMD ..."` (complete command prefix, e.g.
 `"./.venv/bin/hyphaweave-verify"`), `--allow-list PATH`, `--timeout SECONDS`,
-`--max-diff-lines N`, `--verbose`.
+`--max-diff-lines N`, `--verbose`. Cases are identified by their
+`expected.json` `id`. The main corpus uses that id unchanged
+(`sig/unknown-alg`); a different set whose ids repeat the main corpus (such as
+`--include-frozen`, which compares a copy of the same cases) is prefixed with the
+set name (`v0.1-candidate/sig/unknown-alg`) so allow-list entries and `--case`
+selections are unambiguous. `--case` accepts either spelling.
 
 Each difference is printed as a classification line plus a short diff:
 
@@ -71,7 +76,8 @@ could not run (missing binary, unusable Python command, Rust vector failure).
 `gate3_known_differences.json` starts empty. Add an entry only after the
 difference has been traced to a documented specification ambiguity (a section in
 `docs/h1-findings.md`) or to an agreed implementation-shape choice; each entry
-needs the exact case id, a `reason`, and one of the three classifications above.
+needs the exact case id (with the set prefix for non-default sets), a `reason`,
+and one of the three classifications above.
 Never add an entry to paper over a difference where the specification and the
 vectors give a unique answer — that is a defect in one of the implementations.
 Removing or fixing the underlying issue must also remove the entry, because a

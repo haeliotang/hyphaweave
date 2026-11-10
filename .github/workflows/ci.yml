@@ -77,3 +77,65 @@ jobs:
 
       - name: REUSE lint
         run: reuse lint
+
+  rust:
+    name: H1 Rust verifier (stable toolchain)
+    runs-on: ubuntu-latest
+    # CI uses the default CARGO_HOME and target directory. The .tmp-work/cargo-home
+    # setting described in verifiers/rust/ARCHITECTURE.md is a local sandbox
+    # workaround only and must not be used here.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust formatting
+        run: cargo fmt --manifest-path verifiers/rust/Cargo.toml --check
+
+      - name: Rust lints (clippy, warnings are errors)
+        run: cargo clippy --manifest-path verifiers/rust/Cargo.toml --all-targets -- -D warnings
+
+      - name: Rust unit and integration tests
+        run: cargo test --manifest-path verifiers/rust/Cargo.toml --workspace
+
+      - name: Rust verifier over the conformance vectors
+        run: |
+          cargo run --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify-rs -- vectors vectors
+          cargo run --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify-rs -- vectors vectors/frozen/v0.1-candidate
+
+      - name: Install supply-chain tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+
+      - name: Licence, bans, sources and advisory policy
+        working-directory: verifiers/rust
+        run: cargo deny check
+
+      - name: RustSec advisory audit
+        working-directory: verifiers/rust
+        # The two ignored advisories are timing-side-channel issues in secret-key
+        # operations; this verifier only performs public-key signature verification
+        # and handles no secret key material. The same reasons are recorded in
+        # verifiers/rust/deny.toml and verifiers/rust/README.md.
+        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387
+
+      - name: Set up Python for the reference verifier (gate 3 black box)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install reference verifier (used as a black box only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
+
+      - name: Two-implementation report comparison (gate 3)
+        # Runs only after the Rust verifier passed the vector steps above; the
+        # script re-checks that precondition and compares every case's report
+        # bytes after normalizing the §14.6 verifier identity object.
+        run: python verifiers/rust/scripts/compare_reports.py --include-frozen

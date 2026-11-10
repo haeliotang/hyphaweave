@@ -6,6 +6,77 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1 — 2026-11-11 — DRAFT, UNRELEASED
+
+Milestone H1 adds a **second, independent verifier** for `weave-record/1`,
+written in Rust from the specification (`spec/`) and the conformance vectors
+(`vectors/`) only. **H1 has not been externally reviewed.** The format itself is
+still a draft: v0.1 has **not** passed the J1/J2 round-trip acceptance cases, the
+regression set remains the candidate `vectors/frozen/v0.1-candidate/`, and no
+compatibility promise is made. The H0 sections below describe the earlier H0
+hand-off snapshot; in particular, the H0 statement that only one implementation
+exists is superseded by this milestone.
+
+### Added
+
+- **Independent Rust verifier** (`verifiers/rust/`): the `hyphaweave-verify`
+  0.1.0 library and the `hyphaweave-verify-rs` command line, implementing the
+  record envelope, references, labels and consent, key lifecycle and grants,
+  erasure, the L0/L1/L2 container format (including the RFC 3161 timestamp
+  profile of §12) and the deterministic §14.6 report. The CLI exposes `record`,
+  `container` and `vectors` with `--keys`, `--tsa-trust`, `--previous` and
+  `--json`; reports are byte-stable and never depend on the clock, locale, time
+  zone, environment or filesystem order. The implementation was written from
+  the specification and the vectors only; the Python reference verifier is used
+  only as a black box by the gate-3 comparison, never read as source.
+- **Tests**: unit tests in the modules, integration tests for the external
+  vectors (RFC 8032, Wycheproof, RFC 8785-derived canonical JSON), the §14.6
+  report bytes and the committed L2 timestamp cases, plus the conformance runner
+  over `vectors/` and the candidate regression set.
+- **Supply chain** (`verifiers/rust/deny.toml`): a real `cargo deny check`
+  policy with a narrow licence allow list (Apache-2.0, MIT, BSD-3-Clause,
+  Unicode-3.0, the identifiers the locked tree requires), crates.io as the only
+  allowed source, and active bans/advisories checks. Two timing-side-channel
+  advisories that concern secret-key operations (RSA private-key operations and
+  constant-time big-integer arithmetic on secrets) are ignored with a written
+  reason because the verifier only performs public-key signature verification
+  and handles no secret key material.
+  `REUSE.toml` now covers `verifiers/rust/**`, and
+  `verifiers/rust/README.md` documents the build, CLI, library API, crate
+  layout, dependency table and tests.
+- **CI**: a new `rust` job in `.github/workflows/ci.yml` runs `cargo fmt
+  --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, the
+  verifier over `vectors` and `vectors/frozen/v0.1-candidate`, `cargo deny
+  check`, `cargo audit`, and the gate-3 report-comparison script. The existing
+  Python `gates` job is unchanged. This entry does not claim that any CI run
+  passed.
+- **Gate 3 tooling** (`verifiers/rust/scripts/`): `compare_reports.py` runs both
+  implementations over every case with the case's reproduced arguments,
+  normalizes only the §14.6 `verifier` identity object and compares the
+  remaining report bytes. It runs the Python black box only after the Rust
+  verifier passes every vector (the H1 ordering rule), and it fails on any
+  difference not explicitly listed in the empty-by-default
+  `gate3_known_differences.json`.
+- **Findings** (`docs/h1-findings.md`): the specification ambiguities and
+  implementation-shape choices that an independent implementation must resolve,
+  with the chapter, the possible readings, the chosen reading and reason,
+  whether a committed vector pins it, the Python black-box agreement (filled in
+  after gate 3) and a proposed wording change. This is the single place for H1
+  findings.
+
+### Explicitly not yet true in H1
+
+- **H1 has not been externally reviewed.** Passing the shared vectors is
+  necessary but not sufficient evidence that the format is implementable from
+  the specification alone; an outside review of the Rust verifier and of the
+  findings still has to happen.
+- **Gate results are not asserted here.** The Rust gates and the gate-3 report
+  comparison are run on the integrated tree; this changelog claims none of them
+  passed until their results are recorded in the H1 hand-off.
+- **The format is not accepted and not stable.** J1/J2 acceptance and the
+  official freeze of the regression set are still pending, exactly as the H0
+  sections below state.
+
 ## 0.1.0 — 2026-11-10 — DRAFT, UNRELEASED
 
 Milestone H0: the `weave-record/1` v0.1 specification set, JSON Schemas,
