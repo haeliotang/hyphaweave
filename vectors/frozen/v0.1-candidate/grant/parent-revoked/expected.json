@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_REVOKED"],"id":"grant/parent-revoked","input":"container","notes":"The parent grant was revoked at T3; the delegated sub-grant is recorded at T4. A revoked link anywhere in the chain makes the delegation action unverifiable E_GRANT_REVOKED (S3/§6).","target":"container","verdict":"unverifiable"}

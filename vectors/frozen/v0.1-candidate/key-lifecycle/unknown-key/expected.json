@@ -1,1 +1,0 @@
-{"category":"key-lifecycle","errors":["E_KEY_UNKNOWN"],"id":"key-lifecycle/unknown-key","input":"record.json","notes":"A signature by a key with no declaration anywhere in the context cannot be checked: the record is unverifiable E_KEY_UNKNOWN, not invalid (§9.4/§5.3); trust is TOFU but the key must be published first (§5.3).","target":"record","verdict":"unverifiable"}
