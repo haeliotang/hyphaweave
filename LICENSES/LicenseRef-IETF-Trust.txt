@@ -1,0 +1,16 @@
+The file(s) in this repository that are marked with this license reference are
+unmodified excerpts of documents published by the IETF Trust and are subject to
+the IETF Trust Legal Provisions (BCP 78 and BCP 79), including the copyright
+notice carried inside the IETF document itself.
+
+- IETF Trust Legal Provisions: https://trustee.ietf.org/license-info/
+- The retained document (RFC 8032) contains its own Copyright Notice; it is
+  redistributed byte-for-byte and unmodified.
+- No license is granted by Inceptless for these bytes beyond the terms of the
+  IETF Trust Legal Provisions. Attribution and provenance are recorded in
+  vectors/external/rfc8032/SOURCE.json and PROVENANCE.md.
+
+If a full copy of the applicable IETF Trust Legal Provisions is required in this
+repository, the repository maintainers can add it as a separate versioned
+document; it is intentionally not duplicated here, and the authoritative terms
+are the ones published by the IETF Trust at the URL above.

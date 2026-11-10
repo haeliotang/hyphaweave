@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
+# SPDX-License-Identifier: CC-BY-4.0
+#
+# REUSE annotations for files that cannot carry comments themselves.
+# Inline SPDX headers in a file take precedence over these fallbacks; this file
+# exists so that JSON, binary test material and copied legal text also carry
+# licensing information. See LICENSING.md for the licensing split.
+version = 1
+
+# Machine-readable data and executable material: code, schemas and vectors.
+[[annotations]]
+path = [
+    ".gitignore",
+    "schemas/**",
+    "vectors/**",
+    "verifiers/python/**",
+    "tools/**",
+    ".github/**",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
+# Prose written in Markdown is documentation, licensed CC-BY-4.0. Files that
+# carry their own SPDX header are not affected by this fallback.
+[[annotations]]
+path = ["**/*.md", "docs/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# CLA.md is copied byte-for-byte from the Inceptless CLA source, so it cannot
+# carry an inline header. It is legal prose and is declared CC-BY-4.0.
+[[annotations]]
+path = "CLA.md"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# External test data keeps the license recorded by its upstream source (each
+# directory carries SOURCE.json and PROVENANCE.md). Files written by this
+# repository inside vectors/external/ (SHA256SUMS, the manifest metadata and the
+# PROVENANCE pages, which carry inline headers) remain under the repository
+# licenses; upstream bytes follow the entries below.
+[[annotations]]
+path = ["vectors/external/rfc8785-jcs/**", "vectors/external/wycheproof/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "The upstream authors of the referenced test data"
+SPDX-License-Identifier = "Apache-2.0"
+
+# RFC 8032 is an IETF document: its text is redistributed unmodified under the
+# IETF Trust Legal Provisions (BCP 78), not under the repository licenses.
+# SOURCE.json and SHA256SUMS are our provenance metadata, so they stay
+# Apache-2.0 like the rest of the vector tooling.
+[[annotations]]
+path = "vectors/external/rfc8032/**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "vectors/external/rfc8032/rfc8032.txt"
+precedence = "override"
+SPDX-FileCopyrightText = "IETF Trust and the persons identified as the document authors"
+SPDX-License-Identifier = "LicenseRef-IETF-Trust"
+
+# The license texts themselves. REUSE treats LICENSE and LICENSES/ as licensing
+# information rather than as content to be licensed, so these entries are a
+# provenance note for readers; they do not relicense the stewards' words.
+[[annotations]]
+path = ["LICENSE", "LICENSES/Apache-2.0.txt"]
+precedence = "closest"
+SPDX-FileCopyrightText = "Apache Software Foundation"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "LICENSES/CC-BY-4.0.txt"
+precedence = "closest"
+SPDX-FileCopyrightText = "Creative Commons Corporation"
+SPDX-License-Identifier = "CC-BY-4.0"
