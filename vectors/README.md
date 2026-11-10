@@ -12,7 +12,8 @@ reading the Python reference implementation.
 The authoritative source is the normative specification under `spec/`
 (`spec/weave-record-1.md` and the per-kind pages), with the decision draft
 `2026-11-07-common-record-format/DECISIONS.md` (v0.1 + correction v0.1.1) and
-the revision-1 rulings (Inceptless decision 2026-11-10 #34) behind it. Where a
+the revision-1 and revision-2 rulings (Inceptless decisions 2026-11-10 #34
+and #42) behind it. Where a
 vector and the specification disagree, the specification wins; report the
 mismatch to the maintainers instead of silently changing a conclusion.
 
@@ -47,7 +48,7 @@ frozen candidate set is validated separately and is not part of the index).
 ## Current inventory
 
 Authoritative source is `vectors/index.json`; regenerate with
-`tools/gen_index.py` after adding cases. At the time of writing (revision 1,
+`tools/gen_index.py` after adding cases. At the time of writing (revision 2,
 `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
 
 | category | cases |
@@ -59,14 +60,14 @@ Authoritative source is `vectors/index.json`; regenerate with
 | `stage` | 17 |
 | `actor` | 26 |
 | `labels` | 34 |
-| `erasure` | 10 |
-| `grant` | 26 |
-| `key-lifecycle` | 25 |
-| `container` | 25 |
-| `integrity-levels` | 23 |
-| **total** | **270** |
+| `erasure` | 11 |
+| `grant` | 29 |
+| `key-lifecycle` | 36 |
+| `container` | 28 |
+| `integrity-levels` | 29 |
+| **total** | **294** |
 
-Verdict distribution: `valid` 71, `erased` 1, `invalid` 185, `unverifiable` 13.
+Verdict distribution: `valid` 71, `erased` 1, `invalid` 200, `unverifiable` 22.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
