@@ -69,6 +69,28 @@ pub fn parse_object(bytes: &[u8]) -> Result<Object, JsonError> {
     Ok(object)
 }
 
+/// Parses any JSON value (WR-CJ input restrictions: no floats, integer range,
+/// duplicate members rejected). Used by external canonicalization cross-checks;
+/// every `weave-record/1` target requires an object and uses
+/// [`parse_object`]/[`parse_canonical_object`].
+pub fn parse_value(bytes: &[u8]) -> Result<Value, JsonError> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Err(JsonError::at(e::JSON_INVALID, 0));
+    }
+    let mut parser = Parser {
+        bytes,
+        pos: 0,
+        depth: 0,
+    };
+    parser.skip_whitespace();
+    let value = parser.parse_value()?;
+    parser.skip_whitespace();
+    if parser.pos != bytes.len() {
+        return Err(JsonError::at(e::JSON_INVALID, parser.pos));
+    }
+    Ok(value)
+}
+
 /// Parses a file that must be in canonical file form (§1.8): the exact WR-CJ
 /// bytes of its value, optionally followed by exactly one LF.
 ///

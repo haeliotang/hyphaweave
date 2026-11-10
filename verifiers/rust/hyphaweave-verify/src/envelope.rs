@@ -329,7 +329,16 @@ fn parse_envelope(object: &Object) -> Result<Envelope, Code> {
         return Err(e::ENV_STAGE);
     }
 
-    let actor = parse_actor(object.get("actor").ok_or(e::ENV_ACTOR)?)?;
+    // §4.2 exception: for the three key-lifecycle kinds the four agent-only
+    // members are not required even when actor.type is `agent`.
+    let key_lifecycle_exempt = matches!(
+        kind,
+        "weave.key.declared" | "weave.key.rotated" | "weave.key.revoked"
+    );
+    let actor = parse_actor(
+        object.get("actor").ok_or(e::ENV_ACTOR)?,
+        key_lifecycle_exempt,
+    )?;
 
     let recorded_at = parse_timestamp(object.get("recorded_at").ok_or(e::ENV_TIME)?)?;
     let occurred_at = match object.get("occurred_at") {
@@ -459,7 +468,7 @@ fn parse_origin(value: &Value) -> Result<Origin, Code> {
     })
 }
 
-fn parse_actor(value: &Value) -> Result<Actor, Code> {
+fn parse_actor(value: &Value, key_lifecycle_exempt: bool) -> Result<Actor, Code> {
     let object = value.as_object().ok_or(e::ENV_ACTOR)?;
     // The actor object is closed. An undefined member is E_ENV_ACTOR (the
     // actor-specific "structurally invalid" code), while a defined member that
@@ -543,7 +552,7 @@ fn parse_actor(value: &Value) -> Result<Actor, Code> {
         }
         None => None,
     };
-    if is_agent {
+    if is_agent && !key_lifecycle_exempt {
         if model.is_none() {
             return Err(e::ENV_ACTOR_MODEL_MISSING);
         }
