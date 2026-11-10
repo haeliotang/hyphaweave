@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 #
-# H0 gates: specification/vectors/verifier checks. The repository is not pushed
-# yet, so this workflow has not run on GitHub; every command below also runs
-# locally from the repository root (see CONTRIBUTING.md).
+# H0 revision-1 gates: specification, vectors, verifier and repository checks.
+# The repository is not pushed yet, so this workflow has never run on GitHub;
+# every command below also runs locally from the repository root (see
+# CONTRIBUTING.md). Dependency versions are pinned by
+# verifiers/python/constraints.txt; Python 3.12 is only covered by this
+# workflow once it actually runs.
 name: CI
 
 on:
@@ -31,8 +34,15 @@ jobs:
       - name: Install reference verifier and tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e "verifiers/python[dev]"
+          python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
           python -m pip install reuse==5.0.2
+
+      - name: Generator determinism
+        run: |
+          python tools/make_keys.py --check
+          python tools/gen_vectors.py --check
+          python tools/gen_vectors_extra.py --check
+          python tools/gen_index.py --check
 
       - name: Python tests
         run: python -m pytest verifiers/python/tests -q
@@ -40,8 +50,15 @@ jobs:
       - name: Conformance vectors
         run: hyphaweave-verify vectors vectors
 
-      - name: Frozen v0.1 vectors
-        run: hyphaweave-verify vectors vectors/frozen/v0.1
+      - name: Frozen candidate SHA-256 manifest
+        working-directory: vectors/frozen/v0.1-candidate
+        run: sha256sum -c --strict SHA256SUMS
+
+      - name: Frozen candidate file set and case count
+        run: python tools/check_frozen.py
+
+      - name: Frozen candidate vectors
+        run: hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 
       - name: Schema self-check
         run: python tools/check_schemas.py
@@ -49,8 +66,14 @@ jobs:
       - name: External data cross-check
         run: python tools/check_external.py
 
-      - name: Anti-verification
+      - name: True source ablation
         run: python tools/anti_verification.py
+
+      - name: Byte-flip gate (every byte of every positive vector)
+        run: python tools/byte_flip_gate.py
+
+      - name: Specification examples
+        run: python tools/check_spec_examples.py
 
       - name: REUSE lint
         run: reuse lint

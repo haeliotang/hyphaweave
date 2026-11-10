@@ -109,13 +109,14 @@ so that the format and the transport are not changed at the same time.
 - Two independent verifiers reach **the same conclusion, case by case**, on
   every conformance vector.
 - An outsider can manually verify a container using only the specification and
-  no implementation (target: yes, and one person has actually done it — the
-  offline verification guide exists for this).
+  no implementation (target: yes; `spec/offline-verification.md` is the guide,
+  and an independent reviewer executed it against the L0 example during H0
+  review).
 - How many lines of adapter code and how much internal change a project needs
   to adopt the format (the "smallest internal change" promise is tested here).
 - A container written a decade ago still verifies with the current verifier
-  (the "never abandon old versions" promise, tested with a frozen vector
-  regressions set).
+  (the "never abandon old versions" promise, tested with the v0.1 candidate
+  regression vector set).
 - The number of accepted records produced by agents without an authorization
   (target: 0, and the verifier rejects them).
 
@@ -150,15 +151,15 @@ that wants others to implement it independently and confidently. See
 | --- | --- |
 | The specification exists but no project actually adopts it | J1 and J2 are acceptance conditions; without round trips, v0.1 is not valid |
 | A single maintainer, so "independent implementation" would be a hollow claim | The second verifier is written by a different implementer, preferably an outsider, from the specification and vectors only; the README states honestly who implemented what |
-| Human keys are delayed and the agent rules stay theoretical | The human-key foundation is a prerequisite; until it exists, `accepted` records are reported as lacking a human signature |
+| Human keys are delayed and the agent rules stay theoretical | The human-key foundation is a prerequisite; revision 1 reports `accepted` records that carry no signature from a declared human key with the `N_NO_HUMAN_SIGNATURE` notice (a notice, not a rejection) |
 | Scope creep into an identity system or a sync network | The non-goals are fixed; new parts require a written proposal |
 | Renaming the project changes the format name in already-written records | Project name and format identifier are separate: the project is Hyphaweave, the format identifier is always `weave-record/1` |
 
 ## 11. Open questions
 
-The concrete open questions for this milestone — including unsettled decisions
-that are marked `PROVISIONAL` in the specification, and the question of when the
-repository should become public — are tracked in
+The concrete open questions for this milestone — including the
+implementation-shape choices that remain `PROVISIONAL` in the specification, and
+the question of when the repository should become public — are tracked in
 [`open-questions.md`](open-questions.md). When the two documents differ, that
 file and the decision log govern.
 

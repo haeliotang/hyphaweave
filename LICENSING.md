@@ -17,7 +17,7 @@ any other copyleft license.
 | --- | --- | --- |
 | Code (`verifiers/`, `tools/`, CI workflow) | `Apache-2.0` | Patent grant; safe to embed in any implementation, including closed-source ones. |
 | JSON Schemas (`schemas/`) | `Apache-2.0` | Machine-readable part of the format; should be vendorable without friction. |
-| Conformance vectors and test data (`vectors/`, including frozen vectors and public test keys) | `Apache-2.0` | Test data that must be copyable into every implementation's test suite. |
+| Conformance vectors and test data (`vectors/`, including the v0.1 candidate regression set and public test keys) | `Apache-2.0` | Test data that must be copyable into every implementation's test suite. |
 | Specification and prose documentation (`spec/`, `docs/`, root Markdown files) | `CC-BY-4.0` | Prose should be quotable and translatable with attribution; a software license is a poor fit for text. |
 | Brand assets (wordmarks, logos) | `LicenseRef-Inceptless-Brand`, all rights reserved | **None are present in this repository.** If brand assets are ever added, they are explicitly outside the licenses above and are not licensed for reuse or modification. |
 | External data under `vectors/external/` | The upstream license recorded for each source | This repository redistributes unmodified official test data; each directory carries `SOURCE.json` / `PROVENANCE.md` with the source URL, commit, SHA-256 and license. Those terms continue to apply to those bytes. |
@@ -73,6 +73,15 @@ copy of `LICENSES/Apache-2.0.txt`.
 | --- | --- | --- |
 | `LICENSES/Apache-2.0.txt`, `LICENSE` | https://www.apache.org/licenses/LICENSE-2.0.txt | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 | `LICENSES/CC-BY-4.0.txt` | https://creativecommons.org/licenses/by/4.0/legalcode.txt | `9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411` |
+
+## Revision 1 note
+
+The semantic changes of H0 revision 1 (decision 2026-11-10 #34) and the new
+repository tooling (`verifiers/python/constraints.txt`, the ablation, byte-flip,
+specification-example and frozen-candidate checks, and the candidate regression
+set) do not change the split above: they are code or test material and are
+Apache-2.0, while documentation prose stays CC-BY-4.0. The candidate regression
+set is test material and is not frozen until J1/J2 acceptance.
 
 ## Contributions and the CLA
 

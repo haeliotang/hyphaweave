@@ -34,10 +34,16 @@ Read this before using anything in this repository:
   verifier has not been released to PyPI. It is installed from this repository.
 - **H0 scope only.** There is no offline transport package, no project export or
   import adapter, and no network service in this repository.
+- **Revised after review.** This snapshot is H0 revision 1 (decision
+  2026-11-10 #34): independent review found wire-semantics defects, and the
+  revision changed the format rules, the error-code registry, the verifier and
+  the vectors. The regression set is a **candidate** (`vectors/frozen/
+  v0.1-candidate/`); official freeze begins only after J1/J2 acceptance. See
+  the revision-1 section of [`CHANGELOG.md`](CHANGELOG.md).
 
 The Python verifier is a reference implementation, not a product: it is written
 to make the specification testable and to give a second implementer something
-to compare against, not to imply that the format is settled.
+to compare against, not to imply that the format is final.
 
 ## What is in this repository
 
@@ -48,11 +54,11 @@ to compare against, not to imply that the format is settled.
 | [`spec/error-codes.md`](spec/error-codes.md) | Closed registry of verifier error codes and notices. |
 | [`spec/offline-verification.md`](spec/offline-verification.md) | Step-by-step manual verification of an L0 container with common tools only (`sha256sum`, `openssl`, a JSON viewer). |
 | [`schemas/`](schemas/) | JSON Schema 2020-12 for the envelope, references, manifests and registered kinds. |
-| [`vectors/`](vectors/) | Positive and negative conformance vectors, a frozen v0.1 regression set, deliberately public test keys, and provenance for official external test data. |
+| [`vectors/`](vectors/) | Positive and negative conformance vectors, the v0.1 candidate regression set (freeze follows J1/J2 acceptance), deliberately public test keys, and provenance for official external test data. |
 | [`verifiers/python/`](verifiers/python/) | `hyphaweave_verify` 0.1.0 and the `hyphaweave-verify` command line. |
 | [`tools/`](tools/) | Independent vector generators (they do not import the verifier) and the gate scripts. |
 | [`docs/positioning.md`](docs/positioning.md) | Non-normative positioning: scope, non-goals, responsibilities, risks. |
-| [`docs/open-questions.md`](docs/open-questions.md) | Provisional choices H0 made where the decision draft left gaps. |
+| [`docs/open-questions.md`](docs/open-questions.md) | The questions decided by decision 2026-11-10 #34 (Q1–Q33) and the implementation-shape choices that remain PROVISIONAL. |
 
 ## Using the verifier
 
@@ -63,8 +69,14 @@ any machine.
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-python -m pip install -e "verifiers/python[dev]"
+python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
 ```
+
+The exact dependency versions used for the H0 build are pinned in
+[`verifiers/python/constraints.txt`](verifiers/python/constraints.txt); only the
+versions pinned there and in `pyproject.toml` are guaranteed. Python 3.11 and
+3.12 have not been exercised locally (the build environment was Python 3.14);
+the 3.12 CI workflow has never run on GitHub.
 
 The command-line surface is:
 
@@ -85,9 +97,9 @@ hyphaweave-verify record path/to/record.json --keys vectors/keys/keyset
 # a container directory or zip; no timestamp trust anchor is supplied here
 hyphaweave-verify container path/to/container
 
-# the conformance vectors; the frozen set is a directory argument as well
+# the conformance vectors; the candidate regression set is a directory argument too
 hyphaweave-verify vectors vectors
-hyphaweave-verify vectors vectors/frozen/v0.1
+hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 ```
 
 `--keys` points at a directory of key-lifecycle records (its top-level
@@ -108,9 +120,11 @@ clock, the locale, the time zone or the current directory in its output.
 
 L2 timestamps are verified only against a trust anchor supplied with
 `--tsa-trust`. Without one, a timestamp is reported as `present-unverified` and
-the container as `unverifiable`. The TSA key and certificate under
-`vectors/keys/tsa/` are public test material; never trust them outside the test
-vectors.
+the container as `unverifiable`. A container's `level_verified` is always `"L0"`
+(the internal hash chain of L1/L2 cannot be re-verified offline); L2 reports
+`anchor_verified: true` only when the whole timestamp chain verifies against a
+supplied anchor. The TSA key and certificate under `vectors/keys/tsa/` are
+public test material; never trust them outside the test vectors.
 
 ## Running the gates
 
@@ -118,12 +132,20 @@ From the repository root, with the virtual environment activated and `reuse`
 installed (`python -m pip install reuse==5.0.2`):
 
 ```bash
+python tools/make_keys.py --check
+python tools/gen_vectors.py --check
+python tools/gen_vectors_extra.py --check
+python tools/gen_index.py --check
 python -m pytest verifiers/python/tests -q
 hyphaweave-verify vectors vectors
-hyphaweave-verify vectors vectors/frozen/v0.1
+( cd vectors/frozen/v0.1-candidate && sha256sum -c --strict SHA256SUMS )
+python tools/check_frozen.py
+hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 python tools/check_schemas.py
 python tools/check_external.py
 python tools/anti_verification.py
+python tools/byte_flip_gate.py
+python tools/check_spec_examples.py
 reuse lint
 ```
 

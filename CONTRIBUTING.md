@@ -41,19 +41,32 @@ The reference verifier targets Python 3.11 or newer (CI uses 3.12).
 ```bash
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-python -m pip install -e "verifiers/python[dev]"
+python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
 python -m pip install reuse==5.0.2
 ```
+
+Dependency versions are pinned in `verifiers/python/constraints.txt`; only the
+versions pinned there and in `pyproject.toml` are guaranteed. The local build
+environment was Python 3.14; Python 3.11 and 3.12 have not been exercised
+locally.
 
 Then run the repository gates from the repository root:
 
 ```bash
+python tools/make_keys.py --check
+python tools/gen_vectors.py --check
+python tools/gen_vectors_extra.py --check
+python tools/gen_index.py --check
 python -m pytest verifiers/python/tests -q
 hyphaweave-verify vectors vectors
-hyphaweave-verify vectors vectors/frozen/v0.1
+( cd vectors/frozen/v0.1-candidate && sha256sum -c --strict SHA256SUMS )
+python tools/check_frozen.py
+hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 python tools/check_schemas.py
 python tools/check_external.py
 python tools/anti_verification.py
+python tools/byte_flip_gate.py
+python tools/check_spec_examples.py
 reuse lint
 ```
 
@@ -88,8 +101,16 @@ yet, so the workflow has not run on GitHub; run the commands locally.
   running the verifier. Vector generators must not import the verifier.
 - **Tests must fail for the right reason.** A negative vector names the exact
   expected error code; a rejection with a different code is a failing test.
-- **Old versions are never abandoned.** `vectors/frozen/v0.1/` is frozen: its
-  inputs and expected conclusions must never change. New vectors go elsewhere.
+- **Gates are real, not sampled.** The ablation gate mutates verifier source and
+  requires every mutation to be caught by at least one vector; the byte-flip gate
+  flips every byte of every positive vector; do not weaken either to make a
+  change pass.
+- **Specification examples are tested.** Complete JSON examples in `spec/` are
+  validated by `tools/check_spec_examples.py`; a change to an example must leave
+  that gate green.
+- **Old versions are never abandoned.** `vectors/frozen/v0.1-candidate/` is the
+  candidate regression set: once v0.1 is accepted by J1/J2 it is frozen and its inputs
+  and expected conclusions must never change. New vectors go elsewhere.
 - **Do not name third-party products or AI services in repository text.** Keep
   user-visible text focused on the format and the project.
 

@@ -5,10 +5,11 @@
 
 ## Status of this repository
 
-Hyphaweave is at milestone **H0**: a draft specification (`weave-record/1`
-v0.1), JSON Schemas, conformance vectors and one Python reference verifier.
-The format is **not stable**, the repository is **not published**, and nothing
-here runs as a network service. There is no warranty (see `LICENSING.md`).
+Hyphaweave is at milestone **H0 revision 1** (decision 2026-11-10 #34): a draft
+specification (`weave-record/1` v0.1), JSON Schemas, conformance vectors and one
+Python reference verifier. The format is **not stable**, the repository is **not
+published**, and nothing here runs as a network service. There is no warranty
+(see `LICENSING.md`).
 
 ## Reporting a vulnerability
 
@@ -68,6 +69,14 @@ reward.
 - L2 timestamps reported as `present-unverified` when no `--tsa-trust` anchor is
   supplied, and L1 chain heads reported as `unverified`: this is the honest,
   specified behavior, not a bypass.
+- **Unknown-algorithm signature entries being ignored.** Signatures whose `alg`
+  is not understood are reported with state `ignored` and ignored for
+  verification (Q13). A record that requires a signature is still rejected or
+  reported unverifiable when no verifiable required signature remains; that is
+  the decided forward-compatibility rule, not a verification bypass.
+- **`level_verified` being always `"L0"` and `anchor_verified` being a separate
+  field.** The internal L1/L2 hash chain cannot be re-verified offline, so the
+  report never claims more than it can prove (decision 2026-11-10 #34).
 - **The public test keys under `vectors/keys/`.** They are deliberately
   published synthetic test material, not secrets. A key that is public by
   design is not a leaked key. Never use them for real records, and never treat

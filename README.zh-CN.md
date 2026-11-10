@@ -16,6 +16,7 @@ Hyphaweave 定义 `weave-record/1`：一种在相互独立的系统之间交换�
 - **尚不能称为独立实现。** 目前只有**一个**实现：本仓库里的 Python 参考核验器。单一实现无法证明「只看规范就能实现这个格式」，因此本仓库**不**声称已有独立实现。Rust 核验器（H1 里程碑）刻意留给另一位实现者，不属于 H0。
 - **尚未发布。** 仓库目前是私有的，还没有推送到任何公开托管。CI 工作流已经写好，但从未在 GitHub 上运行；核验器也没有发布到 PyPI，只能从本仓库安装。
 - **范围仅限 H0。** 本仓库没有离线传输件，没有各项目的导出/导入适配器，也没有任何网络服务。
+- **经过独立复核后的修订 1。** 本快照是 H0 修订 1（决定 2026-11-10 #34）：独立复核发现了线协议语义缺陷，修订 1 改变了格式规则、错误码表、核验器与测试向量。回归集目前是**候选集**（`vectors/frozen/v0.1-candidate/`）；正式冻结在 J1/J2 验收通过后才开始。详见 [`CHANGELOG.md`](CHANGELOG.md) 的修订 1 段。
 
 Python 核验器是参考实现，不是产品：它的用途是让规范可被测试、给第二位实现者一个对照物，并不代表格式已经定型。
 
@@ -28,11 +29,11 @@ Python 核验器是参考实现，不是产品：它的用途是让规范可被�
 | [`spec/error-codes.md`](spec/error-codes.md) | 封闭的错误码与通知登记表。 |
 | [`spec/offline-verification.md`](spec/offline-verification.md) | 只用常见工具（`sha256sum`、`openssl`、JSON 查看器）手工核验一个 L0 容器的步骤。 |
 | [`schemas/`](schemas/) | 信封、引用、清单与已登记种类的 JSON Schema 2020-12。 |
-| [`vectors/`](vectors/) | 正、反一致性测试向量，冻结的 v0.1 回归集，故意公开的测试密钥，以及官方外部测试数据的来源记录。 |
+| [`vectors/`](vectors/) | 正、反一致性测试向量，v0.1 候选回归集（J1/J2 验收后才正式冻结），故意公开的测试密钥，以及官方外部测试数据的来源记录。 |
 | [`verifiers/python/`](verifiers/python/) | `hyphaweave_verify` 0.1.0 与 `hyphaweave-verify` 命令行。 |
 | [`tools/`](tools/) | 独立的向量生成脚本（不 import 核验器）与各闸门脚本。 |
 | [`docs/positioning.md`](docs/positioning.md) | 非规范性的定位文档：范围、非目标、职责边界与风险。 |
-| [`docs/open-questions.md`](docs/open-questions.md) | H0 在决定稿留有空白处所作的临时选择。 |
+| [`docs/open-questions.md`](docs/open-questions.md) | 决定 2026-11-10 #34 已裁定的问题（Q1–Q33），以及仍标为 PROVISIONAL 的实现形状选择。 |
 
 ## 使用核验器
 
@@ -41,8 +42,10 @@ Python 核验器是参考实现，不是产品：它的用途是让规范可被�
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-python -m pip install -e "verifiers/python[dev]"
+python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
 ```
+
+H0 构建所用的精确依赖版本固定在 [`verifiers/python/constraints.txt`](verifiers/python/constraints.txt)；只有该文件与 `pyproject.toml` 中固定的版本有保证。本机开发环境是 Python 3.14，Python 3.11 与 3.12 未在本机实测；3.12 的 CI 工作流从未在 GitHub 上运行过。
 
 命令行接口如下：
 
@@ -63,28 +66,36 @@ hyphaweave-verify record path/to/record.json --keys vectors/keys/keyset
 # 核验容器目录或 zip（此处未提供时间戳信任锚）
 hyphaweave-verify container path/to/container
 
-# 一致性测试向量；冻结集也用目录参数
+# 一致性测试向量；候选回归集也用目录参数
 hyphaweave-verify vectors vectors
-hyphaweave-verify vectors vectors/frozen/v0.1
+hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 ```
 
 `--keys` 指向一个密钥生命周期记录目录（取其顶层 `*.json` 文件），用于提供公钥及其声明状态，不属于被核验的容器。`--tsa-trust` 提供 L2 时间戳信任锚；`--previous` 额外核对上一份容器的清单摘要与容器内嵌链是否一致。
 
 每次运行只向 stdout 输出一份确定性的 JSON 报告（无颜色、无进度输出）；用法与 I/O 错误只写入 stderr。退出码：`0` 表示有效（`weave.erased` 占位记录的结论为 `erased` 也算成功，或所有向量用例吻合），`1` 表示无效、不可核验或向量不吻合，`2` 表示用法或 I/O 错误。结论分为 `valid`、`invalid`、`unverifiable` 与 `erased`；当某项检查无法完成时（例如未知公钥、缺少时间戳信任锚），如实报告 `unverifiable`，绝不当作 `valid`。核验器不联网，输出不使用墙钟、区域设置、时区或当前目录。
 
-L2 时间戳只在通过 `--tsa-trust` 提供信任锚时才验证。没有信任锚时，时间戳报告为 `present-unverified`，容器报告为 `unverifiable`。`vectors/keys/tsa/` 下的 TSA 密钥与证书是公开测试材料，测试向量之外绝不要信任它们。
+L2 时间戳只在通过 `--tsa-trust` 提供信任锚时才验证。没有信任锚时，时间戳报告为 `present-unverified`，容器报告为 `unverifiable`。容器的 `level_verified` 恒为 `"L0"`（L1/L2 的内部哈希链无法离线复核）；L2 只有在整条时间戳链通过所提供信任锚验证时才报告 `anchor_verified: true`。`vectors/keys/tsa/` 下的 TSA 密钥与证书是公开测试材料，测试向量之外绝不要信任它们。
 
 ## 运行各闸门
 
 在仓库根目录、已激活虚拟环境并安装 `reuse`（`python -m pip install reuse==5.0.2`）后运行：
 
 ```bash
+python tools/make_keys.py --check
+python tools/gen_vectors.py --check
+python tools/gen_vectors_extra.py --check
+python tools/gen_index.py --check
 python -m pytest verifiers/python/tests -q
 hyphaweave-verify vectors vectors
-hyphaweave-verify vectors vectors/frozen/v0.1
+( cd vectors/frozen/v0.1-candidate && sha256sum -c --strict SHA256SUMS )
+python tools/check_frozen.py
+hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 python tools/check_schemas.py
 python tools/check_external.py
 python tools/anti_verification.py
+python tools/byte_flip_gate.py
+python tools/check_spec_examples.py
 reuse lint
 ```
 

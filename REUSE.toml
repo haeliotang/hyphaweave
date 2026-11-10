@@ -30,31 +30,53 @@ SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
 SPDX-License-Identifier = "CC-BY-4.0"
 
 # CLA.md is copied byte-for-byte from the Inceptless CLA source, so it cannot
-# carry an inline header. It is legal prose and is declared CC-BY-4.0.
+# carry an inline header. It is legal prose and is declared CC-BY-4.0. The
+# annotation is "override" because the agreement's section headings (for example
+# "## 2. Copyright licence") would otherwise be parsed as a copyright notice.
 [[annotations]]
 path = "CLA.md"
-precedence = "closest"
+precedence = "override"
 SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
 SPDX-License-Identifier = "CC-BY-4.0"
 
 # External test data keeps the license recorded by its upstream source (each
-# directory carries SOURCE.json and PROVENANCE.md). Files written by this
-# repository inside vectors/external/ (SHA256SUMS, the manifest metadata and the
-# PROVENANCE pages, which carry inline headers) remain under the repository
-# licenses; upstream bytes follow the entries below.
+# directory carries SOURCE.json and PROVENANCE.md). Upstream bytes follow the
+# entry below.
 [[annotations]]
 path = ["vectors/external/rfc8785-jcs/**", "vectors/external/wycheproof/**"]
 precedence = "closest"
 SPDX-FileCopyrightText = "The upstream authors of the referenced test data"
 SPDX-License-Identifier = "Apache-2.0"
 
+# Provenance and expectation metadata written by this repository inside the
+# external-data directories: it is ours, not the upstream authors'.
+[[annotations]]
+path = [
+    "vectors/external/rfc8785-jcs/SOURCE.json",
+    "vectors/external/rfc8785-jcs/SHA256SUMS",
+    "vectors/external/wycheproof/SOURCE.json",
+    "vectors/external/wycheproof/SHA256SUMS",
+    "vectors/external/wycheproof/EXPECTED_OUTCOMES.json",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
 # RFC 8032 is an IETF document: its text is redistributed unmodified under the
 # IETF Trust Legal Provisions (BCP 78), not under the repository licenses.
 # SOURCE.json and SHA256SUMS are our provenance metadata, so they stay
-# Apache-2.0 like the rest of the vector tooling.
+# Apache-2.0 like the rest of the vector tooling; "override" is used because
+# SOURCE.json's license string contains the words "Copyright Notice", which
+# file-content scanning would otherwise take for a copyright statement.
 [[annotations]]
 path = "vectors/external/rfc8032/**"
 precedence = "closest"
+SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["vectors/external/rfc8032/SOURCE.json", "vectors/external/rfc8032/SHA256SUMS"]
+precedence = "override"
 SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
 SPDX-License-Identifier = "Apache-2.0"
 
