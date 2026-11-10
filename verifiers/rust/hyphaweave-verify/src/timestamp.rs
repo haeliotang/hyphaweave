@@ -56,20 +56,15 @@ const OID_SHA512: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.10
 /// `rsaEncryption` (RFC 8017) — RSASSA-PKCS1-v1_5 with the signer digest.
 const OID_RSA_ENCRYPTION: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 /// `sha256WithRSAEncryption` (RFC 8017).
-const OID_SHA256_WITH_RSA: ObjectIdentifier =
-    ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+const OID_SHA256_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 /// `sha384WithRSAEncryption` (RFC 8017).
-const OID_SHA384_WITH_RSA: ObjectIdentifier =
-    ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.12");
+const OID_SHA384_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.12");
 /// `sha512WithRSAEncryption` (RFC 8017).
-const OID_SHA512_WITH_RSA: ObjectIdentifier =
-    ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
+const OID_SHA512_WITH_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
 /// `ecdsa-with-SHA256` (RFC 5758).
-const OID_ECDSA_WITH_SHA256: ObjectIdentifier =
-    ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
+const OID_ECDSA_WITH_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
 /// `ecdsa-with-SHA384` (RFC 5758).
-const OID_ECDSA_WITH_SHA384: ObjectIdentifier =
-    ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
+const OID_ECDSA_WITH_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
 /// `id-aa-signingCertificateV2` (RFC 5035 §3).
 const OID_SIGNING_CERTIFICATE_V2: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.16.2.47");
@@ -90,8 +85,7 @@ const OID_PRIME256V1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.1
 /// `secp384r1` / NIST P-384 (RFC 5480 §2.1.1.1).
 const OID_SECP384R1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.132.0.34");
 /// `id-kp-timeStamping` (RFC 5280 §4.2.1.12).
-const OID_ID_KP_TIMESTAMPING: ObjectIdentifier =
-    ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.8");
+const OID_ID_KP_TIMESTAMPING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.8");
 
 /// State of one timestamp receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +129,8 @@ pub struct ChainEvidence {
     /// One outcome per `timestamps[]` entry, in attestation order.
     pub receipts: Vec<ReceiptOutcome>,
     /// First failing §12.2 check 14 (renewal-chain structure), when present.
+    /// A structurally broken chain also makes every entry of `receipts`
+    /// `Invalid` with this code and no genTime/accuracy evidence.
     pub chain_error: Option<Code>,
     /// True only when every receipt is verified and the chain is complete.
     pub anchor_verified: bool,
@@ -184,6 +180,13 @@ impl ChainEvidence {
 /// path.
 /// `trust_anchors` holds the SHA-256 digests of the DER encodings of the
 /// `--tsa-trust` certificates.
+///
+/// When the `timestamps[]` array itself is not exactly one complete renewal
+/// chain (§12.2 check 14), per-receipt verification is skipped: every entry is
+/// reported [`ReceiptState::Invalid`] with `E_TS_RENEWAL`, no genTime evidence
+/// is attached, [`ChainEvidence::anchor_verified`] is false and
+/// [`ChainEvidence::rescue_bounds_us`] is empty (a broken chain is not trusted
+/// evidence for the §9.4 compromise rule).
 #[must_use]
 pub fn verify_chain(
     entries: &[AttestationTimestamp],
@@ -192,7 +195,19 @@ pub fn verify_chain(
     trust_anchors: &[[u8; 32]],
 ) -> ChainEvidence {
     // Check 14 describes the `timestamps[]` array as a whole, not one receipt.
+    // A structurally broken chain cannot be trusted for anything (§9.4's rescue
+    // rule requires a *trusted chain*), so it short-circuits per-receipt
+    // verification: every listed receipt is reported invalid with check 14's
+    // code and no recovered genTime/accuracy evidence.
     let chain_error = renewal_chain_error(entries);
+    if let Some(code) = chain_error {
+        let receipts = entries.iter().map(|_| invalid_receipt(code)).collect();
+        return ChainEvidence {
+            receipts,
+            chain_error,
+            anchor_verified: false,
+        };
+    }
     let path_index: BTreeMap<&str, usize> = entries
         .iter()
         .enumerate()
@@ -202,14 +217,13 @@ pub fn verify_chain(
     for (index, entry) in entries.iter().enumerate() {
         let outcome = match expected_imprint(index, entries, &path_index, manifest_digest, files) {
             Ok(imprint) => verify_receipt(entry, &imprint, files, trust_anchors),
-            // The renewal link cannot be resolved, so check 4 cannot be
-            // evaluated for this receipt; the chain-defect code applies.
+            // Defensive: the chain structure above already guarantees that a
+            // renewal link names the immediately preceding listed receipt.
             Err(code) => invalid_receipt(code),
         };
         receipts.push(outcome);
     }
-    let anchor_verified = chain_error.is_none()
-        && !receipts.is_empty()
+    let anchor_verified = !receipts.is_empty()
         && receipts
             .iter()
             .all(|receipt| receipt.state == ReceiptState::Verified);
@@ -319,11 +333,46 @@ fn expected_imprint(
 // Per-receipt verification (§12.2 checks 1–15)
 // --------------------------------------------------------------------------
 
-/// Facts extracted from a receipt that passed checks 1–13.
-struct ReceiptFacts {
+/// Timestamp evidence recovered from a receipt before all its checks ran.
+///
+/// `gen_time`/`accuracy_us` are evidence, not check results: the §14.6 report
+/// carries `gen_time` for every receipt whose TSTInfo was parsed far enough to
+/// provide it, even when a later §12.2 check invalidates the receipt. They stay
+/// `None`/0 when the token could not be parsed or its genTime is malformed.
+#[derive(Clone, Copy)]
+struct RecoveredFacts {
+    gen_time: Option<Timestamp>,
+    accuracy_us: i64,
+}
+
+impl RecoveredFacts {
+    fn none() -> Self {
+        Self {
+            gen_time: None,
+            accuracy_us: 0,
+        }
+    }
+}
+
+/// A parsed timestamp token that passed checks 1–4 (token identity and the
+/// §12.4 `messageImprint`).
+struct ParsedToken {
+    signed_data: SignedData,
+    tst_info: TstInfo,
+    encapsulated_content: Vec<u8>,
+}
+
+/// A receipt that passed checks 1–13, with the facts needed for check 15.
+struct VerifiedReceipt {
     gen_time: Timestamp,
     accuracy_us: i64,
     certificate_der_sha256: [u8; 32],
+}
+
+/// First failing §12.2 check plus the timestamp evidence recovered before it.
+struct ReceiptFailure {
+    code: Code,
+    recovered: RecoveredFacts,
 }
 
 fn invalid_receipt(error: Code) -> ReceiptOutcome {
@@ -351,13 +400,20 @@ fn verify_receipt(
     }
     let facts = match verify_receipt_checks(bytes, expected_imprint) {
         Ok(facts) => facts,
-        Err(code) => return invalid_receipt(code),
+        Err(failure) => {
+            // Keep the recovered genTime/accuracy in the evidence report; the
+            // state and the §12.5 effect stay `invalid` with the first code.
+            return ReceiptOutcome {
+                state: ReceiptState::Invalid,
+                gen_time: failure.recovered.gen_time,
+                accuracy_us: failure.recovered.accuracy_us,
+                error: Some(failure.code),
+            };
+        }
     };
     // Check 15: the signer leaf certificate is trusted iff its DER SHA-256 is
     // one of the supplied anchors (§12.3). No chain building.
-    let trusted = trust_anchors
-        .iter()
-        .any(|anchor| *anchor == facts.certificate_der_sha256);
+    let trusted = trust_anchors.contains(&facts.certificate_der_sha256);
     ReceiptOutcome {
         state: if trusted {
             ReceiptState::Verified
@@ -370,8 +426,31 @@ fn verify_receipt(
     }
 }
 
-/// Applies the §12.2 MUST table checks 1–14 of one receipt.
-fn verify_receipt_checks(bytes: &[u8], expected_imprint: &[u8; 32]) -> Result<ReceiptFacts, Code> {
+/// Applies the §12.2 MUST table checks 1–13 of one receipt.
+///
+/// The token's genTime and accuracy are recorded as soon as checks 1–4 passed,
+/// so a failure in a later check still reports them as evidence for the §14.6
+/// `container.timestamps[].gen_time` member. Failures of checks 1–4 (the DER
+/// token does not identify this manifest) report no genTime. The check order,
+/// the first failing code and the §9.4 rescue bounds are unchanged.
+fn verify_receipt_checks(
+    bytes: &[u8],
+    expected_imprint: &[u8; 32],
+) -> Result<VerifiedReceipt, ReceiptFailure> {
+    let parsed = parse_token(bytes, expected_imprint).map_err(|code| ReceiptFailure {
+        code,
+        recovered: RecoveredFacts::none(),
+    })?;
+    let recovered = RecoveredFacts {
+        gen_time: parse_gen_time(&parsed.tst_info.gen_time),
+        accuracy_us: accuracy_micros(parsed.tst_info.accuracy.as_ref()).unwrap_or(0),
+    };
+    verify_parsed_token(&parsed, recovered).map_err(|code| ReceiptFailure { code, recovered })
+}
+
+/// Checks 1–4: parses the DER `TimeStampResp`/CMS token, requires the
+/// `id-ct-TSTInfo` content and TSTInfo version 1, and matches the §12.4 imprint.
+fn parse_token(bytes: &[u8], expected_imprint: &[u8; 32]) -> Result<ParsedToken, Code> {
     // Check 1: DER TimeStampResp with PKIStatusInfo.status == granted (0).
     let response = TimeStampResp::from_der(bytes).map_err(|_| e::TS_SCHEMA)?;
     if response.status.status != 0 {
@@ -398,31 +477,46 @@ fn verify_receipt_checks(bytes: &[u8], expected_imprint: &[u8; 32]) -> Result<Re
     if econtent.tag() != Tag::OctetString {
         return Err(e::TS_SCHEMA);
     }
-    let tstinfo_bytes = econtent.value();
-    let tstinfo = TstInfo::from_der(tstinfo_bytes).map_err(|_| e::TS_SCHEMA)?;
-    if tstinfo.version != 1 {
+    let encapsulated_content = econtent.value().to_vec();
+    let tst_info = TstInfo::from_der(&encapsulated_content).map_err(|_| e::TS_SCHEMA)?;
+    if tst_info.version != 1 {
         return Err(e::TS_SCHEMA);
     }
     // RFC 3161 §2.4.2: the token carries exactly the TSA signature.
     if signed_data.signer_infos.0.len() != 1 {
         return Err(e::TS_SCHEMA);
     }
+
+    // Check 3: messageImprint.hashAlgorithm is sha256.
+    if tst_info.message_imprint.hash_algorithm.oid != OID_SHA256 {
+        return Err(e::TS_SCHEMA);
+    }
+
+    // Check 4: messageImprint.hashedMessage equals the expected imprint.
+    if tst_info.message_imprint.hashed_message.as_bytes() != expected_imprint {
+        return Err(e::TS_IMPRINT);
+    }
+
+    Ok(ParsedToken {
+        signed_data,
+        tst_info,
+        encapsulated_content,
+    })
+}
+
+/// Checks 5–13 of a token that passed checks 1–4.
+fn verify_parsed_token(
+    parsed: &ParsedToken,
+    recovered: RecoveredFacts,
+) -> Result<VerifiedReceipt, Code> {
+    let signed_data = &parsed.signed_data;
+    let tst_info = &parsed.tst_info;
     let signer_info = signed_data
         .signer_infos
         .0
         .iter()
         .next()
         .ok_or(e::TS_SCHEMA)?;
-
-    // Check 3: messageImprint.hashAlgorithm is sha256.
-    if tstinfo.message_imprint.hash_algorithm.oid != OID_SHA256 {
-        return Err(e::TS_SCHEMA);
-    }
-
-    // Check 4: messageImprint.hashedMessage equals the expected imprint.
-    if tstinfo.message_imprint.hashed_message.as_bytes() != expected_imprint {
-        return Err(e::TS_IMPRINT);
-    }
 
     // Check 5: signerInfo.digestAlgorithm is sha256.
     if signer_info.digest_alg.oid != OID_SHA256 {
@@ -436,8 +530,7 @@ fn verify_receipt_checks(bytes: &[u8], expected_imprint: &[u8; 32]) -> Result<Re
     )?;
 
     // Check 7: the signer certificate is carried in the token.
-    let certificate = find_signer_certificate(&signed_data, &signer_info.sid)
-        .ok_or(e::TS_CMS)?;
+    let certificate = find_signer_certificate(signed_data, &signer_info.sid).ok_or(e::TS_CMS)?;
     let certificate_der = certificate.to_der().map_err(|_| e::TS_CMS)?;
 
     // Checks 8 and 9 use the signed attributes.
@@ -449,7 +542,7 @@ fn verify_receipt_checks(bytes: &[u8], expected_imprint: &[u8; 32]) -> Result<Re
 
     // Check 9: the signed attributes' messageDigest equals SHA-256(eContent);
     // the profile also requires the content-type attribute to name TSTInfo.
-    check_signed_attributes(signed_attributes, tstinfo_bytes)?;
+    check_signed_attributes(signed_attributes, &parsed.encapsulated_content)?;
 
     // Check 10: the CMS signature verifies over
     // DER(SET OF SignedAttributes) with the signer certificate's public key.
@@ -463,23 +556,20 @@ fn verify_receipt_checks(bytes: &[u8], expected_imprint: &[u8; 32]) -> Result<Re
     // Check 11: timeStamping EKU and (when present) digitalSignature key usage.
     check_certificate_profile(&certificate)?;
 
-    // Check 13 owns genTime validation, but check 12 needs the instant. Parse
-    // it here; when it is malformed check 12 cannot be evaluated and the
-    // schema failure is reported at its table position below.
-    let gen_time = parse_gen_time(&tstinfo.gen_time);
-
-    // Check 12: the certificate validity window contains genTime.
-    if let Some(gen_time) = gen_time {
-        if !certificate_validity_contains(&certificate, gen_time) {
-            return Err(e::TS_CERT);
-        }
+    // Check 12: the certificate validity window contains genTime. A malformed
+    // genTime makes this check unevaluable; check 13 below reports it.
+    if recovered
+        .gen_time
+        .is_some_and(|gen_time| !certificate_validity_contains(&certificate, gen_time))
+    {
+        return Err(e::TS_CERT);
     }
 
     // Check 13: genTime and accuracy conversion to integer ms/µs.
-    let gen_time = gen_time.ok_or(e::TS_SCHEMA)?;
-    let accuracy_us = accuracy_micros(tstinfo.accuracy.as_ref())?;
+    let gen_time = recovered.gen_time.ok_or(e::TS_SCHEMA)?;
+    let accuracy_us = accuracy_micros(tst_info.accuracy.as_ref())?;
 
-    Ok(ReceiptFacts {
+    Ok(VerifiedReceipt {
         gen_time,
         accuracy_us,
         certificate_der_sha256: digest::sha256(&certificate_der),
@@ -663,10 +753,8 @@ fn signer_identifier_matches(
 ) -> bool {
     match signer_identifier {
         SignerIdentifier::IssuerAndSerialNumber(issuer_serial) => {
-            names_equal(
-                &issuer_serial.issuer,
-                &certificate.tbs_certificate.issuer,
-            ) && issuer_serial.serial_number == certificate.tbs_certificate.serial_number
+            names_equal(&issuer_serial.issuer, &certificate.tbs_certificate.issuer)
+                && issuer_serial.serial_number == certificate.tbs_certificate.serial_number
         }
         SignerIdentifier::SubjectKeyIdentifier(subject_key_identifier) => certificate
             .tbs_certificate
@@ -705,12 +793,10 @@ fn check_ess_signing_certificate_v2(
         // the same code, this branch documents the table row.
         return Err(e::TS_CMS);
     }
-    let attribute =
-        find_attribute(attributes, OID_SIGNING_CERTIFICATE_V2).ok_or(e::TS_CMS)?;
+    let attribute = find_attribute(attributes, OID_SIGNING_CERTIFICATE_V2).ok_or(e::TS_CMS)?;
     let value = attribute.values.iter().next().ok_or(e::TS_CMS)?;
     let value_der = value.to_der().map_err(|_| e::TS_CMS)?;
-    let signing_certificate =
-        SigningCertificateV2::from_der(&value_der).map_err(|_| e::TS_CMS)?;
+    let signing_certificate = SigningCertificateV2::from_der(&value_der).map_err(|_| e::TS_CMS)?;
     let certificate_id = signing_certificate.certs.first().ok_or(e::TS_CMS)?;
     // RFC 5035 §3: an omitted hashAlgorithm means SHA-256.
     let hash = match &certificate_id.hash_algorithm {
@@ -743,8 +829,7 @@ fn check_signed_attributes(
         return Err(e::TS_CMS);
     }
     let content_type_der = content_type_value.to_der().map_err(|_| e::TS_CMS)?;
-    let content_type =
-        ObjectIdentifier::from_der(&content_type_der).map_err(|_| e::TS_CMS)?;
+    let content_type = ObjectIdentifier::from_der(&content_type_der).map_err(|_| e::TS_CMS)?;
     if content_type != OID_ID_CT_TSTINFO {
         return Err(e::TS_CMS);
     }
@@ -776,15 +861,11 @@ fn verify_cms_signature(
     // SignedAttributes` encoding, not the implicit [0] form carried in the
     // token.
     let signed = attributes.to_der().map_err(|_| e::TS_CMS)?;
-    let subject_public_key_info_der =
-        subject_public_key_info.to_der().map_err(|_| e::TS_CMS)?;
+    let subject_public_key_info_der = subject_public_key_info.to_der().map_err(|_| e::TS_CMS)?;
     let verified = match scheme {
-        SignatureScheme::RsaPkcs1V15(hash) => verify_rsa_pkcs1_v15(
-            &subject_public_key_info_der,
-            hash,
-            &signed,
-            signature,
-        ),
+        SignatureScheme::RsaPkcs1V15(hash) => {
+            verify_rsa_pkcs1_v15(&subject_public_key_info_der, hash, &signed, signature)
+        }
         SignatureScheme::Ecdsa(hash) => {
             verify_ecdsa(subject_public_key_info, hash, &signed, signature)
         }
@@ -900,21 +981,17 @@ fn check_certificate_profile(certificate: &Certificate) -> Result<(), Code> {
     let Some((_critical, extended_key_usage)) = extended_key_usage else {
         return Err(e::TS_CERT);
     };
-    if !extended_key_usage
-        .0
-        .iter()
-        .any(|oid| *oid == OID_ID_KP_TIMESTAMPING)
-    {
+    if !extended_key_usage.0.contains(&OID_ID_KP_TIMESTAMPING) {
         return Err(e::TS_CERT);
     }
     let key_usage = certificate
         .tbs_certificate
         .get::<KeyUsage>()
         .map_err(|_| e::TS_CERT)?;
-    if let Some((_critical, key_usage)) = key_usage {
-        if !key_usage.digital_signature() {
-            return Err(e::TS_CERT);
-        }
+    // A present KeyUsage must allow digital signatures; an absent one is
+    // tolerated (§12.2 row 11).
+    if key_usage.is_some_and(|(_critical, key_usage)| !key_usage.digital_signature()) {
+        return Err(e::TS_CERT);
     }
     Ok(())
 }
@@ -1044,11 +1121,9 @@ fn uint_to_u64(value: &Uint) -> Option<u64> {
     if bytes.len() > 8 {
         return None;
     }
-    Some(
-        bytes
-            .iter()
-            .fold(0u64, |accumulator, &byte| (accumulator << 8) | u64::from(byte)),
-    )
+    Some(bytes.iter().fold(0u64, |accumulator, &byte| {
+        (accumulator << 8) | u64::from(byte)
+    }))
 }
 
 // --------------------------------------------------------------------------
@@ -1142,8 +1217,7 @@ mod tests {
     }
 
     fn valid_trust_anchors() -> Vec<[u8; 32]> {
-        load_trust_anchors(&[vector_bytes(TSA_CERTIFICATE)])
-            .expect("test TSA certificate loads")
+        load_trust_anchors(&[vector_bytes(TSA_CERTIFICATE)]).expect("test TSA certificate loads")
     }
 
     fn valid_entry() -> AttestationTimestamp {
@@ -1336,14 +1410,17 @@ mod tests {
         assert!(!evidence.anchor_verified);
         assert_eq!(evidence.receipts[0].state, ReceiptState::Invalid);
         assert_eq!(evidence.receipts[0].error, Some(e::TS_IMPRINT));
+        // Check 4 failed before the token was accepted as identifying this
+        // manifest, so no genTime evidence is reported (§14.6 parity).
+        assert_eq!(evidence.receipts[0].gen_time, None);
+        assert_eq!(evidence.receipts[0].accuracy_us, 0);
     }
 
     #[test]
     fn receipt_with_mismatched_file_digest_is_invalid() {
         let mut entry = valid_entry();
         entry.digest =
-            "sha256:9999999999999999999999999999999999999999999999999999999999999999"
-                .to_string();
+            "sha256:9999999999999999999999999999999999999999999999999999999999999999".to_string();
         let evidence = verify_chain(
             &[entry],
             &MANIFEST_DIGEST_BYTES,
@@ -1377,6 +1454,13 @@ mod tests {
         );
         assert_eq!(evidence.receipts[0].state, ReceiptState::Invalid);
         assert_eq!(evidence.receipts[0].error, Some(e::TS_CMS));
+        // Checks 1–4 passed, so the token's genTime is still reported as
+        // evidence even though the later CMS check invalidates the receipt.
+        assert_eq!(
+            evidence.receipts[0].gen_time,
+            Timestamp::parse("2026-11-01T00:00:00.000Z")
+        );
+        assert_eq!(evidence.receipts[0].accuracy_us, 0);
     }
 
     #[test]
@@ -1432,7 +1516,12 @@ mod tests {
             path: "signatures/timestamp-2.tsr".to_string(),
             renews: Some("signatures/timestamp-1.tsr".to_string()),
         };
-        let evidence = verify_chain(&[second.clone()], &manifest, &BTreeMap::new(), &[]);
+        let evidence = verify_chain(
+            std::slice::from_ref(&second),
+            &manifest,
+            &BTreeMap::new(),
+            &[],
+        );
         assert_eq!(evidence.chain_error, Some(e::TS_RENEWAL));
 
         // Dangling link.
@@ -1440,14 +1529,20 @@ mod tests {
             renews: Some("signatures/timestamp-3.tsr".to_string()),
             ..second.clone()
         };
-        let evidence = verify_chain(
-            &[base.clone(), dangling],
-            &manifest,
-            &BTreeMap::new(),
-            &[],
-        );
+        let evidence = verify_chain(&[base.clone(), dangling], &manifest, &BTreeMap::new(), &[]);
         assert_eq!(evidence.chain_error, Some(e::TS_RENEWAL));
-        assert_eq!(evidence.receipts[1].error, Some(e::TS_RENEWAL));
+        // Check 14 short-circuits per-receipt verification: every receipt is
+        // invalid with the chain code, carries no genTime evidence, and a
+        // broken chain never rescues a compromised-key signature (§9.4).
+        assert_eq!(evidence.receipts.len(), 2);
+        for receipt in &evidence.receipts {
+            assert_eq!(receipt.state, ReceiptState::Invalid);
+            assert_eq!(receipt.error, Some(e::TS_RENEWAL));
+            assert_eq!(receipt.gen_time, None);
+            assert_eq!(receipt.accuracy_us, 0);
+        }
+        assert!(!evidence.anchor_verified);
+        assert!(evidence.rescue_bounds_us().is_empty());
 
         // Two chain heads.
         let two_heads = [

@@ -134,8 +134,8 @@ pub fn read_zip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Code> {
             .checked_add(CENTRAL_FIXED)
             .and_then(|value| value.checked_add(variable_length))
             .ok_or(e::CONTAINER_ZIP)?;
-        let name_bytes = slice(bytes, position + CENTRAL_FIXED, name_length)
-            .ok_or(e::CONTAINER_ZIP)?;
+        let name_bytes =
+            slice(bytes, position + CENTRAL_FIXED, name_length).ok_or(e::CONTAINER_ZIP)?;
         if record_end > cd_end {
             return Err(e::CONTAINER_ZIP);
         }
@@ -213,8 +213,8 @@ fn read_entry_data(
     }
     let name_length = usize::from(u16_at(header, 26).ok_or(e::CONTAINER_ZIP)?);
     let extra_length = usize::from(u16_at(header, 28).ok_or(e::CONTAINER_ZIP)?);
-    let local_name = slice(bytes, local_offset + LOCAL_FIXED, name_length)
-        .ok_or(e::CONTAINER_ZIP)?;
+    let local_name =
+        slice(bytes, local_offset + LOCAL_FIXED, name_length).ok_or(e::CONTAINER_ZIP)?;
     if local_name != cd_name.as_bytes() {
         return Err(e::CONTAINER_ZIP);
     }
@@ -271,7 +271,8 @@ fn find_eocd(bytes: &[u8]) -> Result<usize, Code> {
     let mut candidate = bytes.len() - EOCD_FIXED;
     loop {
         if u32_at(bytes, candidate) == Some(EOCD_SIGNATURE) {
-            let comment_length = usize::from(u16_at(bytes, candidate + 20).ok_or(e::CONTAINER_ZIP)?);
+            let comment_length =
+                usize::from(u16_at(bytes, candidate + 20).ok_or(e::CONTAINER_ZIP)?);
             if candidate + EOCD_FIXED + comment_length == bytes.len() {
                 return Ok(candidate);
             }
@@ -446,7 +447,10 @@ mod tests {
         ]);
         let files = read_zip(&zip).expect("valid archive");
         assert_eq!(files.get("a.txt").map(Vec::as_slice), Some(&b"hello"[..]));
-        assert_eq!(files.get("dir/b.bin").map(Vec::as_slice), Some(&[0, 1, 2, 3][..]));
+        assert_eq!(
+            files.get("dir/b.bin").map(Vec::as_slice),
+            Some(&[0, 1, 2, 3][..])
+        );
     }
 
     #[test]
@@ -454,7 +458,10 @@ mod tests {
         let payload = b"weave-record/1 deflate payload ".repeat(200);
         let zip = make_zip(&[TestEntry::deflated("manifest.json", &payload)]);
         let files = read_zip(&zip).expect("valid archive");
-        assert_eq!(files.get("manifest.json").map(Vec::as_slice), Some(payload.as_slice()));
+        assert_eq!(
+            files.get("manifest.json").map(Vec::as_slice),
+            Some(payload.as_slice())
+        );
     }
 
     #[test]
@@ -554,7 +561,8 @@ mod tests {
     #[test]
     fn declared_oversized_entry_is_a_size_error() {
         let mut entry = TestEntry::stored("a.bin", b"x");
-        entry.declared_uncompressed = Some(u32::try_from(limits::MAX_CONTAINER_UNCOMPRESSED_BYTES).unwrap() + 1);
+        entry.declared_uncompressed =
+            Some(u32::try_from(limits::MAX_CONTAINER_UNCOMPRESSED_BYTES).unwrap() + 1);
         let zip = make_zip(&[entry]);
         assert_eq!(read_zip(&zip), Err(e::CONTAINER_SIZE));
     }

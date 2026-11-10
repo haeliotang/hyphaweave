@@ -34,20 +34,16 @@ use crate::limits;
 use crate::options::{ContainerInput, UsageError, VerifyOptions};
 use crate::patterns;
 use crate::report::{
-    ChainReport, ContainerReport, InputIdentity, OriginReport, RecordReport, Report, Summary,
-    Target, TimestampReport, Verdict, VerdictCounts, VerifierInfo,
+    ChainReport, ContainerReport, InputIdentity, RecordReport, Report, Summary, Target,
+    TimestampReport, Verdict, VerdictCounts, VerifierInfo,
 };
 use crate::time::Timestamp;
-use crate::timestamp::{self, AttestationTimestamp, ChainEvidence, ReceiptState};
+use crate::timestamp::{self, AttestationTimestamp, ChainEvidence, ReceiptOutcome, ReceiptState};
 use crate::value::{Object, Value};
 use crate::zip;
 
 /// Relative path of the manifest (§11.1).
 const MANIFEST_PATH: &str = "manifest.json";
-/// Relative path of the attestation file (§11.3).
-const SIGFILE_PATH: &str = "signatures/manifest.sig.json";
-/// Relative path of the embedded previous manifest (§11.5).
-const PREVIOUS_MANIFEST_PATH: &str = "previous/manifest.json";
 /// The only `format` value defined by this specification version.
 const FORMAT: &str = "weave-record/1";
 
@@ -73,7 +69,7 @@ pub fn verify_container(
             Ok(materialised) => (materialised, None),
             Err(ReadFailure::Usage(error)) => return Err(error),
             Err(ReadFailure::Content { code, partial }) => {
-                let identity = manifest_identity(&partial.files);
+                let identity = fallback_identity(&partial.files);
                 if options.skipped(code) {
                     (Materialised::default(), Some(identity))
                 } else {
@@ -87,19 +83,7 @@ pub fn verify_container(
                 size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
             };
             match zip::read_zip(bytes) {
-                Ok(files) => {
-                    let readable_present = files
-                        .keys()
-                        .any(|path| path == "readable" || path.starts_with("readable/"));
-                    (
-                        Materialised {
-                            files,
-                            readable_present,
-                            total_bytes: 0,
-                        },
-                        Some(identity),
-                    )
-                }
+                Ok(files) => (Materialised::from_files(files), Some(identity)),
                 Err(code) => {
                     if options.skipped(code) {
                         (Materialised::default(), Some(identity))
@@ -109,22 +93,16 @@ pub fn verify_container(
                 }
             }
         }
-        ContainerInput::Files(files) => {
-            let readable_present = files
-                .keys()
-                .any(|path| path == "readable" || path.starts_with("readable/"));
-            (
-                Materialised {
-                    files: files.clone(),
-                    readable_present,
-                    total_bytes: 0,
-                },
-                None,
-            )
-        }
+        ContainerInput::Files(files) => (Materialised::from_files(files.clone()), None),
     };
 
-    let identity = archive_identity.unwrap_or_else(|| manifest_identity(&materialised.files));
+    // The reported input identity follows what was actually identified (§14.6,
+    // Q27): a zip container is always identified by its archive bytes; a
+    // directory container by its manifest once the manifest is read, and by the
+    // manifest digest once the manifest structure passes. Until then the
+    // fallback identity of the materialised file set is reported.
+    let is_archive = archive_identity.is_some();
+    let mut identity = archive_identity.unwrap_or_else(|| fallback_identity(&materialised.files));
 
     // §13: entry count and total uncompressed bytes for the in-memory forms
     // (the zip reader enforces the same limits while inflating; a directory
@@ -136,8 +114,7 @@ pub fn verify_container(
             .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
             .fold(0u64, u64::saturating_add);
         for code in [
-            (materialised.files.len() > limits::MAX_CONTAINER_ENTRIES)
-                .then_some(e::CONTAINER_SIZE),
+            (materialised.files.len() > limits::MAX_CONTAINER_ENTRIES).then_some(e::CONTAINER_SIZE),
             (total > limits::MAX_CONTAINER_UNCOMPRESSED_BYTES).then_some(e::CONTAINER_SIZE),
         ]
         .into_iter()
@@ -152,7 +129,7 @@ pub fn verify_container(
     // ------------------------------------------------------------------
     // (1) Entry enumeration / safety and closed layout (§11.1, §11.9).
     // ------------------------------------------------------------------
-    let (layout, layout_error) = classify_layout(&materialised, options);
+    let (layout, layout_error) = classify_layout(materialised, options);
     if layout.readable_present {
         // §11.8: informational only; the directory is never parsed or hashed.
         run.container.notices.push(n::READABLE_PRESENT);
@@ -171,42 +148,43 @@ pub fn verify_container(
         }
         return Ok(run.fail(e::MANIFEST_MISSING, identity));
     };
-    let manifest_object = match json::parse_canonical_object(manifest_bytes, limits::MAX_MANIFEST_BYTES)
-    {
-        Ok(object) => object,
-        Err(code) => {
-            if options.skipped(code) {
-                return Ok(run.finish(identity, Vec::new()));
+    // From here on the manifest file itself is the identified input (a zip
+    // container keeps its archive identity for the whole run).
+    if !is_archive {
+        identity = raw_manifest_identity(manifest_bytes);
+    }
+    let manifest_object =
+        match json::parse_canonical_object(manifest_bytes, limits::MAX_MANIFEST_BYTES) {
+            Ok(object) => object,
+            Err(code) => {
+                if options.skipped(code) {
+                    return Ok(run.finish(identity, Vec::new()));
+                }
+                return Ok(run.fail(code, identity));
             }
-            return Ok(run.fail(code, identity));
-        }
-    };
+        };
     let canonical_manifest = json::canonical_object_bytes(&manifest_object);
     let manifest_digest = digest::manifest_digest(&canonical_manifest);
-    run.container.manifest_digest = Some(manifest_digest.clone());
     let manifest = match parse_manifest(&manifest_object, options) {
         Ok(manifest) => manifest,
         Err(code) => {
             if options.skipped(code) {
-                run.container.manifest_digest = Some(manifest_digest);
                 return Ok(run.finish(identity, Vec::new()));
             }
             return Ok(run.fail(code, identity));
         }
     };
+    // The manifest structure passed: the container is now identified by its
+    // §2.4 manifest digest, and the determined manifest fields may be reported.
+    if !is_archive {
+        identity = InputIdentity {
+            sha256: manifest_digest.clone(),
+            size: u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX),
+        };
+    }
+    run.container.manifest_digest = Some(manifest_digest.clone());
     run.container.created_at = Some(manifest.created_at.to_ts_string());
     run.container.level_claimed = Some(manifest.level.as_str().to_owned());
-    // §11.4: once a supported manifest was parsed the reported verified level is
-    // always L0; the claimed level and the internal chain claim are separate.
-    run.container.level_verified = Some("L0".to_owned());
-    run.container.anchor_verified = Some(false);
-    run.container.chain = Some(ChainReport {
-        status: match manifest.level {
-            Level::L0 => "absent",
-            Level::L1 | Level::L2 => "unverified",
-        }
-        .to_owned(),
-    });
     run.container.previous_manifest_digest = manifest.previous_manifest.clone();
     run.container.record_count = Some(u64::try_from(manifest.records.len()).unwrap_or(u64::MAX));
 
@@ -231,13 +209,8 @@ pub fn verify_container(
                 return Ok(run.fail(code, identity));
             }
         };
-    let attestation = match parse_attestation(
-        &sigfile_object,
-        &manifest,
-        &manifest_digest,
-        &layout,
-        options,
-    ) {
+    let attestation = match parse_attestation(&sigfile_object, &manifest, &manifest_digest, options)
+    {
         Ok(attestation) => attestation,
         Err(code) => {
             if options.skipped(code) {
@@ -260,21 +233,22 @@ pub fn verify_container(
         })
         .collect();
     let mut world = World::from_results(results, options)?;
+    world.set_container_context();
 
     // ------------------------------------------------------------------
     // Timestamp chain (§12). Verified before evaluation so the §9.4
     // compromise rule and the manifest signature check can use the evidence;
-    // the verdict effects are reported in the §14.5 (11) position below.
+    // the receipt-file problems and the verdict effects are reported in the
+    // §14.5 (11) position below.
     // ------------------------------------------------------------------
-    let evidence = verify_timestamps(
+    let timestamps = verify_timestamps(
         &attestation.timestamps,
         &manifest_digest,
-        &materialised.files,
+        &layout.timestamps,
         options,
     )?;
-    run.container.anchor_verified = Some(evidence.anchor_verified);
-    run.container.timestamps = timestamp_reports(&attestation.timestamps, &evidence);
-    world.set_timestamp_evidence(evidence.clone());
+    run.container.anchor_verified = Some(timestamps.evidence.anchor_verified);
+    world.set_timestamp_evidence(timestamps.evidence.clone());
 
     // ------------------------------------------------------------------
     // (5) Manifest signature (§11.3, §4.4).
@@ -298,34 +272,23 @@ pub fn verify_container(
                 .min()
                 .unwrap_or(&e::MANIFEST_SIG_INVALID);
             if !options.skipped(code) {
-                return Ok(run.fail(code, identity));
+                let limitations = world.limitations(Some(&run.container));
+                return Ok(run.fail_with(code, identity, limitations));
             }
         } else {
-            let mut any_unverifiable = false;
             for code in &outcome.unverifiable_errors {
-                if options.skipped(code) {
-                    continue;
+                if !options.skipped(code) {
+                    run.container.errors.push(code);
                 }
-                any_unverifiable = true;
-                run.container.errors.push(code);
             }
-            if any_unverifiable {
-                run.limitations.push(
-                    "the manifest signature could not be verified from the available key material"
-                        .to_owned(),
-                );
-            } else if !outcome.verified
-                && outcome.invalid_errors.is_empty()
+            if !outcome.verified
+                && outcome.unverifiable_errors.is_empty()
                 && !options.skipped(e::SIG_UNVERIFIABLE)
                 && !options.skipped(e::KEY_UNKNOWN)
             {
                 // Defensive: a non-empty signature list that establishes
                 // nothing is unverifiable, never silently passed (§11.3).
                 run.container.errors.push(e::SIG_UNVERIFIABLE);
-                run.limitations.push(
-                    "the manifest signature could not be verified from the available key material"
-                        .to_owned(),
-                );
             }
         }
     }
@@ -335,18 +298,23 @@ pub fn verify_container(
     // ------------------------------------------------------------------
     match check_level_and_chain(&manifest) {
         Ok(()) => {
+            // §11.4: the chain claim status is only determined once the chain
+            // structure itself is complete.
+            run.container.chain = Some(ChainReport {
+                status: match manifest.level {
+                    Level::L0 => "absent",
+                    Level::L1 | Level::L2 => "unverified",
+                }
+                .to_owned(),
+            });
             if manifest.level != Level::L0 {
                 run.container.notices.push(n::CHAIN_CLAIM_UNVERIFIED);
-                run.limitations.push(
-                    "the internal hash-chain head and record positions are an unverified claim; \
-                     level_verified is reported as L0"
-                        .to_owned(),
-                );
             }
         }
         Err(code) => {
             if !options.skipped(code) {
-                return Ok(run.fail(code, identity));
+                let limitations = world.limitations(Some(&run.container));
+                return Ok(run.fail_with(code, identity, limitations));
             }
         }
     }
@@ -374,12 +342,12 @@ pub fn verify_container(
     listing_errors.sort_unstable();
     listing_errors.dedup();
     if !listing_errors.is_empty() {
-        // The records listing is inconsistent: the container is invalid and
-        // no per-record verification result is claimed. Report one entry per
-        // manifest record (§14.6 never omits a record the manifest requires).
+        // The records listing is inconsistent: the container is invalid and no
+        // per-record verification result is claimed (records: [], zero
+        // summary counts, exactly the container errors).
         run.container.errors.extend(listing_errors);
-        let records: Vec<RecordReport> = entries.iter().map(synthetic_record).collect();
-        return Ok(run.finish(identity, records));
+        let limitations = world.limitations(Some(&run.container));
+        return Ok(run.finish_with(identity, Vec::new(), limitations));
     }
 
     let mut records = world.evaluate_all();
@@ -398,98 +366,100 @@ pub fn verify_container(
     // ------------------------------------------------------------------
     // (10) Previous-manifest chain (§11.5), including `--previous`.
     // ------------------------------------------------------------------
-    let previous = check_previous_chain(&manifest, &layout, options)?;
-    for code in previous.0 {
+    for code in check_previous_chain(&manifest, &layout, options)? {
         if !options.skipped(code) {
             run.container.errors.push(code);
         }
     }
-    for notice in previous.1 {
-        if !options.skipped(notice) {
-            run.container.notices.push(notice);
-        }
+    if manifest.previous_manifest.is_some() {
+        // §11.5: the embedded previous manifest's own signature is not
+        // re-verified; only its digest is chained.
+        run.container.notices.push(n::PREVIOUS_SIG_UNVERIFIED);
     }
 
     // ------------------------------------------------------------------
     // (11) Timestamp outcomes and the container verdict (§12.5).
     // ------------------------------------------------------------------
-    for code in timestamp_effects(&evidence) {
+    run.container.timestamps = timestamp_reports(&attestation.timestamps, &timestamps.evidence);
+    let timestamp_errors = if timestamps.verified {
+        timestamp_effects(&timestamps.evidence)
+    } else {
+        timestamps.errors.clone()
+    };
+    for code in timestamp_errors {
         if !options.skipped(code) {
             run.container.errors.push(code);
         }
     }
-    if manifest.level == Level::L2 {
-        if evidence.anchor_verified {
-            run.limitations.push(
-                "RFC 3161 receipts prove that a timestamp authority signed the manifest digest; \
-                 they do not prove that the content is true"
-                    .to_owned(),
-            );
-        } else {
-            run.limitations.push(
-                "no complete RFC 3161 timestamp chain verified against a supplied trust anchor; \
-                 the L2 claim is unverified (anchor_verified is false)"
-                    .to_owned(),
-            );
-        }
-    }
-    if manifest.previous_manifest.is_some() {
-        run.limitations.push(
-            "the embedded previous manifest's own signature was not re-verified \
-             (N_PREVIOUS_SIG_UNVERIFIED)"
-                .to_owned(),
-        );
-    }
-
     // ------------------------------------------------------------------
     // (12) Aggregation and report.
     // ------------------------------------------------------------------
-    Ok(run.finish(identity, records))
+    let limitations = world.limitations(Some(&run.container));
+    Ok(run.finish_with(identity, records, limitations))
 }
 
 // ---------------------------------------------------------------------------
 // Report assembly
 // ---------------------------------------------------------------------------
 
-/// Accumulates the container report and limitations while the checks run.
+/// Accumulates the container report while the checks run.
 struct Run<'a> {
     options: &'a VerifyOptions,
     container: ContainerReport,
-    limitations: Vec<String>,
 }
 
 impl<'a> Run<'a> {
     fn new(options: &'a VerifyOptions) -> Self {
         Self {
             options,
+            // §14.6: these fields are always present; their default is the
+            // honest "not determined" value, never an invented pass.
             container: ContainerReport {
                 created_at: None,
                 manifest_digest: None,
                 level_claimed: None,
-                level_verified: None,
-                anchor_verified: None,
-                chain: None,
+                level_verified: Some("L0".to_owned()),
+                anchor_verified: Some(false),
+                chain: Some(ChainReport {
+                    status: "absent".to_owned(),
+                }),
                 previous_manifest_digest: None,
-                record_count: None,
+                record_count: Some(0),
                 errors: Vec::new(),
                 notices: Vec::new(),
                 timestamps: Vec::new(),
             },
-            limitations: Vec::new(),
         }
     }
 
     /// A report for a container-level invalid failure: `records: []` and
-    /// exactly one container error (§14.5).
-    fn fail(mut self, code: Code, input: InputIdentity) -> Report {
+    /// exactly one container error (§14.5), with the limitations known before
+    /// the verification context exists.
+    fn fail(self, code: Code, input: InputIdentity) -> Report {
+        self.fail_with(code, input, vec![LIMITATION_OFFLINE.to_owned()])
+    }
+
+    /// A report for a container-level invalid failure with explicit
+    /// limitations (the context exists and owns the §14.9 wording).
+    fn fail_with(mut self, code: Code, input: InputIdentity, limitations: Vec<String>) -> Report {
         if !self.options.skipped(code) {
             self.container.errors.push(code);
         }
-        self.finish(input, Vec::new())
+        self.finish_with(input, Vec::new(), limitations)
     }
 
-    /// Final report; sorts and dedupes codes, computes the verdict and summary.
-    fn finish(mut self, input: InputIdentity, mut records: Vec<RecordReport>) -> Report {
+    /// Final report with explicit limitations; sorts and dedupes codes,
+    /// computes the verdict and summary.
+    fn finish(self, input: InputIdentity, records: Vec<RecordReport>) -> Report {
+        self.finish_with(input, records, vec![LIMITATION_OFFLINE.to_owned()])
+    }
+
+    fn finish_with(
+        mut self,
+        input: InputIdentity,
+        mut records: Vec<RecordReport>,
+        limitations: Vec<String>,
+    ) -> Report {
         sort_unique(&mut self.container.errors);
         sort_unique(&mut self.container.notices);
         for record in &mut records {
@@ -508,7 +478,7 @@ impl<'a> Run<'a> {
             records,
             container: Some(self.container),
             summary,
-            limitations: self.limitations,
+            limitations,
             cases: Vec::new(),
             verifier: VerifierInfo {
                 name: crate::VERIFIER_NAME.to_owned(),
@@ -517,6 +487,10 @@ impl<'a> Run<'a> {
         }
     }
 }
+
+/// The §14.9 offline limitation, the only one that applies before a
+/// verification context exists. The context owns the rest (`World::limitations`).
+const LIMITATION_OFFLINE: &str = "Offline verification: only this container's records and the supplied keyset are in the verification context; references to records outside the context resolve as missing.";
 
 /// §14.4: the error codes that mean `unverifiable`, never `invalid`.
 fn is_unverifiable_code(code: Code) -> bool {
@@ -605,6 +579,17 @@ struct Materialised {
     total_bytes: u64,
 }
 
+impl Materialised {
+    fn from_files(files: BTreeMap<String, Vec<u8>>) -> Self {
+        let readable_present = files.keys().any(|path| path.starts_with("readable/"));
+        Self {
+            files,
+            readable_present,
+            total_bytes: 0,
+        }
+    }
+}
+
 /// A directory read failure: I/O is a usage error, content defects are
 /// reported. The partially materialised container is kept so `input` identity
 /// can still be computed when the manifest was already read.
@@ -624,6 +609,19 @@ fn content_failure(code: Code, materialised: &Materialised) -> ReadFailure {
             readable_present: materialised.readable_present,
             total_bytes: materialised.total_bytes,
         }),
+    }
+}
+
+/// True when `name` may be a directory directly under the container-relative
+/// path `parent` (§11.1 layout).
+fn is_allowed_directory(parent: &str, name: &str) -> bool {
+    match parent {
+        "" => matches!(
+            name,
+            "signatures" | "previous" | "records" | "blobs" | "readable"
+        ),
+        "blobs" => name == "sha256",
+        _ => false,
     }
 }
 
@@ -690,6 +688,11 @@ fn walk_directory(
             return Err(content_failure(e::CONTAINER_ENTRY, materialised));
         }
         if metadata.is_dir() {
+            // §11.1: only the listed directories exist in a container, and
+            // `readable/` was already skipped above.
+            if !is_allowed_directory(prefix, name) {
+                return Err(content_failure(e::CONTAINER_ENTRY, materialised));
+            }
             walk_directory(&path, &relative, materialised)?;
             continue;
         }
@@ -713,28 +716,30 @@ fn walk_directory(
     Ok(())
 }
 
-/// §14.6/Q27: a directory (or materialised-files) container is identified by
-/// the manifest digest and the manifest byte size.
-fn manifest_identity(files: &BTreeMap<String, Vec<u8>>) -> InputIdentity {
-    match files.get(MANIFEST_PATH) {
-        Some(bytes) => {
-            // The §2.4 digest is over the canonical bytes without the optional
-            // trailing LF; the canonical file form guarantees those are the
-            // received bytes minus at most one LF, which is also the best
-            // effort available for a manifest that fails the checks.
-            let without_lf = match bytes.split_last() {
-                Some((&b'\n', head)) => head,
-                _ => bytes.as_slice(),
-            };
-            InputIdentity {
-                sha256: digest::manifest_digest(without_lf),
-                size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-            }
-        }
-        None => InputIdentity {
-            sha256: digest::sha256_digest_string(b""),
-            size: 0,
-        },
+/// §14.6/Q27: the identity of a directory (or materialised-files) container
+/// before its manifest has been read: the SHA-256 over the materialised entry
+/// stream in sorted relative-path order, and the total byte size.
+fn fallback_identity(files: &BTreeMap<String, Vec<u8>>) -> InputIdentity {
+    let mut buffer = Vec::new();
+    let mut total: u64 = 0;
+    for (path, bytes) in files {
+        buffer.extend_from_slice(path.as_bytes());
+        buffer.push(0);
+        buffer.extend_from_slice(bytes);
+        total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+    }
+    InputIdentity {
+        sha256: digest::sha256_digest_string(&buffer),
+        size: total,
+    }
+}
+
+/// §14.6/Q27: once the manifest file has been read, a directory container is
+/// identified by the SHA-256 of its manifest bytes and the manifest byte size.
+fn raw_manifest_identity(bytes: &[u8]) -> InputIdentity {
+    InputIdentity {
+        sha256: digest::sha256_digest_string(bytes),
+        size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     }
 }
 
@@ -770,20 +775,22 @@ fn is_safe_relative_path(path: &str) -> bool {
 
 /// Classifies every entry into the closed layout, returning the first
 /// non-skipped layout error (§11.1, §11.9).
-fn classify_layout(
-    materialised: &Materialised,
-    options: &VerifyOptions,
-) -> (Layout, Option<Code>) {
+fn classify_layout(materialised: Materialised, options: &VerifyOptions) -> (Layout, Option<Code>) {
+    let Materialised {
+        files,
+        readable_present,
+        ..
+    } = materialised;
     let mut layout = Layout {
-        readable_present: materialised.readable_present,
+        readable_present,
         ..Layout::default()
     };
     let mut error: Option<Code> = None;
-    for (path, bytes) in &materialised.files {
-        let violation = if !is_safe_relative_path(path) {
+    for (path, bytes) in files {
+        let violation = if !is_safe_relative_path(&path) {
             Some(e::CONTAINER_ENTRY)
         } else {
-            classify_one(path, bytes, &mut layout)
+            classify_one(&path, bytes, &mut layout)
         };
         let Some(code) = violation else {
             continue;
@@ -795,19 +802,19 @@ fn classify_layout(
     (layout, error)
 }
 
-fn classify_one(path: &str, bytes: &[u8], layout: &mut Layout) -> Option<Code> {
+fn classify_one(path: &str, bytes: Vec<u8>, layout: &mut Layout) -> Option<Code> {
     if path == MANIFEST_PATH {
-        layout.manifest = Some(bytes.to_vec());
+        layout.manifest = Some(bytes);
         return None;
     }
     if let Some(rest) = path.strip_prefix("signatures/") {
         if !rest.contains('/') {
             if rest == "manifest.sig.json" {
-                layout.sigfile = Some(bytes.to_vec());
+                layout.sigfile = Some(bytes);
                 return None;
             }
             if is_timestamp_file_name(rest) {
-                layout.timestamps.insert(path.to_owned(), bytes.to_vec());
+                layout.timestamps.insert(path.to_owned(), bytes);
                 return None;
             }
             if is_tsa_cert_file_name(rest) {
@@ -819,14 +826,14 @@ fn classify_one(path: &str, bytes: &[u8], layout: &mut Layout) -> Option<Code> {
     }
     if let Some(rest) = path.strip_prefix("previous/") {
         if !rest.contains('/') && rest == "manifest.json" {
-            layout.previous_manifest = Some(bytes.to_vec());
+            layout.previous_manifest = Some(bytes);
             return None;
         }
         return Some(e::CONTAINER_ENTRY);
     }
     if let Some(rest) = path.strip_prefix("records/") {
         if !rest.contains('/') && is_record_file_name(rest) {
-            layout.records.insert(path.to_owned(), bytes.to_vec());
+            layout.records.insert(path.to_owned(), bytes);
             return None;
         }
         // §11.1 special case: an extra file in `records/` keeps the content code.
@@ -835,14 +842,16 @@ fn classify_one(path: &str, bytes: &[u8], layout: &mut Layout) -> Option<Code> {
     if let Some(rest) = path.strip_prefix("blobs/") {
         if let Some(hex) = rest.strip_prefix("sha256/") {
             if !hex.contains('/') && is_lower_hex_64(hex) {
-                layout.blobs.insert(path.to_owned(), bytes.to_vec());
+                layout.blobs.insert(path.to_owned(), bytes);
                 return None;
             }
         }
         // §11.1 special case: an extra file in `blobs/` keeps the content code.
         return Some(e::MANIFEST_BLOB);
     }
-    if path == "readable" || path.starts_with("readable/") {
+    if path.starts_with("readable/") {
+        // §11.8: `readable/` is ignored entirely. A *file* named `readable`
+        // is not the optional directory and stays an unknown entry.
         layout.readable_present = true;
         return None;
     }
@@ -868,7 +877,10 @@ fn is_lower_hex_64(text: &str) -> bool {
 /// True for `timestamp-<n>.tsr` with `<n>` a decimal integer >= 1 and no
 /// leading zero (§11.1).
 fn is_timestamp_file_name(name: &str) -> bool {
-    match name.strip_prefix("timestamp-").and_then(|rest| rest.strip_suffix(".tsr")) {
+    match name
+        .strip_prefix("timestamp-")
+        .and_then(|rest| rest.strip_suffix(".tsr"))
+    {
         Some(number) => is_positive_decimal(number),
         None => false,
     }
@@ -1018,10 +1030,7 @@ fn parse_manifest(object: &Object, options: &VerifyOptions) -> Result<Manifest, 
     };
 
     // created_at (§2.8).
-    let created_at = match object
-        .get_str("created_at")
-        .and_then(Timestamp::parse)
-    {
+    let created_at = match object.get_str("created_at").and_then(Timestamp::parse) {
         Some(time) => time,
         None => {
             if !options.skipped(e::MANIFEST_SCHEMA) {
@@ -1177,10 +1186,10 @@ fn parse_manifest_records(
         }
         return Err(e::MANIFEST_RECORDS);
     };
-    if array.is_empty() || array.len() > limits::MAX_RECORDS {
-        if !options.skipped(e::MANIFEST_RECORDS) {
-            return Err(e::MANIFEST_RECORDS);
-        }
+    if (array.is_empty() || array.len() > limits::MAX_RECORDS)
+        && !options.skipped(e::MANIFEST_RECORDS)
+    {
+        return Err(e::MANIFEST_RECORDS);
     }
     let mut entries = Vec::with_capacity(array.len());
     for item in array {
@@ -1334,7 +1343,6 @@ fn parse_attestation(
     object: &Object,
     manifest: &Manifest,
     manifest_digest: &str,
-    layout: &Layout,
     options: &VerifyOptions,
 ) -> Result<Attestation, Code> {
     const MEMBERS: [&str; 4] = ["digest", "format", "signatures", "timestamps"];
@@ -1391,7 +1399,7 @@ fn parse_attestation(
     };
 
     // Timestamp inventory (Q21: the member is mandatory, possibly empty).
-    let mut timestamps = match object.get("timestamps") {
+    let timestamps = match object.get("timestamps") {
         Some(value) => match parse_timestamp_entries(value, options) {
             Ok(entries) => entries,
             Err(code) => {
@@ -1423,37 +1431,9 @@ fn parse_attestation(
         }
     }
 
-    // Every listed `.tsr` must exist and hash to its listed digest, and every
-    // `.tsr` file in `signatures/` must be listed (`E_TS_FILE`, §11.3).
-    let mut tsr_problem = false;
-    let mut verified_entries = Vec::with_capacity(timestamps.len());
-    for entry in &timestamps {
-        match layout.timestamps.get(&entry.path) {
-            Some(bytes) => {
-                if digest::sha256_digest_string(bytes) != entry.digest {
-                    tsr_problem = true;
-                } else {
-                    verified_entries.push(entry.clone());
-                }
-            }
-            None => tsr_problem = true,
-        }
-    }
-    for path in layout.timestamps.keys() {
-        if !timestamps.iter().any(|entry| &entry.path == path) {
-            tsr_problem = true;
-        }
-    }
-    if tsr_problem {
-        if !options.skipped(e::TS_FILE) {
-            return Err(e::TS_FILE);
-        }
-        // The chain cannot be verified against the promised receipt bytes.
-        timestamps.clear();
-    } else {
-        timestamps = verified_entries;
-    }
-
+    // The receipt-file inventory checks (§11.3: every listed `.tsr` exists and
+    // hashes to its listed digest; every `.tsr` file is listed) belong to the
+    // timestamps stage (§14.5 (11)), not to attestation parsing.
     Ok(Attestation {
         signatures,
         timestamps,
@@ -1481,12 +1461,11 @@ fn parse_timestamp_entries(
         }
     }
     for window in entries.windows(2) {
-        if json::utf16_cmp(&window[0].path, &window[1].path) != std::cmp::Ordering::Less
-            || window[0].digest == window[1].digest
+        if (json::utf16_cmp(&window[0].path, &window[1].path) != std::cmp::Ordering::Less
+            || window[0].digest == window[1].digest)
+            && !options.skipped(e::MANIFEST_SCHEMA)
         {
-            if !options.skipped(e::MANIFEST_SCHEMA) {
-                return Err(e::MANIFEST_SCHEMA);
-            }
+            return Err(e::MANIFEST_SCHEMA);
         }
     }
     Ok(entries)
@@ -1506,9 +1485,7 @@ fn parse_timestamp_entry(value: &Value) -> Option<AttestationTimestamp> {
         return None;
     }
     let path = object.get_str("path")?;
-    let Some(name) = path.strip_prefix("signatures/") else {
-        return None;
-    };
+    let name = path.strip_prefix("signatures/")?;
     if name.contains('/') || !is_timestamp_file_name(name) {
         return None;
     }
@@ -1535,9 +1512,64 @@ fn verify_timestamps(
     manifest_digest: &str,
     files: &BTreeMap<String, Vec<u8>>,
     options: &VerifyOptions,
-) -> Result<ChainEvidence, UsageError> {
+) -> Result<TimestampOutcomes, UsageError> {
     if entries.is_empty() {
-        return Ok(ChainEvidence::none());
+        return Ok(TimestampOutcomes {
+            evidence: ChainEvidence::none(),
+            errors: Vec::new(),
+            verified: false,
+        });
+    }
+    // §11.3: every listed `.tsr` MUST exist, obey the per-receipt size limit
+    // and hash to its listed digest; every `.tsr` file in `signatures/` MUST be
+    // listed. These inventory checks are reported in the §14.5 (11) position.
+    let mut issues: Vec<Code> = Vec::new();
+    for entry in entries {
+        match files.get(&entry.path) {
+            Some(bytes) => {
+                if bytes.len() > limits::MAX_TIMESTAMP_BYTES {
+                    // §13 maps the per-receipt size limit to E_JSON_SIZE.
+                    issues.push(e::JSON_SIZE);
+                } else if digest::sha256_digest_string(bytes) != entry.digest {
+                    issues.push(e::TS_FILE);
+                }
+            }
+            None => issues.push(e::TS_FILE),
+        }
+    }
+    for path in files.keys() {
+        if !entries.iter().any(|entry| &entry.path == path) {
+            issues.push(e::TS_FILE);
+        }
+    }
+    issues.sort_unstable();
+    issues.dedup();
+    let reported: Vec<Code> = issues
+        .iter()
+        .copied()
+        .filter(|code| !options.skipped(code))
+        .collect();
+    if !issues.is_empty() {
+        // The promised receipt bytes cannot be checked, so no chain is
+        // verified: every listed receipt is reported invalid with no genTime.
+        let evidence = ChainEvidence {
+            receipts: entries
+                .iter()
+                .map(|_| ReceiptOutcome {
+                    state: ReceiptState::Invalid,
+                    gen_time: None,
+                    accuracy_us: 0,
+                    error: None,
+                })
+                .collect(),
+            chain_error: None,
+            anchor_verified: false,
+        };
+        return Ok(TimestampOutcomes {
+            evidence,
+            errors: reported,
+            verified: false,
+        });
     }
     let anchors = if options.tsa_trust.is_empty() {
         Vec::new()
@@ -1545,12 +1577,22 @@ fn verify_timestamps(
         timestamp::load_trust_anchors(&options.tsa_trust)?
     };
     let raw_manifest_digest = digest::sha256_digest_bytes(manifest_digest).unwrap_or([0u8; 32]);
-    Ok(timestamp::verify_chain(
-        entries,
-        &raw_manifest_digest,
-        files,
-        &anchors,
-    ))
+    let evidence = timestamp::verify_chain(entries, &raw_manifest_digest, files, &anchors);
+    Ok(TimestampOutcomes {
+        evidence,
+        errors: Vec::new(),
+        verified: true,
+    })
+}
+
+/// What the timestamp stage established: the evidence handed to the world
+/// (§9.4, manifest signature) and the receipt-file errors reported at (11).
+struct TimestampOutcomes {
+    evidence: ChainEvidence,
+    /// Receipt-file problems (`E_TS_FILE` / `E_JSON_SIZE`), deferred to (11).
+    errors: Vec<Code>,
+    /// True when the renewal chain was verified over the receipt bytes.
+    verified: bool,
 }
 
 /// One `container.timestamps[]` report entry per attestation entry (§14.6).
@@ -1563,21 +1605,31 @@ fn timestamp_reports(
         .enumerate()
         .map(|(index, entry)| {
             let receipt = evidence.receipts.get(index);
-            let state = match receipt {
-                Some(receipt) => match receipt.state {
-                    ReceiptState::Verified => "verified",
-                    ReceiptState::PresentUnverified => "present-unverified",
-                    ReceiptState::Invalid => "invalid",
-                },
-                None => "invalid",
+            // A structurally broken renewal chain (§12.2 row 14) invalidates
+            // every receipt of the chain, whatever its individual checks said.
+            let (state, gen_time) = if evidence.chain_error.is_some() {
+                ("invalid", None)
+            } else {
+                let state = match receipt {
+                    Some(receipt) => match receipt.state {
+                        ReceiptState::Verified => "verified",
+                        ReceiptState::PresentUnverified => "present-unverified",
+                        ReceiptState::Invalid => "invalid",
+                    },
+                    None => "invalid",
+                };
+                (
+                    state,
+                    receipt
+                        .and_then(|receipt| receipt.gen_time)
+                        .map(Timestamp::to_ts_string),
+                )
             };
             TimestampReport {
                 index,
                 path: Some(entry.path.clone()),
                 state: state.to_owned(),
-                gen_time: receipt
-                    .and_then(|receipt| receipt.gen_time)
-                    .map(Timestamp::to_ts_string),
+                gen_time,
             }
         })
         .collect()
@@ -1600,9 +1652,21 @@ fn timestamp_effects(evidence: &ChainEvidence) -> Vec<Code> {
             }
         }
     }
-    if !any_invalid && evidence.receipts.iter().any(|receipt| receipt.state == ReceiptState::PresentUnverified) {
+    if any_invalid && codes.is_empty() {
+        // Every receipt state comes with its first failing check; stay honest
+        // about an invalid receipt that did not name one.
+        codes.push(e::TS_SCHEMA);
+    }
+    if !any_invalid
+        && evidence
+            .receipts
+            .iter()
+            .any(|receipt| receipt.state == ReceiptState::PresentUnverified)
+    {
         codes.push(e::TS_UNTRUSTED);
     }
+    codes.sort_unstable();
+    codes.dedup();
     codes
 }
 
@@ -1642,7 +1706,6 @@ fn check_level_and_chain(manifest: &Manifest) -> Result<(), Code> {
 
 /// One manifest record entry together with the outcome of reading its file.
 struct EntryState {
-    entry: ManifestRecordEntry,
     /// Container-relative file path derived from the entry digest.
     path: String,
     /// Result of [`envelope::parse_record_file`] when the file is present; the
@@ -1672,7 +1735,6 @@ fn build_entries(
             let path = entry_file_path(&entry.digest).unwrap_or_default();
             let Some(bytes) = record_files.get(&path) else {
                 return EntryState {
-                    entry: entry.clone(),
                     path,
                     parsed: None,
                     error: Some(e::MANIFEST_RECORD_MISSING),
@@ -1689,7 +1751,6 @@ fn build_entries(
                         e::MANIFEST_RECORD_DIGEST
                     };
                     return EntryState {
-                        entry: entry.clone(),
                         path,
                         parsed: None,
                         error: Some(mapped),
@@ -1706,37 +1767,12 @@ fn build_entries(
                 error = Some(e::MANIFEST_RECORDS);
             }
             EntryState {
-                entry: entry.clone(),
                 path,
                 parsed: Some(envelope::parse_record_file(bytes)),
                 error,
             }
         })
         .collect()
-}
-
-/// A `records[]` entry for a container whose records listing is inconsistent:
-/// nothing is claimed verified, the manifest metadata is reported, and the
-/// entry carries the container code that concerns it where known.
-fn synthetic_record(entry: &EntryState) -> RecordReport {
-    let mut errors = Vec::new();
-    if let Some(code) = entry.error {
-        errors.push(code);
-    }
-    RecordReport {
-        digest: Some(entry.entry.digest.clone()),
-        id: Some(entry.entry.id.clone()),
-        kind: Some(entry.entry.kind.clone()),
-        stage: None,
-        origin: None,
-        kind_known: Some(envelope::is_registered_kind(&entry.entry.kind)),
-        verdict: Verdict::Invalid,
-        errors,
-        notices: Vec::new(),
-        refs: Vec::new(),
-        sigs: Vec::new(),
-        attestation: None,
-    }
 }
 
 /// §14.5 (8): merges the context's cross-record outcomes into the reports.
@@ -1824,9 +1860,8 @@ fn check_previous_chain(
     manifest: &Manifest,
     layout: &Layout,
     options: &VerifyOptions,
-) -> Result<(Vec<Code>, Vec<Code>), UsageError> {
+) -> Result<Vec<Code>, UsageError> {
     let mut errors = Vec::new();
-    let mut notices = Vec::new();
     match &manifest.previous_manifest {
         None => {
             // §11.5: with a null `previous_manifest`, `previous/` must be
@@ -1835,21 +1870,14 @@ fn check_previous_chain(
                 errors.push(e::MANIFEST_CHAIN_UNEXPECTED);
             }
         }
-        Some(expected_digest) => {
-            match layout.previous_manifest.as_deref() {
-                None => errors.push(e::MANIFEST_CHAIN_MISSING),
-                Some(bytes) => {
-                    match previous_manifest_matches(bytes, expected_digest, manifest) {
-                        Ok(()) => {
-                            // §11.5: the embedded previous manifest's own
-                            // signature is not re-verified by default.
-                            notices.push(n::PREVIOUS_SIG_UNVERIFIED);
-                        }
-                        Err(code) => errors.push(code),
-                    }
+        Some(expected_digest) => match layout.previous_manifest.as_deref() {
+            None => errors.push(e::MANIFEST_CHAIN_MISSING),
+            Some(bytes) => {
+                if let Err(code) = previous_manifest_matches(bytes, expected_digest, manifest) {
+                    errors.push(code);
                 }
             }
-        }
+        },
     }
     // `--previous <dir>`: the supplied previous container's manifest digest
     // must equal `manifest.previous_manifest.digest` (§11.5).
@@ -1880,7 +1908,7 @@ fn check_previous_chain(
     }
     errors.sort_unstable();
     errors.dedup();
-    Ok((errors, notices))
+    Ok(errors)
 }
 
 /// Validates an embedded `previous/manifest.json` against the current manifest
@@ -1891,11 +1919,13 @@ fn previous_manifest_matches(
     expected_digest: &str,
     current: &Manifest,
 ) -> Result<(), Code> {
+    if bytes.len() > limits::MAX_MANIFEST_BYTES {
+        // §13: `previous/manifest.json` shares the manifest size limit.
+        return Err(e::JSON_SIZE);
+    }
     let object = json::parse_canonical_object(bytes, limits::MAX_MANIFEST_BYTES)
         .map_err(|_| e::MANIFEST_CHAIN)?;
-    if object.get_str("format") != Some(FORMAT)
-        || object.get_i64("manifest_version") != Some(1)
-    {
+    if object.get_str("format") != Some(FORMAT) || object.get_i64("manifest_version") != Some(1) {
         return Err(e::MANIFEST_CHAIN);
     }
     // §11.5 [M-8]: the chain records the history of one publisher.
@@ -1914,4 +1944,3 @@ fn previous_manifest_matches(
     }
     Ok(())
 }
-
