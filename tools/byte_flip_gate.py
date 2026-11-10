@@ -419,20 +419,22 @@ class VerifierRunner:
             records: Any,
             *,
             verified_timestamps: Any = (),
+            timestamp_evidence_present: bool = False,
             context_views: Any = (),
         ) -> Any:
-            """Cache only the keyset-resolution call (no timestamps, no context views).
+            """Cache only the plain keyset-resolution call (no timestamps/evidence/views).
 
-            Container verification passes fresh record lists and context views; those
-            calls bypass the cache (and do not grow it), while ``verify_single_record``
+            Container verification passes fresh record lists, timestamps and context views;
+            those calls bypass the cache (and do not grow it), while ``verify_single_record``
             reuses the memoised keyset list object, so its expensive fixed-point run is
             computed once per process.
             """
             fixed_context = tuple(context_views)
-            if verified_timestamps or fixed_context:
+            if verified_timestamps or fixed_context or timestamp_evidence_present:
                 return original_verify_set(
                     records,
                     verified_timestamps=verified_timestamps,
+                    timestamp_evidence_present=timestamp_evidence_present,
                     context_views=fixed_context,
                 )
             cache_key = id(records)
