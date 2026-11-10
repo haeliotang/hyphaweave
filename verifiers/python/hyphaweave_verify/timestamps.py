@@ -102,6 +102,11 @@ class TimestampResult:
     error: str | None
     gen_time_us: int | None = None
     accuracy_us: int = 0
+    #: T3: the receipt's accuracy is above MAX_TS_ACCURACY (or its conversion
+    #: overflows). It is *unusable evidence*, not a format error: the receipt is
+    #: present-unverified with E_TS_UNTRUSTED and can neither rescue a
+    #: compromised-key signature nor support an L2 claim.
+    unusable: bool = False
 
     def to_report(self, index: int) -> dict[str, object]:
         return {
@@ -359,16 +364,28 @@ def verify_timestamp_token(
         gen_time_value = tst_info["gen_time"].native
         gen_time_ms = _gen_time_to_ms(gen_time_value)
         gen_time = _format_ms(gen_time_ms)
+        # Keep the token's microsecond genTime for reporting; the T3(4)
+        # rescue comparison truncates to milliseconds (VerifiedTimestamp).
         gen_time_us = _gen_time_to_us(gen_time_value)
-        accuracy_us = _accuracy_to_us(tst_info)
-        if gen_time_us is None or gen_time_us + accuracy_us > INT64_MAX:
-            raise WeaveError(
-                "E_TS_SCHEMA", "genTime + accuracy overflows a signed 64-bit value"
-            )
-
+        # T3(3)/§12.2 first failing check: CMS and certificate checks (5-12) run
+        # before the accuracy checks (13).
         signer_info, signer_certificate_der = _verify_cms(signed_data, raw_content, gen_time_value)
         fingerprint = hashlib.sha256(signer_certificate_der).digest()
         _check_signer_certificate(signer_certificate_der, gen_time_value)
+        accuracy_value = _accuracy_to_us(tst_info)
+        if accuracy_value is None:
+            # T3(2): unusable evidence, not a format error. Present-unverified with
+            # E_TS_UNTRUSTED; never rescues, never supports L2, never invalid.
+            return TimestampResult(
+                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
+                "E_TS_UNTRUSTED", gen_time_us, 0, unusable=True,
+            )
+        accuracy_us = accuracy_value
+        if gen_time_us + accuracy_us > INT64_MAX:
+            return TimestampResult(
+                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
+                "E_TS_UNTRUSTED", gen_time_us, accuracy_us, unusable=True,
+            )
         if trust_anchor_fingerprints is None or not trust_anchor_fingerprints:
             return TimestampResult(
                 path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
@@ -613,14 +630,19 @@ def _gen_time_to_us(value: object) -> int:
     return calendar.timegm(utc.utctimetuple()) * 1_000_000 + utc.microsecond
 
 
-def _accuracy_to_us(tst_info) -> int:
-    """Normalise TSTInfo accuracy (seconds/millis/micros) to microseconds.
+def _accuracy_to_us(tst_info) -> int | None:
+    """Normalise TSTInfo accuracy (seconds/millis/micros) to microseconds (T3).
 
-    RFC 3161 ``Accuracy`` carries at most one of seconds, millis and micros; an
-    absent field counts as 0 (an absent accuracy is treated as exact). S11: the
-    conversion is checked and bounded by ``MAX_TS_ACCURACY``; an overflow, a
-    negative total or a total above the bound is ``E_TS_SCHEMA`` (the receipt is
-    invalid and can never rescue a compromised-key signature).
+    Format errors raise ``E_TS_SCHEMA`` (invalid receipt): malformed/absent-type
+    components, negative or non-integer values, and a *present*
+    ``milliseconds``/``microseconds`` component outside 1–999 (an explicit 0 is
+    out of range too). An absent component counts as 0 and an absent accuracy
+    field is exact.
+
+    Returns ``None`` for **unusable evidence**, which is not a format error: the
+    converted total exceeds ``MAX_TS_ACCURACY`` or a signed 64-bit microsecond
+    value overflows. The receipt is then present-unverified with
+    ``E_TS_UNTRUSTED`` and can neither rescue nor support L2 (T3).
     """
     try:
         accuracy = tst_info["accuracy"]
@@ -629,19 +651,40 @@ def _accuracy_to_us(tst_info) -> int:
     if accuracy is None or accuracy.native is None:
         return 0
     native = accuracy.native
+    if not isinstance(native, dict):
+        raise WeaveError("E_TS_SCHEMA", "accuracy is not a sequence")
     try:
-        seconds = int(native.get("seconds") or 0)
-        millis = int(native.get("millis") or 0)
-        micros = int(native.get("micros") or 0)
-    except (TypeError, ValueError) as error:
-        raise WeaveError("E_TS_SCHEMA", "accuracy components are not integers") from error
-    if seconds < 0 or millis < 0 or micros < 0:
-        raise WeaveError("E_TS_SCHEMA", "accuracy components are negative")
-    total = seconds * 1_000_000 + millis * 1000 + micros
-    if total > MAX_TS_ACCURACY_US:
+        seconds = native.get("seconds")
+        millis = native.get("millis")
+        micros = native.get("micros")
+    except Exception as error:  # pragma: no cover - defensive
+        raise WeaveError("E_TS_SCHEMA", "accuracy components are not readable") from error
+    for component in (seconds, millis, micros):
+        if component is not None and (
+            isinstance(component, bool) or not isinstance(component, int)
+        ):
+            raise WeaveError("E_TS_SCHEMA", "accuracy components are not integers")
+    if seconds is None:
+        seconds = 0
+    if millis is not None and not 1 <= millis <= 999:
         raise WeaveError(
-            "E_TS_SCHEMA", "accuracy exceeds MAX_TS_ACCURACY"
+            "E_TS_SCHEMA", "accuracy.milliseconds is outside 1-999"
         )
+    if micros is not None and not 1 <= micros <= 999:
+        raise WeaveError(
+            "E_TS_SCHEMA", "accuracy.microseconds is outside 1-999"
+        )
+    if seconds < 0:
+        raise WeaveError("E_TS_SCHEMA", "accuracy components are negative")
+    total = (
+        seconds * 1_000_000
+        + (millis or 0) * 1000
+        + (micros or 0)
+    )
+    if total > INT64_MAX:
+        return None
+    if total > MAX_TS_ACCURACY_US:
+        return None
     return total
 
 

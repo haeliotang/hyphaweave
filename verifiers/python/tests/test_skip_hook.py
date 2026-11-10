@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from conftest import VECTORS, run_cli
 
 UNDECLARED = VECTORS / "sig" / "undeclared-key" / "record.json"
@@ -97,3 +99,21 @@ def test_hook_applies_to_vectors_command() -> None:
     assert report["verdict"] == "invalid"
     assert report["summary"]["matched"] < report["summary"]["case_count"]
     assert result.returncode == 3
+
+
+def test_token_parsing_details() -> None:
+    """B-L4: split on ASCII comma, trim ASCII whitespace, ignore empty tokens,
+    case-sensitive exact registered codes, duplicates collapsed."""
+    from hyphaweave_verify.errors import CheckSkipper, UsageError
+
+    skipper = CheckSkipper.from_env(
+        True,
+        {"WEAVE_VERIFY_SKIP_CHECKS": " E_SIG_INVALID ,, \tE_KEY_UNKNOWN\r\n,E_SIG_INVALID,"},
+    )
+    assert skipper.tokens == ("E_KEY_UNKNOWN", "E_SIG_INVALID")
+    with pytest.raises(UsageError):
+        CheckSkipper.from_env(True, {"WEAVE_VERIFY_SKIP_CHECKS": "e_sig_invalid"})
+    with pytest.raises(UsageError):
+        CheckSkipper.from_env(True, {"WEAVE_VERIFY_SKIP_CHECKS": "N_KEY_TOFU"})
+    # Disabled hook ignores the variable entirely, including unknown tokens.
+    assert CheckSkipper.from_env(False, {"WEAVE_VERIFY_SKIP_CHECKS": "bogus"}).tokens == ()

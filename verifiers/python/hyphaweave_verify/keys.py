@@ -51,8 +51,12 @@ class VerifiedTimestamp:
 
     @property
     def covered_until_us(self) -> int:
-        """The last microsecond the receipt provably covers (exclusive bound +1)."""
-        return self.gen_time_us + self.accuracy_us
+        """The last microsecond the receipt provably covers (exclusive bound +1).
+
+        T3(4)/§9.4: ``genTime`` is truncated to integer milliseconds before the
+        rescue comparison, so sub-millisecond digits never affect it.
+        """
+        return self.gen_time_ms * 1000 + self.accuracy_us
 
 
 @dataclass(frozen=True)
@@ -97,7 +101,13 @@ class KeyRevocation:
 
 
 def _declaration_order(declaration: KeyDeclaration) -> tuple[tuple[int, ...], str]:
+    """Deterministic "earlier" order: ``recorded_at`` then record digest (T4)."""
     return (timestamp_sort_key(declaration.recorded_at), declaration.record_digest)
+
+
+def _revocation_order(revocation: KeyRevocation) -> tuple[tuple[int, ...], str]:
+    """Deterministic evaluation order of revocations (T9): recorded_at then digest."""
+    return (timestamp_sort_key(revocation.recorded_at), revocation.record_digest)
 
 
 class KeyState:
@@ -197,12 +207,36 @@ class KeyState:
         verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
         timestamp_evidence_present: bool = False,
         skip_revocations: bool = False,
+        prior_order: tuple[tuple[int, ...], str] | None = None,
     ) -> None:
         """Apply declaration validity windows and revocation effects.
 
-        ``skip_revocations`` is used for a ``weave.key.revoked`` record whose own
-        signer is the revoked key: the revocation is the evidence and is not
-        invalidated by itself.
+        T2: the retired/other family and the key-compromise family are evaluated
+        independently and both can apply; there is no "compromise overrides
+        retired" precedence. The worse deterministic result wins:
+
+        * if any valid ``retired``/``other`` revocation of the key has
+          ``recorded_at >= effective_at`` the signature is invalid
+          ``E_KEY_REVOKED`` (never rescuable by timestamps), even when a
+          compromise revocation also applies;
+        * otherwise, if any valid ``key-compromise`` revocation exists, the
+          three-outcome rescue rule applies with ``T`` = the earliest effective
+          time among the compromise revocations: a verified trusted receipt with
+          ``genTime_ms*1000 + accuracy_us < T_ms*1000`` rescues the signature;
+          receipts present but none verified+trusted (including unusable
+          accuracy, T3) make it unverifiable ``E_TS_UNTRUSTED``; no usable
+          evidence or trusted evidence failing the bound makes it invalid
+          ``E_KEY_COMPROMISED``.
+
+        ``skip_revocations`` is the self-revocation exemption (T9): a
+        ``weave.key.revoked`` record signed by the key it revokes is the
+        evidence and is not invalidated by itself.
+
+        ``prior_order`` is the deterministic T9 evaluation order for a
+        ``weave.key.revoked`` record's own signatures: only revocations strictly
+        earlier than ``(recorded_at, record_digest)`` participate, so a
+        revocation signed by an already-revoked key is ineffective and mutual
+        revocations resolve deterministically.
         """
         declaration = self.declarations.get(key_id)
         if declaration is not None:
@@ -216,36 +250,52 @@ class KeyState:
                 raise WeaveError("E_KEY_EXPIRED", "signature made after valid_until")
         if skip_revocations:
             return
-        revocations = sorted(
-            self.revocations.get(key_id, ()),
-            key=lambda revocation: (revocation.effective_at_ms, revocation.record_digest),
-        )
-        for revocation in revocations:
-            if revocation.reason == "key-compromise":
-                # S2 + R3: the claimed recorded_at is not evidence. A verified
-                # external timestamp rescues the signature only when
-                # ``genTime + accuracy`` is strictly earlier than effective_at
-                # (equality does not rescue; an absent accuracy counts as 0).
-                effective_at_us = revocation.effective_at_ms * 1000
-                rescued = any(
-                    timestamp.covered_until_us < effective_at_us
-                    for timestamp in verified_timestamps
-                )
-                if rescued:
-                    continue
-                if not verified_timestamps and timestamp_evidence_present:
-                    # R4: receipts exist but no trust anchor was supplied: the
-                    # missing information makes this unverifiable, not invalid.
-                    raise WeaveError(
-                        "E_TS_UNTRUSTED",
-                        "timestamp receipts exist but no verified trust anchor is available",
-                    )
-                raise WeaveError(
-                    "E_KEY_COMPROMISED",
-                    "signature by a compromised key without an earlier verified timestamp",
-                )
+        revocations = list(self.revocations.get(key_id, ()))
+        if prior_order is not None:
+            revocations = [
+                revocation
+                for revocation in revocations
+                if _revocation_order(revocation) < prior_order
+            ]
+        # Family 1: retired/other. A recorded-time revocation cannot be rescued.
+        retired = [
+            revocation for revocation in revocations if revocation.reason != "key-compromise"
+        ]
+        retired.sort(key=lambda revocation: (revocation.effective_at_ms, revocation.record_digest))
+        for revocation in retired:
             if timestamp_sort_key(recorded_at) >= timestamp_sort_key(revocation.effective_at):
-                raise WeaveError("E_KEY_REVOKED", "signature made at or after a retired revocation")
+                raise WeaveError(
+                    "E_KEY_REVOKED",
+                    "signature made at or after a retired revocation",
+                )
+        # Family 2: key compromise with the three-outcome rescue rule.
+        compromises = [
+            revocation for revocation in revocations if revocation.reason == "key-compromise"
+        ]
+        if not compromises:
+            return
+        compromises.sort(
+            key=lambda revocation: (revocation.effective_at_ms, revocation.record_digest)
+        )
+        effective_at_us = compromises[0].effective_at_ms * 1000
+        rescued = any(
+            timestamp.covered_until_us < effective_at_us
+            for timestamp in verified_timestamps
+        )
+        if rescued:
+            return
+        if not verified_timestamps and timestamp_evidence_present:
+            # Receipts exist but none is verified+trusted (an absent anchor, an
+            # untrusted anchor or unusable accuracy): the missing information
+            # makes the signature unverifiable, not invalid.
+            raise WeaveError(
+                "E_TS_UNTRUSTED",
+                "timestamp receipts exist but none is verified and trusted",
+            )
+        raise WeaveError(
+            "E_KEY_COMPROMISED",
+            "signature by a compromised key without an earlier verified timestamp",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +458,38 @@ def check_declared_semantics(
     )
 
 
+def check_rotated_material(body: dict) -> tuple[bytes, bytes | None]:
+    """Structural validation of a ``weave.key.rotated`` body's key material.
+
+    T13/§9.2: the declared material must be strict unpadded base64url of exactly
+    32 bytes and derive its declared key id. This is a kind-body structural check
+    and therefore runs **before** signature verification, reporting
+    ``E_KEY_ROTATION_KEYS``; curve-point decoding happens later, inside the §3.4
+    signature check, and keeps its ``E_SIG_*`` code.
+    """
+    new_key = body.get("new_key")
+    try:
+        new_public_key = encoding.decode_base64url(body["new_public_key"], 32)
+    except (KeyError, ValueError, TypeError) as error:
+        raise WeaveError(
+            "E_KEY_ROTATION_KEYS", "new_public_key is not 32 raw base64url bytes"
+        ) from error
+    if encoding.key_id_from_public_key(new_public_key) != new_key:
+        raise WeaveError("E_KEY_ROTATION_KEYS", "new_public_key contradicts its key id")
+    old_public_key: bytes | None = None
+    if body.get("old_public_key") is not None:
+        old_key = body.get("old_key")
+        try:
+            old_public_key = encoding.decode_base64url(body["old_public_key"], 32)
+        except (ValueError, TypeError) as error:
+            raise WeaveError(
+                "E_KEY_ROTATION_KEYS", "old_public_key is not 32 raw base64url bytes"
+            ) from error
+        if encoding.key_id_from_public_key(old_public_key) != old_key:
+            raise WeaveError("E_KEY_ROTATION_KEYS", "old_public_key contradicts its key id")
+    return new_public_key, old_public_key
+
+
 def check_rotated_semantics(
     *,
     body: dict,
@@ -424,24 +506,7 @@ def check_rotated_semantics(
         raise WeaveError("E_ENV_ACTOR_KEY", "actor.key must equal body.old_key")
     if old_key == new_key:
         raise WeaveError("E_KEY_ROTATION_KEYS", "old_key and new_key are the same key")
-    try:
-        new_public_key = encoding.decode_base64url(body["new_public_key"], 32)
-    except (ValueError, TypeError) as error:
-        raise WeaveError(
-            "E_KEY_ROTATION_KEYS", "new_public_key is not 32 raw base64url bytes"
-        ) from error
-    if encoding.key_id_from_public_key(new_public_key) != new_key:
-        raise WeaveError("E_KEY_ROTATION_KEYS", "new_public_key contradicts its key id")
-    old_public_key: bytes | None = None
-    if body.get("old_public_key") is not None:
-        try:
-            old_public_key = encoding.decode_base64url(body["old_public_key"], 32)
-        except (ValueError, TypeError) as error:
-            raise WeaveError(
-                "E_KEY_ROTATION_KEYS", "old_public_key is not 32 raw base64url bytes"
-            ) from error
-        if encoding.key_id_from_public_key(old_public_key) != old_key:
-            raise WeaveError("E_KEY_ROTATION_KEYS", "old_public_key contradicts its key id")
+    new_public_key, old_public_key = check_rotated_material(body)
     return KeyRotation(
         old_key=old_key,
         new_key=new_key,

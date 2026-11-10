@@ -574,3 +574,43 @@ def test_consent_revoked_is_invalid_after_effective_time() -> None:
     assert labels.check_consent_reference(note, _LabelContext(None)) == [
         "N_CONSENT_UNRESOLVED"
     ]
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T4: keyset declaration conflicts are a usage error
+# ---------------------------------------------------------------------------
+
+
+def _keyset_with_conflicting_declaration(tmp_path):
+    import json
+    import shutil
+
+    from conftest import KEYSET
+    from hyphaweave_verify import canonical
+    from hyphaweave_verify.errors import UsageError
+
+    keyset = tmp_path / "keyset"
+    shutil.copytree(KEYSET, keyset)
+    source = next(path for path in sorted(keyset.iterdir()) if path.name.endswith(".json"))
+    record = json.loads(source.read_text(encoding="utf-8"))
+    if record.get("kind") != "weave.key.declared":
+        # Use a known declaration from the committed keyset instead.
+        for path in sorted(keyset.iterdir()):
+            candidate = json.loads(path.read_text(encoding="utf-8"))
+            if candidate.get("kind") == "weave.key.declared":
+                record = candidate
+                break
+    # Same key id, different class: a keyset declaration conflict (exit 2).
+    record["body"]["key_type"] = "organization"
+    (keyset / "zz-conflict.json").write_bytes(canonical.canonicalize(record) + b"\n")
+    return keyset, UsageError
+
+
+def test_conflicting_keyset_declarations_are_usage_error(tmp_path) -> None:
+    import pytest
+
+    from hyphaweave_verify import verifier
+
+    keyset, usage_error = _keyset_with_conflicting_declaration(tmp_path)
+    with pytest.raises(usage_error):
+        verifier.load_keyset_directory(keyset)

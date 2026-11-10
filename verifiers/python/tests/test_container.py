@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 
 import pytest
 
 from hyphaweave_verify import container as container_module
+from hyphaweave_verify import manifest as manifest_module
 from hyphaweave_verify import verifier
 from hyphaweave_verify.errors import WeaveError
 
@@ -280,24 +282,24 @@ def test_random_zip_bytes_is_container_zip(tmp_path) -> None:
     _expect_container_zip(bogus)
 
 
-def test_zip_decoder_exception_maps_to_container_zip(valid_zip, monkeypatch) -> None:
-    """NotImplementedError/zlib.error from the decoder must become E_CONTAINER_ZIP."""
-    import zipfile
+def test_zip_reader_structure_error_maps_to_container_zip(valid_zip, monkeypatch) -> None:
+    """A structure error raised by the byte parser is E_CONTAINER_ZIP."""
 
-    def raising_open(self, name, pwd=None):
-        raise NotImplementedError("zip file version 14.8")
+    def raising_read(handle, entry):
+        raise container_module.zipread.ZipStructureError("ablation: decoder failure")
 
-    monkeypatch.setattr(zipfile.ZipFile, "open", raising_open)
+    monkeypatch.setattr(container_module.zipread, "read_entry_data", raising_read)
     _expect_container_zip(valid_zip)
 
 
-def test_zip_value_error_maps_to_container_zip(valid_zip, monkeypatch) -> None:
-    import zipfile
+def test_zip_reader_decode_exception_maps_to_container_zip(valid_zip, monkeypatch) -> None:
+    import zlib
 
-    def raising_open(self, name, pwd=None):
-        raise ValueError("negative seek value")
+    def raising_digest(handle, entry):
+        raise zlib.error("bad deflate stream")
 
-    monkeypatch.setattr(zipfile.ZipFile, "open", raising_open)
+    monkeypatch.setattr(container_module.zipread, "digest_entry", raising_digest)
+    monkeypatch.setattr(container_module.zipread, "read_entry_data", raising_digest)
     _expect_container_zip(valid_zip)
 
 
@@ -394,18 +396,29 @@ def test_oversized_record_file_is_json_size(tmp_path) -> None:
 
     container = _copy_container(tmp_path)
     manifest_bytes = (container / "manifest.json").read_bytes()
+    manifest = json.loads(manifest_bytes)
     oversized = container / "records" / ("ff" * 32 + ".json")
     oversized.write_bytes(b"{" + b" " * (2 << 20) + b"}")
     result = verify(container)
-    assert result.report["verdict"] == "invalid"
-    assert result.report["container"]["errors"] == ["E_JSON_SIZE"]
-    assert result.report["records"] == []
-    # S14/§14.6: the directory identity is the raw manifest bytes even when a
-    # *different* file in the container is over its class limit.
-    assert result.report["input"] == {
-        "sha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
+    report = result.report
+    assert report["verdict"] == "invalid"
+    assert report["container"]["errors"] == ["E_JSON_SIZE"]
+    assert report["records"] == []
+    # T16: the manifest-derived container fields stay filled and the report shape
+    # is the records-listing failure shape.
+    assert report["container"]["record_count"] == len(manifest["records"])
+    assert report["container"]["manifest_digest"] is not None
+    assert report["container"]["level_claimed"] == "L0"
+    assert report["container"]["level_verified"] == "L0"
+    assert report["container"]["timestamps"] == []
+    assert report["summary"] == {"erased": 0, "invalid": 0, "unverifiable": 0, "valid": 0}
+    # S14/§14.6: a directory container's identity is the manifest digest once the
+    # manifest parses; a *different* oversized file does not change it.
+    assert report["input"] == {
+        "sha256": report["container"]["manifest_digest"],
         "size": len(manifest_bytes),
     }
+    assert report["input"]["sha256"] != "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
 
 
 def test_oversized_manifest_has_null_input_identity(tmp_path) -> None:
@@ -455,3 +468,81 @@ def test_erasure_cross_checks_tolerate_a_missing_body_erased() -> None:
     )
     # S7.3: an invalid erasure record must never crash the cross-record phase.
     assert container_module._erasure_cross_checks([fake_view]) is None
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T15/T17/A: directory total cap, previous-manifest precedence and the
+# manifest signer's trust state
+# ---------------------------------------------------------------------------
+
+
+def test_directory_total_uncompressed_cap(tmp_path, monkeypatch) -> None:
+    """T15: MAX_CONTAINER_UNCOMPRESSED_BYTES applies to directory containers."""
+    container = _copy_container(tmp_path)
+    monkeypatch.setattr(container_module, "MAX_CONTAINER_UNCOMPRESSED_BYTES", 32)
+    result = verify(container)
+    assert result.report["verdict"] == "invalid"
+    assert "E_CONTAINER_SIZE" in result.report["container"]["errors"]
+
+
+def test_oversized_embedded_previous_manifest_is_json_size(tmp_path) -> None:
+    """A-L7: previous/manifest.json above MAX_MANIFEST_BYTES is E_JSON_SIZE; the
+    record pass still runs (step 10), unlike a parse error (E_MANIFEST_CHAIN)."""
+    import shutil
+
+    container = tmp_path / "container"
+    shutil.copytree(VECTORS / "container" / "chain-valid" / "container", container)
+    (container / "previous" / "manifest.json").write_bytes(
+        b"{" + b" " * (manifest_module.MAX_MANIFEST_BYTES + 1) + b"}"
+    )
+    result = verify(container)
+    report = result.report
+    assert report["verdict"] == "invalid"
+    assert report["container"]["errors"] == ["E_JSON_SIZE"]
+    assert report["records"], "records must still be processed before step 10"
+    assert all(entry["verdict"] == "valid" for entry in report["records"])
+
+
+def test_unparseable_embedded_previous_manifest_is_manifest_chain(tmp_path) -> None:
+    import shutil
+
+    container = tmp_path / "container"
+    shutil.copytree(VECTORS / "container" / "chain-valid" / "container", container)
+    (container / "previous" / "manifest.json").write_bytes(b"[" * 33 + b"]" * 33)
+    result = verify(container)
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_MANIFEST_CHAIN"]
+    assert result.report["records"]
+
+
+def test_manifest_signer_trust_is_not_part_of_the_crypto_check() -> None:
+    """A-L8: a declared-but-untrusted manifest key does not add E_KEY_UNKNOWN."""
+    case = VECTORS / "container" / "manifest-context-trusted-tofu" / "container"
+    # Without a keyset the device declaration establishes no trust, but the
+    # manifest signature equation still verifies against the declared material.
+    result = verify(case, keyset_pair=([], []))
+    report = result.report
+    assert "E_KEY_UNKNOWN" not in report["container"]["errors"]
+
+
+def test_previous_directory_without_manifest_is_manifest_chain(tmp_path) -> None:
+    """A-L9/B-L7: a readable but unusable --previous path is E_MANIFEST_CHAIN."""
+    previous = tmp_path / "previous"
+    previous.mkdir()
+    result = verify(
+        VECTORS / "container" / "chain-valid" / "container",
+        previous_container=previous,
+    )
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_MANIFEST_CHAIN"]
+
+
+def test_previous_readable_non_zip_file_is_manifest_chain(tmp_path) -> None:
+    previous = tmp_path / "previous.bin"
+    previous.write_bytes(b"not a container and not a manifest\n")
+    result = verify(
+        VECTORS / "container" / "chain-valid" / "container",
+        previous_container=previous,
+    )
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_MANIFEST_CHAIN"]

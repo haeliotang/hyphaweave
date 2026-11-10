@@ -41,11 +41,12 @@ from .keys import (
     VerifiedTimestamp,
     check_declared_semantics,
     check_revoked_semantics,
+    check_rotated_material,
     check_rotated_semantics,
     decode_public_key_material,
 )
 from .report import record_verdict
-from .times import is_valid_timestamp  # noqa: F401  (imported for type checkers)
+from .times import is_valid_timestamp, timestamp_sort_key  # noqa: F401  (timestamp_sort_key used by T9)
 
 MAX_RECORD_BYTES = 1_048_576
 
@@ -384,6 +385,20 @@ def _verify_signatures(
     verified: set[str] = set()
     entries_by_key = _signature_entries_by_key(envelope)
     view.signature_algs_by_key = entries_by_key
+    # T9: for a weave.key.revoked record the deterministic evaluation order is
+    # (recorded_at, record digest); signatures by the key being revoked are the
+    # self-revocation exemption, every other signer is judged against the key
+    # state produced by strictly earlier revocations.
+    revocation_prior_order: tuple[tuple[int, ...], str] | None = None
+    self_revoked_key: str | None = None
+    if envelope.kind == kinds.KIND_REVOKED:
+        revoked_key = envelope.body.get("key")
+        if isinstance(revoked_key, str):
+            self_revoked_key = revoked_key
+        revocation_prior_order = (
+            timestamp_sort_key(envelope.recorded_at),
+            digest,
+        )
     try:
         for signature in envelope.sigs:
             if not signature.is_ed25519:
@@ -420,7 +435,16 @@ def _verify_signatures(
                     envelope.recorded_at,
                     verified_timestamps=context.verified_timestamps,
                     timestamp_evidence_present=context.timestamp_evidence_present,
-                    skip_revocations=(envelope.kind == kinds.KIND_REVOKED),
+                    skip_revocations=(
+                        envelope.kind == kinds.KIND_REVOKED
+                        and signature.key == self_revoked_key
+                    ),
+                    prior_order=(
+                        revocation_prior_order
+                        if envelope.kind == kinds.KIND_REVOKED
+                        and signature.key != self_revoked_key
+                        else None
+                    ),
                 )
     finally:
         for signature in envelope.sigs[len(states):]:
@@ -757,6 +781,11 @@ def attempt_record(view: RecordView, context: Context) -> None:
         envelope = envelope_module.validate_envelope(value)
         view.envelope = envelope
         _check_signature_presence(view, envelope)
+        if envelope.kind == kinds.KIND_ROTATED:
+            # T13: the declared key-material structure (strict base64url, 32
+            # bytes, key-id derivation) is a body/kind check that runs before the
+            # signature pass; curve-point decoding stays with the §3.4 crypto.
+            check_rotated_material(envelope.body)
         _verify_signatures(view, envelope, context)
         _check_required_signers(view, envelope, context)
         kinds.validate_body_schema(envelope.kind, envelope.body)
@@ -881,4 +910,37 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
         except WeaveError as error:
             raise UsageError("keyset file is not a valid record: %s" % error.code) from error
         loaded.append(record)
+    _check_keyset_declaration_conflicts(loaded)
     return loaded
+
+
+def _check_keyset_declaration_conflicts(records: list[LoadedRecord]) -> None:
+    """T4/§14.1: conflicting keyset declarations of one key id are a usage error.
+
+    Two structurally valid ``weave.key.declared`` records for the same key id
+    with a different class, or a different validity window (present versus absent
+    counts as different), are an operator error: exit 2, no report. The
+    deterministic "earlier" order (recorded_at, record digest) only applies when
+    the declarations agree.
+    """
+    seen: dict[str, tuple[str, str | None, str | None]] = {}
+    for record in records:
+        value = record.value
+        if not isinstance(value, dict) or value.get("kind") != kinds.KIND_DECLARED:
+            continue
+        body = value.get("body")
+        if not isinstance(body, dict):
+            continue
+        key_id = body.get("key")
+        key_type = body.get("key_type")
+        if not isinstance(key_id, str) or not isinstance(key_type, str):
+            continue
+        window = (key_type, body.get("valid_from"), body.get("valid_until"))
+        existing = seen.get(key_id)
+        if existing is None:
+            seen[key_id] = window
+            continue
+        if existing != window:
+            raise UsageError(
+                "conflicting keyset declarations for key id %s" % key_id
+            )

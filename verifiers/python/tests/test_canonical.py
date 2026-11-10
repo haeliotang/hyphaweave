@@ -189,3 +189,21 @@ def test_minus_zero_and_float_follow_input_byte_order() -> None:
     with pytest.raises(WeaveError) as raised:
         canonical.parse_text('{"b":1.5,"a":-0}')
     assert raised.value.code == "E_JSON_NUMBER_NOT_INTEGER"
+
+
+def test_supplementary_plane_member_order_is_utf16() -> None:
+    """T14: U+1F600 sorts before U+E000 because UTF-16 D83D DE00 < E000."""
+    value = {"\ue000": 2, "\U0001f600": 1}
+    encoded = canonical.canonicalize(value)
+    assert encoded == '{"\U0001f600":1,"\ue000":2}'.encode("utf-8")
+    # And the canonical-file round trip accepts exactly those bytes.
+    assert canonical.parse_file_bytes(encoded) == value
+
+
+def test_invalid_utf8_is_a_whole_input_precondition() -> None:
+    """A-L6: invalid UTF-8 is E_JSON_INVALID even when a depth violation is earlier."""
+    deep = b"[" * 40 + b"]" * 40
+    bad = deep + b"\xff"
+    with pytest.raises(WeaveError) as raised:
+        canonical.parse_file_bytes(bad)
+    assert raised.value.code == "E_JSON_INVALID"

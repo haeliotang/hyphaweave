@@ -298,19 +298,36 @@ class _TstInfo:
 
 
 def test_accuracy_conversion_is_checked_and_bounded() -> None:
+    # Absent fields are exact (0); a present accuracy is converted.
+    assert timestamps._accuracy_to_us(_TstInfo(None)) == 0
     assert timestamps._accuracy_to_us(_TstInfo({"seconds": 1})) == 1_000_000
+    assert timestamps._accuracy_to_us(_TstInfo({"millis": 500})) == 500_000
+    assert timestamps._accuracy_to_us(_TstInfo({"micros": 500})) == 500
     assert timestamps._accuracy_to_us(
         _TstInfo({"seconds": timestamps.MAX_TS_ACCURACY_SECONDS})
     ) == timestamps.MAX_TS_ACCURACY_US
+    # T3(1): millis/micros outside 1-999 (including an explicit 0) and negative
+    # or non-integer values are format errors (invalid receipt).
     for accuracy in (
-        {"seconds": timestamps.MAX_TS_ACCURACY_SECONDS + 1},
-        {"seconds": 10**12},
-        {"seconds": 9_223_372_036_854, "millis": 999, "micros": 999},
+        {"millis": 1000},
+        {"micros": 5000},
+        {"millis": 0},
+        {"micros": 0},
+        {"millis": -1},
         {"seconds": -1},
+        {"seconds": "1"},
     ):
         with pytest.raises(WeaveError) as raised:
             timestamps._accuracy_to_us(_TstInfo(accuracy))
         assert raised.value.code == "E_TS_SCHEMA"
+    # T3(2): above MAX_TS_ACCURACY or overflowing is *unusable evidence*, not a
+    # format error: None means present-unverified (E_TS_UNTRUSTED, never rescue).
+    for accuracy in (
+        {"seconds": timestamps.MAX_TS_ACCURACY_SECONDS + 1},
+        {"seconds": 10**12},
+        {"seconds": 9_223_372_036_854, "millis": 999, "micros": 999},
+    ):
+        assert timestamps._accuracy_to_us(_TstInfo(accuracy)) is None
 
 
 # ---------------------------------------------------------------------------
