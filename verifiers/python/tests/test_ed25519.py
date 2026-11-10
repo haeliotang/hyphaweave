@@ -174,3 +174,116 @@ def test_public_key_canonical_decoding_rules() -> None:
     assert not ed25519.is_canonical_point_encoding(ed25519.P.to_bytes(32, "little"))
     # The eight small-order points are canonical encodings (rejected only as keys).
     assert ed25519.is_canonical_point_encoding(ed25519.IDENTITY_ENCODING)
+
+
+# ---------------------------------------------------------------------------
+# Revision-1 boundaries (decision #34 / S1 + Q1)
+# ---------------------------------------------------------------------------
+
+
+def _encode_point(point) -> bytes:
+    x, y, z, _t = point
+    z_inverse = pow(z, ed25519.P - 2, ed25519.P)
+    x_affine = x * z_inverse % ed25519.P
+    y_affine = y * z_inverse % ed25519.P
+    value = y_affine | ((x_affine & 1) << 255)
+    return value.to_bytes(32, "little")
+
+
+def _torsion_point() -> tuple:
+    return ed25519._decode_point(
+        bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
+        "E_SIG_NONCANONICAL_A",
+    )
+
+
+def _mixed_order_signature(message: bytes):
+    """Construct a cofactorless-valid signature for a mixed-order public key."""
+    private_scalar = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
+    base = ed25519._base_point()
+    a0 = ed25519._scalar_mult(base, private_scalar)
+    mixed = ed25519._point_add(a0, _torsion_point())
+    mixed_encoding = _encode_point(mixed)
+    r = 1
+    while True:
+        r_point = ed25519._scalar_mult(base, r)
+        r_encoding = _encode_point(r_point)
+        k = int.from_bytes(
+            hashlib.sha512(r_encoding + mixed_encoding + message).digest(), "little"
+        ) % ed25519.L
+        if k % 8 == 0:
+            break
+        r += 1
+    s = (r + k * private_scalar) % ed25519.L
+    signature = r_encoding + s.to_bytes(32, "little")
+    return mixed_encoding, signature
+
+
+def test_x0_sign_bit_public_key_is_rejected() -> None:
+    """RFC 8032 §5.1.3: x = 0 with the sign bit set fails to decode (S1)."""
+    x0_a = bytes.fromhex(
+        "0100000000000000000000000000000000000000000000000000000000000080"
+    )
+    with pytest.raises(WeaveError) as raised:
+        ed25519.verify_signature(x0_a, b"m", x0_a + bytes(32))
+    assert raised.value.code == "E_SIG_NONCANONICAL_A"
+
+
+def test_x0_sign_bit_r_is_rejected() -> None:
+    seed, public_key, _ = _published_key("human-1")
+    real = _sign(seed, b"m")
+    x0_r = bytes.fromhex(
+        "0100000000000000000000000000000000000000000000000000000000000080"
+    )
+    with pytest.raises(WeaveError) as raised:
+        ed25519.verify_signature(public_key, b"m", x0_r + real[32:])
+    assert raised.value.code == "E_SIG_NONCANONICAL_R"
+
+
+@pytest.mark.parametrize("encoding_bytes", sorted(ed25519.SMALL_ORDER_ENCODINGS))
+def test_all_eight_small_order_points_as_a_and_r(encoding_bytes: bytes) -> None:
+    seed, public_key, _ = _published_key("human-1")
+    real = _sign(seed, b"m")
+    with pytest.raises(WeaveError) as raised:
+        ed25519.verify_signature(encoding_bytes, b"m", encoding_bytes + bytes(32))
+    assert raised.value.code == "E_SIG_SMALL_ORDER_A"
+    with pytest.raises(WeaveError) as raised:
+        ed25519.verify_signature(public_key, b"m", encoding_bytes + real[32:])
+    assert raised.value.code == "E_SIG_SMALL_ORDER_R"
+
+
+def test_s_equals_l_and_l_plus_one() -> None:
+    _seed, public_key, _ = _published_key("human-1")
+    message = b"m"
+    signature = _sign(_published_key("human-1")[0], message)
+    for value in (ed25519.L, ed25519.L + 1):
+        with pytest.raises(WeaveError) as raised:
+            ed25519.verify_signature(
+                public_key, message, signature[:32] + value.to_bytes(32, "little")
+            )
+        assert raised.value.code == "E_SIG_S_OUT_OF_RANGE"
+
+
+def test_mixed_order_public_key_rejected() -> None:
+    """Q1: mixed-order A is rejected with the dedicated code."""
+    message = b"weave-record/1/sig\nsha256:any"
+    mixed_encoding, signature = _mixed_order_signature(message)
+    # The cofactorless equation itself holds for this key/signature ...
+    assert ed25519.verify_equation_python(mixed_encoding, message, signature)
+    # ... but the strict profile rejects the mixed-order public key.
+    with pytest.raises(WeaveError) as raised:
+        ed25519.verify_signature(mixed_encoding, message, signature)
+    assert raised.value.code == "E_SIG_MIXED_ORDER_A"
+    assert ed25519.verify(mixed_encoding, message, signature) is False
+
+
+def test_small_order_detection_is_point_based() -> None:
+    """All eight encodings decode into the torsion subgroup ([8]P == identity)."""
+    for encoding_bytes in ed25519.SMALL_ORDER_ENCODINGS:
+        point = ed25519._decode_point(encoding_bytes, "E_SIG_NONCANONICAL_A")
+        assert ed25519._is_small_order(point)
+    # A normal published key is not small-order and is in the prime-order subgroup.
+    _seed, public_key, _ = _published_key("human-1")
+    point = ed25519._decode_point(public_key, "E_SIG_NONCANONICAL_A")
+    assert not ed25519._is_small_order(point)
+    assert ed25519._is_prime_order(point)

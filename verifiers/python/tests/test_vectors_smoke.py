@@ -21,8 +21,9 @@ def test_all_vectors_match() -> None:
     report = vectors_runner.run_vectors(VECTORS)
     failures = [case for case in report["cases"] if not case["ok"]]
     assert report["verdict"] == "valid", failures
-    assert report["matched_count"] == report["case_count"]
-    assert report["case_count"] >= 100
+    assert report["summary"]["mismatched"] == 0
+    assert report["summary"]["matched"] == report["summary"]["case_count"]
+    assert report["summary"]["case_count"] >= 100
     assert report["target"] == "vectors"
     assert report["report_version"] == "1"
 
@@ -41,9 +42,9 @@ def test_vectors_report_shape_is_deterministic() -> None:
 
 @pytest.mark.skipif(not _suite_available(), reason="vector suite is not generated")
 def test_frozen_vectors_when_present() -> None:
-    frozen = VECTORS / "frozen" / "v0.1"
+    frozen = VECTORS / "frozen" / "v0.1-candidate"
     if not frozen.is_dir():
-        pytest.skip("frozen vector set is not committed yet")
+        pytest.skip("candidate frozen vector set is not committed yet")
     report = vectors_runner.run_vectors(frozen)
     assert report["verdict"] == "valid", [
         case for case in report["cases"] if not case["ok"]

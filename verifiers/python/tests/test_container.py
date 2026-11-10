@@ -92,8 +92,11 @@ def test_l2_verified_with_trust_anchor(keyset) -> None:
     report = result.report
     assert report["verdict"] == "valid"
     assert report["container"]["level_claimed"] == "L2"
-    assert report["container"]["level_verified"] == "L2"
+    # S5/低3: L2 is reported as "L0 + verified anchor"; the CLI never claims L1/L2.
+    assert report["container"]["level_verified"] == "L0"
+    assert report["container"]["anchor_verified"] is True
     assert report["container"]["timestamps"][0]["state"] == "verified"
+    assert report["container"]["timestamps"][0]["path"] == "signatures/timestamp-1.tsr"
     assert report["container"]["timestamps"][0]["gen_time"].endswith("Z")
 
 
@@ -104,6 +107,7 @@ def test_l2_without_trust_is_present_unverified(keyset) -> None:
     assert report["verdict"] == "unverifiable"
     assert "E_TS_UNTRUSTED" in report["container"]["errors"]
     assert report["container"]["level_verified"] == "L0"
+    assert report["container"]["anchor_verified"] is False
     assert report["container"]["timestamps"][0]["state"] == "present-unverified"
 
 

@@ -258,13 +258,17 @@ def test_sigs_rules() -> None:
     with_extra = sig()
     with_extra["extra"] = 1
     assert validate(changed(sigs=[with_extra])).code == "E_ENV_SIGS"
-    # Member value errors.
-    bad_alg = sig()
-    bad_alg["alg"] = "rsa"
-    assert validate(changed(sigs=[bad_alg])).code == "E_ENV_SIG_ALG"
+    # Member value errors for known-algorithm entries.
     assert validate(changed(sigs=[sig("not-a-key")])).code == "E_ENV_SIG_KEY"
     assert validate(changed(sigs=[sig(value="A" * 85)])).code == "E_ENV_SIG_VALUE"
     assert validate(changed(sigs=[sig(value="A" * 86 + "=")])).code == "E_ENV_SIG_VALUE"
+    # Q13: unknown algorithms are structurally validated and then ignored.
+    unknown = {"alg": "ml-dsa-65", "key": "ml-dsa-65:" + "ab" * 32, "value": "AAAA"}
+    parsed_unknown = envelope.validate_envelope(changed(sigs=[unknown]))
+    assert parsed_unknown.sigs[0].alg == "ml-dsa-65"
+    assert parsed_unknown.sigs[0].raw is not None
+    malformed_unknown = {"alg": "ml-dsa-65", "key": "not a key", "value": "AAAA"}
+    assert validate(changed(sigs=[malformed_unknown])).code == "E_ENV_SIGS"
     # Ordering and uniqueness.
     unsorted = [sig("ed25519:" + "b" * 32), sig("ed25519:" + "a" * 32)]
     assert validate(changed(sigs=unsorted)).code == "E_ENV_SIGS"

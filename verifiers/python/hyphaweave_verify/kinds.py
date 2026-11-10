@@ -85,6 +85,7 @@ GRANT_OBJECT_MEMBERS = (
     "transferable",
     "evidence",
     "remedy",
+    "revocation",
 )
 REVOKE_OBJECT_MEMBERS = ("revokes", "effective_at", "reason")
 
@@ -216,6 +217,8 @@ def _validate_declared(body: dict[str, Any]) -> None:
         _body_error(code, "key_type is not one of the closed values")
     if not isinstance(body["public_key"], str):
         _body_error(code, "public_key must be a base64url string")
+    if "owner" in body:
+        _check_key_id(body["owner"], code)
     if "valid_from" in body:
         _check_ts(body["valid_from"], code)
     if "valid_until" in body:
@@ -250,7 +253,10 @@ def _validate_revoked(body: dict[str, Any]) -> None:
 
 def _validate_grant_object(grant: Any) -> None:
     code = "E_GRANT_SCHEMA"
-    grant = _closed_object(grant, GRANT_OBJECT_MEMBERS, GRANT_OBJECT_MEMBERS, code)
+    required_members = tuple(
+        member for member in GRANT_OBJECT_MEMBERS if member != "revocation"
+    )
+    grant = _closed_object(grant, GRANT_OBJECT_MEMBERS, required_members, code)
     grantee = grant["grantee"]
     if not isinstance(grantee, dict):
         _body_error(code, "grant.grantee must be an object")
@@ -282,6 +288,16 @@ def _validate_grant_object(grant: Any) -> None:
         _body_error(code, "grant.transferable must be a boolean")
     _check_reference_or_null(grant["evidence"], code)
     _check_string(grant["remedy"], code, nullable=True)
+    if "revocation" in grant:
+        revocation = grant["revocation"]
+        if not isinstance(revocation, list) or not 1 <= len(revocation) <= 8:
+            _body_error(code, "grant.revocation must contain 1-8 key ids")
+        seen_revocation: set[str] = set()
+        for key_id in revocation:
+            _check_key_id(key_id, code)
+            if key_id in seen_revocation:
+                _body_error(code, "grant.revocation keys must be unique")
+            seen_revocation.add(key_id)
 
 
 def _validate_revoke_object(revoke: Any) -> None:

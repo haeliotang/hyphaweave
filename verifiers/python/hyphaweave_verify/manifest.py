@@ -53,7 +53,7 @@ MANIFEST_REQUIRED = (
 RECORD_ENTRY_MEMBERS = ("id", "kind", "digest", "chain_index")
 ATTESTATION_MEMBERS = ("format", "digest", "signatures", "timestamps")
 ATTESTATION_SIG_MEMBERS = ("alg", "key", "value")
-TIMESTAMP_ENTRY_MEMBERS = ("digest", "path")
+TIMESTAMP_ENTRY_MEMBERS = ("digest", "path", "renews")
 BLOB_ENTRY_MEMBERS = ("digest", "size")
 
 LEVELS = ("L0", "L1", "L2")
@@ -96,11 +96,16 @@ class ManifestSignature:
     value: str
     raw: bytes
 
+    @property
+    def is_ed25519(self) -> bool:
+        return self.alg == "ed25519"
+
 
 @dataclass(frozen=True)
 class ListedTimestamp:
     digest: str
     path: str
+    renews: str | None = None
 
 
 @dataclass
@@ -326,20 +331,35 @@ def validate_attestation(value: Any) -> ManifestAttestation:
                 _fail("E_MANIFEST_SCHEMA", "unknown member in manifest signature entry")
         if "alg" not in entry or "key" not in entry or "value" not in entry:
             _fail("E_MANIFEST_SCHEMA", "manifest signature entry is missing a member")
-        if entry["alg"] != "ed25519":
-            _fail("E_MANIFEST_SCHEMA", "manifest signature alg must be ed25519")
-        if not encoding.is_key_id(entry["key"]):
-            _fail("E_MANIFEST_SCHEMA", "manifest signature key is not a key id")
-        try:
-            raw = encoding.decode_base64url(entry["value"], 64)
-        except (ValueError, TypeError) as error:
-            raise WeaveError(
-                "E_MANIFEST_SCHEMA", "manifest signature value is not 64 base64url bytes"
-            ) from error
+        alg = entry["alg"]
+        if not grammar.is_algorithm_name(alg):
+            _fail("E_MANIFEST_SCHEMA", "manifest signature alg is not an algorithm name")
+        if alg == "ed25519":
+            if not encoding.is_key_id(entry["key"]):
+                _fail("E_MANIFEST_SCHEMA", "manifest signature key is not a key id")
+            try:
+                raw = encoding.decode_base64url(entry["value"], 64)
+            except (ValueError, TypeError) as error:
+                raise WeaveError(
+                    "E_MANIFEST_SCHEMA",
+                    "manifest signature value is not 64 base64url bytes",
+                ) from error
+        else:
+            # Q13 symmetry: unknown algorithms are structurally validated and
+            # then ignored by verification.
+            if not grammar.is_generic_key_id(entry["key"]):
+                _fail("E_MANIFEST_SCHEMA", "manifest signature key is malformed")
+            try:
+                raw = encoding.decode_base64url(entry["value"])
+            except (ValueError, TypeError) as error:
+                raise WeaveError(
+                    "E_MANIFEST_SCHEMA",
+                    "manifest signature value is not strict base64url",
+                ) from error
+            if not 1 <= len(raw) <= 2048:
+                _fail("E_MANIFEST_SCHEMA", "manifest signature value length is out of range")
         signatures.append(
-            ManifestSignature(
-                alg=entry["alg"], key=entry["key"], value=entry["value"], raw=raw
-            )
+            ManifestSignature(alg=alg, key=entry["key"], value=entry["value"], raw=raw)
         )
     for previous, current in zip(signatures, signatures[1:]):
         if not previous.key < current.key:
@@ -358,13 +378,24 @@ def validate_attestation(value: Any) -> ManifestAttestation:
         for member in entry:
             if member not in TIMESTAMP_ENTRY_MEMBERS:
                 _fail("E_MANIFEST_SCHEMA", "unknown member in timestamp listing entry")
-        if "digest" not in entry or "path" not in entry:
+        if "digest" not in entry or "path" not in entry or "renews" not in entry:
             _fail("E_MANIFEST_SCHEMA", "timestamp listing entry is missing a member")
+        renews = entry["renews"]
+        if renews is not None:
+            if not isinstance(renews, str) or TIMESTAMP_PATH_PATTERN.match(renews) is None:
+                _fail(
+                    "E_MANIFEST_SCHEMA",
+                    "timestamp listing renews is not null or a timestamp path",
+                )
         if not encoding.is_supported_digest(entry["digest"]):
             _fail("E_MANIFEST_SCHEMA", "timestamp listing digest is not a supported digest")
         if not isinstance(entry["path"], str) or TIMESTAMP_PATH_PATTERN.match(entry["path"]) is None:
             _fail("E_MANIFEST_SCHEMA", "timestamp listing path is not signatures/timestamp-<n>.tsr")
-        timestamps.append(ListedTimestamp(digest=entry["digest"], path=entry["path"]))
+        timestamps.append(
+            ListedTimestamp(
+                digest=entry["digest"], path=entry["path"], renews=entry["renews"]
+            )
+        )
     for previous, current in zip(timestamps, timestamps[1:]):
         if previous.path >= current.path:
             _fail("E_MANIFEST_SCHEMA", "timestamp listings must be sorted by path")

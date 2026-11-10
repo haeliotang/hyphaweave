@@ -3,18 +3,18 @@
 
 """Per-record verification pipeline and the verification context.
 
-This is the orchestration layer that applies the deterministic check order of
-CONTRACT §14.6/spec §14.3 per record:
+The per-record check order is fixed (decision #34): parse/canonical form →
+envelope structure → signature presence/format → key availability → Ed25519
+verification → kind body schema → kind semantics → actor/authorisation → labels
+→ references. The first failing check decides the record's single primary error.
 
-1. parse + canonical form, 2. envelope structure, 3. signature presence/format,
-4. key availability, 5. Ed25519 verification, 6. kind body schema, 7. kind
-semantic rules, 8. actor/authorisation, 9. labels, 10. reference resolution.
+Unknown-algorithm signature entries are validated structurally and then ignored
+(Q13); if a record requires per-record signing but no verifiable required
+signature of a known algorithm exists, the record is ``unverifiable`` with
+``E_SIG_UNVERIFIABLE`` instead of invalid.
 
 Cross-record dependencies (key declarations, grants, references) are resolved
-against a :class:`Context` that is iterated to a fixed point: every pass rebuilds
-key/grant state from the records that verified in the previous pass, then
-re-attempts every record. The iteration is bounded and deterministic, so the
-same container bytes always produce the same report.
+against a :class:`Context` iterated to a deterministic fixed point.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import ed25519, encoding, envelope as envelope_module, erase, kinds, labels, refs
-from . import grammar
 from .errors import UsageError, WeaveError
 from .grants import (
     GrantRecord,
@@ -39,6 +38,7 @@ from .keys import (
     KeyRotation,
     KeyState,
     RevocationContext,
+    VerifiedTimestamp,
     check_declared_semantics,
     check_revoked_semantics,
     check_rotated_semantics,
@@ -47,14 +47,11 @@ from .keys import (
 from .report import record_verdict
 from .times import is_valid_timestamp  # noqa: F401  (imported for type checkers)
 
-#: Maximum size of one record file (spec §13).
 MAX_RECORD_BYTES = 1_048_576
 
 #: Kinds whose signer requirements are kind-specific: a missing required signer is
 #: their own registry code, not the generic ``E_SIG_REQUIRED``.
-SPECIFIC_SIGNER_KINDS = frozenset(
-    {kinds.KIND_DECLARED, kinds.KIND_ROTATED, kinds.KIND_REVOKED}
-)
+SPECIFIC_SIGNER_KINDS = frozenset(kinds.MUST_SIGN_KINDS)
 
 
 @dataclass
@@ -79,6 +76,15 @@ def load_record_bytes(raw: bytes, *, source: str, size_code: str = "E_JSON_SIZE"
     return LoadedRecord(raw=raw, value=value, digest=digest, source=source)
 
 
+@dataclass(frozen=True)
+class ConsentRevocation:
+    """A valid ``weave.consent.revoked`` record, as used by consent checks."""
+
+    digest: str
+    target_digest: str
+    effective_at: str
+
+
 @dataclass
 class RecordView:
     """Mutable per-record verification state used by the pipeline and reports."""
@@ -94,13 +100,13 @@ class RecordView:
     sigs: list[dict[str, Any]] = field(default_factory=list)
     attestation: dict[str, Any] | None = None
     verified_keys: frozenset[str] = frozenset()
+    signature_algs_by_key: dict[str, frozenset[str]] = field(default_factory=dict)
     key_declaration: KeyDeclaration | None = None
     key_rotation: KeyRotation | None = None
     key_revocation: KeyRevocation | None = None
     grant_record: GrantRecord | None = None
     grant_revocation: GrantRevocationRecord | None = None
-
-    # -- derived facts ----------------------------------------------------
+    consent_revocation: ConsentRevocation | None = None
 
     @property
     def subject_key(self) -> tuple[str, str, str] | None:
@@ -140,20 +146,17 @@ class RecordView:
 
 
 class Context:
-    """The record set against which a target is verified.
+    """The record set against which a target is verified."""
 
-    Implements :class:`refs.ResolutionContext` and the state accessors used by
-    the grant and label checks. ``rebuild()`` recomputes key/grant state from the
-    records that currently have verdict ``valid``.
-    """
-
-    def __init__(self, *, verified_timestamps: tuple[Any, ...] = ()) -> None:
+    def __init__(self, *, verified_timestamps: tuple[VerifiedTimestamp, ...] = ()) -> None:
         self.views: list[RecordView] = []
         self.key_state = KeyState()
         self.grant_state = GrantState()
+        self.consent_revocations: dict[str, list[ConsentRevocation]] = {}
         self.verified_timestamps = tuple(verified_timestamps)
         self.pending_touched = False
         self._index: dict[tuple[str, str, str], list[RecordView]] = {}
+        self._declared_material: dict[str, tuple[bytes, str]] = {}
 
     # -- registration -----------------------------------------------------
 
@@ -167,9 +170,41 @@ class Context:
         """Recompute lifecycle state from records whose current verdict is valid."""
         self.key_state = KeyState()
         self.grant_state = GrantState()
+        self.consent_revocations = {}
+        self._declared_material = {}
         for view in self.views:
+            self._register_declared_material(view)
             if view.verdict == "valid":
                 self._apply_state(view)
+
+    def _register_declared_material(self, view: RecordView) -> None:
+        """Owner lookup material: any structurally usable declaration, valid or not."""
+        envelope = view.envelope
+        if envelope is None or envelope.kind != kinds.KIND_DECLARED:
+            return
+        body = envelope.body
+        key_id = body.get("key")
+        key_type = body.get("key_type")
+        if not isinstance(key_id, str) or key_id in self._declared_material:
+            return
+        if key_type not in ("human", "organization", "agent", "program", "device"):
+            return
+        try:
+            public_key = decode_public_key_material(body.get("public_key"))
+        except WeaveError:
+            return
+        if encoding.key_id_from_public_key(public_key) != key_id:
+            return
+        self._declared_material[key_id] = (public_key, key_type)
+
+    def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
+        return self._declared_material.get(key_id)
+
+    def is_declared_key(self, key_id: str) -> bool:
+        return self.key_state.is_declared(key_id)
+
+    def established_human_org_before(self, recorded_at: str, digest: str) -> frozenset[str]:
+        return self.key_state.established_human_org_before(recorded_at, digest)
 
     def _apply_state(self, view: RecordView) -> None:
         if view.key_declaration is not None:
@@ -182,6 +217,20 @@ class Context:
             self.grant_state.add(view.grant_record)
         if view.grant_revocation is not None:
             self.grant_state.add_revocation(view.grant_revocation)
+        if view.consent_revocation is not None:
+            self.consent_revocations.setdefault(
+                view.consent_revocation.target_digest, []
+            ).append(view.consent_revocation)
+
+    # -- consent ----------------------------------------------------------
+
+    def consent_revoked_as_of(self, consent_digest: str, recorded_at: str) -> ConsentRevocation | None:
+        from .times import timestamp_sort_key
+
+        for revocation in self.consent_revocations.get(consent_digest, ()):
+            if timestamp_sort_key(revocation.effective_at) <= timestamp_sort_key(recorded_at):
+                return revocation
+        return None
 
     # -- resolution -------------------------------------------------------
 
@@ -224,20 +273,74 @@ def _target_view(view: RecordView) -> refs.TargetView:
 
 
 # ---------------------------------------------------------------------------
-# Signature verification (steps 3-5)
+# Signature presence (step 3) and verification (steps 4-5)
 # ---------------------------------------------------------------------------
 
 
-def _verify_signatures(view: RecordView, envelope: envelope_module.Envelope, context: Context) -> None:
+def _signature_entries_by_key(
+    envelope: envelope_module.Envelope,
+) -> dict[str, frozenset[str]]:
+    entries: dict[str, set[str]] = {}
+    for signature in envelope.sigs:
+        entries.setdefault(signature.key, set()).add(signature.alg)
+    return {key: frozenset(algs) for key, algs in entries.items()}
+
+
+def _check_signature_presence(
+    view: RecordView, envelope: envelope_module.Envelope
+) -> None:
+    """Step 3: missing/empty sigs on a record that requires per-record signing."""
+    if not envelope_module.signing_required(envelope.kind, envelope.stage):
+        return
+    if not envelope.sigs:
+        raise WeaveError("E_SIG_REQUIRED", "record requires a per-record signature")
+
+
+def _unknown_algorithm_error(
+    view: RecordView, context: "Context", key: str, fallback_code: str
+) -> WeaveError:
+    """Q13: no verifiable required signature. Undeclared key -> E_KEY_UNKNOWN."""
+    if context.is_declared_key(key):
+        return WeaveError(
+            "E_SIG_UNVERIFIABLE",
+            "the required signature only has unknown-algorithm entries",
+        )
+    return WeaveError("E_KEY_UNKNOWN", "the required signing key is not declared")
+
+
+def _check_required_signers(
+    view: RecordView, envelope: envelope_module.Envelope, context: "Context"
+) -> None:
+    """Required-signer existence after signature verification (decision #34 A)."""
+    if not envelope_module.signing_required(envelope.kind, envelope.stage):
+        return
+    if envelope.kind in SPECIFIC_SIGNER_KINDS:
+        return  # kind semantics decide their dedicated signer code
+    actor_key = envelope.actor_key
+    if actor_key in view.verified_keys:
+        return
+    if envelope_module.ed25519_signatures(envelope.sigs):
+        raise WeaveError("E_SIG_REQUIRED", "no valid signature by actor.key")
+    raise _unknown_algorithm_error(view, context, actor_key, "E_SIG_REQUIRED")
+
+
+def _verify_signatures(
+    view: RecordView, envelope: envelope_module.Envelope, context: Context
+) -> None:
+    """Steps 4-5: key availability, lifecycle effects and Ed25519 verification."""
     digest = view.digest or ""
     message = encoding.record_sig_message(digest)
     states: list[dict[str, Any]] = view.sigs
     verified: set[str] = set()
+    entries_by_key = _signature_entries_by_key(envelope)
+    view.signature_algs_by_key = entries_by_key
     try:
         for signature in envelope.sigs:
-            material, from_context, is_declared = _resolve_signing_key(
-                signature.key, envelope, context
-            )
+            if not signature.is_ed25519:
+                # Q13: unknown algorithms are ignored, never invalidating.
+                states.append({"key": signature.key, "state": "ignored"})
+                continue
+            material, from_context = _resolve_signing_key(signature.key, envelope, context)
             if material is None:
                 states.append({"key": signature.key, "state": "unverified"})
                 view.notices.append("N_KEY_UNDECLARED")
@@ -250,19 +353,24 @@ def _verify_signatures(view: RecordView, envelope: envelope_module.Envelope, con
                 context.key_state.check_signature_effects(
                     signature.key,
                     envelope.recorded_at,
-                    verified_timestamps=context.verified_timestamps,  # type: ignore[arg-type]
+                    verified_timestamps=context.verified_timestamps,
                     skip_revocations=(envelope.kind == kinds.KIND_REVOKED),
                 )
             try:
-                ed25519.verify_signature(material, message, signature.raw)
+                ed25519.verify_signature(material, message, signature.raw or b"")
             except WeaveError:
                 states.append({"key": signature.key, "state": "invalid"})
                 raise
             states.append({"key": signature.key, "state": "valid"})
             verified.add(signature.key)
     finally:
-        for signature in envelope.sigs[len(states) :]:
-            states.append({"key": signature.key, "state": "unverified"})
+        for signature in envelope.sigs[len(states):]:
+            states.append(
+                {
+                    "key": signature.key,
+                    "state": "ignored" if not signature.is_ed25519 else "unverified",
+                }
+            )
         view.verified_keys = frozenset(verified)
 
 
@@ -270,26 +378,43 @@ def _resolve_signing_key(
     key: str,
     envelope: envelope_module.Envelope,
     context: Context,
-) -> tuple[bytes | None, bool, bool]:
-    """Resolve signer key material: ``(material, from_context, from_declaration)``.
+) -> tuple[bytes | None, bool]:
+    """Resolve signer key material: ``(material, from_context)``.
 
-    Key-lifecycle records supply their own key material in the body so that the
-    first declaration in a fresh context is verifiable without any prior trust
-    (spec §9.5): a declaration carries the declared key, a rotation carries the
-    old/new public keys.
+    Key-lifecycle records supply their own key material in the body so the first
+    declaration in a fresh context is verifiable without prior trust. No
+    ``old_key -> new_key`` inference is performed (M-12): only explicitly listed
+    public keys (declaration body, rotation body fields) are used.
     """
     body = envelope.body
     if envelope.kind == kinds.KIND_DECLARED and body.get("key") == key:
-        return (decode_public_key_material(body.get("public_key")), False, True)
+        return (decode_public_key_material(body.get("public_key")), False)
     if envelope.kind == kinds.KIND_ROTATED:
         if body.get("new_key") == key and "new_public_key" in body:
-            return (decode_public_key_material(body["new_public_key"]), False, False)
+            return (decode_public_key_material(body["new_public_key"]), False)
         if body.get("old_key") == key and body.get("old_public_key") is not None:
-            return (decode_public_key_material(body["old_public_key"]), False, False)
+            return (decode_public_key_material(body["old_public_key"]), False)
     material = context.key_state.public_key(key)
     if material is not None:
-        return (material, True, context.key_state.is_declared(key))
-    return (None, False, False)
+        return (material, True)
+    return (None, False)
+
+
+def _require_valid_signer(
+    view: RecordView, context: Context, key: str, code: str
+) -> None:
+    """Require a valid signature by ``key`` for a kind-specific rule (Q13 aware).
+
+    A missing signature uses the kind's dedicated code; a present but
+    unverifiable one (unknown algorithm only) is unverifiable: E_KEY_UNKNOWN
+    when the key is undeclared, E_SIG_UNVERIFIABLE otherwise.
+    """
+    if key in view.verified_keys:
+        return
+    entries = view.signature_algs_by_key.get(key, frozenset())
+    if entries:
+        raise _unknown_algorithm_error(view, context, key, code)
+    raise WeaveError(code, "required signature by %s is missing" % key)
 
 
 # ---------------------------------------------------------------------------
@@ -305,26 +430,36 @@ def _check_kind_semantics(
     digest = view.digest or ""
     kind = envelope.kind
     if kind == kinds.KIND_DECLARED:
-        view.key_declaration = check_declared_semantics(
+        declaration = check_declared_semantics(
             body=envelope.body,
             actor_key=envelope.actor_key,
             actor_type=envelope.actor_type,
             verified_signature_keys=view.verified_keys,
+            signature_entries_by_key=view.signature_algs_by_key,
             recorded_at=envelope.recorded_at,
             record_digest=digest,
+            context=context,
         )
+        view.key_declaration = declaration
+        if declaration.self_attested_root:
+            view.notices.append("N_SELF_ATTESTED_ROOT_KEY")
     elif kind == kinds.KIND_ROTATED:
         view.key_rotation = check_rotated_semantics(
             body=envelope.body,
             actor_key=envelope.actor_key,
             verified_signature_keys=view.verified_keys,
+            signature_entries_by_key=view.signature_algs_by_key,
             recorded_at=envelope.recorded_at,
             record_digest=digest,
         )
+        _require_valid_signer(view, context, view.key_rotation.old_key, "E_KEY_ROTATION_SIGS")
+        _require_valid_signer(view, context, view.key_rotation.new_key, "E_KEY_ROTATION_SIGS")
     elif kind == kinds.KIND_REVOKED:
         revocation_context = RevocationContext(
             frozenset(signature.key for signature in envelope.sigs),
+            view.verified_keys,
             context.key_state,
+            view.signature_algs_by_key,
         )
         view.key_revocation = check_revoked_semantics(
             body=envelope.body,
@@ -333,34 +468,38 @@ def _check_kind_semantics(
             verification_context=revocation_context,
         )
     elif kind == kinds.KIND_GRANT:
-        state = check_grant_semantics(envelope, digest, context)
+        state = check_grant_semantics(
+            envelope, digest, context, view.verified_keys
+        )
         if isinstance(state, GrantRecord):
+            _require_valid_signer(view, context, envelope.actor_key, "E_GRANT_GRANTER")
             view.grant_record = state
         else:
             view.grant_revocation = state
     elif kind == kinds.KIND_CONSENT_GRANTED:
         if envelope.actor_type not in ("human", "organization"):
             raise WeaveError(
-                "E_KIND_BODY_SCHEMA",
+                "E_ACTOR_KEY_TYPE_MISMATCH",
                 "consent.granted actor.type must be human or organization",
             )
-        valid_until = envelope.body["valid_until"]
-        if valid_until is not None and is_valid_timestamp(valid_until):
-            from .times import timestamp_sort_key
+        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")
+        from .times import timestamp_sort_key
 
-            if timestamp_sort_key(envelope.body["valid_from"]) > timestamp_sort_key(valid_until):
-                raise WeaveError(
-                    "E_CONSENT_VALIDITY", "consent valid_from is after valid_until"
-                )
+        valid_until = envelope.body["valid_until"]
+        if valid_until is not None and timestamp_sort_key(
+            envelope.body["valid_from"]
+        ) > timestamp_sort_key(valid_until):
+            raise WeaveError("E_CONSENT_VALIDITY", "consent valid_from is after valid_until")
     elif kind == kinds.KIND_CONSENT_REVOKED:
         if envelope.actor_type not in ("human", "organization"):
             raise WeaveError(
-                "E_KIND_BODY_SCHEMA",
+                "E_ACTOR_KEY_TYPE_MISMATCH",
                 "consent.revoked actor.type must be human or organization",
             )
+        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")
         reference = refs.validate_reference(envelope.body["revokes"])
         resolution = context.resolve(reference)
-        if resolution.state != refs.FOUND:
+        if resolution.state != refs.FOUND or resolution.target is None:
             raise WeaveError(
                 "E_CONSENT_REVOKE_REF", "revokes does not resolve to a consent grant"
             )
@@ -369,14 +508,62 @@ def _check_kind_semantics(
                 "E_REF_KIND_MISMATCH", "revokes kind claim contradicts the target kind"
             )
         target = resolution.target
-        assert target is not None
         if target.kind != kinds.KIND_CONSENT_GRANTED:
             raise WeaveError(
                 "E_CONSENT_REVOKE_REF", "revokes does not resolve to a consent grant"
             )
+        view.consent_revocation = ConsentRevocation(
+            digest=digest,
+            target_digest=target.computed_digest or "",
+            effective_at=envelope.body["effective_at"],
+        )
     elif kind == kinds.KIND_ERASURE:
-        if envelope.actor_type != "human":
-            raise WeaveError("E_ERASE_ACTOR", "erasure actor must be human")
+        _check_erasure_actor(envelope, context)
+        _require_valid_signer(view, context, envelope.actor_key, "E_ERASE_ACTOR")
+
+
+def _check_erasure_actor(envelope: envelope_module.Envelope, context: Context) -> None:
+    """Erasure signer rules (M-10): human/organization, or granted agent/program."""
+    actor_type = envelope.actor_type
+    if actor_type in ("human", "organization"):
+        return
+    if actor_type == "agent":
+        if envelope.actor_grant is None:
+            raise WeaveError("E_ERASE_ACTOR", "agent erasure requires a grant")
+        try:
+            check_agent_authorization(envelope, context)
+        except WeaveError as error:
+            raise WeaveError(
+                "E_ERASE_ACTOR", "agent erasure is not covered by an erase grant"
+            ) from error
+        grant = context.resolve(envelope.actor_grant)
+        if grant.target is not None:
+            target_envelope = getattr(grant.target.record, "envelope", None)
+            if target_envelope is not None:
+                grant_body = target_envelope.body.get("grant", {})
+                if "erase" not in grant_body.get("actions", ()):
+                    raise WeaveError("E_ERASE_ACTOR", "grant does not allow erase")
+        return
+    # program/device: body.basis must reference a valid grant covering the actor
+    # key with the erase action.
+    basis = envelope.body.get("basis")
+    if basis is None:
+        raise WeaveError("E_ERASE_ACTOR", "program/device erasure requires a basis grant")
+    reference = refs.validate_reference(basis)
+    resolution = context.resolve(reference)
+    if resolution.state != refs.FOUND or resolution.target is None:
+        raise WeaveError("E_ERASE_ACTOR", "basis grant cannot be resolved")
+    target = resolution.target
+    if target.kind != kinds.KIND_GRANT:
+        raise WeaveError("E_ERASE_ACTOR", "basis does not reference a grant")
+    target_envelope = getattr(target.record, "envelope", None)
+    if target_envelope is None or target_envelope.body.get("action") != "grant":
+        raise WeaveError("E_ERASE_ACTOR", "basis does not reference an authorising grant")
+    grant = target_envelope.body["grant"]
+    if grant["grantee"]["key"] != envelope.actor_key:
+        raise WeaveError("E_ERASE_ACTOR", "basis grant is not for this actor")
+    if "erase" not in grant["actions"] or "weave.erasure" not in grant["kinds"]:
+        raise WeaveError("E_ERASE_ACTOR", "basis grant does not allow erase")
 
 
 # ---------------------------------------------------------------------------
@@ -390,14 +577,15 @@ def _check_actor_and_authorization(
     context: Context,
 ) -> None:
     if envelope.kind in kinds.KEY_LIFECYCLE_KINDS:
-        # The kind pages for the three key-lifecycle kinds carry their own
-        # signer-class rules (including human/organization co-signatures and a
-        # human-signed compromise revocation), so the generic rules do not apply.
+        # The kind pages carry their own signer-class rules (including
+        # human/organization co-signatures), so the generic rules do not apply.
         return
     for signature in envelope.sigs:
+        if not signature.is_ed25519:
+            continue
         key_class = context.key_state.key_type(signature.key)
         if key_class is None:
-            continue  # undeclared or rotation-supplied key: TOFU, no class check
+            continue  # undeclared or rotation-supplied key: no class check
         if signature.key == envelope.actor_key:
             if key_class != envelope.actor_type:
                 raise WeaveError(
@@ -419,9 +607,8 @@ def _check_actor_and_authorization(
                     "a signing key's class is incompatible with actor.type",
                 )
     if envelope.actor_type == "agent" and envelope.kind != kinds.KIND_GRANT:
-        # Delegated weave.grant records are governed by the delegation rules in
-        # the kind semantics; every other agent record needs grant coverage
-        # (spec §5.4, Q10).
+        # Delegated weave.grant records are governed by the delegation rules;
+        # every other agent record (any stage) needs grant coverage (M-3).
         check_agent_authorization(envelope, context)
 
 
@@ -473,13 +660,17 @@ def attempt_record(view: RecordView, context: Context) -> None:
     view.sigs = []
     view.attestation = None
     view.verified_keys = frozenset()
+    view.signature_algs_by_key = {}
     view.key_declaration = None
     view.key_rotation = None
     view.key_revocation = None
     view.grant_record = None
     view.grant_revocation = None
+    view.consent_revocation = None
     try:
         value = view.loaded.value
+        if value is None:
+            raise WeaveError("E_JSON_INVALID", "record file is not canonical JSON")
         if erase.looks_like_placeholder(value):
             placeholder = erase.validate_placeholder(value)
             view.placeholder = placeholder
@@ -494,8 +685,9 @@ def attempt_record(view: RecordView, context: Context) -> None:
             return
         envelope = envelope_module.validate_envelope(value)
         view.envelope = envelope
-        _check_signature_presence(envelope)
+        _check_signature_presence(view, envelope)
         _verify_signatures(view, envelope, context)
+        _check_required_signers(view, envelope, context)
         kinds.validate_body_schema(envelope.kind, envelope.body)
         _check_kind_semantics(view, envelope, context)
         _check_actor_and_authorization(view, envelope, context)
@@ -503,24 +695,20 @@ def attempt_record(view: RecordView, context: Context) -> None:
         _check_references(view, envelope, context)
         if not envelope.kind_known:
             view.notices.append("N_KIND_UNKNOWN_OPAQUE")
+        if envelope.stage == "accepted" and not _has_human_signature(view, context):
+            view.notices.append("N_NO_HUMAN_SIGNATURE")
         view.verdict = "valid"
     except WeaveError as error:
         view.errors.append(error.code)
         view.verdict = record_verdict(view.errors)
 
 
-def _check_signature_presence(envelope: envelope_module.Envelope) -> None:
-    required = envelope_module.signing_required(envelope.kind, envelope.stage)
-    if not required:
-        return
-    if not envelope.sigs:
-        raise WeaveError("E_SIG_REQUIRED", "record requires a per-record signature")
-    if envelope.kind in SPECIFIC_SIGNER_KINDS:
-        return  # the kind's own semantic rules check its required signers
-    if not envelope_module.has_signature_by(envelope.sigs, envelope.actor_key):
-        raise WeaveError(
-            "E_SIG_REQUIRED", "record requires a signature by actor.key"
-        )
+def _has_human_signature(view: RecordView, context: Context) -> bool:
+    """Whether some valid signature was made by a declared human key."""
+    for key in view.verified_keys:
+        if context.key_state.key_type(key) == "human":
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -531,17 +719,10 @@ def _check_signature_presence(envelope: envelope_module.Envelope) -> None:
 def verify_record_set(
     loaded: Iterable[LoadedRecord],
     *,
-    verified_timestamps: tuple[Any, ...] = (),
+    verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
     context_views: Iterable[RecordView] = (),
 ) -> list[RecordView]:
-    """Verify every record of a set (a container or an external keyset).
-
-    The set is iterated to a deterministic fixed point: a record's verdict may
-    depend on another record's verdict (keys, grants, references), so each pass
-    rebuilds key/grant state from the previous pass's valid records and
-    re-attempts every record until the results stop changing or the pass budget
-    is exhausted (then the last results are final).
-    """
+    """Verify every record of a set (a container or an external keyset)."""
     views = [RecordView(loaded=record) for record in loaded]
     fixed_context_views = list(context_views)
     max_passes = 2 * len(views) + 3
@@ -566,7 +747,7 @@ def verify_single_record(
     target: LoadedRecord,
     context_records: Iterable[LoadedRecord] = (),
     *,
-    verified_timestamps: tuple[Any, ...] = (),
+    verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
 ) -> tuple[RecordView, list[RecordView]]:
     """Verify one record target against an external context (the ``--keys`` keyset)."""
     resolved_context = verify_record_set(
@@ -589,10 +770,10 @@ def verify_single_record(
 def load_keyset_directory(path: Path) -> list[LoadedRecord]:
     """Load top-level ``*.json`` files of a keyset directory.
 
-    Per the CLI contract, files are parsed and structurally validated as
-    records; anything else is a usage error (exit 2). A record that parses and is
-    structurally valid but fails its semantic or cryptographic checks does not
-    establish trust; that is not a usage error.
+    Files are parsed and structurally validated as records; anything else is a
+    usage error (exit 2). A record that parses and is structurally valid but
+    fails its semantic or cryptographic checks does not establish trust; that is
+    not a usage error.
     """
     if not path.exists() or not path.is_dir():
         raise UsageError("keyset path is not a directory")
@@ -606,7 +787,7 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
             raise UsageError("could not read a keyset file") from error
         try:
             record = load_record_bytes(raw, source="keyset")
-            if erase.looks_like_placeholder(record.value):
+            if record.value is None or erase.looks_like_placeholder(record.value):
                 raise WeaveError("E_JSON_INVALID", "keyset file is not a normal record")
             envelope_module.validate_envelope(record.value)
         except WeaveError as error:

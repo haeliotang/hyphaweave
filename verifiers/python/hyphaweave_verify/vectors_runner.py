@@ -412,13 +412,12 @@ def run_vectors(root: Path, *, default_tsa_trust: bytes | None = None) -> dict[s
         checks_disabled=skipper.tokens,
         limitations=[],
     )
+    # Vectors report summary is case-based (decision #34 / FIX1 §3):
+    # {"case_count", "matched", "mismatched"} instead of record-verdict counts.
     report["summary"] = {
-        "erased": 0,
-        "invalid": total - matched,
-        "unverifiable": 0,
-        "valid": matched,
+        "case_count": total,
+        "matched": matched,
+        "mismatched": total - matched,
     }
     report["cases"] = case_results
-    report["case_count"] = total
-    report["matched_count"] = matched
     return report

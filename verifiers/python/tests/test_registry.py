@@ -11,7 +11,7 @@ import re
 from hyphaweave_verify import errors
 
 SPEC = pathlib.Path(__file__).resolve().parents[3] / "spec" / "error-codes.md"
-ERROR_ROW = re.compile(r"^\| `(E_[A-Z0-9_]+)` \| (invalid|unverifiable) \|")
+ERROR_ROW = re.compile(r"^\| `(E_[A-Z0-9_]+)` \| (invalid|unverifiable)\b[^|]*\|")
 NOTICE_ROW = re.compile(r"^\| `(N_[A-Z0-9_]+)` \|")
 
 SOURCE_DIR = pathlib.Path(__file__).resolve().parents[1] / "hyphaweave_verify"
@@ -24,7 +24,8 @@ def _parse_registry() -> tuple[dict[str, str], set[str]]:
     for line in text.splitlines():
         error_match = ERROR_ROW.match(line)
         if error_match:
-            errors_table[error_match.group(1)] = error_match.group(2)
+            effect = error_match.group(2)
+            errors_table[error_match.group(1)] = effect
             continue
         notice_match = NOTICE_ROW.match(line)
         if notice_match:

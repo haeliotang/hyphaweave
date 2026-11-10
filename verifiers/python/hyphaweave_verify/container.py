@@ -46,9 +46,10 @@ from .timestamps import (
     STATE_INVALID,
     STATE_PRESENT_UNVERIFIED,
     STATE_VERIFIED,
-    TimestampResult,
-    verify_timestamp_file,
+    TimestampArchive,
+    verify_timestamp_archive,
 )
+from . import keys as keys_module
 from .keys import VerifiedTimestamp
 
 MAX_CONTAINER_ENTRIES = 200_000
@@ -434,8 +435,10 @@ def verify_container(
         )
     container.update(
         {
+            "anchor_verified": False,
             "created_at": manifest.created_at,
             "level_claimed": manifest.level,
+            "level_verified": "L0",
             "record_count": len(manifest.records),
             "previous_manifest_digest": manifest.previous_manifest_digest,
         }
@@ -453,7 +456,7 @@ def verify_container(
             raise WeaveError("E_MANIFEST_DIGEST", "attestation digest does not match the manifest")
         if not attestation.signatures:
             raise WeaveError("E_MANIFEST_UNSIGNED", "manifest attestation has no signatures")
-        _verify_manifest_signatures(
+        manifest_signature_keys = _verify_manifest_signatures(
             attestation.signatures,
             manifest_digest,
             _candidate_manifest_keys(
@@ -491,29 +494,68 @@ def verify_container(
     loaded_records = listing.records
 
     # Step 11 is computed before per-record verification: a verified L2
-    # timestamp can rescue a key-compromise signature (spec §10.3).
-    timestamps, timestamp_errors, timestamp_notices, trust_limitation = _verify_timestamps(
-        attestation, container_input, manifest_digest, tsa_trust
+    # timestamp can rescue a key-compromise signature (S2). The *reported*
+    # timestamp errors are still appended after the record pass, so the
+    # deterministic container check order is unchanged.
+    trust_fingerprints = None
+    if tsa_trust is not None:
+        from .timestamps import parse_trust_anchors
+
+        try:
+            trust_fingerprints = parse_trust_anchors(tsa_trust)
+        except WeaveError:
+            trust_fingerprints = frozenset()
+    archive = verify_timestamp_archive(
+        listed=[
+            {"path": entry.path, "digest": entry.digest, "renews": entry.renews}
+            for entry in attestation.timestamps
+        ],
+        files=container_input.files,
+        manifest_digest=manifest_digest,
+        trust_anchor_fingerprints=trust_fingerprints,
     )
-    if trust_limitation is not None:
-        limitations.append(trust_limitation)
     container["timestamps"] = [
-        timestamp.to_report(index) for index, timestamp in enumerate(timestamps)
+        result.to_report(index) for index, result in enumerate(archive.results)
     ]
-    verified_gen_times = tuple(
-        VerifiedTimestamp(gen_time=timestamp.gen_time)
-        for timestamp in timestamps
-        if timestamp.state == STATE_VERIFIED and timestamp.gen_time is not None
+    container["anchor_verified"] = bool(
+        manifest.level == "L2" and archive.anchor_verified
     )
-    if manifest.level == "L2" and any(
-        timestamp.state == STATE_VERIFIED for timestamp in timestamps
-    ):
-        container["level_verified"] = "L2"
+    if manifest.level == "L2" and not archive.anchor_verified:
+        limitations.append(LIMITATION_TSA_TRUST)
+    earliest_verified = archive.earliest_verified_gen_time_ms
+    verified_timestamps: tuple[VerifiedTimestamp, ...] = ()
+    if earliest_verified is not None:
+        earliest_result = next(
+            result
+            for result in archive.results
+            if result.gen_time_ms == earliest_verified
+        )
+        verified_timestamps = (
+            VerifiedTimestamp(
+                gen_time=earliest_result.gen_time or "",
+                gen_time_ms=earliest_verified,
+            ),
+        )
+    # S2 for the manifest signature: judge it with the manifest timestamp chain.
+    try:
+        _check_manifest_signer_effects(
+            manifest_signature_keys,
+            _candidate_key_state(
+                _load_container_records(container_input).records, keyset_verified
+            ),
+            manifest.created_at,
+            verified_timestamps,
+        )
+    except WeaveError as error:
+        errors.append(error.code)
+        return _finish_container(
+            container_input, container, errors, notices, [], limitations_iter, active_skipper
+        )
 
     # Step 7 (continued): per-record verification.
     record_views = verifier.verify_record_set(
         loaded_records,
-        verified_timestamps=verified_gen_times,
+        verified_timestamps=verified_timestamps,
         context_views=keyset_verified,
     )
 
@@ -540,10 +582,11 @@ def verify_container(
         notices.append("N_PREVIOUS_SIG_UNVERIFIED")
         limitations.append(LIMITATION_PREVIOUS_SIG)
 
-    # Step 11: timestamps (errors were computed early for the compromise rescue).
-    if timestamp_errors:
-        errors.extend(timestamp_errors)
-    notices.extend(timestamp_notices)
+    # Step 11: reported timestamp errors (verification was computed early for
+    # the compromise rescue; the deterministic report order is kept here).
+    for error_code in archive.errors:
+        if error_code not in errors:
+            errors.append(error_code)
 
     # Deterministic informational notices.
     if container_input.readable_present:
@@ -558,6 +601,7 @@ def verify_container(
 
 def _empty_container_report() -> dict[str, Any]:
     return {
+        "anchor_verified": False,
         "chain": {"status": "absent"},
         "created_at": None,
         "errors": [],
@@ -718,9 +762,19 @@ def _verify_manifest_signatures(
     signatures: Iterable[manifest_module.ManifestSignature],
     manifest_digest: str,
     candidates: dict[str, bytes],
-) -> None:
+) -> tuple[str, ...]:
+    """Verify the manifest CMS-less Ed25519 signatures; return the signer key ids."""
     message = encoding.manifest_sig_message(manifest_digest)
-    for signature in signatures:
+    signer_keys: list[str] = []
+    known = [signature for signature in signatures if signature.is_ed25519]
+    if not known:
+        # Q13 symmetry: unknown-algorithm entries are ignored; with no verifiable
+        # known-algorithm signature at all the manifest cannot be trusted.
+        raise WeaveError(
+            "E_SIG_UNVERIFIABLE",
+            "manifest attestation has no known-algorithm signature",
+        )
+    for signature in known:
         material = candidates.get(signature.key)
         if material is None:
             raise WeaveError(
@@ -734,6 +788,80 @@ def _verify_manifest_signatures(
             raise WeaveError(
                 "E_MANIFEST_SIG_INVALID", "manifest signature does not verify"
             ) from error
+        signer_keys.append(signature.key)
+    return tuple(signer_keys)
+
+
+def _candidate_key_state(
+    container_records: list[verifier.LoadedRecord],
+    keyset_views: list[verifier.RecordView],
+) -> keys_module.KeyState:
+    """Key lifecycle state usable before record verdicts exist (manifest S2)."""
+    state = keys_module.KeyState()
+    keyset_context = verifier.Context()
+    for view in keyset_views:
+        keyset_context.register(view)
+    keyset_context.rebuild()
+    state = keyset_context.key_state
+    for record in container_records:
+        value = record.value
+        if not isinstance(value, dict):
+            continue
+        try:
+            envelope = verifier.envelope_module.validate_envelope(value)
+        except WeaveError:
+            continue
+        if envelope.kind == kinds.KIND_DECLARED:
+            try:
+                public_key = verifier.decode_public_key_material(
+                    envelope.body.get("public_key")
+                )
+            except WeaveError:
+                continue
+            try:
+                state.add_declaration(
+                    keys_module.KeyDeclaration(
+                        key_id=envelope.body["key"],
+                        key_type=envelope.body["key_type"],
+                        public_key=public_key,
+                        owner=envelope.body.get("owner"),
+                        valid_from=envelope.body.get("valid_from"),
+                        valid_until=envelope.body.get("valid_until"),
+                        recorded_at=envelope.recorded_at,
+                        record_digest=record.digest or "",
+                    )
+                )
+            except WeaveError:
+                continue
+        elif envelope.kind == kinds.KIND_REVOKED:
+            try:
+                effective_at = envelope.body["effective_at"]
+                state.add_revocation(
+                    keys_module.KeyRevocation(
+                        key_id=envelope.body["key"],
+                        reason=envelope.body["reason"],
+                        effective_at=effective_at,
+                        effective_at_ms=keys_module._timestamp_ms(effective_at),
+                        recorded_at=envelope.recorded_at,
+                        record_digest=record.digest or "",
+                    )
+                )
+            except WeaveError:
+                continue
+    return state
+
+
+def _check_manifest_signer_effects(
+    signer_keys: tuple[str, ...],
+    key_state: keys_module.KeyState,
+    created_at: str,
+    verified_timestamps: tuple[VerifiedTimestamp, ...],
+) -> None:
+    """Apply key lifecycle effects to manifest signatures (S2, Q20, M-2)."""
+    for key in signer_keys:
+        key_state.check_signature_effects(
+            key, created_at, verified_timestamps=verified_timestamps
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +1011,15 @@ def _check_previous_manifest(
     version = value.get("manifest_version")
     if isinstance(version, bool) or version != 1:
         raise WeaveError("E_MANIFEST_CHAIN", "unsupported previous manifest version")
+    previous_origin = value.get("origin")
+    if (
+        not isinstance(previous_origin, dict)
+        or previous_origin.get("project") != manifest.origin_project
+        or previous_origin.get("instance") != manifest.origin_instance
+    ):
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "previous manifest origin differs from the manifest origin"
+        )
     digest = encoding.manifest_digest(canonical.canonicalize(value))
     if digest != manifest.previous_manifest_digest:
         raise WeaveError(
@@ -924,70 +1061,6 @@ def _read_previous_manifest_digest(previous_container: Path) -> str:
     if not isinstance(value, dict):
         raise WeaveError("E_MANIFEST_CHAIN", "--previous manifest is malformed")
     return encoding.manifest_digest(canonical.canonicalize(value))
-
-
-def _verify_timestamps(
-    attestation: manifest_module.ManifestAttestation,
-    container_input: ContainerInput,
-    manifest_digest: str,
-    tsa_trust: bytes | None,
-) -> tuple[list[TimestampResult], list[str], list[str], str | None]:
-    """Verify every listed TSR; return results, errors, notices and a limitation."""
-    trust_fingerprints = None
-    if tsa_trust is not None:
-        from .timestamps import parse_trust_anchors
-
-        try:
-            trust_fingerprints = parse_trust_anchors(tsa_trust)
-        except WeaveError:
-            trust_fingerprints = frozenset()
-    results: list[TimestampResult] = []
-    errors: list[str] = []
-    notices: list[str] = []
-    limitation: str | None = None
-    for entry in attestation.timestamps:
-        data = container_input.files.get(entry.path)
-        if data is None:
-            errors.append("E_TS_FILE")
-            results.append(
-                TimestampResult(
-                    digest=entry.digest,
-                    path=entry.path,
-                    state=STATE_INVALID,
-                    gen_time=None,
-                    error="E_TS_FILE",
-                )
-            )
-            continue
-        if "sha256:" + hashlib.sha256(data).hexdigest() != entry.digest:
-            errors.append("E_TS_FILE")
-            results.append(
-                TimestampResult(
-                    digest=entry.digest,
-                    path=entry.path,
-                    state=STATE_INVALID,
-                    gen_time=None,
-                    error="E_TS_FILE",
-                )
-            )
-            continue
-        result = verify_timestamp_file(
-            tsr_bytes=data,
-            listed_digest=entry.digest,
-            path=entry.path,
-            manifest_digest=manifest_digest,
-            trust_anchor_fingerprints=trust_fingerprints,
-        )
-        results.append(result)
-        if result.state == STATE_INVALID and result.error is not None:
-            errors.append(result.error)
-        elif result.state == STATE_PRESENT_UNVERIFIED and result.error is not None:
-            if trust_fingerprints is None:
-                limitation = LIMITATION_TSA_TRUST
-    if results and all(result.state != STATE_VERIFIED for result in results):
-        if all(result.state == STATE_PRESENT_UNVERIFIED for result in results):
-            errors.append("E_TS_UNTRUSTED")
-    return results, errors, notices, limitation
 
 
 # ---------------------------------------------------------------------------

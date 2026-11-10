@@ -82,4 +82,4 @@ def test_hook_applies_to_vectors_command() -> None:
     # Suppressing parse errors breaks the parse-negative cases, which proves the
     # family is exercised: the suite must no longer fully match.
     assert report["verdict"] == "invalid"
-    assert report["matched_count"] < report["case_count"]
+    assert report["summary"]["matched"] < report["summary"]["case_count"]

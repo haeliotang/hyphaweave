@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
+# SPDX-License-Identifier: Apache-2.0
+#
+# Exact versions of the transitive dependencies that the reference verifier was
+# tested with. The direct dependencies (cryptography, jsonschema, asn1crypto and
+# pytest in the `dev` extra) are pinned exactly in pyproject.toml; this file
+# additionally pins what pip resolves for their dependencies.
+#
+# CI installs with:
+#   python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
+#
+# Only these versions are guaranteed to produce the reference behaviour. Other
+# versions are expected to work but are not covered by the H0 gates.
+asn1crypto==1.5.1
+attrs==26.1.0
+cffi==2.1.1
+click==8.5.1
+cryptography==46.0.5
+jsonschema==4.23.0
+jsonschema-specifications==2025.9.1
+pycparser==3.12
+referencing==0.37.0
+rpds-py==2026.9.1

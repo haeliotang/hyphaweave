@@ -67,12 +67,21 @@ SIG_MEMBERS = ("alg", "key", "value")
 
 @dataclass(frozen=True)
 class Signature:
-    """A validated-shape ``sigs[]`` entry."""
+    """A validated-shape ``sigs[]`` entry.
+
+    ``raw`` is the decoded signature value for ``ed25519`` entries; unknown
+    algorithms are structurally validated and then ignored by verification
+    (Q13), so their ``raw`` value is kept but never used.
+    """
 
     alg: str
     key: str
     value: str
-    raw: bytes
+    raw: bytes | None = None
+
+    @property
+    def is_ed25519(self) -> bool:
+        return self.alg == "ed25519"
 
 
 def _validate_sigs(value: Any) -> tuple[Signature, ...]:
@@ -91,25 +100,52 @@ def _validate_sigs(value: Any) -> tuple[Signature, ...]:
             if member not in entry:
                 raise WeaveError("E_ENV_SIGS", "signature entry is missing a member")
         alg = entry["alg"]
-        if alg != "ed25519":
-            raise WeaveError("E_ENV_SIG_ALG", "signature algorithm must be ed25519")
+        if not grammar.is_algorithm_name(alg):
+            raise WeaveError("E_ENV_SIGS", "signature alg is not a well-formed algorithm name")
         key = entry["key"]
-        if not is_key_id(key):
-            raise WeaveError("E_ENV_SIG_KEY", "signature key is not a key id")
         encoded = entry["value"]
-        if not isinstance(encoded, str):
-            raise WeaveError("E_ENV_SIG_VALUE", "signature value must be a base64url string")
-        try:
-            raw = decode_base64url(encoded, 64)
-        except ValueError as error:
-            raise WeaveError(
-                "E_ENV_SIG_VALUE", "signature value is not 64 base64url bytes"
-            ) from error
+        if alg == "ed25519":
+            if not is_key_id(key):
+                raise WeaveError("E_ENV_SIG_KEY", "signature key is not a key id")
+            if not isinstance(encoded, str):
+                raise WeaveError("E_ENV_SIG_VALUE", "signature value must be a base64url string")
+            try:
+                raw = decode_base64url(encoded, 64)
+            except ValueError as error:
+                raise WeaveError(
+                    "E_ENV_SIG_VALUE", "signature value is not 64 base64url bytes"
+                ) from error
+        else:
+            # Unknown algorithm (Q13): well-formed structure only; the entry is
+            # ignored by signature verification and never makes the record invalid.
+            if not grammar.is_generic_key_id(key):
+                raise WeaveError(
+                    "E_ENV_SIGS", "non-ed25519 signature key is malformed"
+                )
+            if not isinstance(encoded, str):
+                raise WeaveError(
+                    "E_ENV_SIGS", "non-ed25519 signature value must be a string"
+                )
+            try:
+                raw = decode_base64url(encoded)
+            except ValueError as error:
+                raise WeaveError(
+                    "E_ENV_SIGS", "non-ed25519 signature value is not strict base64url"
+                ) from error
+            if not 1 <= len(raw) <= 2048:
+                raise WeaveError(
+                    "E_ENV_SIGS", "non-ed25519 signature value length is out of range"
+                )
         signatures.append(Signature(alg=alg, key=key, value=encoded, raw=raw))
     for previous, current in zip(signatures, signatures[1:]):
         if not previous.key < current.key:
             raise WeaveError("E_ENV_SIGS", "sigs must be sorted by key and have unique keys")
     return tuple(signatures)
+
+
+def ed25519_signatures(signatures: tuple[Signature, ...]) -> tuple[Signature, ...]:
+    """The known-algorithm (ed25519) signature entries; others are ignored (Q13)."""
+    return tuple(signature for signature in signatures if signature.is_ed25519)
 
 
 # ---------------------------------------------------------------------------

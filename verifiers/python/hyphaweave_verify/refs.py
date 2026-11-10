@@ -281,7 +281,11 @@ def resolve_reference(reference: Reference, context: ResolutionContext) -> Resol
         return Resolution(UNVERIFIABLE, candidate)
     for candidate in placeholder_exact:
         return Resolution(UNVERIFIABLE, candidate)
-    return Resolution(MOVED, candidates[0])
+    # A record with the same origin+id but a different digest is NOT "moved" for
+    # an offline verifier (M-1/B5): a digest mismatch means the target could not
+    # be verified. ``moved`` means "found elsewhere via hints with a matching
+    # digest", which requires network resolution and never happens offline.
+    return Resolution(UNVERIFIABLE)
 
 
 def kind_claim_mismatch(reference: Reference, resolution: Resolution) -> bool:

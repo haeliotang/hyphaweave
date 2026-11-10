@@ -234,11 +234,8 @@ class _Parser:
             return None
         if character == "-" or "0" <= character <= "9":
             return self._parse_number()
-        if character == "." and self.pos + 1 < self.length and "0" <= self.text[self.pos + 1] <= "9":
-            # The registry attributes JSON "float-looking" literals to this code.
-            self._fail("E_JSON_NUMBER_NOT_INTEGER", "number literal is not an integer")
-        if character == "+" and self.pos + 1 < self.length and "0" <= self.text[self.pos + 1] <= "9":
-            self._fail("E_JSON_NUMBER_RANGE", "number literal has a leading '+'")
+        # RFC 8259 has no leading '+', no bare '.5' and no leading zero: these are
+        # JSON syntax errors (E_JSON_INVALID), not number-profile violations (M-14).
         self._fail("E_JSON_INVALID", "unexpected character %r" % character)
         raise AssertionError("unreachable")  # pragma: no cover
 
@@ -384,6 +381,17 @@ class _Parser:
         return value
 
     def _parse_number(self) -> int:
+        """Scan one JSON number token and apply the WR-CJ number profile.
+
+        The scan is single-pass and raises at the token position, so multiple
+        violations are reported in input-byte order (M-14):
+
+        * malformed JSON numbers (``+1``, ``01``, ``.5``, ``1.``, ``1e``) are
+          ``E_JSON_INVALID``;
+        * well-formed JSON floats/exponents are ``E_JSON_NUMBER_NOT_INTEGER``;
+        * well-formed integers outside the safe range are ``E_JSON_NUMBER_RANGE``;
+        * the integer literal ``-0`` is ``E_JSON_NOT_CANONICAL``.
+        """
         text = self.text
         length = self.length
         start = self.pos
@@ -393,28 +401,49 @@ class _Parser:
             if pos >= length:
                 self.pos = pos
                 self._fail("E_JSON_INVALID", "truncated number")
-        character = text[pos]
-        if character == "0":
+        first = text[pos]
+        if first == "0":
             pos += 1
             if pos < length and "0" <= text[pos] <= "9":
+                # Leading zeros are not legal JSON (RFC 8259).
                 self.pos = pos
-                self._fail("E_JSON_NUMBER_RANGE", "integer literal has a leading zero")
-        elif "1" <= character <= "9":
+                self._fail("E_JSON_INVALID", "invalid number literal: leading zero")
+        elif "1" <= first <= "9":
             pos += 1
             while pos < length and "0" <= text[pos] <= "9":
                 pos += 1
         else:
             self.pos = pos
-            self._fail("E_JSON_INVALID", "invalid number")
-            raise AssertionError("unreachable")  # pragma: no cover
+            self._fail("E_JSON_INVALID", "invalid number literal")
+        is_float = False
         if pos < length and text[pos] == ".":
-            self.pos = pos
-            self._fail("E_JSON_NUMBER_NOT_INTEGER", "number literal has a fraction")
+            is_float = True
+            pos += 1
+            fraction_start = pos
+            while pos < length and "0" <= text[pos] <= "9":
+                pos += 1
+            if pos == fraction_start:
+                self.pos = pos
+                self._fail("E_JSON_INVALID", "invalid number literal: empty fraction")
         if pos < length and text[pos] in "eE":
-            self.pos = pos
-            self._fail("E_JSON_NUMBER_NOT_INTEGER", "number literal has an exponent")
+            is_float = True
+            pos += 1
+            if pos < length and text[pos] in "+-":
+                pos += 1
+            exponent_start = pos
+            while pos < length and "0" <= text[pos] <= "9":
+                pos += 1
+            if pos == exponent_start:
+                self.pos = pos
+                self._fail("E_JSON_INVALID", "invalid number literal: empty exponent")
+        token = text[start:pos]
         self.pos = pos
-        value = int(text[start:pos])
+        if is_float:
+            self._fail("E_JSON_NUMBER_NOT_INTEGER", "number literal is not an integer")
+        if token == "-0":
+            # Canonical form of zero is "0" (E_JSON_NOT_CANONICAL).
+            self._fail("E_JSON_NOT_CANONICAL", "negative zero is not canonical")
+        value = int(token)
         if value < -MAX_SAFE_INTEGER or value > MAX_SAFE_INTEGER:
             self._fail("E_JSON_NUMBER_RANGE", "integer outside the safe range")
         return value

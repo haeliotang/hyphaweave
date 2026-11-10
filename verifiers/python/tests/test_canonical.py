@@ -85,10 +85,12 @@ def test_number_rules_on_serialize() -> None:
         (b'{"a":{"b":1,"b":2}}', "E_JSON_DUPLICATE_KEY"),
         (b'{"a":1.0}', "E_JSON_NUMBER_NOT_INTEGER"),
         (b'{"a":1e3}', "E_JSON_NUMBER_NOT_INTEGER"),
-        (b'{"a":.5}', "E_JSON_NUMBER_NOT_INTEGER"),
+        (b'{"a":1.}', "E_JSON_INVALID"),
+        (b'{"a":1e}', "E_JSON_INVALID"),
+        (b'{"a":.5}', "E_JSON_INVALID"),
         (b'{"a":9007199254740992}', "E_JSON_NUMBER_RANGE"),
-        (b'{"a":01}', "E_JSON_NUMBER_RANGE"),
-        (b'{"a":+1}', "E_JSON_NUMBER_RANGE"),
+        (b'{"a":01}', "E_JSON_INVALID"),
+        (b'{"a":+1}', "E_JSON_INVALID"),
         (b'{"a":"\\ud800"}', "E_JSON_LONE_SURROGATE"),
         (b'{"a":"\\udc00"}', "E_JSON_LONE_SURROGATE"),
     ],
@@ -97,6 +99,16 @@ def test_parse_rejects_with_expected_code(payload: bytes, code: str) -> None:
     with pytest.raises(WeaveError) as raised:
         canonical.parse_file_bytes(payload, require_object=True)
     assert raised.value.code == code
+
+
+def test_multiple_violations_reported_in_byte_order() -> None:
+    # M-14: the first violation in input-byte order wins.
+    with pytest.raises(WeaveError) as raised:
+        canonical.parse_file_bytes(b'{"a":1,"a":1.5}')
+    assert raised.value.code == "E_JSON_DUPLICATE_KEY"
+    with pytest.raises(WeaveError) as raised:
+        canonical.parse_file_bytes(b'{"a":1.5,"a":1}')
+    assert raised.value.code == "E_JSON_NUMBER_NOT_INTEGER"
 
 
 def test_minus_zero_is_not_canonical() -> None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from . import kinds, refs
+from . import grammar, kinds, refs
 from .envelope import Envelope
 from .errors import WeaveError
 
@@ -22,6 +22,9 @@ class LabelContext(Protocol):
 
     def resolve(self, reference: refs.Reference) -> refs.Resolution:
         ...
+
+    def consent_revoked_as_of(self, consent_digest: str, recorded_at: str):
+        """A valid consent revocation effective at or before ``recorded_at``."""
 
 
 def check_label_propagation(envelope: Envelope, context: LabelContext) -> list[str]:
@@ -35,7 +38,7 @@ def check_label_propagation(envelope: Envelope, context: LabelContext) -> list[s
     """
     notices: list[str] = []
     for entry in envelope.refs:
-        if entry.rel != "derived_from":
+        if entry.rel not in grammar.DERIVATION_RELS:
             continue
         resolution = context.resolve(entry.ref)
         if resolution.state != refs.FOUND or resolution.target is None:
@@ -62,14 +65,11 @@ def check_label_propagation(envelope: Envelope, context: LabelContext) -> list[s
 
 
 def check_consent_reference(envelope: Envelope, context: LabelContext) -> list[str]:
-    """Check ``labels.consent`` (spec §8.6); return notices to attach."""
+    """Check ``labels.consent`` including withdrawal (M-7)."""
     if envelope.consent is None:
         return []
     resolution = context.resolve(envelope.consent)
     if resolution.state != refs.FOUND or resolution.target is None:
-        # An erased or mismatched target is a contradiction of the claim; a
-        # missing/unverifiable reference is only a notice (record verdict
-        # unchanged, spec §8.6).
         if resolution.state == refs.ERASED:
             raise WeaveError(
                 "E_REF_KIND_MISMATCH", "consent reference resolves to an erased record"
@@ -80,13 +80,30 @@ def check_consent_reference(envelope: Envelope, context: LabelContext) -> list[s
         raise WeaveError(
             "E_REF_KIND_MISMATCH", "consent kind claim contradicts the target kind"
         )
-    if target.kind not in (kinds.KIND_CONSENT_GRANTED, kinds.KIND_CONSENT_REVOKED):
-        raise WeaveError(
-            "E_REF_KIND_MISMATCH", "consent reference resolves to a non-consent kind"
+    if target.kind == kinds.KIND_CONSENT_GRANTED:
+        revocation = context.consent_revoked_as_of(
+            target.computed_digest or "", envelope.recorded_at
         )
-    return []
+        if revocation is not None:
+            raise WeaveError(
+                "E_CONSENT_REVOKED",
+                "the cited consent was withdrawn at or before the record's recorded_at",
+            )
+        return []
+    if target.kind == kinds.KIND_CONSENT_REVOKED:
+        target_envelope = getattr(target.record, "envelope", None)
+        if target_envelope is not None:
+            from .times import timestamp_sort_key
 
-
-def is_local_only(envelope: Envelope) -> bool:
-    """Whether the record carries the ``local-only`` sensitivity."""
-    return envelope.sensitivity == "local-only"
+            effective_at = target_envelope.body.get("effective_at")
+            if effective_at is not None and timestamp_sort_key(
+                effective_at
+            ) <= timestamp_sort_key(envelope.recorded_at):
+                raise WeaveError(
+                    "E_CONSENT_REVOKED",
+                    "the cited consent is already withdrawn",
+                )
+        return []
+    raise WeaveError(
+        "E_REF_KIND_MISMATCH", "consent reference resolves to a non-consent kind"
+    )

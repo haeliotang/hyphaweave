@@ -8,11 +8,11 @@ A complete, offline, deterministic verifier for the `weave-record/1` exchange fo
 manifest and manifest signatures, key lifecycle and authorisation, labels and
 consent, erasure, the five-state reference resolution, and L2 RFC 3161 timestamps.
 
-**Status: draft.** `weave-record/1` v0.1 has not passed its J1/J2 round-trip
-acceptance cases yet, and this is currently the only implementation, so it is not
-yet an independent implementation. The specification and the vector set are the
-authority: this package is the reference implementation of the rules, it does not
-define them.
+**Status: draft (revision 1, decision 2026-11-10 #34).** `weave-record/1` v0.1 has
+not passed its J1/J2 round-trip acceptance cases yet, and this is currently the only
+implementation, so it is not yet an independent implementation. The specification
+and the vector set are the authority: this package is the reference implementation
+of the rules, it does not define them.
 
 ## Install and run
 
@@ -66,17 +66,19 @@ stdout is exactly one JSON report per verification run:
 | `verdict` | `valid`, `invalid`, `unverifiable`, or `erased` for a placeholder record |
 | `input` | `{sha256, size}`: the record file bytes; for a directory container the **manifest digest** and manifest byte count; for a zip container the archive hash and size |
 | `records[]` | one entry per record: `digest`, `id`, `kind`, `stage`, `origin`, `kind_known`, `verdict`, `errors`, `notices`, `refs[]` (`index`,`rel`,`state`), `sigs[]` (`key`,`state`), and for `weave.erased` placeholders an `attestation` (`digest`,`state`) |
-| `container` | container target only: `created_at`, `manifest_digest`, `level_claimed`, `level_verified`, `chain` (`absent`/`unverified`), `previous_manifest_digest`, `record_count`, `timestamps[]` (`index`,`state`,`gen_time`), plus container-level `errors`/`notices` |
+| `container` | container target only: `created_at`, `manifest_digest`, `level_claimed`, `level_verified` (**always `"L0"`** — the verifier never claims the chain was verified), `anchor_verified` (true only for a claimed L2 whose whole timestamp chain verified against a trust anchor), `chain` (`absent`/`unverified`), `previous_manifest_digest`, `record_count`, `timestamps[]` (`index`,`path`,`state`,`gen_time`), plus container-level `errors`/`notices` |
 | `summary` | counts of record verdicts |
 | `limitations` | stable English statements of what was not verified |
 | `verifier` | `{name: "hyphaweave-verify-python", version}` |
 
-The `vectors` target adds `cases[]` (`id`, `ok`, `verdict`, `mismatches`),
-`case_count` and `matched_count`.
+The `vectors` target adds `cases[]` (`id`, `ok`, `verdict`, `mismatches`) and a
+case-based `summary` `{"case_count", "matched", "mismatched"}` (record verdict
+counts are only used for the `record`/`container` targets).
 
 A field that cannot be produced (for example the digest of a file that is not
 canonical JSON) is `null`. Container-level failures before record listing report
-`records: []` and one primary error code.
+`records: []` and one primary error code. `sigs[].state` is one of `valid`,
+`invalid`, `unverified` or `ignored` (unknown algorithm, Q13).
 
 ## Conformance vectors
 
@@ -126,10 +128,34 @@ not be used to weaken production verification.
   reported as `L0` for L1 (notice `N_CHAIN_CLAIM_UNVERIFIED`).
 * Trust is trust-on-first-use from key-lifecycle records in the context; there is
   no certificate authority, no network revocation distribution and no pinned
-  local trust store beyond the supplied keyset (`N_KEY_TOFU`).
-* L2 timestamps require an explicit `--tsa-trust` anchor matching the signer
-  certificate fingerprint. Without it a timestamp is `present-unverified`, the
-  container is at most `unverifiable` (`E_TS_UNTRUSTED`), never `valid`.
+  local trust store beyond the supplied keyset (`N_KEY_TOFU`). Since revision 1,
+  a `key-compromise` revocation invalidates **every** signature of that key (the
+  claimed `recorded_at` is not evidence); only a verified external RFC 3161
+  timestamp covering the record with `genTime_ms <= effective_at_ms` rescues it.
+* A key declaration for an agent/program/device key requires `body.owner` and the
+  owner's cosignature; human/organization keys require a cosignature once another
+  human/organization key is established, except the first/root key, which may be
+  self-attested (`N_SELF_ATTESTED_ROOT_KEY`).
+* An offline verifier never reports a reference as `moved`: a digest mismatch
+  cannot be verified (`unverifiable`, `N_REF_UNVERIFIABLE`); `moved` would require
+  locating the record elsewhere through hints, which requires network access.
+* Missing human cosignature on an `accepted` record is reported as
+  `N_NO_HUMAN_SIGNATURE` (notice; the record may stay valid).
+* Unknown signature algorithms are structurally validated and then ignored (Q13);
+  a required signature that is only available under unknown algorithms makes the
+  record `unverifiable` (`E_KEY_UNKNOWN` or `E_SIG_UNVERIFIABLE`). The same
+  symmetry applies to manifest signatures.
+* L2 timestamps require an explicit `--tsa-trust` anchor matching the signer leaf
+  certificate's SHA-256 fingerprint. Without it a timestamp is
+  `present-unverified`, the container is at most `unverifiable`
+  (`E_TS_UNTRUSTED`), never `valid`. The RFC 3161 profile is fixed: granted
+  status, TSTInfo v1, sha256 imprints and digests, RSA PKCS#1 v1.5 / ECDSA
+  signature algorithms only (RSA-PSS is rejected), the signer certificate must be
+  carried in the token, ESS `signingCertificateV2` is required, EKU
+  `timeStamping`/KeyUsage and certificate validity are checked at `genTime`, and
+  renewal chains (`timestamps[].renews`) must form exactly one chain
+  (`E_TS_RENEWAL`). The report still says `level_verified: "L0"`; a claimed L2 is
+  reported as L0 plus `anchor_verified: true`.
 * The embedded `previous/manifest.json` is checked by digest only; its own
   signature is not re-verified (`N_PREVIOUS_SIG_UNVERIFIED`).
 * `weave.erased` placeholders carry no content: their integrity rests on the
@@ -141,7 +167,12 @@ not be used to weaken production verification.
 * Unregistered kinds are transported and integrity-checked but their bodies are
   never interpreted (K3 forward compatibility).
 * Grant `scope`, `evidence` and `remedy` are audit information, not
-  authorisation conditions in H0; `occurred_at` and `executed_at` are claims.
+  authorisation conditions in H0; `scope` only participates in the delegated
+  sub-grant subset check. A delegated sub-grant must be a subset of its parent
+  (kinds, actions, scope, validity window) and the parent must be transferable;
+  a grant's optional `revocation` list restricts who may revoke it (default: the
+  granter's key and its explicit rotation successors). `occurred_at` and
+  `executed_at` are claims.
 * Salt randomness cannot be tested offline; the verifier only checks the
   encoding and length requirement.
 
@@ -150,8 +181,11 @@ not be used to weaken production verification.
 1. `errors.py` — the closed error/notice registry (mirrors `spec/error-codes.md`).
 2. `canonical.py` — WR-CJ canonical serialization and the strict parser.
 3. `encoding.py` — domain-separated digests, unpadded base64url, key ids.
-4. `ed25519.py` — the strict Ed25519 profile (explicit pre-checks, then the
-   cofactorless equation; the identity-key forgery is rejected).
+4. `ed25519.py` — the strict Ed25519 profile: fixed step order
+   (length → S<L → A decode incl. `x=0` sign bit → small-order A → mixed-order A
+   rejection `E_SIG_MIXED_ORDER_A` → R decode → small-order R → cofactorless
+   equation); the identity-key forgery and the non-canonical `x=0` encodings are
+   rejected by the explicit pre-checks.
 5. `times.py` / `grammar.py` — TS grammar and shared small grammars.
 6. `refs.py` — origin/reference objects and five-state resolution.
 7. `kinds.py` — kind registry and body schemas.

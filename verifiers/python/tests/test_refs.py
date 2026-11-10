@@ -57,12 +57,13 @@ def test_found() -> None:
     assert resolution.notice is None
 
 
-def test_moved() -> None:
+def test_digest_mismatch_is_unverifiable_not_moved() -> None:
+    """M-1: an offline verifier never emits ``moved``; a digest mismatch cannot be verified."""
     resolution = refs.resolve_reference(
         reference(), FakeContext([target(digest=DIGEST_B)])
     )
-    assert resolution.state == refs.MOVED
-    assert resolution.notice == "N_REF_MOVED"
+    assert resolution.state == refs.UNVERIFIABLE
+    assert resolution.notice == "N_REF_UNVERIFIABLE"
 
 
 def test_missing() -> None:
@@ -93,12 +94,16 @@ def test_erased_placeholder_matches_original_digest() -> None:
     assert resolution.notice is None
 
 
-def test_placeholder_with_different_original_digest_is_moved() -> None:
+def test_placeholder_with_different_original_digest_is_unverifiable() -> None:
     placeholder = target(
-        digest=DIGEST_B, payload_digest=DIGEST_B, placeholder=True, kind="weave.erased"
+        digest=DIGEST_B,
+        payload_digest=DIGEST_B,
+        placeholder=True,
+        kind="weave.erased",
+        verdict="erased",
     )
     resolution = refs.resolve_reference(reference(), FakeContext([placeholder]))
-    assert resolution.state == refs.MOVED
+    assert resolution.state == refs.UNVERIFIABLE
 
 
 def test_unknown_digest_algorithm_is_unverifiable() -> None:

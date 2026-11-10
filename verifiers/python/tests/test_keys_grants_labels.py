@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Key lifecycle effects, grant authorisation and label propagation rules."""
+"""Revision-1 key lifecycle, grant authorisation and label/consent semantics."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from hyphaweave_verify import envelope, grants, keys, labels, refs
 from hyphaweave_verify.errors import WeaveError
 
 HUMAN_1 = "ed25519:333f90d1d9dfb653b78df977b9b13ff2"
+HUMAN_2 = "ed25519:928a1e1dbe45a5d298ce5f6b5ce2eabe"
 AGENT_1 = "ed25519:b6190071e4bbc7c82afc702fa9ffa6f5"
 ORIGIN_JSON = {"project": "example", "instance": HUMAN_1}
 T0 = "2026-11-01T00:00:00.000Z"
@@ -24,70 +25,89 @@ def require_code(callable_object, code: str) -> None:
     assert raised.value.code == code
 
 
+def _ms(ts: str) -> int:
+    return keys._timestamp_ms(ts)
+
+
+def _declaration(
+    key_id: str = HUMAN_1,
+    *,
+    key_type: str = "human",
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    recorded_at: str = T0,
+    digest: str = "sha256:" + "00" * 32,
+) -> keys.KeyDeclaration:
+    return keys.KeyDeclaration(
+        key_id=key_id,
+        key_type=key_type,
+        public_key=bytes(32),
+        owner=None,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        recorded_at=recorded_at,
+        record_digest=digest,
+    )
+
+
 # ---------------------------------------------------------------------------
 # KeyState effects
 # ---------------------------------------------------------------------------
 
 
-def _declaration(key_id: str = HUMAN_1, valid_until: str | None = None) -> keys.KeyDeclaration:
-    return keys.KeyDeclaration(
-        key_id=key_id,
-        key_type="human",
-        public_key=bytes(32),
-        valid_from=None,
-        valid_until=valid_until,
-        recorded_at=T0,
-        record_digest="sha256:" + "00" * 32,
-    )
-
-
-def test_declared_key_validity_window() -> None:
+def test_declared_key_validity_windows() -> None:
     state = keys.KeyState()
-    state.add_declaration(_declaration(valid_until=T1))
-    state.check_signature_effects(HUMAN_1, T0)  # inside the window
-    state.check_signature_effects(HUMAN_1, T1)  # at the boundary is allowed
-    require_code(
-        lambda: state.check_signature_effects(HUMAN_1, T2), "E_KEY_EXPIRED"
-    )
+    state.add_declaration(_declaration(valid_from=T1, valid_until=T2))
+    state.check_signature_effects(HUMAN_1, T1)  # at valid_from: allowed
+    state.check_signature_effects(HUMAN_1, T2)  # at valid_until: allowed
+    require_code(lambda: state.check_signature_effects(HUMAN_1, T0), "E_KEY_EXPIRED")
+    require_code(lambda: state.check_signature_effects(HUMAN_1, "2026-11-04T00:00:00.000Z"), "E_KEY_EXPIRED")
 
 
-def test_retired_revocation_is_forward_only() -> None:
+def test_retired_revocation_boundary_is_inclusive() -> None:
     state = keys.KeyState()
     state.add_revocation(
         keys.KeyRevocation(
             key_id=HUMAN_1,
             reason="retired",
             effective_at=T1,
+            effective_at_ms=_ms(T1),
             recorded_at=T1,
             record_digest="sha256:" + "01" * 32,
         )
     )
-    state.check_signature_effects(HUMAN_1, T1)  # at effective_at: unaffected
+    state.check_signature_effects(HUMAN_1, T0)  # before effective_at: unaffected
+    require_code(lambda: state.check_signature_effects(HUMAN_1, T1), "E_KEY_REVOKED")
     require_code(lambda: state.check_signature_effects(HUMAN_1, T2), "E_KEY_REVOKED")
 
 
-def test_compromise_revocation_is_retroactive_and_rescuable() -> None:
+def test_compromise_revocation_ignores_claimed_recorded_at() -> None:
+    """S2: a backdated recorded_at does not rescue a compromised-key signature."""
     state = keys.KeyState()
     state.add_revocation(
         keys.KeyRevocation(
             key_id=HUMAN_1,
             reason="key-compromise",
             effective_at=T1,
+            effective_at_ms=_ms(T1),
             recorded_at=T1,
             record_digest="sha256:" + "02" * 32,
         )
     )
     require_code(
-        lambda: state.check_signature_effects(HUMAN_1, T2), "E_KEY_COMPROMISED"
+        lambda: state.check_signature_effects(HUMAN_1, T0), "E_KEY_COMPROMISED"
     )
-    # A verified L2 timestamp with genTime <= effective_at rescues the signature.
+    # A verified external timestamp at or before the effective time rescues it.
     state.check_signature_effects(
-        HUMAN_1, T2, verified_timestamps=(keys.VerifiedTimestamp(gen_time=T0),)
+        HUMAN_1,
+        T0,
+        verified_timestamps=(keys.VerifiedTimestamp(gen_time=T1, gen_time_ms=_ms(T1)),),
     )
-    # A timestamp after the compromise does not rescue it.
     require_code(
         lambda: state.check_signature_effects(
-            HUMAN_1, T2, verified_timestamps=(keys.VerifiedTimestamp(gen_time=T2),)
+            HUMAN_1,
+            T0,
+            verified_timestamps=(keys.VerifiedTimestamp(gen_time=T2, gen_time_ms=_ms(T2)),),
         ),
         "E_KEY_COMPROMISED",
     )
@@ -100,15 +120,26 @@ def test_self_evidencing_revocation_skips_effects() -> None:
             key_id=HUMAN_1,
             reason="retired",
             effective_at=T1,
+            effective_at_ms=_ms(T1),
             recorded_at=T1,
             record_digest="sha256:" + "03" * 32,
         )
     )
-    # The revocation record itself is signed by the revoked key; it stays valid.
     state.check_signature_effects(HUMAN_1, T2, skip_revocations=True)
 
 
-def test_rotation_supplies_key_material() -> None:
+def test_earliest_declaration_wins() -> None:
+    """Q12: the earliest (recorded_at, digest) declaration is authoritative."""
+    state = keys.KeyState()
+    later = _declaration(valid_until=T2, recorded_at=T2, digest="sha256:" + "b" * 64)
+    earlier = _declaration(valid_until=T1, recorded_at=T1, digest="sha256:" + "a" * 64)
+    state.add_declaration(later)
+    state.add_declaration(earlier)
+    assert state.declarations[HUMAN_1].record_digest == earlier.record_digest
+    require_code(lambda: state.check_signature_effects(HUMAN_1, T2), "E_KEY_EXPIRED")
+
+
+def test_rotation_supplies_only_explicit_material() -> None:
     state = keys.KeyState()
     new_key = "ed25519:" + "b" * 32
     state.add_rotation(
@@ -122,8 +153,8 @@ def test_rotation_supplies_key_material() -> None:
         )
     )
     assert state.public_key(new_key) == bytes([1]) * 32
-    assert state.public_key(HUMAN_1) == bytes(32)
     assert state.public_key("ed25519:" + "c" * 32) is None
+    assert state.rotation_successors(HUMAN_1) == frozenset({new_key})
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +167,25 @@ def _grant_envelope(
     grantee: str = AGENT_1,
     kinds: tuple[str, ...] = ("example.note",),
     actions: tuple[str, ...] = ("accept", "propose"),
+    scopes: tuple[str, ...] = ("test-scope",),
     transferable: bool = False,
     valid_from: str = T0,
     valid_until: str | None = T1,
+    revocation: list[str] | None = None,
 ) -> envelope.Envelope:
+    grant: dict = {
+        "grantee": {"key": grantee},
+        "kinds": list(kinds),
+        "actions": list(actions),
+        "scope": list(scopes),
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "transferable": transferable,
+        "evidence": None,
+        "remedy": None,
+    }
+    if revocation is not None:
+        grant["revocation"] = revocation
     record = {
         "format": "weave-record/1",
         "kind": "weave.grant",
@@ -148,29 +194,15 @@ def _grant_envelope(
         "stage": "accepted",
         "actor": {"type": "human", "key": HUMAN_1},
         "recorded_at": T0,
-        "body": {
-            "action": "grant",
-            "grant": {
-                "grantee": {"key": grantee},
-                "kinds": list(kinds),
-                "actions": list(actions),
-                "scope": ["test"],
-                "valid_from": valid_from,
-                "valid_until": valid_until,
-                "transferable": transferable,
-                "evidence": None,
-                "remedy": None,
-            },
-        },
-        "sigs": [
-            {
-                "alg": "ed25519",
-                "key": HUMAN_1,
-                "value": "A" * 86,
-            }
-        ],
+        "body": {"action": "grant", "grant": grant},
+        "sigs": [{"alg": "ed25519", "key": HUMAN_1, "value": "A" * 86}],
     }
     return envelope.validate_envelope(record)
+
+
+class _FakeRecordView:
+    def __init__(self, record_envelope: envelope.Envelope) -> None:
+        self.envelope = record_envelope
 
 
 class _GrantContext:
@@ -185,23 +217,22 @@ class _GrantContext:
     def resolve(self, reference: refs.Reference) -> refs.Resolution:
         if self._grant_envelope is None:
             return refs.Resolution(refs.MISSING)
-        target = refs.TargetView(
-            origin=self._grant_envelope.origin,
-            id=self._grant_envelope.record_id,
-            kind="weave.grant",
-            verdict="valid",
-            computed_digest=self._digest,
-            record=_RecordView(self._grant_envelope),
+        return refs.Resolution(
+            refs.FOUND,
+            refs.TargetView(
+                origin=self._grant_envelope.origin,
+                id=self._grant_envelope.record_id,
+                kind="weave.grant",
+                verdict="valid",
+                computed_digest=self._digest,
+                record=_FakeRecordView(self._grant_envelope),
+            ),
         )
-        return refs.Resolution(refs.FOUND, target)
 
 
-class _RecordView:
-    def __init__(self, record_envelope: envelope.Envelope) -> None:
-        self.envelope = record_envelope
-
-
-def _agent_record(*, stage: str = "accepted", kind: str = "example.note", recorded_at: str = T0) -> envelope.Envelope:
+def _agent_record(
+    *, stage: str = "accepted", kind: str = "example.note", recorded_at: str = T0
+) -> envelope.Envelope:
     record = {
         "format": "weave-record/1",
         "kind": kind,
@@ -228,21 +259,20 @@ def _agent_record(*, stage: str = "accepted", kind: str = "example.note", record
     return envelope.validate_envelope(record)
 
 
-def test_agent_authorization_positive() -> None:
+def test_agent_authorization_positive_for_all_stages() -> None:
     context = _GrantContext(_grant_envelope())
-    grants.check_agent_authorization(_agent_record(), context)
+    for stage in ("proposed", "accepted"):
+        grants.check_agent_authorization(_agent_record(stage=stage), context)
 
 
 def test_agent_authorization_unresolved() -> None:
     require_code(
-        lambda: grants.check_agent_authorization(
-            _agent_record(), _GrantContext(None)
-        ),
+        lambda: grants.check_agent_authorization(_agent_record(), _GrantContext(None)),
         "E_GRANT_UNRESOLVED",
     )
 
 
-def test_agent_authorization_grantee_kind_and_action() -> None:
+def test_agent_authorization_codes() -> None:
     mismatched = _GrantContext(_grant_envelope(grantee="ed25519:" + "c" * 32))
     require_code(
         lambda: grants.check_agent_authorization(_agent_record(), mismatched),
@@ -258,22 +288,16 @@ def test_agent_authorization_grantee_kind_and_action() -> None:
         lambda: grants.check_agent_authorization(_agent_record(), wrong_action),
         "E_GRANT_NOT_APPLICABLE",
     )
-
-
-def test_agent_authorization_expiry_and_revocation() -> None:
-    expired = _GrantContext(_grant_envelope(valid_until=T0))
+    expired = _GrantContext(_grant_envelope(valid_until=T1))
     require_code(
-        lambda: grants.check_agent_authorization(_agent_record(recorded_at=T1), expired),
+        lambda: grants.check_agent_authorization(_agent_record(recorded_at=T2), expired),
         "E_GRANT_EXPIRED",
     )
-    # Not-yet-valid grants are treated like expired grants.
-    future = _GrantContext(_grant_envelope(valid_from=T2, valid_until=None))
-    require_code(
-        lambda: grants.check_agent_authorization(_agent_record(recorded_at=T1), future),
-        "E_GRANT_EXPIRED",
-    )
-    revoked_context = _GrantContext(_grant_envelope())
-    revoked_context.grant_state.add_revocation(
+
+
+def test_grant_revoked_boundary_is_inclusive() -> None:
+    context = _GrantContext(_grant_envelope())
+    context.grant_state.add_revocation(
         grants.GrantRevocationRecord(
             digest="sha256:" + "bb" * 32,
             actor_key=HUMAN_1,
@@ -283,41 +307,129 @@ def test_agent_authorization_expiry_and_revocation() -> None:
         )
     )
     require_code(
-        lambda: grants.check_agent_authorization(_agent_record(recorded_at=T1), revoked_context),
+        lambda: grants.check_agent_authorization(_agent_record(recorded_at=T0), context),
         "E_GRANT_REVOKED",
     )
 
 
-def test_key_lifecycle_agent_records_need_no_authorization() -> None:
-    # An agent-class key declaration has no grant coverage requirement (Q28).
-    record = {
-        "format": "weave-record/1",
-        "kind": "weave.key.declared",
-        "origin": {"project": "example", "instance": AGENT_1},
-        "id": "decl",
-        "stage": "accepted",
-        "actor": {"type": "agent", "key": AGENT_1},
-        "recorded_at": T0,
-        "body": {
-            "algorithm": "ed25519",
-            "key": AGENT_1,
-            "key_type": "agent",
-            "public_key": "A" * 43,
-        },
-        "sigs": [{"alg": "ed25519", "key": AGENT_1, "value": "A" * 86}],
+def test_delegated_grant_chain_codes() -> None:
+    """S3: delegation requires a transferable parent that is a subset superset."""
+    parent_envelope = _grant_envelope(
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "accept", "propose"),
+        transferable=True,
+        valid_until=None,
+    )
+    parent = grants.grant_record_from_envelope(parent_envelope, "sha256:" + "aa" * 32)
+
+    child_grant = {
+        "grantee": {"key": "ed25519:" + "d" * 32},
+        "kinds": ["example.note"],
+        "actions": ["accept"],
+        "scope": ["test-scope"],
+        "valid_from": T0,
+        "valid_until": None,
+        "transferable": False,
+        "evidence": None,
+        "remedy": None,
     }
-    parsed = envelope.validate_envelope(record)
-    grants.check_agent_authorization(parsed, _GrantContext(None))  # no exception
+
+    def child_record(**overrides) -> envelope.Envelope:
+        grant = dict(child_grant)
+        grant.update(overrides.pop("grant", {}))
+        body = {"action": "grant", "grant": grant}
+        record = {
+            "format": "weave-record/1",
+            "kind": "weave.grant",
+            "origin": {"project": "example", "instance": AGENT_1},
+            "id": "sub-grant",
+            "stage": "accepted",
+            "actor": {
+                "type": "agent",
+                "key": AGENT_1,
+                "model": "example/model@1.2.3",
+                "on_behalf_of": HUMAN_1,
+                "grant": {
+                    "origin": ORIGIN_JSON,
+                    "id": "grant-1",
+                    "digest": "sha256:" + "aa" * 32,
+                    "kind": "weave.grant",
+                },
+                "idempotency_key": "idem-sub",
+            },
+            "recorded_at": T0,
+            "body": body,
+            "sigs": [{"alg": "ed25519", "key": AGENT_1, "value": "A" * 86}],
+        }
+        record.update(overrides)
+        return envelope.validate_envelope(record)
+
+    context = _GrantContext(parent_envelope)
+    grants.check_grant_semantics(child_record(), "sha256:" + "cc" * 32, context)  # ok
+
+    require_code(
+        lambda: grants.check_grant_semantics(
+            child_record(grant={"actions": ["accept", "erase"]}),
+            "sha256:" + "cc" * 32,
+            context,
+        ),
+        "E_GRANT_DELEGATION_EXCEEDS",
+    )
+    require_code(
+        lambda: grants.check_grant_semantics(
+            child_record(grant={"kinds": ["example.note", "example.receipt"]}),
+            "sha256:" + "cc" * 32,
+            context,
+        ),
+        "E_GRANT_DELEGATION_EXCEEDS",
+    )
+    wrong_granter = _grant_envelope(
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "accept", "propose"),
+        transferable=True,
+        valid_until=None,
+        grantee="ed25519:" + "e" * 32,
+    )
+    require_code(
+        lambda: grants.check_grant_semantics(
+            child_record(), "sha256:" + "cc" * 32, _GrantContext(wrong_granter)
+        ),
+        "E_GRANT_GRANTER",
+    )
+    not_transferable = _grant_envelope(
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "accept", "propose"),
+        transferable=False,
+        valid_until=None,
+    )
+    require_code(
+        lambda: grants.check_grant_semantics(
+            child_record(), "sha256:" + "cc" * 32, _GrantContext(not_transferable)
+        ),
+        "E_GRANT_NOT_TRANSFERABLE",
+    )
+    require_code(
+        lambda: grants.check_grant_semantics(
+            child_record(), "sha256:" + "cc" * 32, _GrantContext(None)
+        ),
+        "E_GRANT_UNRESOLVED",
+    )
 
 
 # ---------------------------------------------------------------------------
-# Labels
+# Labels and consent
 # ---------------------------------------------------------------------------
 
 
 class _LabelContext:
-    def __init__(self, target_envelope: envelope.Envelope | None) -> None:
+    def __init__(
+        self,
+        target_envelope: envelope.Envelope | None,
+        *,
+        revoked_at: str | None = None,
+    ) -> None:
         self.target_envelope = target_envelope
+        self.revoked_at = revoked_at
 
     def resolve(self, reference: refs.Reference) -> refs.Resolution:
         if self.target_envelope is None:
@@ -330,12 +442,27 @@ class _LabelContext:
                 kind=self.target_envelope.kind,
                 verdict="valid",
                 computed_digest="sha256:" + "00" * 32,
-                record=_RecordView(self.target_envelope),
+                record=_FakeRecordView(self.target_envelope),
             ),
         )
 
+    def consent_revoked_as_of(self, consent_digest: str, recorded_at: str):
+        if self.revoked_at is None:
+            return None
+        from hyphaweave_verify.times import timestamp_sort_key
 
-def _note(*, sensitivity: str | None, derived_from: bool = True) -> envelope.Envelope:
+        if timestamp_sort_key(self.revoked_at) <= timestamp_sort_key(recorded_at):
+            return object()
+        return None
+
+
+def _note(
+    *,
+    sensitivity: str | None,
+    rel: str = "derived_from",
+    consent_digest: str | None = None,
+    recorded_at: str = T0,
+) -> envelope.Envelope:
     reference = {
         "origin": ORIGIN_JSON,
         "id": "input-record",
@@ -348,39 +475,40 @@ def _note(*, sensitivity: str | None, derived_from: bool = True) -> envelope.Env
         "id": "derived-record",
         "stage": "proposed",
         "actor": {"type": "human", "key": HUMAN_1},
-        "recorded_at": T0,
+        "recorded_at": recorded_at,
         "body": {},
     }
     if sensitivity is not None:
         record["labels"] = {"sensitivity": sensitivity}
         if sensitivity in ("personal", "local-only"):
             record["salt"] = "AAECAwQFBgcICQoLDA0ODw"
-    if derived_from:
-        record["refs"] = [{"rel": "derived_from", "ref": reference}]
+    if consent_digest is not None:
+        record.setdefault("labels", {})["consent"] = {
+            "origin": ORIGIN_JSON,
+            "id": "consent-1",
+            "digest": consent_digest,
+            "kind": "weave.consent.granted",
+        }
+    record["refs"] = [{"rel": rel, "ref": reference}]
     return envelope.validate_envelope(record)
 
 
-def test_label_propagation_strictest_wins() -> None:
+def test_label_propagation_all_derivation_relations() -> None:
     personal_input = _note(sensitivity="personal")
-    labels.check_label_propagation(_note(sensitivity="personal"), _LabelContext(personal_input))
-    labels.check_label_propagation(_note(sensitivity="local-only"), _LabelContext(personal_input))
-    require_code(
-        lambda: labels.check_label_propagation(
-            _note(sensitivity="public"), _LabelContext(personal_input)
-        ),
-        "E_LABEL_DOWNGRADE",
+    for rel in ("derived_from", "reshaped_from", "migrated_from", "correction_of"):
+        require_code(
+            lambda: labels.check_label_propagation(
+                _note(sensitivity="public", rel=rel), _LabelContext(personal_input)
+            ),
+            "E_LABEL_DOWNGRADE",
+        )
+    # A non-derivation relation does not propagate.
+    assert (
+        labels.check_label_propagation(
+            _note(sensitivity="public", rel="supersedes"), _LabelContext(personal_input)
+        )
+        == []
     )
-    require_code(
-        lambda: labels.check_label_propagation(
-            _note(sensitivity=None), _LabelContext(personal_input)
-        ),
-        "E_LABEL_DOWNGRADE",
-    )
-    # A missing label is fine when the input is public.
-    public_input = _note(sensitivity="public")
-    assert labels.check_label_propagation(
-        _note(sensitivity=None), _LabelContext(public_input)
-    ) == []
 
 
 def test_label_propagation_unresolved_is_a_notice() -> None:
@@ -388,8 +516,8 @@ def test_label_propagation_unresolved_is_a_notice() -> None:
     assert notices == ["N_LABEL_PROPAGATION_UNCHECKED"]
 
 
-def test_consent_reference_rules() -> None:
-    consent_record = {
+def _consent_granted() -> envelope.Envelope:
+    record = {
         "format": "weave-record/1",
         "kind": "weave.consent.granted",
         "origin": ORIGIN_JSON,
@@ -407,27 +535,34 @@ def test_consent_reference_rules() -> None:
         },
         "sigs": [{"alg": "ed25519", "key": HUMAN_1, "value": "A" * 86}],
     }
-    consent_envelope = envelope.validate_envelope(consent_record)
-    other = _note(sensitivity="public")
-    other_kind = envelope.validate_envelope(
-        {
-            **other.raw,
-            "labels": {
-                "consent": {
-                    "origin": ORIGIN_JSON,
-                    "id": "consent-1",
-                    "digest": "sha256:" + "00" * 32,
-                    "kind": "weave.consent.granted",
-                }
-            },
-        }
-    )
-    assert labels.check_consent_reference(other_kind, _LabelContext(consent_envelope)) == []
-    mismatched = _LabelContext(_note(sensitivity="public"))
+    return envelope.validate_envelope(record)
+
+
+def test_consent_revoked_is_invalid_after_effective_time() -> None:
+    granted = _consent_granted()
+    consent_digest = "sha256:" + "00" * 32
+    note = _note(sensitivity="internal", consent_digest=consent_digest, recorded_at=T1)
+    # Before the withdrawal: still consistent.
+    assert labels.check_consent_reference(note, _LabelContext(granted)) == []
     require_code(
-        lambda: labels.check_consent_reference(other_kind, mismatched),
-        "E_REF_KIND_MISMATCH",
+        lambda: labels.check_consent_reference(
+            note, _LabelContext(granted, revoked_at=T1)
+        ),
+        "E_CONSENT_REVOKED",
     )
-    assert labels.check_consent_reference(other_kind, _LabelContext(None)) == [
+    # A withdrawal after the record's recorded_at does not invalidate it.
+    assert (
+        labels.check_consent_reference(
+            _note(
+                sensitivity="internal",
+                consent_digest=consent_digest,
+                recorded_at=T0,
+            ),
+            _LabelContext(granted, revoked_at=T1),
+        )
+        == []
+    )
+    # Unresolvable consent is only a notice.
+    assert labels.check_consent_reference(note, _LabelContext(None)) == [
         "N_CONSENT_UNRESOLVED"
     ]

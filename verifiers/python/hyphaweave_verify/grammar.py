@@ -27,7 +27,8 @@ MAX_HINTS = 8
 MAX_SIGS = 16
 MAX_SALT_BYTES = 16
 
-#: Closed ``rel`` vocabulary (spec §6.2).
+#: Closed ``rel`` vocabulary (Q7: the eight Inceptless relations plus
+#: ``supersedes`` and ``correction_of``; erasure/revocation use body references).
 RELS = (
     "derived_from",
     "handed_off_to",
@@ -39,9 +40,35 @@ RELS = (
     "reshaped_from",
     "supersedes",
     "correction_of",
-    "erases",
-    "revokes",
 )
+
+#: Relations that propagate labels (M/L: all derivation relations).
+DERIVATION_RELS = frozenset(
+    {"derived_from", "reshaped_from", "migrated_from", "correction_of"}
+)
+
+#: Algorithm-name grammar used by ``sigs[].alg`` (FIX1 §4.3 / Q13).
+ALGORITHM_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+ALGORITHM_MAX_BYTES = 32
+
+#: Generic key-id shape for signatures whose algorithm is not ed25519.
+GENERIC_KEY_ID_PATTERN = re.compile(
+    r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]{1,128}$"
+)
+
+
+def is_algorithm_name(value: object) -> bool:
+    """Whether ``value`` is a well-formed signature algorithm name."""
+    if not isinstance(value, str):
+        return False
+    if len(value.encode("utf-8")) > ALGORITHM_MAX_BYTES:
+        return False
+    return ALGORITHM_PATTERN.match(value) is not None
+
+
+def is_generic_key_id(value: object) -> bool:
+    """The ``<alg>:<lowercase hex>`` key-id shape for non-ed25519 algorithms."""
+    return isinstance(value, str) and GENERIC_KEY_ID_PATTERN.match(value) is not None
 
 
 def is_valid_project_slug(value: object) -> bool:

@@ -1,32 +1,40 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Grants, delegated sub-grants and authorisation (spec §5.4-§5.6, §9.6).
+"""Grants, delegated sub-grants, revocations and authorisation (S3/Q10/Q11/M-3/M-5).
 
-A ``weave.grant`` record either grants authority (``action: "grant"``) or
-revokes a previously granted authority (``action: "revoke"``). Root grants are
-signed by human/organization actors; delegated sub-grants are signed by an
-agent/program/device under a transferable parent grant and may not exceed it
-[§8.2][Q10]. The body grammar itself is validated by :mod:`kinds`; this module
-holds the cross-record semantics and the authorisation evaluation.
+Revision-1 rules (decision #34):
+
+* a delegated sub-grant must be a **subset** of its parent: kinds, actions and
+  scope are subsets, the validity window lies inside the parent's, and ``grant``
+  itself must be among the parent's actions to be re-delegated;
+* the delegated-chain verdict order is fixed: unresolvable parent
+  (``E_GRANT_UNRESOLVED``), parent is not an authorising grant
+  (``E_GRANT_GRANTER``), non-transferable (``E_GRANT_NOT_TRANSFERABLE``), granter
+  mismatch (``E_GRANT_GRANTER``), parent does not allow granting
+  (``E_GRANT_GRANTER``), authority exceeded (``E_GRANT_DELEGATION_EXCEEDS``),
+  parent revoked/expired (``E_GRANT_REVOKED``/``E_GRANT_EXPIRED``), chain depth /
+  cycles (``E_GRANT_UNRESOLVED``);
+* every stage of an agent record needs grant coverage (including ``propose``,
+  ``reject``, ``withdraw``, ``supersede``);
+* a grant may list the keys allowed to revoke it (``revocation``); the default is
+  the granter's key plus its explicit rotation successors;
+* revocation boundaries are inclusive: a grant revoked with
+  ``effective_at <= recorded_at`` is revoked for that record.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 from . import kinds, refs
 from .envelope import Envelope
 from .errors import WeaveError
 from .refs import Reference, Resolution
-from .keys import KeyState
 from .times import timestamp_sort_key
 
-
-# ---------------------------------------------------------------------------
-# State derived from valid context records
-# ---------------------------------------------------------------------------
+MAX_CHAIN_DEPTH = 8
 
 
 @dataclass
@@ -40,9 +48,12 @@ class GrantRecord:
     grantee_key: str
     kind_names: tuple[str, ...]
     actions: tuple[str, ...]
+    scopes: tuple[str, ...]
     valid_from: str
     valid_until: str | None
     transferable: bool
+    revocation_keys: tuple[str, ...] | None
+    parent_reference: Reference | None
     envelope: Envelope
 
 
@@ -82,31 +93,11 @@ class GrantState:
                 return revocation
         return None
 
-    def extension_of(self, child: GrantRecord, parent: GrantRecord) -> None:
-        """Check that a sub-grant does not exceed its parent's authority."""
-        for kind_name in child.kind_names:
-            if kind_name not in parent.kind_names:
-                raise WeaveError(
-                    "E_GRANT_DELEGATION_EXCEEDS", "sub-grant grants a kind outside the parent"
-                )
-        if timestamp_sort_key(child.valid_from) < timestamp_sort_key(parent.valid_from):
-            raise WeaveError(
-                "E_GRANT_DELEGATION_EXCEEDS", "sub-grant starts before the parent grant"
-            )
-        if parent.valid_until is None:
-            return
-        if child.valid_until is None or timestamp_sort_key(child.valid_until) > timestamp_sort_key(
-            parent.valid_until
-        ):
-            raise WeaveError(
-                "E_GRANT_DELEGATION_EXCEEDS", "sub-grant ends after the parent grant"
-            )
-
 
 def grant_record_from_envelope(envelope: Envelope, digest: str) -> GrantRecord:
     """Build the state view of a valid ``action: "grant"`` record."""
-    body = envelope.body
-    grant = body["grant"]
+    grant = envelope.body["grant"]
+    revocation_value = grant.get("revocation")
     return GrantRecord(
         digest=digest,
         actor_key=envelope.actor_key,
@@ -115,16 +106,16 @@ def grant_record_from_envelope(envelope: Envelope, digest: str) -> GrantRecord:
         grantee_key=grant["grantee"]["key"],
         kind_names=tuple(grant["kinds"]),
         actions=tuple(grant["actions"]),
+        scopes=tuple(grant["scope"]),
         valid_from=grant["valid_from"],
         valid_until=grant["valid_until"],
         transferable=grant["transferable"],
+        revocation_keys=(
+            None if revocation_value is None else tuple(revocation_value)
+        ),
+        parent_reference=envelope.actor_grant,
         envelope=envelope,
     )
-
-
-# ---------------------------------------------------------------------------
-# Context protocol
-# ---------------------------------------------------------------------------
 
 
 class GrantContext(Protocol):
@@ -135,59 +126,140 @@ class GrantContext(Protocol):
         ...
 
     @property
-    def key_state(self) -> "KeyState":
-        ...
+    def key_state(self) -> "object":
+        """A :class:`hyphaweave_verify.keys.KeyState` (rotation successors)."""
 
     def resolve(self, reference: Reference) -> Resolution:
-        """Resolve a reference against the current verification context."""
         ...
 
+    def is_declared_key(self, key_id: str) -> bool:
+        """Whether the key id is declared anywhere in the context."""
+
 
 # ---------------------------------------------------------------------------
-# Kind semantics: weave.grant
+# Chain validation
 # ---------------------------------------------------------------------------
 
 
-def _resolve_parent_grant(
+def _as_grant(envelope: Envelope, digest: str) -> GrantRecord:
+    if envelope.kind != kinds.KIND_GRANT or envelope.body.get("action") != "grant":
+        raise WeaveError("E_GRANT_GRANTER", "reference does not resolve to an authorising grant")
+    return grant_record_from_envelope(envelope, digest)
+
+
+def _resolve_grant(
     reference: Reference | None, context: GrantContext
-) -> GrantRecord:
-    """Resolve the parent grant of a delegated sub-grant.
-
-    An unresolvable parent makes the sub-grant ``unverifiable``
-    (``E_GRANT_UNRESOLVED``); a parent that resolves but does not cover
-    ``weave.grant``/``grant`` is ``E_GRANT_GRANTER`` (registry semantics).
-    """
+) -> tuple[GrantRecord, str]:
+    """Resolve a grant reference to a valid authorising grant record."""
     if reference is None:
-        raise WeaveError("E_GRANT_UNRESOLVED", "delegated grant has no parent reference")
+        raise WeaveError("E_GRANT_UNRESOLVED", "no grant reference")
     resolution = context.resolve(reference)
     if resolution.state != refs.FOUND or resolution.target is None:
-        raise WeaveError("E_GRANT_UNRESOLVED", "parent grant cannot be resolved")
+        raise WeaveError("E_GRANT_UNRESOLVED", "grant cannot be resolved")
     target = resolution.target
-    if target.kind != kinds.KIND_GRANT or target.record is None:
-        raise WeaveError("E_GRANT_GRANTER", "parent reference does not resolve to a grant")
-    parent_envelope = target.record.envelope  # type: ignore[attr-defined]
-    if parent_envelope is None or parent_envelope.body.get("action") != "grant":
-        raise WeaveError("E_GRANT_GRANTER", "parent grant is not an authorising grant")
-    parent = grant_record_from_envelope(parent_envelope, target.computed_digest or "")
+    digest = target.computed_digest or ""
+    record = getattr(target.record, "envelope", None)
+    if record is None or target.kind != kinds.KIND_GRANT:
+        raise WeaveError("E_GRANT_GRANTER", "reference does not resolve to a grant record")
+    return _as_grant(record, digest), digest
+
+
+def _check_window(grant: GrantRecord, at_time: str) -> None:
+    if timestamp_sort_key(at_time) < timestamp_sort_key(grant.valid_from) or (
+        grant.valid_until is not None
+        and timestamp_sort_key(at_time) > timestamp_sort_key(grant.valid_until)
+    ):
+        raise WeaveError("E_GRANT_EXPIRED", "grant is outside its validity window")
+
+
+def _check_delegation(
+    child: GrantRecord,
+    parent: GrantRecord,
+    context: GrantContext,
+    at_time: str,
+) -> None:
+    """Steps 2-7 of the delegated sub-grant rules (fixed order)."""
     if "weave.grant" not in parent.kind_names or "grant" not in parent.actions:
         raise WeaveError(
             "E_GRANT_GRANTER", "parent grant does not authorise granting weave.grant"
         )
-    return parent
+    if not parent.transferable:
+        raise WeaveError("E_GRANT_NOT_TRANSFERABLE", "parent grant is not transferable")
+    if parent.grantee_key != child.actor_key:
+        raise WeaveError("E_GRANT_GRANTER", "parent grantee is not the sub-granting key")
+    if not set(child.kind_names).issubset(set(parent.kind_names)):
+        raise WeaveError(
+            "E_GRANT_DELEGATION_EXCEEDS", "sub-grant grants kinds outside the parent"
+        )
+    if not set(child.actions).issubset(set(parent.actions)):
+        raise WeaveError(
+            "E_GRANT_DELEGATION_EXCEEDS", "sub-grant grants actions outside the parent"
+        )
+    if not set(child.scopes).issubset(set(parent.scopes)):
+        raise WeaveError(
+            "E_GRANT_DELEGATION_EXCEEDS", "sub-grant scope exceeds the parent"
+        )
+    if timestamp_sort_key(child.valid_from) < timestamp_sort_key(parent.valid_from):
+        raise WeaveError(
+            "E_GRANT_DELEGATION_EXCEEDS", "sub-grant starts before the parent grant"
+        )
+    if parent.valid_until is None:
+        parent_until = None
+    else:
+        parent_until = timestamp_sort_key(parent.valid_until)
+    if parent_until is not None and (
+        child.valid_until is None
+        or timestamp_sort_key(child.valid_until) > parent_until
+    ):
+        raise WeaveError(
+            "E_GRANT_DELEGATION_EXCEEDS", "sub-grant ends after the parent grant"
+        )
+    # Step 7: parent revoked / outside its own window at the evaluation time.
+    if context.grant_state.revocation_as_of(parent.digest, at_time) is not None:
+        raise WeaveError("E_GRANT_REVOKED", "parent grant is revoked")
+    if timestamp_sort_key(at_time) < timestamp_sort_key(parent.valid_from):
+        raise WeaveError("E_GRANT_EXPIRED", "parent grant is not yet valid")
+    if parent.valid_until is not None and timestamp_sort_key(at_time) > timestamp_sort_key(
+        parent.valid_until
+    ):
+        raise WeaveError("E_GRANT_EXPIRED", "parent grant is expired")
+
+
+def validate_grant_chain(
+    grant: GrantRecord,
+    context: GrantContext,
+    at_time: str,
+    *,
+    depth: int = 0,
+    seen: frozenset[str] = frozenset(),
+) -> None:
+    """Validate a grant and its ancestor chain at ``at_time`` (S3, fixed order)."""
+    if depth > MAX_CHAIN_DEPTH or grant.digest in seen:
+        raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is too deep or cyclic")
+    seen = seen | {grant.digest}
+    _check_window(grant, at_time)
+    if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:
+        raise WeaveError("E_GRANT_REVOKED", "grant is revoked")
+    if grant.actor_type in ("human", "organization"):
+        return  # root grant
+    parent, _parent_digest = _resolve_grant(grant.parent_reference, context)
+    _check_delegation(grant, parent, context, at_time)
+    validate_grant_chain(parent, context, at_time, depth=depth + 1, seen=seen)
 
 
 def check_grant_semantics(
-    envelope: Envelope, digest: str, context: GrantContext
+    envelope: Envelope,
+    digest: str,
+    context: GrantContext,
+    verified_signature_keys: frozenset[str] = frozenset(),
 ) -> GrantRecord | GrantRevocationRecord:
-    """Cross-record semantic checks for a ``weave.grant`` record (spec §5.5).
-
-    Called after the record's own signatures and body grammar were validated.
-    Returns the state view the verifier records when the record is valid.
-    """
+    """Cross-record semantic checks for a ``weave.grant`` record."""
     body = envelope.body
     action = body["action"]
     if action == "revoke":
-        return _check_grant_revocation(envelope, digest, context)
+        return _check_grant_revocation(
+            envelope, digest, context, verified_signature_keys
+        )
     grant = grant_record_from_envelope(envelope, digest)
     valid_until = grant.valid_until
     if valid_until is not None and timestamp_sort_key(grant.valid_from) > timestamp_sort_key(
@@ -196,30 +268,20 @@ def check_grant_semantics(
         raise WeaveError("E_KEY_VALIDITY", "grant valid_from is after valid_until")
     if envelope.actor_type in ("human", "organization"):
         return grant  # root grant
-    # Delegated sub-grant.
-    parent = _resolve_parent_grant(envelope.actor_grant, context)
-    if not parent.transferable:
-        raise WeaveError("E_GRANT_NOT_TRANSFERABLE", "parent grant is not transferable")
-    if parent.grantee_key != envelope.actor_key:
-        raise WeaveError(
-            "E_GRANT_GRANTER", "parent grantee is not the sub-granting key"
-        )
-    if timestamp_sort_key(envelope.recorded_at) < timestamp_sort_key(parent.valid_from):
-        raise WeaveError("E_GRANT_GRANTER", "parent grant is not yet valid")
-    if parent.valid_until is not None and timestamp_sort_key(
-        envelope.recorded_at
-    ) > timestamp_sort_key(parent.valid_until):
-        raise WeaveError("E_GRANT_GRANTER", "parent grant is expired")
-    if context.grant_state.revocation_as_of(parent.digest, envelope.recorded_at) is not None:
-        raise WeaveError("E_GRANT_GRANTER", "parent grant is revoked")
-    context.grant_state.extension_of(grant, parent)
+    # Delegated sub-grant: steps 1-8 at the sub-grant's recorded_at.
+    parent, _ = _resolve_grant(envelope.actor_grant, context)
+    _check_delegation(grant, parent, context, envelope.recorded_at)
+    validate_grant_chain(parent, context, envelope.recorded_at, depth=1, seen=frozenset({digest}))
     return grant
 
 
 def _check_grant_revocation(
-    envelope: Envelope, digest: str, context: GrantContext
+    envelope: Envelope,
+    digest: str,
+    context: GrantContext,
+    verified_signature_keys: frozenset[str],
 ) -> GrantRevocationRecord:
-    """Semantic checks for a grant-revocation record (spec §5.5)."""
+    """Semantic checks for a grant-revocation record."""
     revoke = envelope.body["revoke"]
     reference = refs.validate_reference(revoke["revokes"])
     resolution = context.resolve(reference)
@@ -228,33 +290,57 @@ def _check_grant_revocation(
     target = resolution.target
     if target.kind != kinds.KIND_GRANT:
         raise WeaveError("E_GRANT_REVOKE_REF", "revoked target is not a grant record")
-    if target.record is None:
-        raise WeaveError("E_GRANT_REVOKE_REF", "revoked target is not a grant record")
-    target_envelope = target.record.envelope  # type: ignore[attr-defined]
+    target_envelope = getattr(target.record, "envelope", None)
     if target_envelope is None or target_envelope.body.get("action") != "grant":
         raise WeaveError("E_GRANT_REVOKE_REF", "revoked target is not an authorising grant")
     if refs.kind_claim_mismatch(reference, resolution):
         raise WeaveError("E_REF_KIND_MISMATCH", "revokes kind claim contradicts target kind")
-    # Signer: the original granter's actor.key, or a declared human/organization key.
+    target_grant = grant_record_from_envelope(target_envelope, target.computed_digest or "")
+    allowed = _allowed_revocation_keys(target_grant, context)
     signature_keys = frozenset(signature.key for signature in envelope.sigs)
-    allowed = target_envelope.actor_key in signature_keys or any(
-        context.key_state.key_type(key) in ("human", "organization") for key in signature_keys
-    )
-    if not allowed:
+    if not allowed & verified_signature_keys:
+        candidate_unknown = any(
+            key in allowed
+            and any(
+                entry.alg != "ed25519"
+                for entry in envelope.sigs
+                if entry.key == key
+            )
+            for key in signature_keys
+        )
+        if candidate_unknown:
+            if any(context.is_declared_key(key) for key in allowed & signature_keys):
+                raise WeaveError(
+                    "E_SIG_UNVERIFIABLE",
+                    "revocation signer only has unknown-algorithm entries",
+                )
+            raise WeaveError(
+                "E_KEY_UNKNOWN", "revocation signer is not declared in the context"
+            )
         raise WeaveError(
-            "E_GRANT_REVOKE_SIGNER", "revocation lacks an acceptable signer"
+            "E_GRANT_REVOKE_SIGNER", "revocation lacks an authorised signer"
         )
     return GrantRevocationRecord(
         digest=digest,
         actor_key=envelope.actor_key,
         effective_at=revoke["effective_at"],
-        target_digest=target.computed_digest or "",
+        target_digest=target_grant.digest,
         envelope=envelope,
     )
 
 
+def _allowed_revocation_keys(grant: GrantRecord, context: GrantContext) -> frozenset[str]:
+    if grant.revocation_keys is not None:
+        return frozenset(grant.revocation_keys)
+    key_state = context.key_state
+    successors = getattr(key_state, "rotation_successors", lambda _key: frozenset())(
+        grant.actor_key
+    )
+    return frozenset({grant.actor_key}) | frozenset(successors)
+
+
 # ---------------------------------------------------------------------------
-# Authorisation of agent records by their cited grant
+# Authorisation of records by their cited grant
 # ---------------------------------------------------------------------------
 
 
@@ -266,12 +352,11 @@ def _action_for_stage(stage: str) -> str:
 
 
 def check_agent_authorization(envelope: Envelope, context: GrantContext) -> None:
-    """Check that an agent-authored record is covered by its cited grant.
+    """Check that a record's cited grant covers kind and stage action.
 
-    Enforced for every agent record except key-lifecycle records (which are key
-    classes, not delegated actions — spec §4.2 exception / Q28). A delegated
-    ``weave.grant`` record is governed by the delegation rules instead of the
-    generic stage/action mapping (spec §5.4, Q10), so it is skipped here.
+    Required for **every** stage of an agent record (M-3, decision #34), except
+    key-lifecycle records (key classes, not delegated actions) and ``weave.grant``
+    records (governed by the delegation rules).
     """
     if envelope.kind in kinds.KEY_LIFECYCLE_KINDS:
         return
@@ -286,21 +371,12 @@ def check_agent_authorization(envelope: Envelope, context: GrantContext) -> None
     if resolution.state != refs.FOUND or resolution.target is None:
         raise WeaveError("E_GRANT_UNRESOLVED", "cited authorisation cannot be resolved")
     target = resolution.target
-    if target.kind != kinds.KIND_GRANT or target.record is None:
-        raise WeaveError("E_GRANT_UNRESOLVED", "cited authorisation is not a grant")
-    grant_envelope = target.record.envelope  # type: ignore[attr-defined]
+    if target.kind != kinds.KIND_GRANT:
+        raise WeaveError("E_GRANT_GRANTER", "cited authorisation is not a grant record")
+    grant_envelope = getattr(target.record, "envelope", None)
     if grant_envelope is None or grant_envelope.body.get("action") != "grant":
-        raise WeaveError("E_GRANT_UNRESOLVED", "cited grant is not an authorising grant")
-    grant_digest = target.computed_digest or ""
-    grant = grant_record_from_envelope(grant_envelope, grant_digest)
-    if context.grant_state.revocation_as_of(grant_digest, envelope.recorded_at) is not None:
-        raise WeaveError("E_GRANT_REVOKED", "cited grant has been revoked")
-    recorded_at = envelope.recorded_at
-    if timestamp_sort_key(recorded_at) < timestamp_sort_key(grant.valid_from) or (
-        grant.valid_until is not None
-        and timestamp_sort_key(recorded_at) > timestamp_sort_key(grant.valid_until)
-    ):
-        raise WeaveError("E_GRANT_EXPIRED", "cited grant is outside its validity window")
+        raise WeaveError("E_GRANT_GRANTER", "cited authorisation is not an authorising grant")
+    grant = grant_record_from_envelope(grant_envelope, target.computed_digest or "")
     if grant.grantee_key != envelope.actor_key:
         raise WeaveError(
             "E_GRANT_GRANTEE_MISMATCH", "record is not written by the grant's grantee"
@@ -314,3 +390,6 @@ def check_agent_authorization(envelope: Envelope, context: GrantContext) -> None
         raise WeaveError(
             "E_GRANT_NOT_APPLICABLE", "grant does not cover the record's action"
         )
+    validate_grant_chain(
+        grant, context, envelope.recorded_at, depth=0, seen=frozenset()
+    )
