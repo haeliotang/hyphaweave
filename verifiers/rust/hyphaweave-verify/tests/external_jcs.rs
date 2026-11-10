@@ -36,7 +36,14 @@ fn rfc8785_documents_match_profile_mapping() {
     let root = testdata();
     let mut accepted = 0usize;
     let mut rejected = 0usize;
-    for name in ["arrays", "french", "structures", "unicode", "values", "weird"] {
+    for name in [
+        "arrays",
+        "french",
+        "structures",
+        "unicode",
+        "values",
+        "weird",
+    ] {
         let input = fs::read(root.join(format!("input/{name}.json"))).expect("input");
         let output = fs::read(root.join(format!("output/{name}.json"))).expect("output");
         let outhex = fs::read_to_string(root.join(format!("outhex/{name}.txt"))).expect("outhex");
@@ -45,8 +52,7 @@ fn rfc8785_documents_match_profile_mapping() {
             Ok(value) => {
                 let canonical = json::canonical_value_bytes(&value);
                 assert_eq!(
-                    canonical,
-                    output,
+                    canonical, output,
                     "{name}: canonical form differs from the RFC 8785 output"
                 );
                 accepted += 1;

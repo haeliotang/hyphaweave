@@ -41,10 +41,7 @@ fn jcs_vectors_match_envelope_classification() {
         let expected = json::parse_object(&expected_bytes).expect("expected.json parses");
         let input = expected.get_str("input").expect("input field");
         let input_bytes = fs::read(case_dir.join(input)).expect("input file");
-        let expected_errors = expected
-            .get("errors")
-            .map(code_strings)
-            .unwrap_or_default();
+        let expected_errors = expected.get("errors").map(code_strings).unwrap_or_default();
         let actual = envelope::parse_record_file(&input_bytes);
         cases += 1;
         match (&actual, expected_errors.first().copied()) {

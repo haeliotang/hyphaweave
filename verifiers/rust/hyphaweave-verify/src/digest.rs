@@ -118,7 +118,12 @@ pub fn parse_digest_string(text: &str) -> Option<DigestString<'_>> {
     if !is_algorithm_name(algorithm) {
         return None;
     }
-    if hex.is_empty() || hex.len() > 128 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
+    if hex.is_empty()
+        || hex.len() > 128
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return None;
     }
     Some(DigestString { algorithm, hex })

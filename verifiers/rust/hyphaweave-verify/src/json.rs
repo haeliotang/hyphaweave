@@ -476,10 +476,7 @@ impl Parser<'_> {
                                 char::from_u32(scalar)
                                     .ok_or_else(|| self.error(e::JSON_LONE_SURROGATE))?
                             } else if (0xDC00..=0xDFFF).contains(&first) {
-                                return Err(JsonError::at(
-                                    e::JSON_LONE_SURROGATE,
-                                    escape_offset,
-                                ));
+                                return Err(JsonError::at(e::JSON_LONE_SURROGATE, escape_offset));
                             } else {
                                 char::from_u32(u32::from(first))
                                     .ok_or_else(|| self.error(e::JSON_INVALID))?

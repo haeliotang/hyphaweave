@@ -178,7 +178,8 @@ pub enum KindBody {
     ConsentRevoked(ConsentRevokedBody),
     /// `weave.erasure` body.
     Erasure(ErasureBody),
-    /// Unknown kind: not interpreted.
+    /// Not interpreted: an unknown kind (§7.3), or the special
+    /// `weave.erased` placeholder whose shape `envelope` validates (§4.5).
     Opaque,
 }
 
@@ -246,6 +247,11 @@ impl Obligation {
 
 /// Check (6) of §14.5: validates the kind body schema and derives facts.
 ///
+/// A `weave.erased` placeholder is a special shape rather than a normal
+/// envelope (§4.5); [`crate::envelope::parse_record_file`] validates it and this
+/// function returns [`KindBody::Opaque`] for it, because there is no body to
+/// interpret. Unknown kinds are opaque as well (§7.3).
+///
 /// # Errors
 /// Returns the kind's schema/semantic error code (`E_KIND_BODY_SCHEMA`,
 /// `E_GRANT_SCHEMA`, `E_KEY_VALIDITY`, `E_KEY_ROTATION_KEYS`,
@@ -263,12 +269,8 @@ pub fn parse_body(record: &RecordFile) -> Result<KindBody, Code> {
         "weave.key.rotated" => parse_key_rotated(envelope).map(KindBody::KeyRotated),
         "weave.key.revoked" => parse_key_revoked(envelope).map(KindBody::KeyRevoked),
         "weave.grant" => parse_grant(envelope).map(KindBody::Grant),
-        "weave.consent.granted" => {
-            parse_consent_granted(envelope).map(KindBody::ConsentGranted)
-        }
-        "weave.consent.revoked" => {
-            parse_consent_revoked(envelope).map(KindBody::ConsentRevoked)
-        }
+        "weave.consent.granted" => parse_consent_granted(envelope).map(KindBody::ConsentGranted),
+        "weave.consent.revoked" => parse_consent_revoked(envelope).map(KindBody::ConsentRevoked),
         "weave.erasure" => parse_erasure(envelope).map(KindBody::Erasure),
         // §7.3: unknown kinds are opaque; the body is never inspected.
         _ => Ok(KindBody::Opaque),
@@ -432,11 +434,7 @@ fn timestamp_member(object: &Object, name: &str, code: Code) -> Result<Timestamp
     Timestamp::parse(text).ok_or(code)
 }
 
-fn optional_timestamp(
-    object: &Object,
-    name: &str,
-    code: Code,
-) -> Result<Option<Timestamp>, Code> {
+fn optional_timestamp(object: &Object, name: &str, code: Code) -> Result<Option<Timestamp>, Code> {
     match object.get(name) {
         Some(value) => {
             let text = value.as_str().ok_or(code)?;
@@ -474,7 +472,7 @@ fn nullable_string(object: &Object, name: &str, code: Code) -> Result<(), Code> 
 /// caller decides which code a malformed value gets.
 fn decode_public_key(value: &Value) -> Result<Vec<u8>, ()> {
     let text = value.as_str().ok_or(())?;
-    b64::decode_exact(text, 32)
+    b64::decode_exact(text, 32).map_err(|_| ())
 }
 
 fn reference_member(object: &Object, name: &str, code: Code) -> Result<RefObject, Code> {
@@ -503,7 +501,9 @@ fn nullable_reference_object(
     if value.is_null() {
         return Ok(None);
     }
-    envelope::parse_ref_object(value).map(Some).map_err(|_| code)
+    envelope::parse_ref_object(value)
+        .map(Some)
+        .map_err(|_| code)
 }
 
 /// Rejects every member not in `allowed` (a closed object).
@@ -597,8 +597,8 @@ fn parse_key_declared(envelope: &Envelope) -> Result<KeyDeclaredBody, Code> {
     if !KEY_TYPES.contains(&key_type.as_str()) {
         return Err(CODE);
     }
-    let public_key = decode_public_key(required(body, "public_key", CODE)?)
-        .map_err(|()| e::KEY_PUBLIC_KEY)?;
+    let public_key =
+        decode_public_key(required(body, "public_key", CODE)?).map_err(|()| e::KEY_PUBLIC_KEY)?;
     let owner = optional_key_id(body, "owner", CODE)?.map(str::to_owned);
     let valid_from = optional_timestamp(body, "valid_from", CODE)?;
     let valid_until = optional_timestamp(body, "valid_until", CODE)?;
@@ -613,10 +613,11 @@ fn parse_key_declared(envelope: &Envelope) -> Result<KeyDeclaredBody, Code> {
         return Err(e::KEY_OWNER_MISSING);
     }
     // §9.1 rule 5: a claimed window must not be inverted.
-    if let (Some(from), Some(until)) = (valid_from, valid_until) {
-        if from > until {
-            return Err(e::KEY_VALIDITY);
-        }
+    if valid_from
+        .zip(valid_until)
+        .is_some_and(|(from, until)| from > until)
+    {
+        return Err(e::KEY_VALIDITY);
     }
     // Kind page envelope requirements: a key self-description must describe
     // its own actor key and class.
@@ -661,10 +662,11 @@ fn parse_key_rotated(envelope: &Envelope) -> Result<KeyRotatedBody, Code> {
     if digest::derive_key_id(&new_public_key) != new_key {
         return Err(e::KEY_ROTATION_KEYS);
     }
-    if let Some(bytes) = &old_public_key {
-        if digest::derive_key_id(bytes) != old_key {
-            return Err(e::KEY_ROTATION_KEYS);
-        }
+    if old_public_key
+        .as_deref()
+        .is_some_and(|bytes| digest::derive_key_id(bytes) != old_key)
+    {
+        return Err(e::KEY_ROTATION_KEYS);
     }
     // Kind page envelope requirement: `actor.key` is the predecessor key.
     if envelope.actor.key != old_key {
@@ -760,10 +762,9 @@ fn parse_grant_spec(value: &Value) -> Result<GrantSpec, Code> {
     // 1–64 unique kind names (§7.1).
     let kinds = checked_string_array(object, "kinds", CODE, 1, 64, patterns::is_kind_name)?;
     // 1–7 unique closed-vocabulary actions.
-    let actions =
-        checked_string_array(object, "actions", CODE, 1, 7, |action| {
-            GRANT_ACTIONS.contains(&action)
-        })?;
+    let actions = checked_string_array(object, "actions", CODE, 1, 7, |action| {
+        GRANT_ACTIONS.contains(&action)
+    })?;
     // 1–32 unique scope strings, each 1–256 Unicode scalar values.
     let scope = checked_string_array(object, "scope", CODE, 1, 32, |item| {
         patterns::scalars_between(item, 1, 256)
@@ -788,10 +789,8 @@ fn parse_grant_spec(value: &Value) -> Result<GrantSpec, Code> {
         None => None,
     };
     // §5.5.1: an inverted window is `E_KEY_VALIDITY`, not `E_GRANT_SCHEMA`.
-    if let Some(until) = valid_until {
-        if valid_from > until {
-            return Err(e::KEY_VALIDITY);
-        }
+    if valid_until.is_some_and(|until| valid_from > until) {
+        return Err(e::KEY_VALIDITY);
     }
     Ok(GrantSpec {
         grantee_key,
@@ -838,10 +837,8 @@ fn parse_consent_granted(envelope: &Envelope) -> Result<ConsentGrantedBody, Code
     validate_nullable_reference(body, "data_subject", CODE)?;
     nullable_string(body, "terms", CODE)?;
     // §8.6 / kind page rule 1: consent windows use `E_CONSENT_VALIDITY`.
-    if let Some(until) = valid_until {
-        if valid_from > until {
-            return Err(e::CONSENT_VALIDITY);
-        }
+    if valid_until.is_some_and(|until| valid_from > until) {
+        return Err(e::CONSENT_VALIDITY);
     }
     Ok(ConsentGrantedBody {
         valid_from,
@@ -1318,10 +1315,7 @@ mod tests {
             e::KIND_BODY_SCHEMA
         );
         let bad_key = set(rotated_body(), "old_key", "not-a-key-id".into());
-        assert_eq!(
-            body_error(&rotation_record(bad_key)),
-            e::KIND_BODY_SCHEMA
-        );
+        assert_eq!(body_error(&rotation_record(bad_key)), e::KIND_BODY_SCHEMA);
 
         // Kind page envelope requirement: actor.key is the old key.
         let file = record_with(
@@ -1476,11 +1470,7 @@ mod tests {
 
     #[test]
     fn grant_bodies() {
-        let body = set(
-            grant_spec(),
-            "revocation",
-            strings(&[HUMAN_1, HUMAN_2]),
-        );
+        let body = set(grant_spec(), "revocation", strings(&[HUMAN_1, HUMAN_2]));
         let file = grant_record(body);
         let parsed = body_ok(&file);
         let KindBody::Grant(grant) = &parsed else {
@@ -1513,12 +1503,18 @@ mod tests {
 
         // `valid_until: null` is unbounded and valid.
         let unbounded = set(grant_spec(), "valid_until", Value::Null);
-        assert!(matches!(body_ok(&grant_record(unbounded)), KindBody::Grant(_)));
+        assert!(matches!(
+            body_ok(&grant_record(unbounded)),
+            KindBody::Grant(_)
+        ));
 
         // A reference object in `evidence` is accepted, as is a string remedy.
         let evidence = set(grant_spec(), "evidence", reference("example.note"));
         let evidence = set(evidence, "remedy", "audit remedy".into());
-        assert!(matches!(body_ok(&grant_record(evidence)), KindBody::Grant(_)));
+        assert!(matches!(
+            body_ok(&grant_record(evidence)),
+            KindBody::Grant(_)
+        ));
 
         // Unknown members at the `body` root are permitted (§7.5).
         let file = record(
@@ -1569,12 +1565,12 @@ mod tests {
         let schema = e::GRANT_SCHEMA;
 
         // `action` handling and variant pairing.
-        let file = record("weave.grant", object(vec![("grant", Value::Object(grant_spec()))]));
-        assert_eq!(body_error(&file), schema);
         let file = record(
             "weave.grant",
-            object(vec![("action", "delegate".into())]),
+            object(vec![("grant", Value::Object(grant_spec()))]),
         );
+        assert_eq!(body_error(&file), schema);
+        let file = record("weave.grant", object(vec![("action", "delegate".into())]));
         assert_eq!(body_error(&file), schema);
         let file = record("weave.grant", object(vec![("action", "grant".into())]));
         assert_eq!(body_error(&file), schema);
@@ -1602,7 +1598,10 @@ mod tests {
         let file = grant_record(set(
             grant_spec(),
             "grantee",
-            value_object(vec![("key", HUMAN_1.into()), ("future_member", 1_i64.into())]),
+            value_object(vec![
+                ("key", HUMAN_1.into()),
+                ("future_member", 1_i64.into()),
+            ]),
         ));
         assert_eq!(body_error(&file), schema);
         let file = grant_record(set(grant_spec(), "grantee", object(vec![]).into()));
@@ -1627,11 +1626,7 @@ mod tests {
         assert_eq!(body_error(&file), schema);
         let file = grant_record(set(grant_spec(), "actions", strings(&["approve"])));
         assert_eq!(body_error(&file), schema);
-        let file = grant_record(set(
-            grant_spec(),
-            "actions",
-            strings(&["accept", "accept"]),
-        ));
+        let file = grant_record(set(grant_spec(), "actions", strings(&["accept", "accept"])));
         assert_eq!(body_error(&file), schema);
         let file = grant_record(set(grant_spec(), "scope", strings(&[])));
         assert_eq!(body_error(&file), schema);
@@ -1640,11 +1635,7 @@ mod tests {
         let file = grant_record(set(grant_spec(), "scope", strings(&["a", "a"])));
         assert_eq!(body_error(&file), schema);
         let long_scope = Value::from("a".repeat(257));
-        let file = grant_record(set(
-            grant_spec(),
-            "scope",
-            Value::Array(vec![long_scope]),
-        ));
+        let file = grant_record(set(grant_spec(), "scope", Value::Array(vec![long_scope])));
         assert_eq!(body_error(&file), schema);
         let too_many_scope = Value::Array(
             (0..33)
@@ -1858,7 +1849,10 @@ mod tests {
         let KindBody::ConsentRevoked(consent) = &parsed else {
             panic!("expected a ConsentRevoked body");
         };
-        assert_eq!(consent.revokes.kind.as_deref(), Some("weave.consent.granted"));
+        assert_eq!(
+            consent.revokes.kind.as_deref(),
+            Some("weave.consent.granted")
+        );
         assert_eq!(consent.effective_at, timestamp(RECORDED_AT));
         assert_eq!(obligation(&file, &parsed), Obligation::Consent);
 
@@ -1947,7 +1941,10 @@ mod tests {
         let KindBody::Erasure(erasure) = &parsed else {
             panic!("expected an Erasure body");
         };
-        assert_eq!(erasure.basis.as_ref().expect("basis").kind.as_deref(), Some("weave.grant"));
+        assert_eq!(
+            erasure.basis.as_ref().expect("basis").kind.as_deref(),
+            Some("weave.grant")
+        );
         assert_eq!(erasure.executed_at, Some(timestamp(RECORDED_AT)));
 
         // Unknown members at the body root are permitted (§7.5).
@@ -1992,11 +1989,7 @@ mod tests {
         assert_eq!(body_error(&file), schema);
         let file = record(
             "weave.erasure",
-            add(
-                erasure_body(),
-                "executed_at",
-                "not-a-timestamp".into(),
-            ),
+            add(erasure_body(), "executed_at", "not-a-timestamp".into()),
         );
         assert_eq!(body_error(&file), schema);
         let file = record("weave.erasure", erasure_body().without("erased"));

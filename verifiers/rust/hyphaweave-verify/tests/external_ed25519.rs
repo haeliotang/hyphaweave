@@ -178,7 +178,9 @@ fn parse_rfc8032_vectors(text: &str) -> Vec<RfcVector> {
             continue; // Page footer, form feed or padding.
         }
         let bytes = hex(line);
-        let vector = current.as_mut().expect("hexadecimal line before test header");
+        let vector = current
+            .as_mut()
+            .expect("hexadecimal line before test header");
         match field {
             RfcField::Seed => vector.seed.extend_from_slice(&bytes),
             RfcField::Public => vector.public_key.extend_from_slice(&bytes),
@@ -215,7 +217,12 @@ fn check_rfc8032() -> usize {
             "{}: message length",
             vector.name
         );
-        assert_eq!(vector.signature.len(), 64, "{}: signature length", vector.name);
+        assert_eq!(
+            vector.signature.len(),
+            64,
+            "{}: signature length",
+            vector.name
+        );
 
         let seed: [u8; 32] = vector.seed.as_slice().try_into().expect("32-byte seed");
         let derived = ed25519::public_key_from_seed(&seed);
@@ -231,10 +238,9 @@ fn check_rfc8032() -> usize {
             "{}: deterministic signature",
             vector.name
         );
-        ed25519::verify(&vector.public_key, &vector.signature, &vector.message)
-            .unwrap_or_else(|code| {
-                panic!("{}: published signature rejected with {code}", vector.name)
-            });
+        ed25519::verify(&vector.public_key, &vector.signature, &vector.message).unwrap_or_else(
+            |code| panic!("{}: published signature rejected with {code}", vector.name),
+        );
     }
     vectors.len()
 }
@@ -445,7 +451,8 @@ fn check_edge_points() -> (usize, usize) {
     assert_eq!(points.len(), 11, "edge-points fixture size");
 
     // A valid prime-order public key (RFC 8032 §7.1 TEST 1) for the `R` checks.
-    let valid_public_key = hex32("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+    let valid_public_key =
+        hex32("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
 
     let mut classified_keys = 0;
     let mut classified_r = 0;
@@ -620,7 +627,7 @@ fn check_project_sig_vectors() -> usize {
                 .unwrap_or_else(|| panic!("{case}: signature value")),
             64,
         )
-        .unwrap_or_else(|()| panic!("{case}: signature is not 64 base64url bytes"));
+        .unwrap_or_else(|_| panic!("{case}: signature is not 64 base64url bytes"));
         let message = digest::record_signature_message(&digest::record_digest(&record));
         assert_eq!(
             ed25519::verify(&public_key, &signature, &message),

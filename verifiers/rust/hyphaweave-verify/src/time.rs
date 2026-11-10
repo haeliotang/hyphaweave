@@ -100,7 +100,11 @@ impl Timestamp {
     /// `0000`–`9999`, so the value fits an `i64` comfortably.
     #[must_use]
     pub fn to_unix_millis(self) -> i64 {
-        let days = days_from_civil(i32::from(self.year), i32::from(self.month), i32::from(self.day));
+        let days = days_from_civil(
+            i32::from(self.year),
+            i32::from(self.month),
+            i32::from(self.day),
+        );
         let millis = i64::from(self.hour) * 3_600_000
             + i64::from(self.minute) * 60_000
             + i64::from(self.second) * 1_000
@@ -177,8 +181,7 @@ fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
 
 /// Civil date for a day count since the Unix epoch (Howard Hinnant's algorithm).
 fn civil_from_days(days: i64) -> (i32, i32, i32) {
-    let days = i32::try_from(days).unwrap_or(if days < 0 { i32::MIN } else { i32::MAX })
-        + 719_468;
+    let days = i32::try_from(days).unwrap_or(if days < 0 { i32::MIN } else { i32::MAX }) + 719_468;
     let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
     let day_of_era = days - era * 146_097;
     let year_of_era =

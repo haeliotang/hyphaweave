@@ -21,7 +21,8 @@ pub fn is_kind_name(text: &str) -> bool {
         return false;
     }
     index += 1;
-    while index < bytes.len() && (bytes[index].is_ascii_lowercase() || bytes[index].is_ascii_digit())
+    while index < bytes.len()
+        && (bytes[index].is_ascii_lowercase() || bytes[index].is_ascii_digit())
     {
         index += 1;
     }
@@ -59,7 +60,8 @@ pub fn is_project_slug(text: &str) -> bool {
         return false;
     }
     let mut index = 1;
-    while index < bytes.len() && (bytes[index].is_ascii_lowercase() || bytes[index].is_ascii_digit())
+    while index < bytes.len()
+        && (bytes[index].is_ascii_lowercase() || bytes[index].is_ascii_digit())
     {
         index += 1;
     }

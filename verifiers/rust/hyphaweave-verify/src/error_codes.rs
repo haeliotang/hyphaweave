@@ -129,7 +129,8 @@ pub mod e {
     pub const TS_CMS: Code = "E_TS_CMS";
     pub const TS_CERT: Code = "E_TS_CERT";
     pub const TS_UNTRUSTED: Code = "E_TS_UNTRUSTED";
-    pub const TS_RENEWAL: Code = "E_TS_RENEWAL";}
+    pub const TS_RENEWAL: Code = "E_TS_RENEWAL";
+}
 
 /// Notices (`N_*`), non-fatal unless the specification says otherwise.
 #[allow(dead_code)]
@@ -149,7 +150,8 @@ pub mod n {
     pub const CONSENT_UNRESOLVED: Code = "N_CONSENT_UNRESOLVED";
     pub const PREVIOUS_SIG_UNVERIFIED: Code = "N_PREVIOUS_SIG_UNVERIFIED";
     pub const IDEMPOTENCY_DUPLICATE: Code = "N_IDEMPOTENCY_DUPLICATE";
-    pub const READABLE_PRESENT: Code = "N_READABLE_PRESENT";}
+    pub const READABLE_PRESENT: Code = "N_READABLE_PRESENT";
+}
 
 /// Every error code in the closed registry, in registry order.
 pub const ALL_ERROR_CODES: &[Code] = &[
@@ -265,7 +267,8 @@ pub const ALL_ERROR_CODES: &[Code] = &[
     "E_TS_CMS",
     "E_TS_CERT",
     "E_TS_UNTRUSTED",
-    "E_TS_RENEWAL",];
+    "E_TS_RENEWAL",
+];
 
 /// Every notice in the closed registry, in registry order.
 pub const ALL_NOTICES: &[Code] = &[
@@ -282,7 +285,8 @@ pub const ALL_NOTICES: &[Code] = &[
     "N_CONSENT_UNRESOLVED",
     "N_PREVIOUS_SIG_UNVERIFIED",
     "N_IDEMPOTENCY_DUPLICATE",
-    "N_READABLE_PRESENT",];
+    "N_READABLE_PRESENT",
+];
 
 /// True when `code` is a registered error code.
 #[must_use]

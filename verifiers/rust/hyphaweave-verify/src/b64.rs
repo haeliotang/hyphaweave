@@ -20,22 +20,26 @@ fn decode_symbol(byte: u8) -> Option<u32> {
     }
 }
 
+/// Strict base64url decoding failure; callers map it to their field's code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodeError;
+
 /// Decodes strict unpadded base64url.
 ///
 /// # Errors
-/// Returns `Err(())` for padding, any character outside the alphabet, a length
+/// Returns `Err(DecodeError)` for padding, any character outside the alphabet, a length
 /// that cannot be produced without padding (1 mod 4), or non-zero unused
 /// trailing bits.
-pub fn decode(text: &str) -> Result<Vec<u8>, ()> {
+pub fn decode(text: &str) -> Result<Vec<u8>, DecodeError> {
     let bytes = text.as_bytes();
     if bytes.len() % 4 == 1 {
-        return Err(());
+        return Err(DecodeError);
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3 + 2);
     let mut accumulator: u32 = 0;
     let mut bits: u32 = 0;
     for &byte in bytes {
-        let symbol = decode_symbol(byte).ok_or(())?;
+        let symbol = decode_symbol(byte).ok_or(DecodeError)?;
         accumulator = (accumulator << 6) | symbol;
         bits += 6;
         if bits >= 8 {
@@ -46,28 +50,28 @@ pub fn decode(text: &str) -> Result<Vec<u8>, ()> {
     }
     if bits > 0 && accumulator != 0 {
         // Non-zero unused trailing bits: a padded/redundant encoding.
-        return Err(());
+        return Err(DecodeError);
     }
     Ok(out)
 }
 
 /// Decodes strict unpadded base64url and requires exactly `expected` bytes.
-pub fn decode_exact(text: &str, expected: usize) -> Result<Vec<u8>, ()> {
+pub fn decode_exact(text: &str, expected: usize) -> Result<Vec<u8>, DecodeError> {
     let bytes = decode(text)?;
     if bytes.len() == expected {
         Ok(bytes)
     } else {
-        Err(())
+        Err(DecodeError)
     }
 }
 
 /// Decodes strict unpadded base64url and requires a length in `min..=max`.
-pub fn decode_range(text: &str, min: usize, max: usize) -> Result<Vec<u8>, ()> {
+pub fn decode_range(text: &str, min: usize, max: usize) -> Result<Vec<u8>, DecodeError> {
     let bytes = decode(text)?;
     if (min..=max).contains(&bytes.len()) {
         Ok(bytes)
     } else {
-        Err(())
+        Err(DecodeError)
     }
 }
 

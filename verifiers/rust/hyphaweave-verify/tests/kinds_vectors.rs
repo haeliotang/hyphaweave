@@ -123,7 +123,10 @@ fn kinds_record_target_kind_level_errors() {
             continue;
         }
         let errors = expected_errors(&expected);
-        if !errors.iter().any(|code| KIND_CODES.contains(&code.as_str())) {
+        if !errors
+            .iter()
+            .any(|code| KIND_CODES.contains(&code.as_str()))
+        {
             continue;
         }
         let input = expected.get_str("input").unwrap_or("record.json");
@@ -220,10 +223,17 @@ fn kinds_consent_validity_container_vector() {
         .expect("consent-validity container records")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
         .collect();
     files.sort();
-    assert_eq!(files.len(), 1, "expected the consent record in the container");
+    assert_eq!(
+        files.len(),
+        1,
+        "expected the consent record in the container"
+    );
     let mut validity_errors = 0usize;
     for file in files {
         let bytes = fs::read(&file).expect("read container record");
@@ -262,7 +272,10 @@ fn kinds_obligation_matches_every_vector_record() {
             if container.is_dir() && records_dir.is_dir() {
                 for entry in fs::read_dir(&records_dir).expect("container records dir") {
                     let path = entry.expect("container record entry").path();
-                    if path.extension().is_some_and(|extension| extension == "json") {
+                    if path
+                        .extension()
+                        .is_some_and(|extension| extension == "json")
+                    {
                         files.push(path);
                     }
                 }
@@ -336,7 +349,12 @@ fn kinds_obligation_matches_every_vector_record() {
                     } else {
                         Obligation::None
                     };
-                    assert_eq!(obligation, expected, "{}: wrong ordinary obligation", file.display());
+                    assert_eq!(
+                        obligation,
+                        expected,
+                        "{}: wrong ordinary obligation",
+                        file.display()
+                    );
                 }
             }
             if let Some(envelope) = record.envelope() {
