@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"expected_container":{"level_claimed":"L0","level_verified":"L0","record_count":2},"id":"labels/consent-resolved","input":"container","notes":"Positive: a resolved consent reference makes the labels consistent (spec §8.6, H3).","target":"container","verdict":"valid"}

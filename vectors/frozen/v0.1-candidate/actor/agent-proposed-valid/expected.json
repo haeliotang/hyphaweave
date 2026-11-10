@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":[],"expected_container":{"level_claimed":"L0","level_verified":"L0","record_count":2},"id":"actor/agent-proposed-valid","input":"container","notes":"Positive: an agent record with a resolved, applicable grant for the propose action and the record's kind.","target":"container","verdict":"valid"}

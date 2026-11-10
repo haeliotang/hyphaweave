@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_UNVERIFIABLE"],"id":"sig/unknown-alg","input":"record.json","notes":"Q13: an unknown-algorithm signature entry is ignored. The record is required to be signed and has no verifiable required signature, so it is unverifiable (spec §3.6, signature aggregation).","target":"record","verdict":"unverifiable"}

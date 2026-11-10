@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_VERSION"],"id":"container/manifest-version-unsupported","input":"container","notes":"H0 supports only manifest_version 1; an unknown integer version is unsupported (E_MANIFEST_VERSION), never silently accepted (K3).","target":"container","verdict":"invalid"}

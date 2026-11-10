@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_LICENCE"],"id":"labels/licence-garbage","input":"record.json","notes":"Licence expressions may not contain arbitrary text.","target":"record","verdict":"invalid"}

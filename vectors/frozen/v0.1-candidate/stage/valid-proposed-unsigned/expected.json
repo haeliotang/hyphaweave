@@ -1,0 +1,1 @@
+{"category":"stage","errors":[],"id":"stage/valid-proposed-unsigned","input":"record.json","notes":"A proposed record may rely on the container signature only (§4.4).","target":"record","verdict":"valid"}

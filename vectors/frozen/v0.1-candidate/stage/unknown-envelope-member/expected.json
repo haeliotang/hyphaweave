@@ -1,0 +1,1 @@
+{"category":"stage","errors":["E_ENV_UNKNOWN_FIELD"],"id":"stage/unknown-envelope-member","input":"record.json","notes":"The envelope is a closed object (§4).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":["E_GRANT_NOT_APPLICABLE"],"id":"actor/agent-accepted-action-not-granted","input":"container","notes":"Grant allows propose but not accept: an accepted record exceeds the delegated action set (E_GRANT_NOT_APPLICABLE).","target":"container","verdict":"invalid"}

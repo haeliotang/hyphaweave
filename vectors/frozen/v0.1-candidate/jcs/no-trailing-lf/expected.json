@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"jcs","errors":[],"id":"jcs/no-trailing-lf","input":"record.json","notes":"Canonical bytes without the optional trailing LF are also valid (§1.8).","target":"record","verdict":"valid"}

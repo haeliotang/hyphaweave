@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NUMBER_RANGE"],"id":"jcs/integer-below-min","input":"record.json","notes":"Integers below -(2^53-1) are rejected by the range check (spec §1.6).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"category":"actor","errors":["E_ENV_ACTOR_MODEL"],"id":"actor/agent-bad-model","input":"record.json","notes":"model must be provider/model@version ASCII (§4.2).","target":"record","verdict":"invalid"}

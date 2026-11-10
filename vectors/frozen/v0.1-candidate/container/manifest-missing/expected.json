@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_MISSING"],"id":"container/manifest-missing","input":"container","notes":"A container directory without manifest.json is E_MANIFEST_MISSING (§11.1), not a generic parse error.","target":"container","verdict":"invalid"}

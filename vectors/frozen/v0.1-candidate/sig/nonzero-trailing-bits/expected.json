@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_ENV_SIG_VALUE"],"id":"sig/nonzero-trailing-bits","input":"record.json","notes":"Non-zero unused trailing bits are not canonical base64url (§2.6).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_DELEGATION_EXCEEDS"],"id":"grant/sub-grant-expands-actions","input":"container","notes":"A sub-grant's actions must be a subset of the parent's actions; adding 'reject' is an authority expansion (E_GRANT_DELEGATION_EXCEEDS, S3).","target":"container","verdict":"invalid"}

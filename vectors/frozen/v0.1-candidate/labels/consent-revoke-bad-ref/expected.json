@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":["E_CONSENT_REVOKE_REF"],"id":"labels/consent-revoke-bad-ref","input":"container","notes":"A weave.consent.revoked record must cite a weave.consent.granted record; a reference resolving to another kind is E_CONSENT_REVOKE_REF (§8.6, H3).","target":"container","verdict":"invalid"}

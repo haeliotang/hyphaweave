@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"integrity-levels","errors":["E_MANIFEST_L1_NO_POSITION"],"id":"integrity-levels/l1-no-position","input":"container","notes":"A manifest claiming L1 with chain present but a records[] entry lacking chain_index is incomplete (E_MANIFEST_L1_NO_POSITION).","target":"container","verdict":"invalid"}

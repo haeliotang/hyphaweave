@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":["E_GRANT_UNRESOLVED"],"id":"actor/agent-accepted-grant-unresolved-container","input":"container","notes":"A container whose only record is unverifiable must aggregate to the container verdict 'unverifiable', not 'valid' and not 'invalid' (§14.3).","target":"container","verdict":"unverifiable"}

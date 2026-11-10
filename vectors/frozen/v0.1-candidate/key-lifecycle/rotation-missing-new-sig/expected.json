@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_ROTATION_SIGS"],"id":"key-lifecycle/rotation-missing-new-sig","input":"record.json","notes":"A rotation is only valid when signed by BOTH the old and the new key (§9.2, E_KEY_ROTATION_SIGS); the old-key signature alone cannot authorize a new key.","target":"record","verdict":"invalid"}

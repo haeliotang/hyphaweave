@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"ref","errors":[],"expected_container":{"level_claimed":"L0","level_verified":"L0","record_count":2},"id":"ref/kind-match","input":"container","notes":"Positive control for the previous case: a matching kind claim is fine.","target":"container","verdict":"valid"}

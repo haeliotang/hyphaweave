@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":["E_ACTOR_KEY_TYPE_MISMATCH"],"id":"actor/agent-with-human-key","input":"record.json","notes":"A key declared human may only sign records with actor.type=human: an agent using a human key is E_ACTOR_KEY_TYPE_MISMATCH (§5.1).","target":"record","verdict":"invalid"}

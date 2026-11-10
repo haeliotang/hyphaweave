@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_REVOKE_EFFECTIVE"],"id":"key-lifecycle/revoke-effective-after-recorded","input":"record.json","notes":"A revocation may not take effect after it was recorded: effective_at > recorded_at is E_KEY_REVOKE_EFFECTIVE invalid.","target":"record","verdict":"invalid"}

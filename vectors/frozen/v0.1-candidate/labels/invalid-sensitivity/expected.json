@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_SENSITIVITY"],"id":"labels/invalid-sensitivity","input":"record.json","notes":"sensitivity uses the closed vocabulary public/internal/personal/local-only.","target":"record","verdict":"invalid"}

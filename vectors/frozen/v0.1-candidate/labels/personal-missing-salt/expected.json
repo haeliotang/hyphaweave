@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_SALT_MISSING"],"id":"labels/personal-missing-salt","input":"record.json","notes":"personal sensitivity requires the salt member (§4, §8.3).","target":"record","verdict":"invalid"}

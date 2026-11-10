@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"jcs","errors":[],"id":"jcs/utf16-key-order","input":"record.json","notes":"Member names must sort by UTF-16 code units: U+1F600 sorts between U+D7FF and U+E000, not after U+FFFF.","target":"record","verdict":"valid"}

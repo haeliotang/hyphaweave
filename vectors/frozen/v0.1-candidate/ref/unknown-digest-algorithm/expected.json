@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"ref","errors":[],"expected_resolution":["unverifiable"],"id":"ref/unknown-digest-algorithm","input":"record.json","notes":"An unsupported digest algorithm makes that reference unverifiable, not the record invalid (§2.7, §6).","notices":["N_REF_UNVERIFIABLE"],"target":"record","verdict":"valid"}

@@ -1,0 +1,1 @@
+{"category":"stage","errors":["E_ENV_BODY"],"id":"stage/non-object-body","input":"record.json","notes":"body must be a JSON object (§4).","target":"record","verdict":"invalid"}

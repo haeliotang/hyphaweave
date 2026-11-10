@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":[],"id":"actor/human-valid","input":"record.json","notes":"Baseline human actor with a declared human key.","target":"record","verdict":"valid"}

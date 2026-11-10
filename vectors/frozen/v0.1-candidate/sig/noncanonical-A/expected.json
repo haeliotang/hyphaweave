@@ -1,0 +1,1 @@
+{"category":"sig","errors":["E_SIG_NONCANONICAL_A"],"id":"sig/noncanonical-A","input":"record.json","notes":"A declared public key encoding with y = p (>= p) fails RFC 8032 decoding before any equation work (spec §3.2, §3.4).","target":"record","verdict":"invalid"}

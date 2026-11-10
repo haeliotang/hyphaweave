@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_DIGEST"],"id":"container/manifest-digest-wrong","input":"container","notes":"signatures/manifest.sig.json.digest does not equal the §2.4 manifest digest; the digest check precedes signature verification (§14.5).","target":"container","verdict":"invalid"}

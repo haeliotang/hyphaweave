@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/local-only-with-salt","input":"record.json","notes":"local-only records need a salt; the export refusal only applies inside containers (§8.5).","target":"record","verdict":"valid"}

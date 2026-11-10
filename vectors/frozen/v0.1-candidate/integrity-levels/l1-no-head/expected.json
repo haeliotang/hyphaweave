@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"integrity-levels","errors":["E_MANIFEST_L1_NO_HEAD"],"id":"integrity-levels/l1-no-head","input":"container","notes":"A manifest claiming L1 without manifest.chain is structurally incomplete (E_MANIFEST_L1_NO_HEAD); the manifest digest and signature are valid.","target":"container","verdict":"invalid"}

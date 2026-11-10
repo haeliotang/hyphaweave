@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_INVALID"],"id":"sig/invalid-value","input":"record.json","notes":"A flipped signature byte fails the Ed25519 equation (§3.4).","target":"record","verdict":"invalid"}

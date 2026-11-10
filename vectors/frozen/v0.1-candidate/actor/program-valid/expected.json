@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":[],"id":"actor/program-valid","input":"record.json","notes":"program actors have no extra actor members (§4.2).","target":"record","verdict":"valid"}

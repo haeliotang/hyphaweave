@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_VALIDITY"],"id":"key-lifecycle/declared-validity-inverted","input":"record.json","notes":"A declaration whose valid_from is later than its valid_until is E_KEY_VALIDITY invalid; self-signature and cosignature are both valid, so the window check is the failing rule.","target":"record","verdict":"invalid"}

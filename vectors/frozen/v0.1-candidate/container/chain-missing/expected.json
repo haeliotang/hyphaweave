@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_CHAIN_MISSING"],"id":"container/chain-missing","input":"container","notes":"previous_manifest is non-null but previous/manifest.json is absent (§11.5, E_MANIFEST_CHAIN_MISSING).","target":"container","verdict":"invalid"}
