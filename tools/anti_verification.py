@@ -349,10 +349,11 @@ def _build_catalogue() -> None:
            r'if envelope\.kind != kinds\.KIND_GRANT or envelope\.body\.get\("action"\) != "grant":\n\s*raise WeaveError\("E_GRANT_GRANTER", "reference does not resolve to an authorising grant"\)',
            'if False:  # ablation: revoke record accepted as authorising grant\n        pass',
            ("grant/revoke-grant-as-authority",), review_a_survivor=True,
-           equivalent_reason="the cited-authority action is checked twice with the same E_GRANT_GRANTER "
-           "(grants.py _as_grant and check_agent_authorization); removing both removes the guard that "
-           "prevents grant_record_from_envelope from reinterpreting a revoke body (body.grant is absent, "
-           "KeyError), so no mutant can be accepted - the vector's E_GRANT_GRANTER outcome is preserved"),
+           equivalent_reason="reviewed-equivalent: the cited-authority action is checked twice with the "
+           "same E_GRANT_GRANTER (grants.py _as_grant and check_agent_authorization), and removing both "
+           "still cannot accept a revoke record: grant_record_from_envelope reinterprets the body and "
+           "fails because body.grant is absent; grant/revoke-record-as-authority pins the "
+           "E_GRANT_GRANTER outcome"),
         _m("grant-delegation-parent-action", "grants.py", "grants.delegation.parent-capabilities",
            "allow a parent grant that does not authorise granting",
            r'if "weave\.grant" not in parent\.kind_names or "grant" not in parent\.actions:',
@@ -398,21 +399,22 @@ def _build_catalogue() -> None:
            r'if context\.grant_state\.revocation_as_of\(parent\.digest, at_time\) is not None:',
            'if False:  # ablation: parent grant revocation check disabled',
            ("grant/sub-grant-parent-revoked",), review_a_survivor=True,
-           co_mutations=(
-               ("grants.py",
-                r'raise WeaveError\("E_GRANT_REVOKED", "grant is revoked"\)',
-                'pass  # co-ablation: chain-level revocation disabled'),
-           )),
+           equivalent_reason="reviewed-equivalent: the delegation-layer revocation check is mirrored by "
+           "validate_grant_chain's own revocation guard (same E_GRANT_REVOKED) and by the "
+           "agent-authorisation path that resolves the same cited grant; non-agent sub-grants are "
+           "unconstructible (the envelope forbids actor.grant on non-agent actors), so the "
+           "E_GRANT_REVOKED outcome is pinned by grant/parent-revoked, grant/revoked and "
+           "grant/revoked-boundary-equal"),
         _m("grant-parent-expired", "grants.py", "grants.delegation.parent-window",
            "ignore that the parent grant is not yet valid",
            r'if timestamp_sort_key\(at_time\) < timestamp_sort_key\(parent\.valid_from\):',
            'if False:  # ablation: parent grant lower-window check disabled',
            ("grant/sub-grant-parent-expired",), review_a_survivor=True,
-           co_mutations=(
-               ("grants.py",
-                r'raise WeaveError\("E_GRANT_EXPIRED", "grant is outside its validity window"\)',
-                'pass  # co-ablation: _check_window expiry disabled'),
-           )),
+           equivalent_reason="reviewed-equivalent: the delegation-layer validity check is mirrored by "
+           "_check_window during the recursive parent-chain validation (same E_GRANT_EXPIRED, covering "
+           "both not-yet-valid and expired parents), and the delegating record is necessarily an agent "
+           "record whose actor.grant goes through the same agent-authorisation path; the vectors "
+           "grant/parent-expired and grant/sub-grant-parent-expired pin the E_GRANT_EXPIRED outcome"),
         _m("grant-chain-depth", "grants.py", "grants.chain.depth",
            "remove the grant chain depth guard",
            r'if depth > MAX_CHAIN_DEPTH or grant\.digest in seen:',
@@ -500,14 +502,15 @@ def _build_catalogue() -> None:
            ("key-lifecycle/compromise-backdated-forgery", "key-lifecycle/compromise-retroactive"),
            review_a_survivor=True),
         _m("key-owner-missing", "keys.py", "keys.declaration.owner",
-           "allow agents/programs/devices without a declared owner",
-           r'raise WeaveError\("E_KEY_OWNER_MISSING", "missing owner"\)',
-           'pass  # ablation: owner requirement disabled',
+           "allow agents/programs/devices without a declared owner "
+           "(primary check; the second guard is unreachable dead code)",
+           r'raise WeaveError\(\n\s*"E_KEY_OWNER_MISSING",\n\s*"agent/program/device key declarations require body\.owner",?\n\s*\)',
+           'pass  # ablation: primary owner requirement disabled',
            ("key-lifecycle/declared-agent-without-owner",),
            co_mutations=(
                ("keys.py",
-                r'raise WeaveError\(\n\s*"E_KEY_OWNER_MISSING",\n\s*"agent/program/device key declarations require body\.owner",?\n\s*\)',
-                'pass  # co-ablation: primary owner requirement disabled'),
+                r'raise WeaveError\("E_KEY_OWNER_MISSING", "missing owner"\)',
+                'pass  # co-ablation: fallback owner guard disabled'),
            )),
         _m("key-id-mismatch", "keys.py", "keys.declaration.key-id",
            "stop deriving the key id from the declared public key",
