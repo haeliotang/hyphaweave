@@ -243,8 +243,13 @@ def validate_grant_chain(
     if grant.actor_type in ("human", "organization"):
         return  # root grant
     parent, _parent_digest = _resolve_grant(grant.parent_reference, context)
-    _check_delegation(grant, parent, context, at_time)
-    validate_grant_chain(parent, context, at_time, depth=depth + 1, seen=seen)
+    # The whole authorisation chain, ancestors included, is evaluated at the
+    # verified record's claimed time. This single assignment is the anti-
+    # verification anchor for the old §5.5.2 step-6 reading: mutating it to the
+    # grant's own time must make grant/ancestor-revoked-before-record fail.
+    ancestor_time = at_time
+    _check_delegation(grant, parent, context, ancestor_time)
+    validate_grant_chain(parent, context, ancestor_time, depth=depth + 1, seen=seen)
 
 
 def check_grant_semantics(

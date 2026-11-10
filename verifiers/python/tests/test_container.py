@@ -24,8 +24,23 @@ def keyset():
     return loaded, views
 
 
+_DEFAULT_KEYSET_CACHE: tuple | None = None
+
+
+def default_keyset():
+    """Revision 2: container trust roots come from the local --keys keyset."""
+    global _DEFAULT_KEYSET_CACHE
+    if _DEFAULT_KEYSET_CACHE is None:
+        loaded = verifier.load_keyset_directory(KEYSET)
+        views = verifier.verify_record_set(loaded)
+        _DEFAULT_KEYSET_CACHE = (loaded, views)
+    return _DEFAULT_KEYSET_CACHE
+
+
 def verify(path, keyset_pair=None, **kwargs):
-    keyset_loaded, keyset_views = keyset_pair or ([], [])
+    if keyset_pair is None:
+        keyset_pair = default_keyset()
+    keyset_loaded, keyset_views = keyset_pair
     return container_module.verify_container(
         path,
         keyset_records=keyset_loaded,

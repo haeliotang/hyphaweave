@@ -148,12 +148,19 @@ class RecordView:
 class Context:
     """The record set against which a target is verified."""
 
-    def __init__(self, *, verified_timestamps: tuple[VerifiedTimestamp, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
+        timestamp_evidence_present: bool = False,
+    ) -> None:
         self.views: list[RecordView] = []
         self.key_state = KeyState()
         self.grant_state = GrantState()
         self.consent_revocations: dict[str, list[ConsentRevocation]] = {}
         self.verified_timestamps = tuple(verified_timestamps)
+        self.timestamp_evidence_present = timestamp_evidence_present
+        self._trusted_human_org: frozenset[str] = frozenset()
         self.pending_touched = False
         self._index: dict[tuple[str, str, str], list[RecordView]] = {}
         self._declared_material: dict[str, tuple[bytes, str]] = {}
@@ -172,10 +179,16 @@ class Context:
         self.grant_state = GrantState()
         self.consent_revocations = {}
         self._declared_material = {}
+        trusted: set[str] = set()
         for view in self.views:
             self._register_declared_material(view)
-            if view.verdict == "valid":
-                self._apply_state(view)
+            if view.verdict != "valid":
+                continue
+            self._apply_state(view)
+            declaration = view.key_declaration
+            if declaration is not None and declaration.key_type in ("human", "organization"):
+                trusted.add(declaration.key_id)
+        self._trusted_human_org = frozenset(trusted)
 
     def _register_declared_material(self, view: RecordView) -> None:
         """Owner lookup material: any structurally usable declaration, valid or not."""
@@ -203,8 +216,9 @@ class Context:
     def is_declared_key(self, key_id: str) -> bool:
         return self.key_state.is_declared(key_id)
 
-    def established_human_org_before(self, recorded_at: str, digest: str) -> frozenset[str]:
-        return self.key_state.established_human_org_before(recorded_at, digest)
+    def trusted_human_org(self) -> frozenset[str]:
+        """Human/organization keys trusted via the keyset and its closure."""
+        return self._trusted_human_org
 
     def _apply_state(self, view: RecordView) -> None:
         if view.key_declaration is not None:
@@ -354,6 +368,7 @@ def _verify_signatures(
                     signature.key,
                     envelope.recorded_at,
                     verified_timestamps=context.verified_timestamps,
+                    timestamp_evidence_present=context.timestamp_evidence_present,
                     skip_revocations=(envelope.kind == kinds.KIND_REVOKED),
                 )
             try:
@@ -385,10 +400,23 @@ def _resolve_signing_key(
     declaration in a fresh context is verifiable without prior trust. No
     ``old_key -> new_key`` inference is performed (M-12): only explicitly listed
     public keys (declaration body, rotation body fields) are used.
+
+    For a ``weave.key.declared`` record, signatures by keys that are declared
+    anywhere in the context are verified against that declaration's structural
+    public key: the declaration's own trust/validity is decided by the kind
+    semantics, not by the fact that a cosignature could be located.
+    ``from_context`` is only true for keys whose declaration is itself valid
+    (those signatures are subject to TOFU/lifecycle effects); structurally
+    resolved keys are reported as ``False`` because the declaration semantics
+    owns the trust decision.
     """
     body = envelope.body
-    if envelope.kind == kinds.KIND_DECLARED and body.get("key") == key:
-        return (decode_public_key_material(body.get("public_key")), False)
+    if envelope.kind == kinds.KIND_DECLARED:
+        if body.get("key") == key:
+            return (decode_public_key_material(body.get("public_key")), False)
+        declared_material = context.declaration_material(key)
+        if declared_material is not None:
+            return (declared_material[0], False)
     if envelope.kind == kinds.KIND_ROTATED:
         if body.get("new_key") == key and "new_public_key" in body:
             return (decode_public_key_material(body["new_public_key"]), False)
@@ -439,10 +467,9 @@ def _check_kind_semantics(
             recorded_at=envelope.recorded_at,
             record_digest=digest,
             context=context,
+            source=view.loaded.source,
         )
         view.key_declaration = declaration
-        if declaration.self_attested_root:
-            view.notices.append("N_SELF_ATTESTED_ROOT_KEY")
     elif kind == kinds.KIND_ROTATED:
         view.key_rotation = check_rotated_semantics(
             body=envelope.body,
@@ -700,6 +727,8 @@ def attempt_record(view: RecordView, context: Context) -> None:
         view.verdict = "valid"
     except WeaveError as error:
         view.errors.append(error.code)
+        if error.notice is not None:
+            view.notices.append(error.notice)
         view.verdict = record_verdict(view.errors)
 
 
@@ -720,6 +749,7 @@ def verify_record_set(
     loaded: Iterable[LoadedRecord],
     *,
     verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
+    timestamp_evidence_present: bool = False,
     context_views: Iterable[RecordView] = (),
 ) -> list[RecordView]:
     """Verify every record of a set (a container or an external keyset)."""
@@ -728,7 +758,10 @@ def verify_record_set(
     max_passes = 2 * len(views) + 3
     previous: tuple[Any, ...] | None = None
     for _ in range(max_passes):
-        context = Context(verified_timestamps=verified_timestamps)
+        context = Context(
+            verified_timestamps=verified_timestamps,
+            timestamp_evidence_present=timestamp_evidence_present,
+        )
         for view in fixed_context_views:
             context.register(view)
         for view in views:
@@ -748,12 +781,18 @@ def verify_single_record(
     context_records: Iterable[LoadedRecord] = (),
     *,
     verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
+    timestamp_evidence_present: bool = False,
 ) -> tuple[RecordView, list[RecordView]]:
     """Verify one record target against an external context (the ``--keys`` keyset)."""
     resolved_context = verify_record_set(
-        context_records, verified_timestamps=verified_timestamps
+        context_records,
+        verified_timestamps=verified_timestamps,
+        timestamp_evidence_present=timestamp_evidence_present,
     )
-    context = Context(verified_timestamps=verified_timestamps)
+    context = Context(
+        verified_timestamps=verified_timestamps,
+        timestamp_evidence_present=timestamp_evidence_present,
+    )
     for view in resolved_context:
         context.register(view)
     context.rebuild()

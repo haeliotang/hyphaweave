@@ -15,10 +15,12 @@ KEYSET = VECTORS / "keys" / "keyset"
 
 
 def test_container_report_is_deterministic() -> None:
-    first = run_cli("container", str(L0_CONTAINER))
+    first = run_cli("container", str(L0_CONTAINER), "--keys", str(KEYSET))
     second = run_cli(
         "container",
         str(L0_CONTAINER),
+        "--keys",
+        str(KEYSET),
         extra_env={"TZ": "Pacific/Kiritimati", "LANG": "C", "LC_ALL": "C"},
         cwd=REPO_ROOT,
     )
@@ -27,10 +29,12 @@ def test_container_report_is_deterministic() -> None:
 
 
 def test_container_report_independent_of_cwd_timezone_locale(tmp_path) -> None:
-    first = run_cli("container", str(L0_CONTAINER), cwd=tmp_path)
+    first = run_cli("container", str(L0_CONTAINER), "--keys", str(KEYSET), cwd=tmp_path)
     second = run_cli(
         "container",
         str(L0_CONTAINER),
+        "--keys",
+        str(KEYSET),
         cwd="/",
         extra_env={
             "TZ": "America/New_York",
@@ -72,13 +76,16 @@ def test_report_serialization_shape() -> None:
 
 
 def test_input_identity_uses_manifest_digest_for_directories() -> None:
-    result = run_cli("container", str(L0_CONTAINER))
+    result = run_cli("container", str(L0_CONTAINER), "--keys", str(KEYSET))
     report = json.loads(result.stdout.decode("utf-8"))
     assert report["input"]["sha256"] == report["container"]["manifest_digest"]
     assert report["input"]["size"] > 0
     # The zip form identifies the archive itself.
     zip_result = run_cli(
-        "container", str(VECTORS / "container" / "zip-valid" / "container.zip")
+        "container",
+        str(VECTORS / "container" / "zip-valid" / "container.zip"),
+        "--keys",
+        str(KEYSET),
     )
     zip_report = json.loads(zip_result.stdout.decode("utf-8"))
     assert zip_report["input"]["sha256"].startswith("sha256:")

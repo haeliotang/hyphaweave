@@ -567,20 +567,18 @@ def verify_container(
     )
     if manifest.level == "L2" and not archive.anchor_verified:
         limitations.append(LIMITATION_TSA_TRUST)
-    earliest_verified = archive.earliest_verified_gen_time_ms
-    verified_timestamps: tuple[VerifiedTimestamp, ...] = ()
-    if earliest_verified is not None:
-        earliest_result = next(
-            result
-            for result in archive.results
-            if result.gen_time_ms == earliest_verified
+    # Rescue evidence keeps every verified receipt together with its
+    # accuracy; the compromise rule is genTime + accuracy < effective_at (strict).
+    verified_timestamps: tuple[VerifiedTimestamp, ...] = tuple(
+        VerifiedTimestamp(
+            gen_time=result.gen_time or "",
+            gen_time_ms=result.gen_time_ms or 0,
+            gen_time_us=result.gen_time_us or 0,
+            accuracy_us=result.accuracy_us,
         )
-        verified_timestamps = (
-            VerifiedTimestamp(
-                gen_time=earliest_result.gen_time or "",
-                gen_time_ms=earliest_verified,
-            ),
-        )
+        for result in archive.verified_results()
+    )
+    timestamp_evidence_present = bool(attestation.timestamps)
     # S2 for the manifest signature: judge it with the manifest timestamp chain.
     try:
         _check_manifest_signer_effects(
@@ -590,6 +588,7 @@ def verify_container(
             ),
             manifest.created_at,
             verified_timestamps,
+            timestamp_evidence_present,
         )
     except WeaveError as error:
         errors.append(error.code)
@@ -601,6 +600,7 @@ def verify_container(
     record_views = verifier.verify_record_set(
         loaded_records,
         verified_timestamps=verified_timestamps,
+        timestamp_evidence_present=timestamp_evidence_present,
         context_views=keyset_verified,
     )
 
@@ -901,11 +901,15 @@ def _check_manifest_signer_effects(
     key_state: keys_module.KeyState,
     created_at: str,
     verified_timestamps: tuple[VerifiedTimestamp, ...],
+    timestamp_evidence_present: bool,
 ) -> None:
-    """Apply key lifecycle effects to manifest signatures (S2, Q20, M-2)."""
+    """Apply key lifecycle effects to manifest signatures (compromise timing and timestamp accuracy)."""
     for key in signer_keys:
         key_state.check_signature_effects(
-            key, created_at, verified_timestamps=verified_timestamps
+            key,
+            created_at,
+            verified_timestamps=verified_timestamps,
+            timestamp_evidence_present=timestamp_evidence_present,
         )
 
 

@@ -8,8 +8,8 @@ A complete, offline, deterministic verifier for the `weave-record/1` exchange fo
 manifest and manifest signatures, key lifecycle and authorisation, labels and
 consent, erasure, the five-state reference resolution, and L2 RFC 3161 timestamps.
 
-**Status: draft (revision 1, decision 2026-11-10 #34).** `weave-record/1` v0.1 has
-not passed its J1/J2 round-trip acceptance cases yet, and this is currently the only
+**Status: draft (decisions 2026-11-10 #34 and #42).** `weave-record/1` v0.1 has not
+passed its J1/J2 round-trip acceptance cases yet, and this is currently the only
 implementation, so it is not yet an independent implementation. The specification
 and the vector set are the authority: this package is the reference implementation
 of the rules, it does not define them.
@@ -127,15 +127,27 @@ not be used to weaken production verification.
   exported records: `chain.status` is always `unverified` and `level_verified` is
   reported as `L0` for L1 (notice `N_CHAIN_CLAIM_UNVERIFIED`).
 * Trust is trust-on-first-use from key-lifecycle records in the context; there is
-  no certificate authority, no network revocation distribution and no pinned
-  local trust store beyond the supplied keyset (`N_KEY_TOFU`). Since revision 1,
-  a `key-compromise` revocation invalidates **every** signature of that key (the
-  claimed `recorded_at` is not evidence); only a verified external RFC 3161
-  timestamp covering the record with `genTime_ms <= effective_at_ms` rescues it.
-* A key declaration for an agent/program/device key requires `body.owner` and the
-  owner's cosignature; human/organization keys require a cosignature once another
-  human/organization key is established, except the first/root key, which may be
-  self-attested (`N_SELF_ATTESTED_ROOT_KEY`).
+  no certificate authority and no network revocation distribution. **Trust roots
+  come only from the verifier-supplied `--keys` keyset** (decision #42): a
+  self-signed human/organization declaration in the keyset is a root, while a
+  container/target human/organization declaration is valid only when its key is
+  already trusted or it is cosigned by a trusted human/organization key
+  (iterative closure). Otherwise it is unverifiable (`E_KEY_UNTRUSTED`) and, when
+  it only carries its own self-signature, a `N_SELF_ATTESTED_ROOT_KEY` notice is
+  emitted. There is no root election by claimed `recorded_at`; with no `--keys`
+  the trust set is empty.
+* A `key-compromise` revocation invalidates **every** signature of that key (the
+  claimed `recorded_at` is not evidence). Only a verified external RFC 3161
+  timestamp covering the record with `genTime + accuracy` **strictly before**
+  `effective_at` rescues it (accuracy absent counts as 0, microsecond
+  comparison; equality does not rescue). If timestamp receipts exist but no
+  trust anchor was supplied the signature is unverifiable (`E_TS_UNTRUSTED`);
+  with no timestamp evidence at all it is invalid (`E_KEY_COMPROMISED`).
+* A key declaration for an agent/program/device key requires `body.owner`, an
+  owner of human/organization class (`E_KEY_OWNER_MISSING` when the owner is
+  missing or of the wrong class), the owner's cosignature
+  (`E_KEY_DECLARED_NOT_COSIGNED`), and an owner that is trusted
+  (`E_KEY_UNTRUSTED` otherwise; an unresolvable owner is `E_KEY_UNKNOWN`).
 * An offline verifier never reports a reference as `moved`: a digest mismatch
   cannot be verified (`unverifiable`, `N_REF_UNVERIFIABLE`); `moved` would require
   locating the record elsewhere through hints, which requires network access.
@@ -148,7 +160,10 @@ not be used to weaken production verification.
 * L2 timestamps require an explicit `--tsa-trust` anchor matching the signer leaf
   certificate's SHA-256 fingerprint. Without it a timestamp is
   `present-unverified`, the container is at most `unverifiable`
-  (`E_TS_UNTRUSTED`), never `valid`. The RFC 3161 profile is fixed: granted
+  (`E_TS_UNTRUSTED`), never `valid`. TSTInfo `accuracy` is parsed
+  (seconds/millis/micros, absent = 0) and only used for compromise rescue, where
+  `genTime + accuracy` must be strictly earlier than the revocation time. The
+  RFC 3161 profile is fixed: granted
   status, TSTInfo v1, sha256 imprints and digests, RSA PKCS#1 v1.5 / ECDSA
   signature algorithms only (RSA-PSS is rejected), the signer certificate must be
   carried in the token, ESS `signingCertificateV2` is required, EKU
@@ -171,8 +186,10 @@ not be used to weaken production verification.
   sub-grant subset check. A delegated sub-grant must be a subset of its parent
   (kinds, actions, scope, validity window) and the parent must be transferable;
   a grant's optional `revocation` list restricts who may revoke it (default: the
-  granter's key and its explicit rotation successors). `occurred_at` and
-  `executed_at` are claims.
+  granter's key and its explicit rotation successors). The whole authorisation
+  chain, ancestors included, is evaluated at the verified record's claimed
+  `recorded_at` (and at the grant's own `recorded_at` when the grant record
+  itself is verified). `occurred_at` and `executed_at` are claims.
 * Salt randomness cannot be tested offline; the verifier only checks the
   encoding and length requirement.
 

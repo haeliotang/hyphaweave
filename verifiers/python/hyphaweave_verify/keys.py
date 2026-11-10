@@ -3,7 +3,7 @@
 
 """Key lifecycle: declarations, rotations, revocations and their effects.
 
-Implements the revision-1 rules (decision #34):
+Implements the key-lifecycle rules (decisions #34 and #42):
 
 * a declaration publishes the key structurally: the public key only has to be
   32 strict-base64url bytes and to derive the declared key id; point validity
@@ -36,10 +36,23 @@ from .times import timestamp_sort_key
 
 @dataclass(frozen=True)
 class VerifiedTimestamp:
-    """A verified L2 timestamp as far as compromise rescue is concerned."""
+    """A verified L2 timestamp as far as compromise rescue is concerned.
+
+    ``gen_time_us`` is genTime in integer microseconds and ``accuracy_us`` is
+    the TSTInfo accuracy (seconds/millis/micros, absent fields = 0). S2/R3
+    rescue requires ``gen_time_us + accuracy_us < effective_at_us`` (strictly
+    earlier; equality does not rescue).
+    """
 
     gen_time: str
     gen_time_ms: int
+    gen_time_us: int = 0
+    accuracy_us: int = 0
+
+    @property
+    def covered_until_us(self) -> int:
+        """The last microsecond the receipt provably covers (exclusive bound +1)."""
+        return self.gen_time_us + self.accuracy_us
 
 
 @dataclass(frozen=True)
@@ -54,7 +67,6 @@ class KeyDeclaration:
     valid_until: str | None
     recorded_at: str
     record_digest: str
-    self_attested_root: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,22 +144,6 @@ class KeyState:
     def is_declared(self, key_id: str) -> bool:
         return self.public_key(key_id) is not None
 
-    def established_human_org_before(self, recorded_at: str, digest: str) -> frozenset[str]:
-        """Human/organization keys established by earlier declarations.
-
-        Used for the Q33 bootstrap rule: declarations are processed in
-        ``(recorded_at, record digest)`` order, and a declaration may be cosigned
-        only by a key established before it.
-        """
-        boundary = (timestamp_sort_key(recorded_at), digest)
-        established: set[str] = set()
-        for key_id, declaration in self.declarations.items():
-            if declaration.key_type not in ("human", "organization"):
-                continue
-            if _declaration_order(declaration) < boundary:
-                established.add(key_id)
-        return frozenset(established)
-
     def rotation_successors(self, key_id: str, max_depth: int = 8) -> frozenset[str]:
         """Explicit ``old_key -> new_key`` successors of ``key_id`` (grant revocations).
 
@@ -180,6 +176,7 @@ class KeyState:
         recorded_at: str,
         *,
         verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
+        timestamp_evidence_present: bool = False,
         skip_revocations: bool = False,
     ) -> None:
         """Apply declaration validity windows and revocation effects.
@@ -206,15 +203,24 @@ class KeyState:
         )
         for revocation in revocations:
             if revocation.reason == "key-compromise":
-                # S2: the claimed recorded_at is not evidence. Only a verified
-                # external timestamp that provably covers the record earlier than
-                # the compromise rescues the signature.
+                # S2 + R3: the claimed recorded_at is not evidence. A verified
+                # external timestamp rescues the signature only when
+                # ``genTime + accuracy`` is strictly earlier than effective_at
+                # (equality does not rescue; an absent accuracy counts as 0).
+                effective_at_us = revocation.effective_at_ms * 1000
                 rescued = any(
-                    timestamp.gen_time_ms <= revocation.effective_at_ms
+                    timestamp.covered_until_us < effective_at_us
                     for timestamp in verified_timestamps
                 )
                 if rescued:
                     continue
+                if not verified_timestamps and timestamp_evidence_present:
+                    # R4: receipts exist but no trust anchor was supplied: the
+                    # missing information makes this unverifiable, not invalid.
+                    raise WeaveError(
+                        "E_TS_UNTRUSTED",
+                        "timestamp receipts exist but no verified trust anchor is available",
+                    )
                 raise WeaveError(
                     "E_KEY_COMPROMISED",
                     "signature by a compromised key without an earlier verified timestamp",
@@ -229,13 +235,13 @@ class KeyState:
 
 
 class DeclarationContext(Protocol):
-    """What the Q33 cosignature rules need from the verification context."""
+    """What the keyset-root trust rules need from the verification context."""
 
     def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
         """Public key and key class of any declared record, valid or not."""
 
-    def established_human_org_before(self, recorded_at: str, digest: str) -> frozenset[str]:
-        ...
+    def trusted_human_org(self) -> frozenset[str]:
+        """Human/organization key ids trusted via the keyset and its closure."""
 
     def is_declared_key(self, key_id: str) -> bool:
         """Whether the key id is declared anywhere in the context."""
@@ -267,8 +273,21 @@ def check_declared_semantics(
     recorded_at: str,
     record_digest: str,
     context: DeclarationContext,
+    source: str,
 ) -> KeyDeclaration:
-    """Semantic checks for ``weave.key.declared`` (S4 + Q33)."""
+    """Semantic checks for ``weave.key.declared`` (S4-style cosign, R2/R5).
+
+    Keyset-root trust model (decision #42): a human/organization key is trusted only via the verifier's
+    local keyset (``source == "keyset"``); keyset declarations pass their own
+    checks and need no cosignature. Container/target human/organization
+    declarations become valid only when the key is already trusted or the
+    declaration is cosigned by a trusted human/organization key; otherwise they
+    are unverifiable with ``E_KEY_UNTRUSTED`` (plus
+    ``N_SELF_ATTESTED_ROOT_KEY`` when a self-signature is their only signature)
+    and never become trusted. Automated keys (agent/program/device) require an owner
+    that is a human/organization declaration, cosigned and trusted (R5: a wrong
+    owner class is ``E_KEY_OWNER_MISSING``).
+    """
     declared_key = body["key"]
     if actor_key != declared_key:
         raise WeaveError("E_ENV_ACTOR_KEY", "actor.key must equal the declared key")
@@ -311,8 +330,8 @@ def check_declared_semantics(
             "no valid signature by the declared key",
         )
 
-    self_attested_root = False
     if key_type in ("agent", "program", "device"):
+        # R5: owner must be resolvable and be a human/organization declaration.
         if owner is None:  # pragma: no cover - checked above
             raise WeaveError("E_KEY_OWNER_MISSING", "missing owner")
         owner_material = context.declaration_material(owner)
@@ -320,26 +339,38 @@ def check_declared_semantics(
             # Owner key is not declared anywhere in the context: unverifiable.
             raise WeaveError("E_KEY_UNKNOWN", "owner key is not declared in the context")
         if owner_material[1] not in ("human", "organization"):
+            # A resolvable owner of the wrong class is an invalid declaration.
             raise WeaveError(
-                "E_KEY_DECLARED_NOT_COSIGNED", "owner is not a human/organization key"
+                "E_KEY_OWNER_MISSING",
+                "owner declaration is not a human/organization key",
             )
         if owner not in verified_signature_keys:
             raise WeaveError(
                 "E_KEY_DECLARED_NOT_COSIGNED",
                 "agent/program/device key declaration lacks the owner's cosignature",
             )
-    else:
-        established = context.established_human_org_before(recorded_at, record_digest)
-        if established and (established & verified_signature_keys) - {declared_key}:
-            pass  # cosigned by a previously established human/organization key
-        elif not established:
-            # Q33 bootstrap: the first human/organization key may be self-attested.
-            self_attested_root = True
-        else:
+        if owner not in context.trusted_human_org():
             raise WeaveError(
-                "E_KEY_DECLARED_NOT_COSIGNED",
-                "human/organization key declaration lacks a cosignature",
+                "E_KEY_UNTRUSTED",
+                "the owner key is not trusted through the local keyset",
             )
+    else:
+        if source == "keyset":
+            # Keyset human/organization declarations are the local trust roots.
+            pass
+        else:
+            trusted = context.trusted_human_org()
+            if declared_key in trusted:
+                pass  # duplicate declaration of an already trusted key
+            elif (trusted & verified_signature_keys) - {declared_key}:
+                pass  # cosigned by a trusted human/organization key
+            else:
+                self_signed_only = verified_signature_keys == {declared_key}
+                raise WeaveError(
+                    "E_KEY_UNTRUSTED",
+                    "container declaration cannot be chained to a keyset trust root",
+                    notice="N_SELF_ATTESTED_ROOT_KEY" if self_signed_only else None,
+                )
     return KeyDeclaration(
         key_id=declared_key,
         key_type=key_type,
@@ -349,7 +380,6 @@ def check_declared_semantics(
         valid_until=valid_until,
         recorded_at=recorded_at,
         record_digest=record_digest,
-        self_attested_root=self_attested_root,
     )
 
 

@@ -77,7 +77,12 @@ _SHA256_OID = "2.16.840.1.101.3.4.2.1"
 
 @dataclass(frozen=True)
 class TimestampResult:
-    """The verification outcome for one listed TSR."""
+    """The verification outcome for one listed TSR.
+
+    ``gen_time_us`` is genTime in integer microseconds; ``accuracy_us`` is the
+    TSTInfo accuracy normalised to microseconds (absent fields count as 0).
+    Compromise rescue uses ``gen_time_us + accuracy_us < effective_at_us``.
+    """
 
     path: str
     digest: str
@@ -85,6 +90,8 @@ class TimestampResult:
     gen_time: str | None
     gen_time_ms: int | None
     error: str | None
+    gen_time_us: int | None = None
+    accuracy_us: int = 0
 
     def to_report(self, index: int) -> dict[str, object]:
         return {
@@ -112,6 +119,10 @@ class TimestampArchive:
             if result.state == STATE_VERIFIED and result.gen_time_ms is not None
         ]
         return min(values) if values else None
+
+    def verified_results(self) -> list[TimestampResult]:
+        """Every individually verified receipt (used for compromise rescue evidence)."""
+        return [result for result in self.results if result.state == STATE_VERIFIED]
 
 
 def parse_trust_anchors(pem_bytes: bytes) -> frozenset[bytes]:
@@ -275,10 +286,14 @@ def verify_timestamp_token(
     state = STATE_INVALID
     gen_time: str | None = None
     gen_time_ms: int | None = None
+    gen_time_us: int | None = None
+    accuracy_us = 0
     try:
         parsed = _parse_tst_info(tsr_bytes)
     except WeaveError as error:
-        return TimestampResult(path, listed_digest, state, gen_time, gen_time_ms, error.code)
+        return TimestampResult(
+            path, listed_digest, state, gen_time, gen_time_ms, error.code, gen_time_us, accuracy_us
+        )
     signed_data, tst_info, raw_content = parsed
     try:
         # Checks 3-4: hash algorithm and message imprint.
@@ -290,21 +305,30 @@ def verify_timestamp_token(
         gen_time_value = tst_info["gen_time"].native
         gen_time_ms = _gen_time_to_ms(gen_time_value)
         gen_time = _format_ms(gen_time_ms)
+        gen_time_us = _gen_time_to_us(gen_time_value)
+        accuracy_us = _accuracy_to_us(tst_info)
 
         signer_info, signer_certificate_der = _verify_cms(signed_data, raw_content, gen_time_value)
         fingerprint = hashlib.sha256(signer_certificate_der).digest()
         _check_signer_certificate(signer_certificate_der, gen_time_value)
         if trust_anchor_fingerprints is None or not trust_anchor_fingerprints:
             return TimestampResult(
-                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms, "E_TS_UNTRUSTED"
+                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
+                "E_TS_UNTRUSTED", gen_time_us, accuracy_us,
             )
         if fingerprint not in trust_anchor_fingerprints:
             return TimestampResult(
-                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms, "E_TS_UNTRUSTED"
+                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
+                "E_TS_UNTRUSTED", gen_time_us, accuracy_us,
             )
     except WeaveError as error:
-        return TimestampResult(path, listed_digest, state, gen_time, gen_time_ms, error.code)
-    return TimestampResult(path, listed_digest, STATE_VERIFIED, gen_time, gen_time_ms, None)
+        return TimestampResult(
+            path, listed_digest, state, gen_time, gen_time_ms, error.code, gen_time_us, accuracy_us
+        )
+    return TimestampResult(
+        path, listed_digest, STATE_VERIFIED, gen_time, gen_time_ms, None,
+        gen_time_us, accuracy_us,
+    )
 
 
 def _parse_tst_info(tsr_bytes: bytes):
@@ -523,6 +547,31 @@ def _gen_time_to_ms(value: object) -> int:
     """Normalise genTime to integer milliseconds (fraction beyond ms is floored)."""
     utc = _to_aware_datetime(value).astimezone(_datetime.timezone.utc)
     return calendar.timegm(utc.utctimetuple()) * 1000 + utc.microsecond // 1000
+
+
+def _gen_time_to_us(value: object) -> int:
+    """Normalise genTime to integer microseconds (sub-microsecond truncation)."""
+    utc = _to_aware_datetime(value).astimezone(_datetime.timezone.utc)
+    return calendar.timegm(utc.utctimetuple()) * 1_000_000 + utc.microsecond
+
+
+def _accuracy_to_us(tst_info) -> int:
+    """Normalise TSTInfo accuracy (seconds/millis/micros) to microseconds.
+
+    RFC 3161 ``Accuracy`` carries at most one of seconds, millis and micros; an
+    absent field counts as 0 (an absent accuracy is treated as exact).
+    """
+    try:
+        accuracy = tst_info["accuracy"]
+    except Exception:  # pragma: no cover - defensive
+        return 0
+    if accuracy is None or accuracy.native is None:
+        return 0
+    native = accuracy.native
+    seconds = native.get("seconds") or 0
+    millis = native.get("millis") or 0
+    micros = native.get("micros") or 0
+    return int(seconds) * 1_000_000 + int(millis) * 1000 + int(micros)
 
 
 def _format_ms(epoch_ms: int) -> str:

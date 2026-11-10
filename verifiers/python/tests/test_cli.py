@@ -90,7 +90,12 @@ def test_erased_placeholder_is_success() -> None:
 
 
 def test_container_valid() -> None:
-    result = run_cli("container", str(VECTORS / "container" / "l0-minimal" / "container"))
+    result = run_cli(
+        "container",
+        str(VECTORS / "container" / "l0-minimal" / "container"),
+        "--keys",
+        str(VECTORS / "keys" / "keyset"),
+    )
     assert result.returncode == 0
     report = _json_output(result)
     assert report["verdict"] == "valid"
@@ -103,7 +108,10 @@ def test_container_valid() -> None:
 
 def test_container_zip() -> None:
     result = run_cli(
-        "container", str(VECTORS / "container" / "zip-valid" / "container.zip")
+        "container",
+        str(VECTORS / "container" / "zip-valid" / "container.zip"),
+        "--keys",
+        str(VECTORS / "keys" / "keyset"),
     )
     assert result.returncode == 0
     assert _json_output(result)["verdict"] == "valid"
@@ -148,7 +156,12 @@ def test_json_flag_is_accepted() -> None:
 
 
 def test_report_contains_no_paths_or_environment() -> None:
-    result = run_cli("container", str(VECTORS / "container" / "l0-minimal" / "container"))
+    result = run_cli(
+        "container",
+        str(VECTORS / "container" / "l0-minimal" / "container"),
+        "--keys",
+        str(VECTORS / "keys" / "keyset"),
+    )
     text = result.stdout.decode("utf-8")
     assert str(REPO_ROOT) not in text
     assert "/Users/" not in text

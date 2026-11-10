@@ -91,6 +91,7 @@ ERROR_CODES: dict[str, str] = {
     "E_KEY_REVOKE_EFFECTIVE": EFFECT_INVALID,
     "E_KEY_REVOKE_SIGNER": EFFECT_INVALID,
     "E_KEY_REVOKED": EFFECT_INVALID,
+    "E_KEY_UNTRUSTED": EFFECT_UNVERIFIABLE,
     "E_KEY_ROTATION_KEYS": EFFECT_INVALID,
     "E_KEY_ROTATION_SIGS": EFFECT_INVALID,
     "E_KEY_UNKNOWN": EFFECT_UNVERIFIABLE,
@@ -171,12 +172,20 @@ class WeaveError(ValueError):
     debugging/tests and never appears in a report.
     """
 
-    def __init__(self, code: str, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        detail: str | None = None,
+        notice: str | None = None,
+    ) -> None:
         if code not in ERROR_CODES:
             raise KeyError(f"{code!r} is not a registered error code")
+        if notice is not None and notice not in NOTICES:
+            raise KeyError(f"{notice!r} is not a registered notice code")
         super().__init__(detail or code)
         self.code = code
         self.detail = detail
+        self.notice = notice
 
     @property
     def effect(self) -> str:

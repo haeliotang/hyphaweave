@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Revision-1 integrated semantics: declarations, Q13, consent withdrawal, S2.
+"""Integrated semantics: keyset trust roots, Q13, consent, compromise timing.
 
 These tests build their own canonical records and sign them with the published
 synthetic test keys, so they pin behaviour independently of the conformance
-vector suite.
+vector suite. Trust roots come only from the local ``--keys`` keyset (decision
+2026-11-10 #42); those fixtures are marked with ``source="keyset"``.
 """
 
 from __future__ import annotations
@@ -21,15 +22,22 @@ from hyphaweave_verify import (
     container as container_module,
     encoding,
     envelope,
-    kinds,
+    keys as keys_module,
     verifier,
 )
 from hyphaweave_verify.errors import WeaveError
 
 VECTORS = pathlib.Path(__file__).resolve().parents[3] / "vectors"
 KEYS = VECTORS / "keys"
+KEYSET = KEYS / "keyset"
 T0 = "2026-11-01T00:00:00.000Z"
 T1 = "2026-11-02T00:00:00.000Z"
+T2 = "2026-11-03T00:00:00.000Z"
+
+
+# ---------------------------------------------------------------------------
+# Fixture builders
+# ---------------------------------------------------------------------------
 
 
 def load_key(name: str) -> tuple[str, Ed25519PrivateKey]:
@@ -39,7 +47,6 @@ def load_key(name: str) -> tuple[str, Ed25519PrivateKey]:
 
 
 def sign_record(record: dict, signer_names: list[str]) -> dict:
-    """Compute the record digest and attach signatures by the given test keys."""
     digest = encoding.record_digest(record)
     message = encoding.record_sig_message(digest)
     signatures = []
@@ -97,30 +104,14 @@ def declared(
     return sign_record(record, [name] + (cosigners or []))
 
 
-def revoked(name: str, *, signer: str, effective_at: str = T1, reason: str = "retired") -> dict:
-    key_id, _private = load_key(name)
-    signer_id, _signer_private = load_key(signer)
-    record = {
-        "format": "weave-record/1",
-        "kind": "weave.key.revoked",
-        "origin": {"project": "example", "instance": signer_id},
-        "id": f"revoke-{name}-{reason}",
-        "stage": "accepted",
-        "actor": {"type": "human", "key": signer_id},
-        "recorded_at": T1,
-        "body": {"effective_at": effective_at, "key": key_id, "reason": reason},
-    }
-    return sign_record(record, [signer])
-
-
-def note(*, signer: str = "human-1", recorded_at: str = T0, **body_extra) -> dict:
+def note(*, signer: str = "human-1", recorded_at: str = T0, stage: str = "proposed", **body_extra) -> dict:
     key_id, _private = load_key(signer)
     record = {
         "format": "weave-record/1",
         "kind": "example.note",
         "origin": {"project": "example", "instance": key_id},
         "id": "note-1",
-        "stage": "proposed",
+        "stage": stage,
         "actor": {"type": "human", "key": key_id},
         "recorded_at": recorded_at,
         "body": {"text": "synthetic", **body_extra},
@@ -128,95 +119,288 @@ def note(*, signer: str = "human-1", recorded_at: str = T0, **body_extra) -> dic
     return sign_record(record, [signer])
 
 
-def verify_set(records: list[dict]) -> list[verifier.RecordView]:
-    loaded = [
+def _loaded(records: list[dict], source: str) -> list[verifier.LoadedRecord]:
+    return [
         verifier.LoadedRecord(
             raw=canonical_bytes(record),
             value=record,
             digest=encoding.record_digest(record),
-            source="container",
+            source=source,
         )
         for record in records
     ]
-    return verifier.verify_record_set(loaded)
 
 
-def _errors(views: list[verifier.RecordView]) -> dict[str, list[str]]:
-    return {
-        (view.envelope.record_id if view.envelope else "?"): view.errors for view in views
-    }
+def verify_set(
+    records: list[dict],
+    *,
+    keyset_records: int = 0,
+    timestamp_evidence_present: bool = False,
+) -> list[verifier.RecordView]:
+    """Verify records, optionally treating the first ``keyset_records`` as --keys."""
+    keyset_records_list = records[:keyset_records]
+    container_records_list = records[keyset_records:]
+    keyset_views: list[verifier.RecordView] = []
+    if keyset_records_list:
+        keyset_views = verifier.verify_record_set(_loaded(keyset_records_list, "keyset"))
+    container_views = verifier.verify_record_set(
+        _loaded(container_records_list, "container"),
+        context_views=keyset_views,
+        timestamp_evidence_present=timestamp_evidence_present,
+    )
+    return keyset_views + container_views
+
+
+def by_id(views: list[verifier.RecordView]) -> dict[str, verifier.RecordView]:
+    return {(view.envelope.record_id if view.envelope else "?"): view for view in views}
 
 
 # ---------------------------------------------------------------------------
-# Key declarations: owner / cosignature / Q33 root bootstrap
+# Roots come only from the local keyset (decision #42)
 # ---------------------------------------------------------------------------
+
+
+def test_keyset_human_root_is_trusted_without_notice() -> None:
+    views = verify_set([declared("human-1")], keyset_records=1)
+    record = by_id(views)["declare-human-1"]
+    assert record.verdict == "valid"
+    assert "N_SELF_ATTESTED_ROOT_KEY" not in record.notices
+
+
+def test_duplicate_declaration_of_keyset_root_in_container_is_valid() -> None:
+    views = verify_set([declared("human-1"), declared("human-1")], keyset_records=1)
+    container_record = views[-1]
+    assert container_record.verdict == "valid"
+    assert container_record.errors == []
+
+
+def test_container_human_cosigned_by_keyset_root_is_valid() -> None:
+    views = verify_set(
+        [
+            declared("human-1"),
+            declared("human-2", recorded_at=T1, cosigners=["human-1"]),
+        ],
+        keyset_records=1,
+    )
+    record = by_id(views)["declare-human-2"]
+    assert record.verdict == "valid"
+    assert record.errors == []
+
+
+def test_container_human_cosign_chain_closes_iteratively() -> None:
+    """key-old (cosigned by the keyset root) becomes trusted for key-new."""
+    views = verify_set(
+        [
+            declared("human-1"),
+            declared("key-old", recorded_at=T1, cosigners=["human-1"]),
+            declared("key-new", recorded_at=T2, cosigners=["key-old"]),
+        ],
+        keyset_records=1,
+    )
+    records = by_id(views)
+    assert records["declare-key-old"].verdict == "valid"
+    assert records["declare-key-new"].verdict == "valid"
+
+
+def test_container_self_attested_human_is_untrusted_with_notice() -> None:
+    """Backdating the claimed recorded_at no longer elects a root (decision #42)."""
+    attacker = declared("human-2", recorded_at="2020-01-01T00:00:00.000Z")
+    views = verify_set([declared("human-1"), attacker], keyset_records=1)
+    record = by_id(views)["declare-human-2"]
+    assert record.verdict == "unverifiable"
+    assert record.errors == ["E_KEY_UNTRUSTED"]
+    assert "N_SELF_ATTESTED_ROOT_KEY" in record.notices
+
+
+def test_untrusted_container_root_does_not_invalidate_keyset_root() -> None:
+    attacker = declared("human-2", recorded_at="2020-01-01T00:00:00.000Z")
+    legitimate_note = note(signer="human-1")
+    views = verify_set(
+        [declared("human-1"), attacker, legitimate_note], keyset_records=1
+    )
+    records = by_id(views)
+    assert records["declare-human-2"].verdict == "unverifiable"
+    assert records["note-1"].verdict == "valid"
 
 
 def test_agent_declaration_requires_owner() -> None:
-    record = declared("agent-1", key_type="agent")
-    views = verify_set([record])
+    views = verify_set([declared("agent-1", key_type="agent")])
     assert views[0].verdict == "invalid"
     assert views[0].errors == ["E_KEY_OWNER_MISSING"]
 
 
 def test_agent_declaration_requires_owner_cosignature() -> None:
-    human_root = declared("human-1")
-    agent = declared("agent-1", key_type="agent", owner=load_key("human-1")[0])
-    views = verify_set([human_root, agent])
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    assert by_id["declare-human-1"].verdict == "valid"
-    assert by_id["declare-agent-1"].errors == ["E_KEY_DECLARED_NOT_COSIGNED"]
+    human_id = load_key("human-1")[0]
+    views = verify_set(
+        [
+            declared("human-1"),
+            declared("agent-1", key_type="agent", owner=human_id, recorded_at=T1),
+        ],
+        keyset_records=1,
+    )
+    record = by_id(views)["declare-agent-1"]
+    assert record.verdict == "invalid"
+    assert record.errors == ["E_KEY_DECLARED_NOT_COSIGNED"]
 
 
-def test_agent_declaration_with_owner_cosignature_is_valid() -> None:
-    human_1 = load_key("human-1")[0]
-    records = [
-        declared("human-1"),
-        declared("agent-1", key_type="agent", owner=human_1, cosigners=["human-1"]),
-    ]
-    views = verify_set(records)
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    assert by_id["declare-agent-1"].verdict == "valid"
-    # The root human key is self-attested and must say so.
-    assert "N_SELF_ATTESTED_ROOT_KEY" in by_id["declare-human-1"].notices
+def test_agent_declaration_with_trusted_owner_cosignature_is_valid() -> None:
+    human_id = load_key("human-1")[0]
+    views = verify_set(
+        [
+            declared("human-1"),
+            declared(
+                "agent-1",
+                key_type="agent",
+                owner=human_id,
+                recorded_at=T1,
+                cosigners=["human-1"],
+            ),
+        ],
+        keyset_records=1,
+    )
+    assert by_id(views)["declare-agent-1"].verdict == "valid"
 
 
-def test_later_self_attested_human_key_is_not_cosigned() -> None:
-    root = declared("human-1")
-    later = declared("human-2", recorded_at=T1)
-    views = verify_set([root, later])
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    assert by_id["declare-human-1"].verdict == "valid"
-    assert by_id["declare-human-2"].errors == ["E_KEY_DECLARED_NOT_COSIGNED"]
+def test_owner_wrong_class_is_invalid_owner_missing() -> None:
+    """R5: a resolvable owner of the wrong class is E_KEY_OWNER_MISSING."""
+    agent_id = load_key("agent-1")[0]
+    # Owner is this very agent declaration: its single self-signature also serves
+    # as the owner cosignature, and the owner material's class is agent.
+    views = verify_set(
+        [declared("agent-1", key_type="agent", owner=agent_id)]
+    )
+    record = views[0]
+    assert record.verdict == "invalid"
+    assert record.errors == ["E_KEY_OWNER_MISSING"]
 
 
-def test_human_key_with_root_cosignature_is_valid() -> None:
-    records = [
-        declared("human-1"),
-        declared("human-2", recorded_at=T1, cosigners=["human-1"]),
-    ]
-    views = verify_set(records)
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    assert by_id["declare-human-2"].verdict == "valid"
+def test_untrusted_owner_leaves_agent_declaration_unverifiable() -> None:
+    container_owner = declared("human-2", recorded_at=T1)
+    owner_id = load_key("human-2")[0]
+    agent = declared(
+        "agent-1",
+        key_type="agent",
+        owner=owner_id,
+        recorded_at=T2,
+        cosigners=["human-2"],
+    )
+    views = verify_set([declared("human-1"), container_owner, agent], keyset_records=1)
+    records = by_id(views)
+    assert records["declare-human-2"].errors == ["E_KEY_UNTRUSTED"]
+    assert records["declare-agent-1"].verdict == "unverifiable"
+    assert records["declare-agent-1"].errors == ["E_KEY_UNTRUSTED"]
+
+
+def test_no_keyset_means_no_trust_roots() -> None:
+    result = container_module.verify_container(
+        VECTORS / "container" / "self-attested-root-untrusted" / "container"
+    )
+    report = result.report
+    assert report["verdict"] == "unverifiable"
+    entry = report["records"][0]
+    assert entry["errors"] == ["E_KEY_UNTRUSTED"]
+    assert "N_SELF_ATTESTED_ROOT_KEY" in entry["notices"]
+
+
+def test_keyset_makes_the_same_container_valid() -> None:
+    keyset = verifier.load_keyset_directory(KEYSET)
+    keyset_views = verifier.verify_record_set(keyset)
+    result = container_module.verify_container(
+        VECTORS / "container" / "l0-minimal" / "container",
+        keyset_records=keyset,
+        keyset_views=keyset_views,
+    )
+    assert result.report["verdict"] == "valid"
 
 
 # ---------------------------------------------------------------------------
-# S2 key-compromise (no recorded_at evidence)
+# Compromise revocation: timestamp accuracy and evidence split
 # ---------------------------------------------------------------------------
 
 
-def test_compromise_revocation_invalidates_backdated_signature() -> None:
-    records = [
-        declared("human-1"),
-        declared("key-compromised", recorded_at=T1, cosigners=["human-1"]),
-        revoked("key-compromised", signer="human-1", effective_at=T1, reason="key-compromise"),
-        # A forged record signed by the compromised key, backdated before T.
-        note(signer="key-compromised", recorded_at=T0),
-    ]
-    views = verify_set(records)
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    assert by_id["note-1"].verdict == "invalid"
-    assert "E_KEY_COMPROMISED" in by_id["note-1"].errors
+def _compromise_state() -> tuple[keys_module.KeyState, str]:
+    effective = T1
+    state = keys_module.KeyState()
+    state.add_revocation(
+        keys_module.KeyRevocation(
+            key_id=load_key("key-compromised")[0],
+            reason="key-compromise",
+            effective_at=effective,
+            effective_at_ms=keys_module._timestamp_ms(effective),
+            recorded_at=T1,
+            record_digest="sha256:" + "02" * 32,
+        )
+    )
+    return state, effective
+
+
+def _verified(gen_time: str, accuracy_us: int = 0) -> keys_module.VerifiedTimestamp:
+    gen_time_ms = keys_module._timestamp_ms(gen_time)
+    return keys_module.VerifiedTimestamp(
+        gen_time=gen_time,
+        gen_time_ms=gen_time_ms,
+        gen_time_us=gen_time_ms * 1000,
+        accuracy_us=accuracy_us,
+    )
+
+
+def test_r4_no_timestamp_evidence_is_invalid() -> None:
+    state, effective = _compromise_state()
+    key_id = load_key("key-compromised")[0]
+    with pytest.raises(WeaveError) as raised:
+        state.check_signature_effects(key_id, T0)
+    assert raised.value.code == "E_KEY_COMPROMISED"
+
+
+def test_r4_untrusted_receipts_make_it_unverifiable() -> None:
+    state, effective = _compromise_state()
+    key_id = load_key("key-compromised")[0]
+    with pytest.raises(WeaveError) as raised:
+        state.check_signature_effects(
+            key_id, T0, timestamp_evidence_present=True
+        )
+    assert raised.value.code == "E_TS_UNTRUSTED"
+    assert raised.value.effect == "unverifiable"
+
+
+def test_r3_rescue_requires_strictly_earlier_gen_time() -> None:
+    state, effective = _compromise_state()
+    key_id = load_key("key-compromised")[0]
+    # genTime == T: equality does not rescue.
+    with pytest.raises(WeaveError) as raised:
+        state.check_signature_effects(
+            key_id, T0, verified_timestamps=(_verified(effective),)
+        )
+    assert raised.value.code == "E_KEY_COMPROMISED"
+    # genTime earlier than T: rescued.
+    earlier = "2026-10-31T00:00:00.000Z"
+    state.check_signature_effects(key_id, T0, verified_timestamps=(_verified(earlier),))
+
+
+def test_r3_accuracy_is_added_to_gen_time() -> None:
+    state, effective = _compromise_state()
+    key_id = load_key("key-compromised")[0]
+    # genTime 500ms before T + 1s accuracy crosses T: not provably earlier.
+    gen_time = "2026-12-31T00:00:00.000Z"
+    state = keys_module.KeyState()
+    state.add_revocation(
+        keys_module.KeyRevocation(
+            key_id=key_id,
+            reason="key-compromise",
+            effective_at=gen_time,
+            effective_at_ms=keys_module._timestamp_ms(gen_time),
+            recorded_at=T1,
+            record_digest="sha256:" + "03" * 32,
+        )
+    )
+    half_before = "2026-12-30T23:59:59.500Z"
+    with pytest.raises(WeaveError) as raised:
+        state.check_signature_effects(
+            key_id,
+            T0,
+            verified_timestamps=(_verified(half_before, accuracy_us=1_000_000),),
+        )
+    assert raised.value.code == "E_KEY_COMPROMISED"
 
 
 # ---------------------------------------------------------------------------
@@ -238,130 +422,22 @@ def _with_unknown_alg(record: dict, *, keep_known: bool) -> dict:
     return record
 
 
-def test_unknown_algorithm_only_required_record_is_unverifiable() -> None:
+def test_unknown_algorithm_optional_record_is_valid() -> None:
     record = _with_unknown_alg(note(signer="human-1"), keep_known=False)
-    record["stage"] = "accepted"  # accepted records require per-record signing
-    # Recompute nothing: the record digest covered the pre-Q13 object only when
-    # signed; here we only test the required-signer rule, so an undeclared
-    # actor key keeps the failure unverifiable as well.
-    views = verify_set([record])
-    assert views[0].verdict == "unverifiable"
-    assert views[0].errors == ["E_KEY_UNKNOWN"]
-    assert any(entry["state"] == "ignored" for entry in views[0].sigs)
-
-
-def test_unknown_algorithm_only_with_declared_key_is_unverifiable() -> None:
-    record = note(signer="human-1")
-    record = _with_unknown_alg(record, keep_known=False)
-    record["stage"] = "accepted"
-    # The actor key is declared in the context, but no known-algorithm signature
-    # can be verified: E_SIG_UNVERIFIABLE (unverifiable), not invalid.
-    views = verify_set([declared("human-1"), record])
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    note_view = by_id["note-1"]
-    assert note_view.errors == ["E_SIG_UNVERIFIABLE"]
-    assert note_view.verdict == "unverifiable"
+    views = verify_set([declared("human-1"), record], keyset_records=1)
+    record_view = views[-1]
+    assert record_view.verdict == "valid"
+    assert record_view.sigs[0]["state"] == "ignored"
 
 
 def test_unknown_algorithm_ignored_when_a_known_signature_is_valid() -> None:
-    record = note(signer="human-1")
-    record = _with_unknown_alg(record, keep_known=True)
-    views = verify_set([declared("human-1"), record])
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    assert by_id["note-1"].verdict == "valid"
-    states = {entry["key"]: entry["state"] for entry in by_id["note-1"].sigs}
+    record = _with_unknown_alg(note(signer="human-1"), keep_known=True)
+    views = verify_set([declared("human-1"), record], keyset_records=1)
+    record_view = views[-1]
+    assert record_view.verdict == "valid"
+    states = {entry["key"]: entry["state"] for entry in record_view.sigs}
     assert "ignored" in states.values()
     assert "valid" in states.values()
-
-
-def test_unknown_algorithm_optional_record_is_valid() -> None:
-    record = _with_unknown_alg(note(signer="human-1"), keep_known=False)
-    views = verify_set([record])
-    assert views[0].verdict == "valid"
-    assert views[0].sigs[0]["state"] == "ignored"
-
-
-# ---------------------------------------------------------------------------
-# Consent withdrawal (M-7)
-# ---------------------------------------------------------------------------
-
-
-def _consent_granted_record() -> dict:
-    human_id = load_key("human-1")[0]
-    record = {
-        "format": "weave-record/1",
-        "kind": "weave.consent.granted",
-        "origin": {"project": "example", "instance": human_id},
-        "id": "consent-1",
-        "stage": "accepted",
-        "actor": {"type": "human", "key": human_id},
-        "recorded_at": T0,
-        "body": {
-            "purpose": "test",
-            "scope": ["test"],
-            "valid_from": T0,
-            "valid_until": None,
-            "data_subject": None,
-            "terms": None,
-        },
-    }
-    return sign_record(record, ["human-1"])
-
-
-def _consent_revoked_record(consent: dict) -> dict:
-    human_id = load_key("human-1")[0]
-    digest = encoding.record_digest(consent)
-    record = {
-        "format": "weave-record/1",
-        "kind": "weave.consent.revoked",
-        "origin": {"project": "example", "instance": human_id},
-        "id": "consent-revoke-1",
-        "stage": "accepted",
-        "actor": {"type": "human", "key": human_id},
-        "recorded_at": T1,
-        "body": {
-            "revokes": {
-                "origin": consent["origin"],
-                "id": consent["id"],
-                "digest": digest,
-                "kind": "weave.consent.granted",
-            },
-            "effective_at": T1,
-            "reason": "withdrawn",
-        },
-    }
-    return sign_record(record, ["human-1"])
-
-
-def test_record_citing_withdrawn_consent_is_invalid() -> None:
-    consent = _consent_granted_record()
-    withdrawal = _consent_revoked_record(consent)
-    human_id = load_key("human-1")[0]
-    citing = {
-        "format": "weave-record/1",
-        "kind": "example.note",
-        "origin": {"project": "example", "instance": human_id},
-        "id": "citing-note",
-        "stage": "proposed",
-        "actor": {"type": "human", "key": human_id},
-        "recorded_at": T1,
-        "labels": {
-            "sensitivity": "internal",
-            "consent": {
-                "origin": consent["origin"],
-                "id": consent["id"],
-                "digest": encoding.record_digest(consent),
-                "kind": "weave.consent.granted",
-            },
-        },
-        "body": {"text": "uses personal data"},
-    }
-    sign_record(citing, ["human-1"])
-    views = verify_set([declared("human-1"), consent, withdrawal, citing])
-    by_id = {(view.envelope.record_id if view.envelope else ""): view for view in views}
-    assert by_id["consent-1"].verdict == "valid"
-    assert by_id["consent-revoke-1"].verdict == "valid"
-    assert by_id["citing-note"].errors == ["E_CONSENT_REVOKED"]
 
 
 # ---------------------------------------------------------------------------
@@ -371,22 +447,7 @@ def test_record_citing_withdrawn_consent_is_invalid() -> None:
 
 def _minimal_container(tmp_path: pathlib.Path, attestation_signatures: list[dict]) -> pathlib.Path:
     human_id, _private = load_key("human-1")
-    record = {
-        "format": "weave-record/1",
-        "kind": "weave.key.declared",
-        "origin": {"project": "example", "instance": human_id},
-        "id": "decl",
-        "stage": "accepted",
-        "actor": {"type": "human", "key": human_id},
-        "recorded_at": T0,
-        "body": {
-            "algorithm": "ed25519",
-            "key": human_id,
-            "key_type": "human",
-            "public_key": encoding.encode_base64url((KEYS / "human-1.pub.bin").read_bytes()),
-        },
-    }
-    sign_record(record, ["human-1"])
+    record = declared("human-1")
     record_bytes = canonical_bytes(record)
     digest = encoding.record_digest(record)
     manifest = {
@@ -396,7 +457,7 @@ def _minimal_container(tmp_path: pathlib.Path, attestation_signatures: list[dict
         "manifest_version": 1,
         "origin": {"instance": human_id, "project": "example"},
         "previous_manifest": None,
-        "records": [{"digest": digest, "id": "decl", "kind": "weave.key.declared"}],
+        "records": [{"digest": digest, "id": "declare-human-1", "kind": "weave.key.declared"}],
     }
     manifest_bytes = canonical_bytes(manifest)
     manifest_digest = encoding.manifest_digest(canonical.canonicalize(manifest))
@@ -415,18 +476,25 @@ def _minimal_container(tmp_path: pathlib.Path, attestation_signatures: list[dict
     return container
 
 
+def _keyset_for_container():
+    keyset = verifier.load_keyset_directory(KEYSET)
+    keyset_views = verifier.verify_record_set(keyset)
+    return keyset, keyset_views
+
+
 def test_manifest_unknown_algorithm_only_is_unverifiable(tmp_path) -> None:
     unknown = {"alg": "ml-dsa-65", "key": "ml-dsa-65:" + "ab" * 32, "value": "AAAA"}
     container = _minimal_container(tmp_path, [unknown])
-    result = container_module.verify_container(container)
+    keyset, keyset_views = _keyset_for_container()
+    result = container_module.verify_container(
+        container, keyset_records=keyset, keyset_views=keyset_views
+    )
     assert result.report["verdict"] == "unverifiable"
     assert "E_SIG_UNVERIFIABLE" in result.report["container"]["errors"]
 
 
 def test_manifest_unknown_algorithm_ignored_with_known_signature(tmp_path) -> None:
     human_id, private = load_key("human-1")
-    record = verifier.load_keyset_directory(KEYS / "keyset")
-    # Build the known signature over the manifest digest used by the fixture.
     container = _minimal_container(tmp_path, [])
     manifest_bytes = (container / "manifest.json").read_bytes()
     manifest_value = canonical.parse_file_bytes(manifest_bytes)
@@ -449,6 +517,87 @@ def test_manifest_unknown_algorithm_ignored_with_known_signature(tmp_path) -> No
             }
         )
     )
-    keyset = verifier.load_keyset_directory(KEYS / "keyset")
-    result = container_module.verify_container(container, keyset_records=keyset)
+    keyset, keyset_views = _keyset_for_container()
+    result = container_module.verify_container(
+        container, keyset_records=keyset, keyset_views=keyset_views
+    )
     assert result.report["verdict"] == "valid", result.report["container"]["errors"]
+
+
+# ---------------------------------------------------------------------------
+# Consent withdrawal (M-7) under the keyset trust model
+# ---------------------------------------------------------------------------
+
+
+def _consent_granted() -> dict:
+    human_id = load_key("human-1")[0]
+    record = {
+        "format": "weave-record/1",
+        "kind": "weave.consent.granted",
+        "origin": {"project": "example", "instance": human_id},
+        "id": "consent-1",
+        "stage": "accepted",
+        "actor": {"type": "human", "key": human_id},
+        "recorded_at": T0,
+        "body": {
+            "purpose": "test",
+            "scope": ["test"],
+            "valid_from": T0,
+            "valid_until": None,
+            "data_subject": None,
+            "terms": None,
+        },
+    }
+    return sign_record(record, ["human-1"])
+
+
+def test_record_citing_withdrawn_consent_is_invalid() -> None:
+    consent = _consent_granted()
+    human_id = load_key("human-1")[0]
+    withdrawal = {
+        "format": "weave-record/1",
+        "kind": "weave.consent.revoked",
+        "origin": {"project": "example", "instance": human_id},
+        "id": "consent-revoke-1",
+        "stage": "accepted",
+        "actor": {"type": "human", "key": human_id},
+        "recorded_at": T1,
+        "body": {
+            "revokes": {
+                "origin": consent["origin"],
+                "id": consent["id"],
+                "digest": encoding.record_digest(consent),
+                "kind": "weave.consent.granted",
+            },
+            "effective_at": T1,
+            "reason": "withdrawn",
+        },
+    }
+    sign_record(withdrawal, ["human-1"])
+    citing = {
+        "format": "weave-record/1",
+        "kind": "example.note",
+        "origin": {"project": "example", "instance": human_id},
+        "id": "citing-note",
+        "stage": "proposed",
+        "actor": {"type": "human", "key": human_id},
+        "recorded_at": T1,
+        "labels": {
+            "sensitivity": "internal",
+            "consent": {
+                "origin": consent["origin"],
+                "id": consent["id"],
+                "digest": encoding.record_digest(consent),
+                "kind": "weave.consent.granted",
+            },
+        },
+        "body": {"text": "uses personal data"},
+    }
+    sign_record(citing, ["human-1"])
+    views = verify_set(
+        [declared("human-1"), consent, withdrawal, citing], keyset_records=1
+    )
+    records = by_id(views)
+    assert records["consent-1"].verdict == "valid"
+    assert records["consent-revoke-1"].verdict == "valid"
+    assert records["citing-note"].errors == ["E_CONSENT_REVOKED"]

@@ -97,17 +97,25 @@ def test_compromise_revocation_ignores_claimed_recorded_at() -> None:
     require_code(
         lambda: state.check_signature_effects(HUMAN_1, T0), "E_KEY_COMPROMISED"
     )
-    # A verified external timestamp at or before the effective time rescues it.
+    # R3: rescue needs genTime + accuracy strictly before effective_at.
     state.check_signature_effects(
         HUMAN_1,
         T0,
-        verified_timestamps=(keys.VerifiedTimestamp(gen_time=T1, gen_time_ms=_ms(T1)),),
+        verified_timestamps=(
+            keys.VerifiedTimestamp(
+                gen_time=T0, gen_time_ms=_ms(T0), gen_time_us=_ms(T0) * 1000
+            ),
+        ),
     )
     require_code(
         lambda: state.check_signature_effects(
             HUMAN_1,
             T0,
-            verified_timestamps=(keys.VerifiedTimestamp(gen_time=T2, gen_time_ms=_ms(T2)),),
+            verified_timestamps=(
+                keys.VerifiedTimestamp(
+                    gen_time=T2, gen_time_ms=_ms(T2), gen_time_us=_ms(T2) * 1000
+                ),
+            ),
         ),
         "E_KEY_COMPROMISED",
     )
