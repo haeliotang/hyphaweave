@@ -88,24 +88,26 @@ authority comes from the signer; no parent grant is required [§8.2].
 ### Delegated sub-grant
 
 A grant record whose `actor.type` is `agent`, `program` or `device` **MUST** have
-`actor.grant` resolve to a parent `weave.grant` record with `action == "grant"` that:
+`actor.grant` resolve to a parent `weave.grant` record that permits issuing grants, checked
+in this order:
 
-1. has `transferable == true` — otherwise `E_GRANT_NOT_TRANSFERABLE` (invalid);
-2. has `kinds` containing `weave.grant` and `actions` containing `grant` — otherwise
-   `E_GRANT_GRANTER` (invalid);
+1. **resolve and cover:** an unresolvable parent is `unverifiable` (`E_GRANT_UNRESOLVED`);
+   a resolved parent that is not an `action == "grant"` `weave.grant` whose `kinds`
+   contain `weave.grant` and whose `actions` contain `grant` is `E_GRANT_GRANTER`
+   (invalid);
+2. has `transferable == true` — otherwise `E_GRANT_NOT_TRANSFERABLE` (invalid);
 3. has `grant.grantee.key` equal to the sub-granter's `actor.key` — otherwise
-   `E_GRANT_GRANTEE_MISMATCH` (invalid).
+   `E_GRANT_GRANTER` (invalid);
+4. is inside its validity window at the sub-grant's `recorded_at` and is not revoked as of
+   that time — otherwise `E_GRANT_GRANTER` (invalid).
 
 The sub-grant's fields **MUST** stay within the parent's authority: its `kinds` **MUST** be
 a subset of the parent's `kinds`; its `valid_from` **MUST** be greater than or equal to the
 parent's `valid_from`; its `valid_until` **MUST** be less than or equal to the parent's
 `valid_until` (`null` on the parent means unbounded; a `null` child under a bounded parent
-exceeds it). Any violation is `E_GRANT_DELEGATION_EXCEEDS` (invalid). An unresolvable or
-invalid parent makes the sub-grant `unverifiable` (`E_GRANT_UNRESOLVED`, per the Lead's
-ruling: the claimed delegating authorisation cannot be checked). `E_GRANT_GRANTER`
-(invalid) is used only when the context is resolvable but the granter's
-actor/signing-key class may not issue grants, or the resolved parent does not cover
-`weave.grant`/`grant` [Q10].
+exceeds it). Any violation is `E_GRANT_DELEGATION_EXCEEDS` (invalid). The five checks of
+the parent (resolve/cover, transferable, granter identity, parent validity, no expansion)
+are applied in that order; the first failing check is the record's single error [Q10].
 
 ### Authorisation of a record by a grant
 
@@ -162,11 +164,11 @@ expand authority (§ above) [§8.2][Q10].
 | `E_GRANT_DELEGATION_EXCEEDS` | invalid | sub-grant exceeds parent kinds or window |
 | `E_GRANT_REVOKE_SIGNER` | invalid | revocation not signed by original granter key or human/org key |
 | `E_GRANT_REVOKE_REF` | invalid | revoked grant not resolvable in context |
-| `E_GRANT_GRANTEE_MISMATCH` | invalid | record's actor key is not the grant's grantee, or a delegated grant's parent grantee is not the sub-granter's actor key |
+| `E_GRANT_GRANTEE_MISMATCH` | invalid | a record's `actor.key` is not the `grantee.key` of the grant it cites for authorisation |
 | `E_GRANT_NOT_APPLICABLE` | invalid | record's kind/action not covered by the grant |
 | `E_REF_KIND_MISMATCH` | invalid | a reference kind claim contradicts the target kind |
-| `E_GRANT_GRANTER` | invalid | granter's actor/signing-key class may not issue grants, the resolved parent does not cover `weave.grant`/`grant`, or (with non-empty `sigs`) the required granter signature is missing/wrong for `action == "grant"` |
-| `E_GRANT_UNRESOLVED` | unverifiable | a grant's or record's cited authorisation cannot be resolved/checked |
+| `E_GRANT_GRANTER` | invalid | the granter is not permitted to issue this grant: parent resolved but not an authorising `weave.grant` covering `weave.grant`/`grant`, parent `grantee.key` is not the sub-granter's key, parent outside its validity window or revoked at the sub-grant's `recorded_at`, or (with non-empty `sigs`) the required granter signature is missing/wrong for `action == "grant"` |
+| `E_GRANT_UNRESOLVED` | unverifiable | a grant's parent or a record's cited authorisation cannot be resolved/checked |
 | `E_GRANT_EXPIRED` | unverifiable | a record's cited grant is outside its validity window at record time (incl. not yet valid) |
 | `E_GRANT_REVOKED` | unverifiable | grant revoked as of record time |
 | `E_ENV_ACTOR_GRANT_MISSING` | invalid | agent actor lacks `actor.grant` (envelope) |

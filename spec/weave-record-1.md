@@ -666,23 +666,30 @@ a **delegated sub-grant**:
 
 - A grant whose `actor.type` is `human` or `organization` is a **root grant** [§8.2].
 - A grant whose `actor.type` is `agent`, `program` or `device` is a **delegated sub-grant**.
-  It **MUST** have `actor.grant` resolving to a parent `weave.grant` record with
-  `action == "grant"`, `transferable == true` (else `E_GRANT_NOT_TRANSFERABLE`), `kinds`
-  containing `weave.grant` and `actions` containing `grant` (else `E_GRANT_GRANTER`), and
-  `grantee.key` equal to the sub-granter's `actor.key` (else
-  `E_GRANT_GRANTEE_MISMATCH`). The sub-grant's `kinds` **MUST** be a
-  subset of the parent's `kinds`; its `valid_from` **MUST** be greater than or equal to the
-  parent's `valid_from`; its `valid_until` **MUST** be less than or equal to the parent's
-  `valid_until` (null means unbounded; a null child under a bounded parent exceeds it).
-  Violations are `E_GRANT_DELEGATION_EXCEEDS` [Q10]. (For a *record* authorised by a
-  grant — not for the grant record itself — coverage failures are
-  `E_GRANT_NOT_APPLICABLE`; see §5.4.) A delegated grant whose parent
-  cannot be found in the context (or whose parent is not itself valid) is `unverifiable`
-  (`E_GRANT_UNRESOLVED`), consistent with the general authorisation rule of §8.3: the
-  claimed delegating authorisation cannot be checked. `E_GRANT_GRANTER` (invalid) is used
-  only when the context is resolvable and the granter is not permitted to issue the grant:
-  the actor/signing-key class does not permit issuing grants, or the resolved parent does
-  not cover `weave.grant`/`grant` [Q10].
+  It **MUST** have `actor.grant` resolving to a parent `weave.grant` record that permits
+  issuing grants; the checks are applied in this order:
+  1. **resolve and cover.** An unresolvable parent is `unverifiable` (`E_GRANT_UNRESOLVED`):
+     the claimed delegating authorisation cannot be checked. A resolved parent that is not
+     a `weave.grant` with `action == "grant"`, or whose `kinds` do not contain
+     `weave.grant`/`actions` do not contain `grant`, is `E_GRANT_GRANTER` (invalid): the
+     context is resolvable but the granter is not permitted to issue this grant.
+  2. **transferable.** The parent's `transferable` **MUST** be `true`; otherwise
+     `E_GRANT_NOT_TRANSFERABLE`.
+  3. **granter identity.** The parent's `grantee.key` **MUST** equal the sub-granter's
+     `actor.key`; otherwise `E_GRANT_GRANTER`.
+  4. **parent validity.** The parent **MUST** be inside its validity window at the
+     sub-grant's claimed `recorded_at` and **MUST NOT** be revoked as of that time;
+     otherwise `E_GRANT_GRANTER`.
+  5. **no expansion.** The sub-grant's `kinds` **MUST** be a subset of the parent's
+     `kinds`; its `valid_from` **MUST** be greater than or equal to the parent's
+     `valid_from`; its `valid_until` **MUST** be less than or equal to the parent's
+     `valid_until` (null means unbounded; a null child under a bounded parent exceeds it).
+     Violations are `E_GRANT_DELEGATION_EXCEEDS`.
+
+  (For a *record* authorised by a grant — not for the grant record itself — coverage
+  failures are `E_GRANT_NOT_APPLICABLE`; see §5.4.) The ordering above is the deterministic
+  precedence used by the reference implementation: the first failing check is the record's
+  single error [Q10].
 
 Revocation is modelled inside `weave.grant` with `action == "revoke"` rather than as a ninth
 `weave.*` kind, because the H0 kind list names exactly eight kinds; this may be revisited in
