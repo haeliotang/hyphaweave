@@ -11,7 +11,8 @@
 > decided** by Inceptless decision **2026-11-10 #42**. Revision 3 records the
 > rulings S1–S17 of Inceptless decision **2026-11-11 #2**: the ambiguity classes
 > that S8 left to the reviser are listed, with their readings and rationale, in
-> §6 under `decided by principle (Inceptless decision 2026-11-11 #2)`. Each
+> §6 under `decided by principle (Inceptless decision 2026-11-11 #2)`, and §7
+> records the five further principle decisions of decision 2026-11-11 #5. Each
 > entry in §1 carries its decision status; its normative form is in
 > [`../spec/`](../spec/), and this page only records the question, the decision
 > and the reasoning. A small number of *implementation-shape* details were not
@@ -715,7 +716,9 @@ float) and left the rest to the reviser with the instruction to take the more
 conservative reading, pin it in the specification and record it here. Every entry in this
 section carries the status `decided by principle (Inceptless decision 2026-11-11 #2)`; each
 gives the two readings, the chosen one and why it is the conservative or the deterministic
-one.
+one. **The entry numbers 1–14 below are the numbers used by the specification's
+`[S8①]`–`[S8⑭]` labels**; entries 15–19 record five further principle decisions added
+in revision 1 of the S1-FIX1 round (T11).
 
 1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
    the old §14.5 applies to the whole container, so one code. Reading B: the one-error
@@ -744,14 +747,15 @@ one.
    to guess.
 5. **Envelope sub-order (F3).** Readings: required-member presence first, or
    closedness first. **Chosen** presence → closedness → per-member grammar in table
-   order, repeated inside every closed nested object. More conservative: it makes
-   "one error per record" deterministic; the alternative lets two conforming verifiers
-   report different codes for one record.
+   order, repeated inside every closed nested object. **Deterministic** (not a
+   conservative-vs-permissive axis): it makes "one error per record" deterministic; the
+   alternative lets two conforming verifiers report different codes for one record.
 6. **Nested closed-object codes (F2).** Readings: the envelope-level codes cover every
    closed object, or the object's owning section names the code. **Chosen** the owning
    section's dedicated code; `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` are top-level
-   only. More conservative: the more specific diagnosis, and it matches the explicit
-   §4.5 and §11.2 statements that the envelope codes do not apply to those objects.
+   only. **Deterministic**: the more specific owning-section code is the only reading that
+   matches the explicit §4.5 and §11.2 statements that the envelope codes do not apply to
+   those objects.
 7. **Reference to an individually invalid record.** Readings: `found` because origin,
    id and digest match, or `unverifiable`. **Chosen `unverifiable`**
    (`N_REF_UNVERIFIABLE`), as §6.3 already states: a record that is not itself valid is
@@ -769,24 +773,28 @@ one.
    errors; kind-semantic, lifecycle, actor, authorisation and cryptographic failures
    establish no trust and are not usage errors. More conservative: a malformed keyset
    input fails closed as a usage error, while a merely untrusted record is ignored
-   instead of silently upgrading trust.
+   instead of silently upgrading trust. The silently ignored keyset record is invisible to
+   the operator in the report; that is accepted because the alternative (a report warning)
+   would need a notice code and the file establishes nothing either way.
 10. **Report construction details (F12, S8⑩).** Readings: leave them
     implementation-defined (byte comparisons then cannot be meaningful) or pin them.
     **Chosen** pin them normatively in §14.6: `N_KEY_TOFU` placement, unknown-kind
     notice only on a valid record, `sigs[].state`, partial `refs[]`,
     `timestamps[].gen_time`, broken-renewal states, container defaults for undetermined
-    values, and the serializer micro-decisions (including `\u007f` escaping). More
-    conservative: the report becomes reproducible and no implementation must copy
+    values, and the serializer micro-decisions (including `\u007f` escaping).
+    **Deterministic**: the report becomes reproducible and no implementation must copy
     another implementation's output to conform.
 11. **Check-order precedence (S8⑪).** **Chosen** the §14.5 stage order: cryptographic
-    checks before lifecycle/semantic ones, and `E_TS_FILE` before `E_TS_RENEWAL`. More
-    deterministic: a single code per defect; the reference behaviour already follows it.
+    checks before lifecycle/semantic ones, and `E_TS_FILE` before `E_TS_RENEWAL`.
+    **Deterministic**: a single code per defect; the order is the logical one (a signature
+    can only be attributed to a key once it verifies), so no implementation needs another
+    implementation's behaviour to reach it.
 12. **`verifier` identity (F1, S8⑫).** **Chosen**: informational, excluded from
     cross-implementation comparison; conformance is defined by §14.10. Avoids claiming
     byte identity that cannot exist and fixes no false shared name.
 13. **`vectors` report layout (F5, S8⑬).** **Chosen**: `summary` is normative and
     per-case layout and `vectors` input identity are implementation-defined,
-    deterministic and path-free. More conservative: no implementer has to copy an
+    deterministic and path-free. **Deterministic**: no implementer has to copy an
     unobservable shape, and conformance is `mismatched == 0`.
 14. **`N_NO_HUMAN_SIGNATURE` precedence (F6, S8⑭).** Readings: the notice also appears
     on the unverifiable signature branches, or only on a valid accepted record.
@@ -794,14 +802,63 @@ one.
     conclusion on a record whose signatures could not be checked would state something
     the verifier did not establish.
 
+Entries 15–19 record five further principle decisions added by revision 1 of the S1-FIX1
+round (T11); they carry the status
+`decided by principle (Inceptless decision 2026-11-11 #5; T11)`.
+
+15. **`stage` value semantics (§4.1.1).** Readings: the five stage words are opaque closed
+    values whose meaning is left to projects, or they have fixed envelope meanings. **Chosen**
+    fixed meanings: `proposed` = the actor asserts the claim without having adopted it (not
+    "awaiting receiver approval"), `accepted` = the actor adopts it as its current position,
+    and similarly `rejected`/`withdrawn`/`superseded`. Reason: a closed vocabulary with no
+    meaning cannot support the signer/authorisation rules that key off `accepted`, and the
+    alternative lets two implementations disagree on what a `proposed` record asserts. The
+    negative clarification ("not awaiting approval") prevents a receiver from reading the
+    stage as a workflow state the format does not define.
+16. **Registration does not retroactively abandon records (§7.6).** Readings: registering a
+    kind re-judges all older records of that kind against the new body rules, or the frozen
+    set pins old conclusions and a registration must accept previously exportable bodies.
+    **Chosen** the second: a kind page must accept the body shapes its project exported while
+    the kind was opaque, and a registration that cannot do so is a breaking change under
+    §0.3. Reason: §7.5's additive evolution exists precisely so a verifier never abandons
+    older records (K3); the frozen regression set makes the commitment checkable.
+17. **Manifest signing key need not be `manifest.origin.instance` (§11.3).** Readings: the
+    manifest signature must be by the key named in the manifest origin (publisher binding),
+    or the signature only proves which declared key signed the manifest bytes. **Chosen** the
+    second, as a documented limitation (T17/A-L8): the verifier checks the equation
+    against declared material, the report does not claim a publisher binding, and a consumer
+    that needs the binding must pin the key id out of band. Reason: H0 has no ruling that
+    establishes the binding, and inventing one would reject valid containers produced by
+    systems whose manifest signer is a delegated key. The limitation is stated in §15 so the
+    gap is not silent.
+18. **Oversized `.tsr` is a container-level `E_JSON_SIZE` (§13).** Readings: an oversized
+    timestamp receipt file is an invalid receipt (`E_TS_*` inside the timestamp phase) or a
+    container-level size-limit failure. **Chosen** container-level `E_JSON_SIZE`, reported by
+    the timestamp phase, with the record verdicts kept. Reason: every §13 limit maps to one
+    deterministic code (Q24); the size limit is checked before parsing the file, so calling it
+    a receipt format error would report a different check than the one that failed, and the
+    timestamp phase runs after the record phase so the already-processed records remain
+    reportable (T16).
+19. **Retention of `N_READABLE_PRESENT` / `N_PREVIOUS_SIG_UNVERIFIED` after an early
+    failure (§14.6).** Readings: notices are reported only from completed stages, or a
+    notice about a condition the verifier already observed is kept even if a later check
+    fails. **Chosen** the second, and the identical if-and-only-if rule for the limitation
+    identifiers. Reason: deterministic information-preserving reporting — the condition is a
+    fact of the input, not a passed check, so dropping it after a later failure would make
+    the report depend on check ordering and hide a condition the verifier did establish.
+    When the condition cannot be determined (for example entry enumeration fails before a
+    `readable/` entry is observed), it is not reported.
+
 Status updates in this revision:
 
-- **Q27** (report `input` identity) is refined by S14 and the Lead's decisions §4.7:
-  the directory-container `input` is the raw `manifest.json` digest and byte size
-  whenever those bytes can be read, and `null` for both when the manifest is absent,
-  unreadable or above `MAX_MANIFEST_BYTES`; a record target above `MAX_RECORD_BYTES`
-  reports `E_JSON_SIZE` with `input` `null` because the whole file is never read. The
-  `vectors` target report shape is implementation-defined (F5/S8⑬).
+- **Q27** (report `input` identity) is refined by S14 and T16: a directory container's
+  `input` is the §2.4 manifest digest and byte size once the manifest has parsed and its
+  structure validated; before that (structurally invalid manifest or a stop before the
+  manifest structure stage) it is the raw `manifest.json` bytes' SHA-256 and size; it is
+  `null` for both when the manifest is absent, unreadable or above
+  `MAX_MANIFEST_BYTES`, and for a standalone record above `MAX_RECORD_BYTES` (the whole
+  file is never read). The `vectors` target report shape is implementation-defined
+  (F5/S8⑬).
 - **P3** (delegation-chain depth) and **P10** (human-signature notice precedence) are
   resolved and removed from §3; **P7** is narrowed to the `vectors`-target layout
   (F5).
