@@ -318,6 +318,13 @@ def _crafted_certificate(variant: str) -> tuple[bytes, bytes]:
             (2126, 1, 1),
             True,
         ),
+        "eku-wrong": (
+            "Hyphaweave H0 test TSA (wrong EKU)",
+            7005,
+            (2026, 1, 1),
+            (2126, 1, 1),
+            True,
+        ),
     }
     common_name, serial, not_before, not_after, with_eku = specifications[variant]
     base = asn1_x509.Certificate.load(_tsa_certificate_der())
@@ -355,7 +362,11 @@ def _crafted_certificate(variant: str) -> tuple[bytes, bytes]:
                 {
                     "extn_id": "extended_key_usage",
                     "critical": True,
-                    "extn_value": asn1_x509.ExtKeyUsageSyntax(["time_stamping"]),
+                    "extn_value": asn1_x509.ExtKeyUsageSyntax(
+                        ["code_signing"]
+                        if variant == "eku-wrong"
+                        else ["time_stamping"]
+                    ),
                 }
             )
         )
@@ -506,6 +517,7 @@ def _crafted_tsr(
     encap_content_type: str = "tst_info",
     attribute_content_type: str = "tst_info",
     signer_digest_algorithm: str = "sha256",
+    certificates_override: Sequence[bytes] | None = None,
 ) -> bytes:
     """Build one DER TimeStampResp deterministically (see module section note)."""
     signer_der = certificate_der if certificate_der is not None else _tsa_certificate_der()
@@ -561,7 +573,14 @@ def _crafted_tsr(
     signed_data["version"] = "v3"
     signed_data["digest_algorithms"] = [{"algorithm": "sha256"}]
     signed_data["encap_content_info"] = encapsulated
-    if include_certificate:
+    if certificates_override is not None:
+        signed_data["certificates"] = [
+            asn1_cms.CertificateChoices(
+                {"certificate": asn1_x509.Certificate.load(der)}
+            )
+            for der in certificates_override
+        ]
+    elif include_certificate:
         signed_data["certificates"] = [
             asn1_cms.CertificateChoices({"certificate": signer_certificate})
         ]
@@ -1550,11 +1569,14 @@ def grant_revocation(
     signer: str = "human-1",
     effective_at: str = recordlib.T3,
     revokes_digest: str | None = None,
+    revokes_ref: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     body = {
         "action": "revoke",
         "revoke": {
-            "revokes": recordlib.make_ref(
+            "revokes": revokes_ref
+            if revokes_ref is not None
+            else recordlib.make_ref(
                 grant["origin"]["instance"],
                 grant["id"],
                 revokes_digest
@@ -1855,22 +1877,30 @@ declare(
     "invalid",
     errors=("E_GRANT_REVOKE_REF",),
     build=lambda case_dir: (
-        lambda grant: container(
+        lambda grant, first: container(
             [
                 grant,
+                first,
                 grant_revocation(
                     grant,
-                    record_id="grant-revoke-bad-ref",
-                    revokes_digest="sha256:" + "66" * 32,
+                    record_id="grant-revoke-targets-revocation",
+                    revokes_ref=parent_ref(first),
                 ),
             ]
         )
     )(
-        root_grant(record_id="grant-root-revoke-ref")
+        root_grant(record_id="grant-root-revoke-ref"),
+        grant_revocation(
+            root_grant(record_id="grant-root-revoke-ref"),
+            record_id="grant-revoke-first",
+            effective_at=recordlib.T3,
+        ),
     ),
     args=GRANT_ARGS,
-    notes="A grant-revocation's revokes reference must resolve to the grant it "
-    "names; a wrong digest makes the revocation invalid (E_GRANT_REVOKE_REF, §5.5).",
+    notes="The revocation's revokes reference does resolve to a record of kind "
+    "weave.grant, but that record is itself a revoke record (action != grant), so it "
+    "is not an authorising grant: E_GRANT_REVOKE_REF invalid. This distinguishes "
+    "the reference-resolution check from the authorising-action check.",
 )
 
 declare(
@@ -1880,17 +1910,25 @@ declare(
     "container",
     "valid",
     build=lambda case_dir: (
-        lambda grant: container([grant, grant_revocation(grant, record_id="grant-revoke-ok")])
+        lambda grant: container(
+            [
+                grant,
+                grant_revocation(
+                    grant, record_id="grant-revoke-default", signer="human-1"
+                ),
+            ]
+        )
     )(
-        root_grant(record_id="grant-root-revoke-ok")
+        root_grant(record_id="grant-root-default-granter")
     ),
     args=GRANT_ARGS,
     records=(
-        {"id": "grant-root-revoke-ok", "verdict": "valid", "errors": []},
-        {"id": "grant-revoke-ok", "verdict": "valid", "errors": []},
+        {"id": "grant-root-default-granter", "verdict": "valid", "errors": []},
+        {"id": "grant-revoke-default", "verdict": "valid", "errors": []},
     ),
-    notes="Positive revocation: signed by the original granter, effective_at not "
-    "after recorded_at, revokes reference resolves to a resolvable grant (§5.5).",
+    notes="Positive default revocation authority (Q10): with no explicit "
+    "revocation list, the granter's own key may revoke the grant; the revokes "
+    "reference resolves to an authorising grant and the revocation is valid.",
 )
 
 declare(
@@ -3938,6 +3976,18 @@ declare(
 # ---------------------------------------------------------------------------
 
 
+def _chain_unexpected_zip_files() -> dict[str, bytes]:
+    """A zip container whose manifest has no previous but carries previous/manifest.json.
+
+    A zip without explicit directory entries has no ``previous/`` entry in the
+    container's directory set, so only the first unexpected-previous branch (the
+    embedded manifest file itself) can reject it.
+    """
+    files = recordlib.build_container(SIMPLE_RECORDS())
+    files["previous/manifest.json"] = _previous_manifest_bytes()
+    return {"container.zip": as_zip(files)}
+
+
 def _blobs_extra_unlisted_files() -> dict[str, bytes]:
     """A container with a listed blob plus one extra blob file not in the manifest."""
     files = recordlib.build_container(
@@ -4199,6 +4249,61 @@ declare(
 )
 
 
+
+declare(
+    "container",
+    "chain-unexpected-first",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN_UNEXPECTED",),
+    build=lambda case_dir: _chain_unexpected_zip_files(),
+    notes="Zip form of the unexpected-previous manifest: previous_manifest is null "
+    "but the archive carries previous/manifest.json. With no explicit previous/ "
+    "directory entry, only the embedded-file branch can reject this, which pins "
+    "that first branch (E_MANIFEST_CHAIN_UNEXPECTED).",
+)
+
+declare(
+    "integrity-levels",
+    "l2-cert-not-matching-token",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_CMS",),
+    build=lambda case_dir: _crafted_l2_files(
+        case_dir,
+        tsr_factory=lambda imprint: _crafted_tsr(
+            imprint,
+            certificates_override=[_crafted_certificate("wrong-anchor")[0]],
+        ),
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container=dict(level_claimed="L2", **L2_NO_ANCHOR),
+    notes="The token carries a certificate set, but none of its certificates is the "
+    "signer certificate named by signerInfo.sid: the signer certificate MUST be "
+    "carried inside the token (E_TS_CMS), regardless of --tsa-trust.",
+)
+
+declare(
+    "integrity-levels",
+    "l2-eku-wrong-usage",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_CERT",),
+    build=lambda case_dir: _crafted_l2_files(
+        case_dir,
+        tsr_factory=_with_certificate("eku-wrong"),
+        cert_variant="eku-wrong",
+        trust_name="tsa-crafted.pem",
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", "tsa-crafted.pem"),
+    expected_container=dict(level_claimed="L2", **L2_NO_ANCHOR),
+    notes="The signer certificate has an extendedKeyUsage extension, but it does "
+    "not include id-kp-timeStamping: E_TS_CERT. This pins the timestamping-profile "
+    "branch separately from the missing-EKU branch.",
+)
 
 # === END CASE SECTIONS ===
 
@@ -4492,6 +4597,8 @@ def freeze_cases(*, source_commit: str, freeze_date: str) -> int:
         "  expects it. This keeps at least one negative per registered error code",
         "  while remaining deterministic.",
         "",
+        "- Case count: %d" % len(selected),
+        "",
         "| Category | Cases |",
         "|---|---:|",
     ]
@@ -4530,6 +4637,9 @@ def freeze_cases(*, source_commit: str, freeze_date: str) -> int:
         ]
     )
     (destination / "FROZEN.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (destination / "FROZEN_CASE_COUNT").write_text(
+        "%d\n" % len(selected), encoding="utf-8"
+    )
 
     digest_lines = []
     for path in sorted(destination.rglob("*")):
@@ -4539,30 +4649,13 @@ def freeze_cases(*, source_commit: str, freeze_date: str) -> int:
             "%s  %s" % (hashlib.sha256(path.read_bytes()).hexdigest(), path.relative_to(destination).as_posix())
         )
     (destination / "SHA256SUMS").write_text("\n".join(digest_lines) + "\n", encoding="utf-8")
-    count_document = {
-        "format": "weave-record-frozen-count/1",
-        "freeze_version": FREEZE_VERSION,
-        "status": "candidate",
-        "formal_freeze_condition": (
-            "J1 and J2 acceptance round trips (decision draft §10) passed"
-        ),
-        "freeze_date": freeze_date,
-        "source_commit": source_commit,
-        "case_count": len(selected),
-        "file_count": len(digest_lines),
-        "categories": {
-            category: category_counts[category] for category in sorted(category_counts)
-        },
-        "verdicts": {
-            verdict: verdict_counts[verdict] for verdict in sorted(verdict_counts)
-        },
-    }
-    (destination / "FROZEN_CASE_COUNT.json").write_text(
-        wcj.dump_canonical_file(count_document).decode("utf-8"), encoding="utf-8"
-    )
+    try:
+        destination_label = destination.resolve().relative_to(REPO_ROOT)
+    except ValueError:  # pragma: no cover - sandbox/QA override path
+        destination_label = destination
     print(
         "wrote %d frozen case(s) under %s (%d categories)"
-        % (len(selected), destination.relative_to(REPO_ROOT), len(category_counts))
+        % (len(selected), destination_label, len(category_counts))
     )
     return 0
 

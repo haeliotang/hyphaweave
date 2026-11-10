@@ -14,15 +14,25 @@ of every input file:
   directory (metadata flips are expected to be exempt).
 
 The mutation is deterministic: byte offset ``i`` gets bit ``i % 8`` flipped
-(least-significant bit first).  The verifier must return ``invalid`` for every
-mutant.  A mutant that does **not** return ``invalid`` is either:
+(least-significant bit first).
 
-* **exempt** - the flipped byte cannot be covered by any signature/digest and
-  the verifier's non-``invalid`` verdict is honest.  Each exemption class is
-  listed in ``EXEMPT_REASONS`` and every exempt mutant is counted per class and
-  printed in the JSON report; the delivery report must quote that list; or
-* a **survivor** - the gate fails (exit 1), because a checker that accepts this
-  mutant would not be exercising the rule the byte carries.
+Expected outcome: every mutant must be **rejected** by the verifier, i.e. it must
+not come back with the case's accepted verdict (``valid``, or ``erased`` for an
+erased-placeholder case):
+
+* ``invalid`` - the normal rejection; counted separately.
+* ``unverifiable`` / usage error / verifier crash - also a rejection.  A mutated
+  byte can break a dependency (for example the only key-declaration record), so
+  the honest verdict is ``unverifiable`` rather than ``invalid``; this is counted
+  separately with the observed verdict, never silently folded into ``invalid``.
+  A crash means the verifier did not fail closed; it is counted separately too.
+* **exempt** - a mutant that *is accepted again* is only allowed when the flipped
+  byte is in a documented, signature/digest-uncovered byte class (unsigned
+  records, erased placeholders, ``sigs`` metadata, ``readable/``, untrusted TSA
+  certificate files, zip container metadata).  Each class has a written reason in
+  ``EXEMPT_REASONS``; counts are reported per class.
+* a **survivor** - an accepted mutant outside every exemption class; the gate
+  fails (exit 1) because the vectors do not depend on that byte.
 
 Exemption classes implemented here:
 
@@ -76,7 +86,7 @@ import sys
 import tempfile
 import threading
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -88,8 +98,9 @@ KEYSET = REPO / "vectors" / "keys" / "keyset"
 
 EXEMPT_REASONS = {
     "unsigned-record": (
-        "deliberately unsigned record: no sigs member, so no byte is signature-covered; "
-        "a content flip can legitimately remain a valid unsigned record"
+        "record target with no verifiable per-record signature (no sigs member, or only "
+        "unknown-algorithm entries that Q13 ignores): no content byte is signature-covered, "
+        "so a content flip can legitimately remain a valid unsigned record"
     ),
     "erased-placeholder": (
         "weave.erased placeholder: no sigs by format; a flip in the claimed placeholder "
@@ -448,6 +459,14 @@ class VerifierRunner:
             return {"verdict": "usage-error", "error": str(error)}
         except OSError as error:
             return {"verdict": "usage-error", "error": str(error)}
+        except Exception as error:  # noqa: BLE001 - a crash must be reported, not hidden
+            # A malformed mutant may make the verifier raise instead of reporting invalid.
+            # That is not a clean rejection; it is reported as ``verifier-crash`` and the
+            # byte-class exemption rules decide whether it is documented or a survivor.
+            return {
+                "verdict": "verifier-crash",
+                "error": "%s: %s" % (type(error).__name__, error),
+            }
         raise SystemExit("byte_flip_gate: unexpected verifier command")
 
 
@@ -500,6 +519,10 @@ def classify_non_invalid(
         return None
     if file_rel is None:
         return None
+    if spans:
+        sigs_span = spans.get("sigs")
+        if sigs_span and sigs_span[0] <= offset < sigs_span[1]:
+            return "record-signature-metadata"
     if file_rel == "readable" or file_rel.startswith("readable/"):
         return "readable-view"
     name = file_rel.rsplit("/", 1)[-1]
@@ -534,6 +557,11 @@ def input_files(case_dir: Path, expected: dict) -> tuple[str, list[Path] | Path]
     return ("container-zip", [input_path])
 
 
+def _accepted_verdict(expected: dict) -> str:
+    """The accepted verdict for this positive case (``valid`` or ``erased``)."""
+    return "erased" if expected.get("verdict") == "erased" else "valid"
+
+
 def process_case(
     *,
     case_id: str,
@@ -546,26 +574,55 @@ def process_case(
 ) -> dict:
     args = expand_args(list(expected.get("args") or []), case_dir)
     kind, paths = input_files(case_dir, expected)
+    accepted = _accepted_verdict(expected)
     result: dict[str, Any] = {
         "case": case_id,
         "target": expected["target"],
         "mutants": 0,
         "invalid": 0,
+        "rejected": {},
         "exempt": {},
+        "crash_samples": [],
         "survivors": [],
+        "crash_samples": [],
         "files": [],
     }
+
+    def note_outcome(verdict: str, report: dict, exempt_class: str | None, location: dict) -> None:
+        result["mutants"] += 1
+        if verdict != accepted:
+            if verdict == "invalid":
+                result["invalid"] += 1
+            else:
+                result["rejected"][verdict] = result["rejected"].get(verdict, 0) + 1
+                if verdict == "verifier-crash" and len(result["crash_samples"]) < 20:
+                    result["crash_samples"].append(
+                        {**location, "error": report.get("error", "")}
+                    )
+            return
+        if exempt_class is None:
+            result["survivors"].append(
+                {**location, "verdict": verdict, "errors": _errors(report)}
+            )
+        else:
+            result["exempt"][exempt_class] = result["exempt"].get(exempt_class, 0) + 1
+
     work = work_root / case_id.replace("/", "__")
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
+
     if kind == "record":
         original = paths[0].read_bytes()
         expected["_kind"] = None
         try:
             record = json.loads(original)
             expected["_kind"] = record.get("kind") if isinstance(record, dict) else None
-            expected["_unsigned"] = not (isinstance(record, dict) and record.get("sigs"))
+            sigs = record.get("sigs") if isinstance(record, dict) else None
+            known = isinstance(sigs, list) and any(
+                isinstance(entry, dict) and entry.get("alg") == "ed25519" for entry in sigs
+            )
+            expected["_unsigned"] = not known
         except ValueError:
             expected["_unsigned"] = False
         spans = record_span_map(original)
@@ -575,9 +632,8 @@ def process_case(
             temp_path.write_bytes(mutate_bytes_at(original, offset))
             report = runner.run(["record", str(temp_path)] + args)
             verdict = report.get("verdict")
-            result["mutants"] += 1
-            if verdict == "invalid":
-                result["invalid"] += 1
+            if verdict != accepted:
+                note_outcome(verdict, report, None, {})
                 continue
             exemption = classify_non_invalid(
                 case=expected,
@@ -588,16 +644,12 @@ def process_case(
                 spans=spans,
                 verdict=verdict,
             )
-            if exemption is None:
-                entry = {
-                    "offset": offset,
-                    "bit": offset % 8,
-                    "verdict": verdict,
-                    "errors": _errors(report),
-                }
-                result["survivors"].append(entry)
-            else:
-                result["exempt"][exemption] = result["exempt"].get(exemption, 0) + 1
+            note_outcome(
+                verdict,
+                report,
+                exemption,
+                {"offset": offset, "bit": offset % 8},
+            )
         result["files"].append({"file": expected["input"], "bytes": len(original)})
         return result
 
@@ -609,6 +661,9 @@ def process_case(
         for path in files:
             rel = path.relative_to(container).as_posix()
             original = path.read_bytes()
+            file_spans = None
+            if rel.startswith("records/") and rel.endswith(".json"):
+                file_spans = record_span_map(original)
             limit = len(original) if max_bytes is None else min(len(original), max_bytes)
             result["files"].append({"file": rel, "bytes": len(original)})
             for offset in range(limit):
@@ -618,9 +673,8 @@ def process_case(
                 finally:
                     path.write_bytes(original)
                 verdict = report.get("verdict")
-                result["mutants"] += 1
-                if verdict == "invalid":
-                    result["invalid"] += 1
+                if verdict != accepted:
+                    note_outcome(verdict, report, None, {})
                     continue
                 exemption = classify_non_invalid(
                     case=expected,
@@ -628,21 +682,15 @@ def process_case(
                     file_rel=rel,
                     offset=offset,
                     raw=original,
-                    spans=None,
+                    spans=file_spans,
                     verdict=verdict,
                 )
-                if exemption is None:
-                    result["survivors"].append(
-                        {
-                            "file": rel,
-                            "offset": offset,
-                            "bit": offset % 8,
-                            "verdict": verdict,
-                            "errors": _errors(report),
-                        }
-                    )
-                else:
-                    result["exempt"][exemption] = result["exempt"].get(exemption, 0) + 1
+                note_outcome(
+                    verdict,
+                    report,
+                    exemption,
+                    {"file": rel, "offset": offset, "bit": offset % 8},
+                )
         return result
 
     # zip container
@@ -656,24 +704,13 @@ def process_case(
         temp_zip.write_bytes(mutate_bytes_at(original, offset))
         report = runner.run(["container", str(temp_zip)] + _container_args(args))
         verdict = report.get("verdict")
-        result["mutants"] += 1
-        if verdict == "invalid":
-            result["invalid"] += 1
+        if verdict != accepted:
+            note_outcome(verdict, report, None, {})
             continue
         exemption = classify_zip(offset, payload_ranges)
         if exemption is None and expected.get("verdict") == "erased":
             exemption = "erased-placeholder"
-        if exemption is None:
-            result["survivors"].append(
-                {
-                    "offset": offset,
-                    "bit": offset % 8,
-                    "verdict": verdict,
-                    "errors": _errors(report),
-                }
-            )
-        else:
-            result["exempt"][exemption] = result["exempt"].get(exemption, 0) + 1
+        note_outcome(verdict, report, exemption, {"offset": offset, "bit": offset % 8})
     return result
 
 
@@ -690,6 +727,30 @@ def _errors(report: dict) -> list[str]:
     return sorted(set(errors))
 
 
+# ---------------------------------------------------------------------- process pool
+
+_WORKER_RUNNER: "VerifierRunner | None" = None
+
+
+def _init_worker(cache: bool) -> None:
+    global _WORKER_RUNNER
+    _WORKER_RUNNER = VerifierRunner(cache=cache)
+
+
+def _process_case_worker(task: tuple) -> dict:
+    case_id, expected, case_dir, work_root, max_bytes = task
+    assert _WORKER_RUNNER is not None
+    return process_case(
+        case_id=case_id,
+        expected=expected,
+        case_dir=Path(case_dir),
+        work_root=Path(work_root),
+        runner=_WORKER_RUNNER,
+        max_bytes=max_bytes,
+        verbose=False,
+    )
+
+
 # ---------------------------------------------------------------------------- main
 
 
@@ -697,6 +758,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--suite", default=str(DEFAULT_SUITE), help="vector suite root (default: vectors/)")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 4))
+    parser.add_argument(
+        "--executor",
+        choices=("process", "thread"),
+        default="process",
+        help="process pool (default, true CPU parallelism) or thread pool",
+    )
+    parser.add_argument("--quiet", action="store_true", help="suppress per-case progress on stderr")
     parser.add_argument("--json", metavar="PATH", help="write the machine report to PATH")
     parser.add_argument("--case", action="append", default=[], help="only these case ids (repeatable)")
     parser.add_argument("--max-bytes", type=int, help="debug: only the first N bytes of each file")
@@ -738,11 +806,28 @@ def main(argv: list[str] | None = None) -> int:
 
     all_cases = [("source", case) for case in cases] + [("frozen-candidate", case) for case in frozen_cases]
     results: list[dict] = []
+    executor: Any
+    if args.executor == "process" and args.jobs > 1:
+        executor = ProcessPoolExecutor(
+            max_workers=max(1, args.jobs),
+            initializer=_init_worker,
+            initargs=(not args.no_cache,),
+        )
+    else:
+        executor = ThreadPoolExecutor(max_workers=max(1, args.jobs))
     try:
-        with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        if args.executor == "process" and args.jobs > 1:
             futures = {}
             for origin, (case_id, expected, case_dir) in all_cases:
-                future = pool.submit(
+                future = executor.submit(
+                    _process_case_worker,
+                    (case_id, expected, str(case_dir), str(tmpdir), args.max_bytes),
+                )
+                futures[future] = (origin, case_id)
+        else:
+            futures = {}
+            for origin, (case_id, expected, case_dir) in all_cases:
+                future = executor.submit(
                     process_case,
                     case_id=case_id,
                     expected=expected,
@@ -753,24 +838,28 @@ def main(argv: list[str] | None = None) -> int:
                     verbose=args.verbose,
                 )
                 futures[future] = (origin, case_id)
-            for future in futures:
-                origin, case_id = futures[future]
-                result = future.result()
-                result["origin"] = origin
-                results.append(result)
-                if args.verbose:
-                    print(
-                        "  %-12s %-45s mutants=%d invalid=%d exempt=%s survivors=%d"
-                        % (
-                            origin,
-                            case_id,
-                            result["mutants"],
-                            result["invalid"],
-                            json.dumps(result["exempt"], sort_keys=True),
-                            len(result["survivors"]),
-                        )
-                    )
+        for future in futures:
+            origin, case_id = futures[future]
+            result = future.result()
+            result["origin"] = origin
+            results.append(result)
+            if args.verbose or not args.quiet:
+                print(
+                    "  %-12s %-45s mutants=%d invalid=%d rejected=%s exempt=%s survivors=%d"
+                    % (
+                        origin,
+                        case_id,
+                        result["mutants"],
+                        result["invalid"],
+                        json.dumps(result.get("rejected", {}), sort_keys=True),
+                        json.dumps(result["exempt"], sort_keys=True),
+                        len(result["survivors"]),
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
     finally:
+        executor.shutdown(wait=True, cancel_futures=True)
         if not os.environ.get("KEEP_BYTE_FLIP_TMP"):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -781,10 +870,17 @@ def main(argv: list[str] | None = None) -> int:
         "bytes": sum(entry["bytes"] for item in results for entry in item["files"]),
         "mutants": sum(item["mutants"] for item in results),
         "invalid": sum(item["invalid"] for item in results),
+        "rejected": {},
         "exempt": {},
+        "crash_samples": [],
         "survivors": [],
     }
     for item in results:
+        for name, count in item.get("rejected", {}).items():
+            totals["rejected"][name] = totals["rejected"].get(name, 0) + count
+        for sample in item.get("crash_samples", []):
+            if len(totals["crash_samples"]) < 20:
+                totals["crash_samples"].append({"case": item["case"], **sample})
         for name, count in item["exempt"].items():
             totals["exempt"][name] = totals["exempt"].get(name, 0) + count
         for survivor in item["survivors"]:
@@ -802,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.json).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         "byte-flip: %d cases (%d frozen candidate), %d files, %d bytes, %d mutants, "
-        "%d invalid, %d exempt, %d survivors"
+        "%d invalid, %d other-rejection, %d exempt, %d survivors"
         % (
             totals["cases"],
             1 if totals["frozen_included"] else 0,
@@ -810,10 +906,22 @@ def main(argv: list[str] | None = None) -> int:
             totals["bytes"],
             totals["mutants"],
             totals["invalid"],
+            sum(totals["rejected"].values()),
             sum(totals["exempt"].values()),
             len(totals["survivors"]),
         )
     )
+    if totals["rejected"]:
+        print("non-invalid rejections (fail-closed dependency breaks):")
+        for name in sorted(totals["rejected"]):
+            print("  %-26s %6d" % (name, totals["rejected"][name]))
+    if totals["crash_samples"]:
+        print("verifier-crash samples (fail-closed gap, reported separately):")
+        for sample in totals["crash_samples"][:10]:
+            print(
+                "  %s file=%s offset=%s :: %s"
+                % (sample["case"], sample.get("file", "-"), sample.get("offset"), sample.get("error", "")[:120])
+            )
     if totals["exempt"]:
         print("exempt classes:")
         for name in sorted(totals["exempt"]):

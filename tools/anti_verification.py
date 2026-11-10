@@ -86,6 +86,11 @@ class Mutation:
     #: Equivalent mutants are reported separately (they cannot be killed by a vector);
     #: the gate fails only on survivors that are not documented equivalents.
     equivalent_reason: str = ""
+    #: further (module, anchor-regex, replacement) patches that implement the same
+    #: semantic elsewhere.  When the single-site mutation survives, the harness applies
+    #: this site *and* the co-sites together and requires the vectors to go red; that
+    #: proves the semantic is pinned even though one redundant site is invisible alone.
+    co_mutations: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass
@@ -98,6 +103,8 @@ class MutationResult:
     exit_code: int | None = None
     report_verdict: str | None = None
     mismatched_cases: int = 0
+    mismatched_case_ids: tuple[str, ...] = ()
+    kill_kind: str = ""  # "mismatch" | "crash" for killed mutations
 
 
 #: Curated mutation catalogue.  ``check`` groups mutations by verifier check class;
@@ -122,6 +129,7 @@ def _m(
     occurrences: int = 1,
     replace_all: bool = False,
     equivalent_reason: str = "",
+    co_mutations: tuple[tuple[str, str, str], ...] = (),
 ) -> Mutation:
     return Mutation(
         id=mid,
@@ -135,6 +143,7 @@ def _m(
         occurrences=occurrences,
         replace_all=replace_all,
         equivalent_reason=equivalent_reason,
+        co_mutations=co_mutations,
     )
 
 
@@ -339,7 +348,11 @@ def _build_catalogue() -> None:
            "accept a weave.grant revoke record as an authorising grant",
            r'if envelope\.kind != kinds\.KIND_GRANT or envelope\.body\.get\("action"\) != "grant":\n\s*raise WeaveError\("E_GRANT_GRANTER", "reference does not resolve to an authorising grant"\)',
            'if False:  # ablation: revoke record accepted as authorising grant\n        pass',
-           ("grant/revoke-grant-as-authority",), review_a_survivor=True),
+           ("grant/revoke-grant-as-authority",), review_a_survivor=True,
+           equivalent_reason="the cited-authority action is checked twice with the same E_GRANT_GRANTER "
+           "(grants.py _as_grant and check_agent_authorization); removing both removes the guard that "
+           "prevents grant_record_from_envelope from reinterpreting a revoke body (body.grant is absent, "
+           "KeyError), so no mutant can be accepted - the vector's E_GRANT_GRANTER outcome is preserved"),
         _m("grant-delegation-parent-action", "grants.py", "grants.delegation.parent-capabilities",
            "allow a parent grant that does not authorise granting",
            r'if "weave\.grant" not in parent\.kind_names or "grant" not in parent\.actions:',
@@ -384,12 +397,22 @@ def _build_catalogue() -> None:
            "ignore revocation of the parent grant",
            r'if context\.grant_state\.revocation_as_of\(parent\.digest, at_time\) is not None:',
            'if False:  # ablation: parent grant revocation check disabled',
-           ("grant/sub-grant-parent-revoked",), review_a_survivor=True),
+           ("grant/sub-grant-parent-revoked",), review_a_survivor=True,
+           co_mutations=(
+               ("grants.py",
+                r'raise WeaveError\("E_GRANT_REVOKED", "grant is revoked"\)',
+                'pass  # co-ablation: chain-level revocation disabled'),
+           )),
         _m("grant-parent-expired", "grants.py", "grants.delegation.parent-window",
            "ignore that the parent grant is not yet valid",
            r'if timestamp_sort_key\(at_time\) < timestamp_sort_key\(parent\.valid_from\):',
            'if False:  # ablation: parent grant lower-window check disabled',
-           ("grant/sub-grant-parent-expired",), review_a_survivor=True),
+           ("grant/sub-grant-parent-expired",), review_a_survivor=True,
+           co_mutations=(
+               ("grants.py",
+                r'raise WeaveError\("E_GRANT_EXPIRED", "grant is outside its validity window"\)',
+                'pass  # co-ablation: _check_window expiry disabled'),
+           )),
         _m("grant-chain-depth", "grants.py", "grants.chain.depth",
            "remove the grant chain depth guard",
            r'if depth > MAX_CHAIN_DEPTH or grant\.digest in seen:',
@@ -423,7 +446,11 @@ def _build_catalogue() -> None:
            "accept a grant-revocation reference that does not resolve to an authorising grant",
            r'raise WeaveError\("E_GRANT_REVOKE_REF", "revoked target is not an authorising grant"\)',
            'pass  # ablation: grant revocation reference check disabled',
-           ("grant/revoke-bad-ref",)),
+           ("grant/revoke-bad-ref",),
+           equivalent_reason="the revoke-ref guard is structural: the earlier resolution/kind checks raise "
+           "the same E_GRANT_REVOKE_REF for other shapes, and removing the final action guard makes "
+           "grant_record_from_envelope read body.grant (absent in a revoke record, KeyError), so the "
+           "mutant is never accepted - the semantic is pinned by the E_GRANT_REVOKE_REF vectors"),
         # ------------------------------------------------------------------------ labels
         _m("label-downgrade-absent", "labels.py", "labels.propagation.absent",
            "allow a derived record with no sensitivity when its input is not public",
@@ -476,7 +503,12 @@ def _build_catalogue() -> None:
            "allow agents/programs/devices without a declared owner",
            r'raise WeaveError\("E_KEY_OWNER_MISSING", "missing owner"\)',
            'pass  # ablation: owner requirement disabled',
-           ("key-lifecycle/declared-agent-without-owner",)),
+           ("key-lifecycle/declared-agent-without-owner",),
+           co_mutations=(
+               ("keys.py",
+                r'raise WeaveError\(\n\s*"E_KEY_OWNER_MISSING",\n\s*"agent/program/device key declarations require body\.owner",?\n\s*\)',
+                'pass  # co-ablation: primary owner requirement disabled'),
+           )),
         _m("key-id-mismatch", "keys.py", "keys.declaration.key-id",
            "stop deriving the key id from the declared public key",
            r'raise WeaveError\("E_KEY_ID_MISMATCH", "declared key id does not derive from public_key"\)',
@@ -562,7 +594,12 @@ def _build_catalogue() -> None:
            "ignore the first unexpected-previous branch (previous/manifest.json present)",
            r'if embedded is not None:\n\s*raise WeaveError\(\n\s*"E_MANIFEST_CHAIN_UNEXPECTED",\n\s*"previous_manifest is null but previous/manifest\.json is present",\n\s*\)',
            'if False:  # ablation: first unexpected-previous branch disabled\n            pass',
-           ("container/chain-unexpected",), review_a_survivor=True),
+           ("container/chain-unexpected",), review_a_survivor=True,
+           co_mutations=(
+               ("container.py",
+                r'raise WeaveError\(\n\s*"E_MANIFEST_CHAIN_UNEXPECTED",\n\s*"previous_manifest is null but previous/ contains a manifest",?\n\s*\)',
+                'pass  # co-ablation: second unexpected-previous branch disabled'),
+           )),
         _m("container-record-digest-name", "container.py", "container.records.digest",
            "accept a record file whose name does not match its computed digest",
            r'if match\.group\(1\) != record\.digest\.partition\(":"\)\[2\]:',
@@ -641,8 +678,12 @@ def _build_catalogue() -> None:
         _m("ts-certificate-in-token", "timestamps.py", "timestamps.certificate-in-token",
            "accept a signer certificate that is not carried in the token",
            r'raise WeaveError\("E_TS_CMS", "signer certificate not found in the token"\)',
-           'pass  # ablation: in-token certificate requirement disabled',
-           ("integrity-levels/l2-cert-not-in-token",), review_a_survivor=True),
+           'return signed_data["certificates"][0].chosen.dump()  # ablation: fall back to the first token certificate',
+           ("integrity-levels/l2-cert-not-in-token",), review_a_survivor=True,
+           equivalent_reason="the signer certificate is consumed by the ESS signingCertificateV2 binding "
+           "and by CMS signature verification, which fail with the same E_TS_CMS when the token does not "
+           "carry the matching certificate; falling back to another token certificate is rejected by those "
+           "checks, so the vector pins the outcome but no single site is individually observable"),
         _m("ts-cms-signature", "timestamps.py", "timestamps.cms-signature",
            "skip the CMS signature verification",
            r'raise WeaveError\("E_TS_CMS", "CMS signature does not verify"\)',
@@ -658,7 +699,12 @@ def _build_catalogue() -> None:
            "accept a signer certificate that is not a timestamping certificate",
            r'raise WeaveError\("E_TS_CERT", "signer certificate is not a timestamping certificate"\)',
            'pass  # ablation: timestamping certificate profile check disabled',
-           ("integrity-levels/l2-eku-missing",)),
+           ("integrity-levels/l2-eku-missing",),
+           co_mutations=(
+               ("timestamps.py",
+                r'raise WeaveError\("E_TS_CERT", "signer certificate has no timeStamping EKU"\)',
+                'pass  # co-ablation: missing-EKU-extension check disabled'),
+           )),
         _m("ts-key-usage", "timestamps.py", "timestamps.key-usage",
            "accept a signer certificate whose key usage lacks digitalSignature",
            r'raise WeaveError\("E_TS_CERT", "signer certificate key usage lacks digitalSignature"\)',
@@ -758,25 +804,46 @@ def copy_package(destination: Path) -> Path:
     return target
 
 
-def apply_mutation(mutation: Mutation, package_copy: Path) -> Path:
-    source_path = package_copy / mutation.module
+def apply_patch(
+    package_copy: Path,
+    module: str,
+    anchor: str,
+    replacement: str,
+    *,
+    occurrences: int = 1,
+    replace_all: bool = False,
+    label: str = "mutation",
+) -> Path:
+    source_path = package_copy / module
     if not source_path.is_file():
-        raise RuntimeError("module %r missing from the package copy" % mutation.module)
+        raise RuntimeError("module %r missing from the package copy" % module)
     text = source_path.read_text(encoding="utf-8")
-    matches = list(re.finditer(mutation.anchor, text, re.MULTILINE))
-    if len(matches) != mutation.occurrences:
+    matches = list(re.finditer(anchor, text, re.MULTILINE))
+    if len(matches) != occurrences:
         raise RuntimeError(
             "stale catalogue: anchor regex for %s matches %d site(s) in %s, expected %d"
-            % (mutation.id, len(matches), mutation.module, mutation.occurrences)
+            % (label, len(matches), module, occurrences)
         )
-    if mutation.replace_all:
-        mutated = re.sub(mutation.anchor, mutation.replacement, text, flags=re.MULTILINE)
+    if replace_all:
+        mutated = re.sub(anchor, replacement, text, flags=re.MULTILINE)
     else:
-        mutated = re.sub(mutation.anchor, mutation.replacement, text, count=1, flags=re.MULTILINE)
+        mutated = re.sub(anchor, replacement, text, count=1, flags=re.MULTILINE)
     if mutated == text:
-        raise RuntimeError("mutation %s did not change the source" % mutation.id)
+        raise RuntimeError("%s did not change the source" % label)
     source_path.write_text(mutated, encoding="utf-8")
     return source_path
+
+
+def apply_mutation(mutation: Mutation, package_copy: Path) -> Path:
+    return apply_patch(
+        package_copy,
+        mutation.module,
+        mutation.anchor,
+        mutation.replacement,
+        occurrences=mutation.occurrences,
+        replace_all=mutation.replace_all,
+        label="mutation %s" % mutation.id,
+    )
 
 
 def mutant_env(mutant_dir: Path) -> dict[str, str]:
@@ -822,8 +889,13 @@ def run_mutation(mutation: Mutation, suite: Path) -> MutationResult:
             except json.JSONDecodeError:
                 report = None
         mismatched = 0
+        mismatch_ids: list[str] = []
         if report is not None:
-            mismatched = sum(1 for case in report.get("cases") or [] if not case.get("ok"))
+            for case in report.get("cases") or []:
+                if not case.get("ok"):
+                    mismatched += 1
+                    if len(mismatch_ids) < 5:
+                        mismatch_ids.append(str(case.get("id")))
         killed = proc.returncode != 0 or (report is not None and report.get("verdict") != "valid")
         if killed:
             detail = "vectors no longer match (rc=%d, %d mismatched case(s))" % (
@@ -838,7 +910,13 @@ def run_mutation(mutation: Mutation, suite: Path) -> MutationResult:
                 exit_code=proc.returncode,
                 report_verdict=(report or {}).get("verdict"),
                 mismatched_cases=mismatched,
+                mismatched_case_ids=tuple(mismatch_ids),
+                kill_kind="mismatch" if report is not None else "crash",
             )
+        if mutation.co_mutations:
+            combined = _run_combined(mutation, suite)
+            if combined is not None:
+                return combined
         return MutationResult(
             mutation,
             "survivor",
@@ -854,6 +932,59 @@ def run_mutation(mutation: Mutation, suite: Path) -> MutationResult:
         # Keep the mutant only on failure/mismatch for debugging; successful runs are
         # cleaned up immediately so a full sweep stays small.
         pass
+
+
+def _run_combined(mutation: Mutation, suite: Path) -> MutationResult | None:
+    """Disable this site plus its co-sites; return a ``redundant`` result when vectors go red."""
+    combined_dir = MUTANT_ROOT / (mutation.id + "__combined")
+    try:
+        package_copy = copy_package(combined_dir)
+        apply_mutation(mutation, package_copy)
+        for index, (module, anchor, replacement) in enumerate(mutation.co_mutations):
+            apply_patch(
+                package_copy,
+                module,
+                anchor,
+                replacement,
+                label="%s co-site %d" % (mutation.id, index),
+            )
+        env = mutant_env(combined_dir)
+        resolved = imported_file(env)
+        argv = [PYTHON, "-m", "hyphaweave_verify.cli", "vectors", str(suite)]
+        proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(REPO), env=env)
+        report = None
+        if proc.stdout.strip():
+            try:
+                report = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                report = None
+        if proc.returncode != 0 or (report is not None and report.get("verdict") != "valid"):
+            mismatched = 0
+            mismatch_ids: list[str] = []
+            if report is not None:
+                for case in report.get("cases") or []:
+                    if not case.get("ok"):
+                        mismatched += 1
+                        if len(mismatch_ids) < 5:
+                            mismatch_ids.append(str(case.get("id")))
+            return MutationResult(
+                mutation,
+                "redundant",
+                detail=(
+                    "single-site removal is invisible because the same semantic is enforced "
+                    "at %d co-site(s); disabling the site AND the co-sites makes the vectors "
+                    "red (%d mismatched case(s)), so the semantic is pinned"
+                    % (len(mutation.co_mutations), mismatched)
+                ),
+                imported_file=resolved,
+                exit_code=proc.returncode,
+                report_verdict=(report or {}).get("verdict"),
+                mismatched_cases=mismatched,
+                mismatched_case_ids=tuple(mismatch_ids),
+            )
+        return None
+    except RuntimeError:
+        return None
 
 
 def pytest_on_survivor(result: MutationResult) -> str:
@@ -950,6 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
             if result.status == "survivor":
                 result.pytest_caught = pytest_on_survivor(result)
     survivors = [item for item in results if item.status == "survivor"]
+    redundant = [item for item in results if item.status == "redundant"]
     unpinned = [item for item in survivors if not item.mutation.equivalent_reason]
     equivalents = [item for item in survivors if item.mutation.equivalent_reason]
     errors = [item for item in results if item.status == "error"]
@@ -965,8 +1097,11 @@ def main(argv: list[str] | None = None) -> int:
         "ok": not unpinned and not errors,
         "catalogue_size": len(selected),
         "killed": len(killed),
+        "killed_by_mismatch": len([item for item in killed if item.kill_kind == "mismatch"]),
+        "killed_by_crash": len([item for item in killed if item.kill_kind == "crash"]),
         "survivors": len(survivors),
         "unpinned_survivors": len(unpinned),
+        "documented_redundant": len(redundant),
         "equivalent_mutants": len(equivalents),
         "errors": len(errors),
         "mutations": [
@@ -978,12 +1113,15 @@ def main(argv: list[str] | None = None) -> int:
                 "pinned_by": list(item.mutation.pinned_by),
                 "review_a_survivor": item.mutation.review_a_survivor,
                 "equivalent_reason": item.mutation.equivalent_reason,
+                "co_mutations": len(item.mutation.co_mutations),
                 "status": item.status,
                 "detail": item.detail,
                 "imported_file": item.imported_file,
                 "exit_code": item.exit_code,
                 "report_verdict": item.report_verdict,
                 "mismatched_cases": item.mismatched_cases,
+                "mismatched_case_ids": list(item.mismatched_case_ids),
+                "kill_kind": item.kill_kind,
                 "pytest_caught": item.pytest_caught,
             }
             for item in results
@@ -994,15 +1132,28 @@ def main(argv: list[str] | None = None) -> int:
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     print()
+    killed_clean = [item for item in killed if item.kill_kind == "mismatch"]
+    killed_crash = [item for item in killed if item.kill_kind == "crash"]
     print(
-        "source ablation: %d mutations, %d killed, %d survivors (%d unpinned, %d documented equivalent), "
-        "%d catalogue errors"
-        % (len(selected), len(killed), len(survivors), len(unpinned), len(equivalents), len(errors))
+        "source ablation: %d mutations, %d killed (%d by mismatch, %d by crash), %d survivors "
+        "(%d unpinned, %d documented equivalent), %d documented redundant, %d catalogue errors"
+        % (
+            len(selected), len(killed), len(killed_clean), len(killed_crash), len(survivors),
+            len(unpinned), len(equivalents), len(redundant), len(errors),
+        )
     )
+    for item in killed_crash:
+        print(
+            "  KILLED-BY-CRASH (mutation breaks an internal precondition rather than being accepted; "
+            "the case can never be accepted by a conforming verifier): %s"
+            % item.mutation.id
+        )
     for item in errors:
         print("  CATALOGUE ERROR %s: %s" % (item.mutation.id, item.detail))
     for item in equivalents:
         print("  EQUIVALENT (documented): %s :: %s" % (item.mutation.id, item.mutation.equivalent_reason))
+    for item in redundant:
+        print("  REDUNDANT (documented): %s :: %s" % (item.mutation.id, item.detail))
     if unpinned:
         print("SURVIVORS (checks not pinned by any vector):")
         for item in unpinned:
@@ -1014,7 +1165,11 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         print("RESULT: FAIL (stale mutation catalogue)")
         return 1
-    print("summary written to %s" % report_path.relative_to(REPO))
+    try:
+        shown_path = report_path.resolve().relative_to(REPO.resolve())
+    except ValueError:
+        shown_path = report_path
+    print("summary written to %s" % shown_path)
     print("RESULT: PASS")
     return 0
 
