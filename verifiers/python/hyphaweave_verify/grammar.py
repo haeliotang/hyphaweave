@@ -162,14 +162,27 @@ def _tokenize_spdx(value: str) -> list[str] | None:
     return tokens
 
 
+#: §13: parenthesis nesting depth of an SPDX licence expression (spec §8.7).
+MAX_LICENCE_NESTING = 16
+
+
 def _spdx_is_identifier(token: str) -> bool:
-    return token not in ("AND", "OR", "WITH")
+    if token in ("AND", "OR", "WITH") or not token:
+        return False
+    first = token[0]
+    return (
+        "A" <= first <= "Z"
+        or "a" <= first <= "z"
+        or "0" <= first <= "9"
+    )
 
 
-def _parse_spdx_simple(tokens: list[str], index: int) -> int:
+def _parse_spdx_simple(tokens: list[str], index: int, depth: int) -> int:
+    if depth > MAX_LICENCE_NESTING:
+        raise ValueError("licence nesting exceeds MAX_LICENCE_NESTING")
     token = tokens[index]
     if token == "(":
-        index = _parse_spdx_or(tokens, index + 1)
+        index = _parse_spdx_or(tokens, index + 1, depth + 1)
         if index >= len(tokens) or tokens[index] != ")":
             raise ValueError("unbalanced parentheses")
         return index + 1
@@ -183,29 +196,34 @@ def _parse_spdx_simple(tokens: list[str], index: int) -> int:
     return index
 
 
-def _parse_spdx_and(tokens: list[str], index: int) -> int:
-    index = _parse_spdx_simple(tokens, index)
+def _parse_spdx_and(tokens: list[str], index: int, depth: int) -> int:
+    index = _parse_spdx_simple(tokens, index, depth)
     while index < len(tokens) and tokens[index] == "AND":
-        index = _parse_spdx_simple(tokens, index + 1)
+        index = _parse_spdx_simple(tokens, index + 1, depth)
     return index
 
 
-def _parse_spdx_or(tokens: list[str], index: int) -> int:
-    index = _parse_spdx_and(tokens, index)
+def _parse_spdx_or(tokens: list[str], index: int, depth: int) -> int:
+    index = _parse_spdx_and(tokens, index, depth)
     while index < len(tokens) and tokens[index] == "OR":
-        index = _parse_spdx_and(tokens, index + 1)
+        index = _parse_spdx_and(tokens, index + 1, depth)
     return index
 
 
 def is_valid_spdx_expression(value: object) -> bool:
-    """Syntax-only SPDX expression check (membership is never checked, Q14)."""
+    """Syntax-only SPDX expression check (membership is never checked, Q14).
+
+    S3/§8.7: parenthesis nesting is bounded by ``MAX_LICENCE_NESTING`` and the
+    parser is depth-bounded, so a deeply nested expression is a syntax error
+    (``E_ENV_LICENCE``), never a ``RecursionError``/crash.
+    """
     if not isinstance(value, str) or not value.strip():
         return False
     tokens = _tokenize_spdx(value)
     if tokens is None:
         return False
     try:
-        index = _parse_spdx_or(tokens, 0)
+        index = _parse_spdx_or(tokens, 0, 0)
     except (ValueError, IndexError):
         return False
     return index == len(tokens)

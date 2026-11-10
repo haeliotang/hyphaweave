@@ -284,18 +284,174 @@ def test_zip_decoder_exception_maps_to_container_zip(valid_zip, monkeypatch) -> 
     """NotImplementedError/zlib.error from the decoder must become E_CONTAINER_ZIP."""
     import zipfile
 
-    def raising_read(self, name, pwd=None):
+    def raising_open(self, name, pwd=None):
         raise NotImplementedError("zip file version 14.8")
 
-    monkeypatch.setattr(zipfile.ZipFile, "read", raising_read)
+    monkeypatch.setattr(zipfile.ZipFile, "open", raising_open)
     _expect_container_zip(valid_zip)
 
 
 def test_zip_value_error_maps_to_container_zip(valid_zip, monkeypatch) -> None:
     import zipfile
 
-    def raising_read(self, name, pwd=None):
+    def raising_open(self, name, pwd=None):
         raise ValueError("negative seek value")
 
-    monkeypatch.setattr(zipfile.ZipFile, "read", raising_read)
+    monkeypatch.setattr(zipfile.ZipFile, "open", raising_open)
     _expect_container_zip(valid_zip)
+
+
+# ---------------------------------------------------------------------------
+# S4/S5/S14: bounded reads, zip raw-byte rules, streamed blobs and identity
+# ---------------------------------------------------------------------------
+
+
+def _copy_container(tmp_path, name: str = "container"):
+    import shutil
+
+    destination = tmp_path / name
+    shutil.copytree(VECTORS / "container" / "l0-minimal" / "container", destination)
+    return destination
+
+
+def test_zip_prefix_bytes_are_rejected(valid_zip) -> None:
+    prefixed = valid_zip.parent / "prefixed.zip"
+    prefixed.write_bytes(b"\x00" * 32 + valid_zip.read_bytes())
+    _expect_container_zip(prefixed)
+
+
+def test_zip_trailing_bytes_are_rejected(valid_zip) -> None:
+    trailing = valid_zip.parent / "trailing.zip"
+    trailing.write_bytes(valid_zip.read_bytes() + b"trailing")
+    _expect_container_zip(trailing)
+
+
+def test_zip_archive_comment_is_rejected(valid_zip) -> None:
+    data = bytearray(valid_zip.read_bytes())
+    eocd = data.rfind(b"PK\x05\x06")
+    assert eocd >= 0
+    comment = b"comment"
+    data[eocd + 20 : eocd + 22] = len(comment).to_bytes(2, "little")
+    commented = valid_zip.parent / "commented.zip"
+    commented.write_bytes(bytes(data) + comment)
+    _expect_container_zip(commented)
+
+
+def test_zip_directory_entries_are_ignored(valid_zip) -> None:
+    import zipfile
+
+    directory_entry = zipfile.ZipInfo("records/")
+    directory_entry.external_attr = (0o40755 << 16) | 0x10
+    with zipfile.ZipFile(valid_zip, "a") as archive:
+        archive.writestr(directory_entry, b"")
+    result = verify(valid_zip)
+    assert result.report["verdict"] == "valid"
+
+
+def test_zip_dos_directory_attribute_with_data_is_container_zip(valid_zip) -> None:
+    import zipfile
+
+    entry = zipfile.ZipInfo("readable/not-a-directory")
+    entry.external_attr = 0x10  # DOS directory attribute
+    with zipfile.ZipFile(valid_zip, "a") as archive:
+        archive.writestr(entry, b"payload")
+    _expect_container_zip(valid_zip)
+
+
+def test_readable_entries_are_never_read(tmp_path) -> None:
+    container = _copy_container(tmp_path)
+    readable = container / "readable"
+    readable.mkdir()
+    payload = readable / "payload.bin"
+    payload.write_bytes(b"x" * (2 << 20))
+    payload.chmod(0o000)  # an attempt to open this file would fail
+    try:
+        container_input = container_module.read_container(container)
+    finally:
+        payload.chmod(0o644)
+    assert container_input.error is None
+    assert container_input.readable_present is True
+    assert not any(name.startswith("readable/") for name in container_input.files)
+    result = verify(container)
+    assert result.report["verdict"] == "valid"
+    assert "N_READABLE_PRESENT" in result.report["container"]["notices"]
+
+
+def test_blobs_are_streamed_not_materialised(tmp_path) -> None:
+    container = _copy_container(tmp_path)
+    blobs = container / "blobs" / "sha256"
+    blobs.mkdir(parents=True)
+    name = "ab" * 32
+    (blobs / name).write_bytes(b"\0" * (4 << 20))
+    container_input = container_module.read_container(container)
+    assert container_input.error is None
+    assert container_input.blobs["blobs/sha256/" + name][1] == 4 << 20
+    assert "blobs/sha256/" + name not in container_input.files
+
+
+def test_oversized_record_file_is_json_size(tmp_path) -> None:
+    import hashlib
+
+    container = _copy_container(tmp_path)
+    manifest_bytes = (container / "manifest.json").read_bytes()
+    oversized = container / "records" / ("ff" * 32 + ".json")
+    oversized.write_bytes(b"{" + b" " * (2 << 20) + b"}")
+    result = verify(container)
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_JSON_SIZE"]
+    assert result.report["records"] == []
+    # S14/§14.6: the directory identity is the raw manifest bytes even when a
+    # *different* file in the container is over its class limit.
+    assert result.report["input"] == {
+        "sha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
+        "size": len(manifest_bytes),
+    }
+
+
+def test_oversized_manifest_has_null_input_identity(tmp_path) -> None:
+    container = _copy_container(tmp_path)
+    (container / "manifest.json").write_bytes(b"{" + b" " * (5 << 20) + b"}")
+    result = verify(container)
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_JSON_SIZE"]
+    assert result.report["input"] == {"sha256": None, "size": None}
+
+
+def test_previous_with_a_null_chain_is_manifest_chain(keyset, tmp_path) -> None:
+    from hyphaweave_verify.errors import WeaveError
+
+    previous = VECTORS / "container" / "l0-minimal" / "container"
+    result = verify(
+        VECTORS / "container" / "l0-minimal" / "container",
+        keyset,
+        previous_container=previous,
+    )
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_MANIFEST_CHAIN"]
+
+
+def test_missing_previous_path_is_a_usage_error(keyset, tmp_path) -> None:
+    from hyphaweave_verify.errors import UsageError
+
+    with pytest.raises(UsageError):
+        verify(
+            VECTORS / "container" / "l0-minimal" / "container",
+            keyset,
+            previous_container=tmp_path / "does-not-exist",
+        )
+
+
+def test_erasure_cross_checks_tolerate_a_missing_body_erased() -> None:
+    from types import SimpleNamespace
+
+    from hyphaweave_verify import kinds
+    from hyphaweave_verify.errors import UsageError  # noqa: F401
+
+    fake_view = SimpleNamespace(
+        verdict="invalid",
+        digest="sha256:" + "aa" * 32,
+        placeholder=None,
+        envelope=SimpleNamespace(kind=kinds.KIND_ERASURE, body={}, origin=None),
+    )
+    # S7.3: an invalid erasure record must never crash the cross-record phase.
+    assert container_module._erasure_cross_checks([fake_view]) is None

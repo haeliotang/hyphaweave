@@ -78,14 +78,25 @@ def test_weave_error_requires_registry_code() -> None:
         raise AssertionError("unknown code accepted")
 
 
-def test_skip_checker_exact_and_family() -> None:
-    skipper = errors.CheckSkipper(["E_SIG", "E_KEY_UNKNOWN", "E_SIG_INVALID"])
-    assert skipper.tokens == ("E_KEY_UNKNOWN", "E_SIG", "E_SIG_INVALID")
+def test_skip_checker_accepts_registered_error_codes_only() -> None:
+    skipper = errors.CheckSkipper(["E_SIG_INVALID", "E_KEY_UNKNOWN", "E_SIG_INVALID"])
+    assert skipper.tokens == ("E_KEY_UNKNOWN", "E_SIG_INVALID")
     assert skipper.skip_error("E_SIG_INVALID")
-    assert skipper.skip_error("E_SIG_SMALL_ORDER_A")
     assert skipper.skip_error("E_KEY_UNKNOWN")
+    assert not skipper.skip_error("E_SIG_SMALL_ORDER_A")
     assert not skipper.skip_error("E_ENV_FORMAT")
     assert not skipper.skip_error("N_KEY_TOFU")
-    wildcard = errors.CheckSkipper(["E_ENV_*"])
-    assert wildcard.skip_error("E_ENV_FORMAT")
-    assert not wildcard.skip_error("E_KEY_UNKNOWN")
+    # S13: family prefixes, wildcards, notice codes and unknown tokens are not
+    # accepted; an unknown token is a usage error (the CLI exits 2).
+    for bad in (["E_SIG"], ["E_ENV_*"], ["N_KEY_TOFU"], ["E_NOT_A_CODE"]):
+        try:
+            errors.CheckSkipper(bad)
+        except errors.UsageError:
+            pass
+        else:  # pragma: no cover - the registry is closed
+            raise AssertionError("bad skip token accepted: %r" % (bad,))
+    # The environment variable is read only when the explicit hook is enabled.
+    assert errors.CheckSkipper.from_env(False, {"WEAVE_VERIFY_SKIP_CHECKS": "E_SIG_INVALID"}).tokens == ()
+    assert errors.CheckSkipper.from_env(True, {"WEAVE_VERIFY_SKIP_CHECKS": "E_SIG_INVALID"}).tokens == (
+        "E_SIG_INVALID",
+    )

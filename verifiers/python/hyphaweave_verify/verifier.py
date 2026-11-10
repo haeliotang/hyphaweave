@@ -164,6 +164,9 @@ class Context:
         self.pending_touched = False
         self._index: dict[tuple[str, str, str], list[RecordView]] = {}
         self._declared_material: dict[str, tuple[bytes, str]] = {}
+        #: Where a key's governing declaration material came from: ``"keyset"``
+        #: or ``"context"`` (S8.10: N_KEY_TOFU covers context declarations only).
+        self._material_source: dict[str, str] = {}
 
     # -- registration -----------------------------------------------------
 
@@ -180,14 +183,23 @@ class Context:
         self.consent_revocations = {}
         self._declared_material = {}
         trusted: set[str] = set()
+        self._material_source = {}
         for view in self.views:
             self._register_declared_material(view)
             if view.verdict != "valid":
                 continue
             self._apply_state(view)
+            source = "keyset" if view.loaded.source == "keyset" else "context"
             declaration = view.key_declaration
-            if declaration is not None and declaration.key_type in ("human", "organization"):
-                trusted.add(declaration.key_id)
+            if declaration is not None:
+                _record_source(self._material_source, declaration.key_id, source)
+                if declaration.key_type in ("human", "organization"):
+                    trusted.add(declaration.key_id)
+            rotation = view.key_rotation
+            if rotation is not None:
+                _record_source(self._material_source, rotation.new_key, source)
+                if rotation.old_public_key is not None:
+                    _record_source(self._material_source, rotation.old_key, source)
         self._trusted_human_org = frozenset(trusted)
 
     def _register_declared_material(self, view: RecordView) -> None:
@@ -219,6 +231,23 @@ class Context:
     def trusted_human_org(self) -> frozenset[str]:
         """Human/organization keys trusted via the keyset and its closure."""
         return self._trusted_human_org
+
+    def material_source(self, key_id: str) -> str | None:
+        """``"keyset"``/``"context"`` for a key's governing material (S8.10)."""
+        return self._material_source.get(key_id)
+
+    def governing_class(self, key_id: str, exclude_digest: str) -> str | None:
+        """The class of the key's governing declaration, ignoring itself (S1).
+
+        The governing declaration is the keyset declaration when the local
+        keyset establishes one, otherwise the earliest valid in-context
+        declaration (Q12). Excluding the record's own digest lets a declaration
+        be judged against the *other* declarations instead of itself.
+        """
+        declaration = self.key_state.declarations.get(key_id)
+        if declaration is None or declaration.record_digest == exclude_digest:
+            return None
+        return declaration.key_type
 
     def _apply_state(self, view: RecordView) -> None:
         if view.key_declaration is not None:
@@ -259,6 +288,13 @@ class Context:
 
     def resolve(self, reference: refs.Reference) -> refs.Resolution:
         return refs.resolve_reference(reference, self)
+
+
+def _record_source(sources: dict[str, str], key_id: str, source: str) -> None:
+    """Record a key's material source; keyset declarations are authoritative."""
+    current = sources.get(key_id)
+    if current is None or (current == "context" and source == "keyset"):
+        sources[key_id] = source
 
 
 def _target_view(view: RecordView) -> refs.TargetView:
@@ -361,8 +397,23 @@ def _verify_signatures(
                 raise WeaveError(
                     "E_KEY_UNKNOWN", "signing key is not declared in the context"
                 )
+            # S8.11/§14.5: the Ed25519 cryptographic steps (§3.4) run before the
+            # §9.4 lifecycle/semantic effects, so a flipped signature on a
+            # compromised/expired/revoked key reports E_SIG_INVALID.
+            try:
+                ed25519.verify_signature(material, message, signature.raw or b"")
+            except WeaveError:
+                states.append({"key": signature.key, "state": "invalid"})
+                raise
+            states.append({"key": signature.key, "state": "valid"})
+            verified.add(signature.key)
             if from_context:
-                if "N_KEY_TOFU" not in view.notices:
+                # S8.10/F12.2: TOFU covers material admitted through context
+                # declarations, not material supplied by the local keyset.
+                if (
+                    context.material_source(signature.key) == "context"
+                    and "N_KEY_TOFU" not in view.notices
+                ):
                     view.notices.append("N_KEY_TOFU")
                 context.key_state.check_signature_effects(
                     signature.key,
@@ -371,13 +422,6 @@ def _verify_signatures(
                     timestamp_evidence_present=context.timestamp_evidence_present,
                     skip_revocations=(envelope.kind == kinds.KIND_REVOKED),
                 )
-            try:
-                ed25519.verify_signature(material, message, signature.raw or b"")
-            except WeaveError:
-                states.append({"key": signature.key, "state": "invalid"})
-                raise
-            states.append({"key": signature.key, "state": "valid"})
-            verified.add(signature.key)
     finally:
         for signature in envelope.sigs[len(states):]:
             states.append(
@@ -828,7 +872,12 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
             record = load_record_bytes(raw, source="keyset")
             if record.value is None or erase.looks_like_placeholder(record.value):
                 raise WeaveError("E_JSON_INVALID", "keyset file is not a normal record")
-            envelope_module.validate_envelope(record.value)
+            envelope = envelope_module.validate_envelope(record.value)
+            # S8.9/§14.1: the structural side of the boundary includes the
+            # registered-kind body *schema*; a semantic, lifecycle, actor,
+            # authorisation or cryptographic failure is not a usage error and
+            # simply establishes no trust.
+            kinds.validate_body_schema(envelope.kind, envelope.body)
         except WeaveError as error:
             raise UsageError("keyset file is not a valid record: %s" % error.code) from error
         loaded.append(record)

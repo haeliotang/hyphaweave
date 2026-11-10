@@ -18,7 +18,6 @@ report never contains absolute paths, and a malformed input never raises out of
 from __future__ import annotations
 
 import hashlib
-import io
 import os
 import re
 import stat
@@ -28,8 +27,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import canonical, encoding, kinds, manifest as manifest_module, refs, verifier
-from .errors import CheckSkipper, WeaveError
+from . import (
+    canonical,
+    encoding,
+    kinds,
+    manifest as manifest_module,
+    refs,
+    timestamps as timestamps_module,
+    verifier,
+)
+from .errors import CheckSkipper, UsageError, WeaveError
 from .report import (
     LIMITATION_ERASED_PLACEHOLDER,
     LIMITATION_LABELS_ARE_CLAIMS,
@@ -40,7 +47,9 @@ from .report import (
     LIMITATION_UNKNOWN_KIND,
     LIMITATION_CHAIN_CLAIM,
     container_verdict,
+    limitation_list,
     record_entry,
+    record_limitations,
     record_verdict,
 )
 from .timestamps import (
@@ -57,8 +66,6 @@ MAX_CONTAINER_ENTRIES = 200_000
 MAX_CONTAINER_UNCOMPRESSED_BYTES = 1_073_741_824
 MAX_BLOB_BYTES = 1_073_741_824
 
-CONTAINER_INPUT_DOMAIN = b"weave-container/1/input\n"
-
 _RECORDS_FILE = re.compile(r"^records/([0-9a-f]{64})\.json$")
 _BLOBS_FILE = re.compile(r"^blobs/sha256/([0-9a-f]{64})$")
 _TIMESTAMP_FILE = re.compile(r"^signatures/timestamp-[1-9][0-9]*\.tsr$")
@@ -71,20 +78,86 @@ ALLOWED_DIRECTORIES = frozenset(
 
 @dataclass
 class ContainerInput:
-    """The raw container content tree plus its deterministic input identity."""
+    """The container content tree plus its deterministic input identity.
+
+    Only *small consumed* files are materialised (manifest, attestation,
+    record files, embedded previous manifest, TSA certificates as presence
+    markers). Blobs are streamed to their digest and size and never held in
+    memory. ``input_sha256``/``input_size`` stay ``None`` for a directory
+    container whose ``manifest.json`` is absent or over the size limit (S14).
+    """
 
     files: dict[str, bytes]
+    blobs: dict[str, tuple[str, int]] = field(default_factory=dict)
     error: str | None = None
-    input_sha256: str = "sha256:" + "0" * 64
-    input_size: int = 0
+    input_sha256: str | None = None
+    input_size: int | None = None
     is_zip: bool = False
     readable_present: bool = False
     directory_entries: set[str] = field(default_factory=set)
+    oversized_timestamps: frozenset[str] = frozenset()
 
 
-# ---------------------------------------------------------------------------
-# Reading the container
-# ---------------------------------------------------------------------------
+#: Streamed read chunk; memory stays bounded by the chunk plus at most one
+#: limit-sized file buffer.
+_READ_CHUNK_BYTES = 1 << 20
+
+
+def _read_capped(handle, limit: int) -> tuple[bytes, int, bool]:
+    """Read a binary stream with a hard stop at ``limit + 1`` bytes (§13/S4).
+
+    Returns ``(prefix, bytes_read, truncated)``. The read stops as soon as the
+    limit is exceeded; the caller reports the class error and never reads the
+    rest of an oversized stream.
+    """
+    kept = bytearray()
+    while True:
+        chunk = handle.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        kept.extend(chunk)
+        if len(kept) > limit:
+            return bytes(kept[: limit + 1]), limit + 1, True
+    return bytes(kept), len(kept), False
+
+
+def _stream_sha256(handle, limit: int | None = None) -> tuple[str, int, bool]:
+    """Hash a binary stream without materialising it; stop after ``limit + 1`` bytes.
+
+    ``limit`` is ``None`` only for the zip archive identity, which is computed
+    while the archive is read anyway (its central-directory limits are checked
+    separately).
+    """
+    digest = hashlib.sha256()
+    total = 0
+    while True:
+        chunk = handle.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        digest.update(chunk)
+        total += len(chunk)
+        if limit is not None and total > limit:
+            return digest.hexdigest(), total, True
+    return digest.hexdigest(), total, False
+
+
+#: Files whose §13 class limit applies while reading (S4). ``None`` means the
+#: file has no class limit; it is read whole but the container total still
+#: bounds the read.
+def _file_class_limit(relative_path: str) -> int | None:
+    if _RECORDS_FILE.match(relative_path) or (
+        relative_path.startswith("records/") and relative_path.endswith(".json")
+    ):
+        return verifier.MAX_RECORD_BYTES
+    if relative_path in ("manifest.json", "previous/manifest.json"):
+        return manifest_module.MAX_MANIFEST_BYTES
+    if relative_path == "signatures/manifest.sig.json":
+        return manifest_module.MAX_SIGFILE_BYTES
+    if _TIMESTAMP_FILE.match(relative_path):
+        return timestamps_module.MAX_TIMESTAMP_BYTES
+    if _BLOBS_FILE.match(relative_path):
+        return MAX_BLOB_BYTES
+    return None
 
 
 def read_container(path: Path) -> ContainerInput:
@@ -92,15 +165,16 @@ def read_container(path: Path) -> ContainerInput:
 
     Returns the collected files (paths are POSIX-style relative paths) and the
     first structural error encountered, if any. Never raises for malformed
-    input.
+    input; reads are bounded per §13/S4 (never a full read before the size
+    check, never a whole-archive or whole-blob materialisation).
     """
     try:
         if not path.exists():
             return ContainerInput(files={}, error="E_MANIFEST_MISSING")
         if path.is_dir():
             return _read_directory_container(path)
-        is_zip = path.is_file() and zipfile.is_zipfile(path)
-    except Exception:
+        is_zip = path.is_file() and _looks_like_zip(path)
+    except OSError:
         # A path that cannot be classified/read is treated as a broken container.
         return ContainerInput(files={}, error="E_CONTAINER_ZIP")
     if is_zip:
@@ -108,25 +182,60 @@ def read_container(path: Path) -> ContainerInput:
     return ContainerInput(files={}, error="E_CONTAINER_ZIP")
 
 
-def _content_tree_identity(files: dict[str, bytes]) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    digest.update(CONTAINER_INPUT_DOMAIN)
-    size = 0
-    for relative_path in sorted(files):
-        data = files[relative_path]
-        size += len(data)
-        digest.update(relative_path.encode("utf-8", "surrogatepass"))
-        digest.update(b"\0")
-        digest.update(hashlib.sha256(data).digest())
-    return "sha256:" + digest.hexdigest(), size
+def _looks_like_zip(path: Path) -> bool:
+    """Cheap signature probe; full validation happens on the raw bytes (S5)."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x06\x06")
+    except OSError:
+        return False
 
 
 def _read_directory_container(path: Path) -> ContainerInput:
     files: dict[str, bytes] = {}
+    blobs: dict[str, tuple[str, int]] = {}
     directory_entries: set[str] = set()
+    oversized_timestamps: set[str] = set()
     error: str | None = None
+    readable_present = False
     total = 0
     count = 0
+    # §14.6/S14: a directory container's input identity is the raw
+    # manifest.json digest and byte size whenever those bytes can be read within
+    # the MAX_MANIFEST_BYTES class limit — even when the manifest is structurally
+    # invalid. Only an absent, unreadable or oversized manifest leaves the
+    # identity null, so the manifest is read before the rest of the tree.
+    manifest_path = path / "manifest.json"
+    manifest_identity: tuple[str, int] | None = None
+    manifest_preloaded = False
+    try:
+        manifest_stat = manifest_path.lstat()
+    except OSError:
+        manifest_stat = None
+    if manifest_stat is not None and stat.S_ISREG(manifest_stat.st_mode):
+        try:
+            with manifest_path.open("rb") as handle:
+                manifest_bytes, manifest_size, manifest_truncated = _read_capped(
+                    handle, manifest_module.MAX_MANIFEST_BYTES
+                )
+        except OSError:
+            # Unreadable manifest bytes cannot establish the input identity.
+            manifest_bytes, manifest_size, manifest_truncated = b"", 0, False
+        else:
+            if manifest_truncated:
+                return ContainerInput(
+                    files={},
+                    error="E_JSON_SIZE",
+                    input_sha256=None,
+                    input_size=None,
+                )
+            manifest_identity = (
+                "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
+                manifest_size,
+            )
+            files["manifest.json"] = manifest_bytes
+            total += manifest_size
+            manifest_preloaded = True
     for root, dirnames, filenames in os.walk(path, followlinks=False):
         root_path = Path(root)
         dirnames.sort()
@@ -142,12 +251,15 @@ def _read_directory_container(path: Path) -> ContainerInput:
                 error = error or "E_CONTAINER_ENTRY"
             directory_entries.add(relative_directory)
         for filename in sorted(filenames):
+            relative_path = f"{relative_root}/{filename}" if relative_root else filename
+            if relative_path == "manifest.json" and manifest_preloaded:
+                # Already read and accounted for before the tree walk (S14).
+                continue
             count += 1
             if count > MAX_CONTAINER_ENTRIES:
                 error = error or "E_CONTAINER_SIZE"
                 break
             file_path = root_path / filename
-            relative_path = f"{relative_root}/{filename}" if relative_root else filename
             try:
                 file_stat = file_path.lstat()
             except OSError:
@@ -156,137 +268,244 @@ def _read_directory_container(path: Path) -> ContainerInput:
             if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
                 error = error or "E_CONTAINER_ENTRY"
                 continue
-            total += file_stat.st_size
+            if relative_path == "readable" or relative_path.startswith("readable/"):
+                # spec §11.8/§13: readable/ is ignored entirely; never read.
+                readable_present = True
+                continue
+            if _TSA_CERT_FILE.match(relative_path):
+                # Transport-only file that is never trusted on its own (§12.3):
+                # only its presence matters, so it is not read at all.
+                files[relative_path] = b""
+                continue
+            limit = _file_class_limit(relative_path)
+            if limit is None:
+                # A path outside the layout (or a transport-only file): only its
+                # presence matters, so it is never read at all.
+                files[relative_path] = b""
+                continue
+            try:
+                with file_path.open("rb") as handle:
+                    if _BLOBS_FILE.match(relative_path):
+                        digest_hex, size, truncated = _stream_sha256(handle, limit)
+                        blobs[relative_path] = (digest_hex, size)
+                        total += size
+                        if truncated or total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
+                            error = error or (
+                                "E_CONTAINER_SIZE"
+                                if total > MAX_CONTAINER_UNCOMPRESSED_BYTES
+                                else "E_MANIFEST_BLOB"
+                            )
+                            break
+                        continue
+                    data, size, truncated = _read_capped(handle, limit)
+            except OSError:
+                error = error or "E_CONTAINER_ENTRY"
+                continue
+            total += size
             if total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
                 error = error or "E_CONTAINER_SIZE"
                 break
-            try:
-                files[relative_path] = file_path.read_bytes()
-            except OSError:
-                error = error or "E_CONTAINER_ENTRY"
-        if error == "E_CONTAINER_SIZE":
+            if truncated:
+                if _TIMESTAMP_FILE.match(relative_path):
+                    # Step 11 reports the size violation; records still run.
+                    files[relative_path] = b""
+                    oversized_timestamps.add(relative_path)
+                    continue
+                error = "E_JSON_SIZE"
+                break
+            files[relative_path] = data
+        if error in ("E_CONTAINER_SIZE", "E_JSON_SIZE"):
             break
-    input_sha, input_size = _content_tree_identity(files)
-    readable_present = any(name.startswith("readable/") or name == "readable" for name in directory_entries) or any(
-        name.startswith("readable/") for name in files
-    )
     return ContainerInput(
         files=files,
+        blobs=blobs,
         error=error,
-        input_sha256=input_sha,
-        input_size=input_size,
+        input_sha256=manifest_identity[0] if manifest_identity is not None else None,
+        input_size=manifest_identity[1] if manifest_identity is not None else None,
         readable_present=readable_present,
         directory_entries=directory_entries,
+        oversized_timestamps=frozenset(oversized_timestamps),
     )
 
 
 def _read_zip_container(path: Path) -> ContainerInput:
     """Read a zip container; every structural/decoder failure maps to E_CONTAINER_ZIP.
 
-    A corrupted archive can fail in many ways below ``zipfile``: truncation
-    (``BadZipFile``), unsupported compression/zip versions (``NotImplementedError``),
-    corrupt deflate streams (``zlib.error``), impossible offsets (``ValueError``),
-    or I/O errors. None of these may escape as a Python traceback: they are all
-    malformed-input conditions reported as ``E_CONTAINER_ZIP`` (invalid).
+    The archive is never materialised: the whole-file identity is streamed, the
+    raw-byte prefix/trailing rules of §11.9 are validated on the file, and each
+    entry is decompressed with a bounded output cap. Malformed archives must
+    never raise a Python traceback (S4/S5).
     """
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as handle:
+            sha_hex, archive_size, _truncated = _stream_sha256(handle)
     except OSError:
         return ContainerInput(files={}, error="E_CONTAINER_ZIP")
-    input_sha = "sha256:" + hashlib.sha256(raw).hexdigest()
+    input_sha = "sha256:" + sha_hex
     try:
-        return _process_zip_bytes(raw, input_sha)
+        raw_problem = _raw_zip_problem(path, archive_size)
+    except OSError:
+        return ContainerInput(files={}, error="E_CONTAINER_ZIP")
+    if raw_problem is not None:
+        return ContainerInput(
+            files={}, error=raw_problem, input_sha256=input_sha,
+            input_size=archive_size, is_zip=True,
+        )
+    try:
+        with path.open("rb") as handle:
+            with zipfile.ZipFile(handle) as archive:
+                result = _collect_zip_entries(archive)
     except (zipfile.BadZipFile, NotImplementedError, zlib.error, ValueError, EOFError, OSError, RuntimeError):
         return ContainerInput(
-            files={},
-            error="E_CONTAINER_ZIP",
-            input_sha256=input_sha,
-            input_size=len(raw),
-            is_zip=True,
+            files={}, error="E_CONTAINER_ZIP", input_sha256=input_sha,
+            input_size=archive_size, is_zip=True,
         )
     except Exception:  # pragma: no cover - defensive: malformed input must not crash
         return ContainerInput(
-            files={},
-            error="E_CONTAINER_ZIP",
-            input_sha256=input_sha,
-            input_size=len(raw),
-            is_zip=True,
+            files={}, error="E_CONTAINER_ZIP", input_sha256=input_sha,
+            input_size=archive_size, is_zip=True,
         )
+    result.input_sha256 = input_sha
+    result.input_size = archive_size
+    result.is_zip = True
+    return result
 
 
-def _process_zip_bytes(raw: bytes, input_sha: str) -> ContainerInput:
-    """Parse an archive whose bytes were already read (exceptions are mapped above)."""
+_END_OF_CENTRAL_DIRECTORY = b"PK\x05\x06"
+_MAX_ZIP_COMMENT = 65535
+_ZIP64_LOCATOR = b"PK\x06\x07"
+
+
+def _raw_zip_problem(path: Path, archive_size: int) -> str | None:
+    """Validate the §11.9 raw-byte rules: prefix bytes and trailing bytes.
+
+    The archive MUST start at byte 0 with a local file header (or be the
+    22-byte end-of-central-directory record of an empty archive) and the
+    end-of-central-directory record MUST end exactly at the last input byte, so
+    an archive comment and any trailing bytes are rejected (S5).
+    """
+    with path.open("rb") as handle:
+        head = handle.read(4)
+        if head == _END_OF_CENTRAL_DIRECTORY:
+            return None if archive_size == 22 else "E_CONTAINER_ZIP"
+        if head not in (b"PK\x03\x04", _ZIP64_LOCATOR):
+            return "E_CONTAINER_ZIP"
+        window = min(archive_size, 22 + _MAX_ZIP_COMMENT + 20)
+        handle.seek(archive_size - window)
+        tail = handle.read(window)
+    position = tail.rfind(_END_OF_CENTRAL_DIRECTORY)
+    while position >= 0:
+        if position + 22 <= len(tail):
+            comment_length = int.from_bytes(tail[position + 20 : position + 22], "little")
+            if position + 22 + comment_length == len(tail):
+                # A comment (even an empty one that is followed by nothing) is
+                # accepted only when its length is zero: trailing bytes and
+                # comments are both rejected by S5.
+                return None if comment_length == 0 else "E_CONTAINER_ZIP"
+        position = tail.rfind(_END_OF_CENTRAL_DIRECTORY, 0, position)
+    return "E_CONTAINER_ZIP"
+
+
+def _collect_zip_entries(archive: zipfile.ZipFile) -> ContainerInput:
+    """Collect one archive's entries within the §13 limits (bounded decompression)."""
     files: dict[str, bytes] = {}
+    blobs: dict[str, tuple[str, int]] = {}
     directory_entries: set[str] = set()
+    oversized_timestamps: set[str] = set()
     error: str | None = None
-    archive = zipfile.ZipFile(io.BytesIO(raw))
-    with archive:
+    readable_present = False
+    try:
+        infos = archive.infolist()
+    except (zipfile.BadZipFile, ValueError, NotImplementedError, zlib.error):
+        return ContainerInput(files={}, error="E_CONTAINER_ZIP")
+    if len(infos) > MAX_CONTAINER_ENTRIES:
+        return ContainerInput(files={}, error="E_CONTAINER_SIZE")
+    declared_total = 0
+    for info in infos:
+        if not info.filename.endswith("/"):
+            declared_total += info.file_size
+    if declared_total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
+        return ContainerInput(files={}, error="E_CONTAINER_SIZE")
+    total = 0
+    for info in infos:
+        name = info.filename
+        if name.endswith("/"):
+            # Zero-length directory entries are ignored (S5); a directory entry
+            # carrying data is an archive error.
+            if info.file_size:
+                error = error or "E_CONTAINER_ZIP"
+                continue
+            directory_entries.add(name.rstrip("/"))
+            continue
+        if info.external_attr & 0x10 and info.file_size:
+            # DOS directory attribute on an entry that carries data (S5).
+            error = error or "E_CONTAINER_ZIP"
+            continue
+        unix_mode = info.external_attr >> 16
+        if stat.S_ISLNK(unix_mode):
+            error = error or "E_CONTAINER_ENTRY"
+            continue
+        if info.flag_bits & 0x1:
+            error = error or "E_CONTAINER_ZIP"
+            continue
+        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            error = error or "E_CONTAINER_ZIP"
+            continue
+        if not _is_safe_relative_path(name):
+            error = error or "E_CONTAINER_ENTRY"
+            continue
+        if name in files or name in blobs or name in directory_entries:
+            error = error or "E_CONTAINER_ENTRY"
+            continue
+        if name == "readable" or name.startswith("readable/"):
+            # Never decompressed, never CRC-checked (S4).
+            readable_present = True
+            continue
+        if _TSA_CERT_FILE.match(name):
+            files[name] = b""
+            continue
+        limit = _file_class_limit(name)
+        if limit is None:
+            # Unknown/transport-only path: presence marker only, never read.
+            files[name] = b""
+            continue
         try:
-            infos = archive.infolist()
-        except (zipfile.BadZipFile, ValueError, NotImplementedError, zlib.error):
-            return ContainerInput(
-                files={}, error="E_CONTAINER_ZIP", input_sha256=input_sha,
-                input_size=len(raw), is_zip=True,
-            )
-        if len(infos) > MAX_CONTAINER_ENTRIES:
-            error = "E_CONTAINER_SIZE"
-            infos = infos[:0]
-        declared_total = sum(info.file_size for info in infos)
-        if declared_total > MAX_CONTAINER_UNCOMPRESSED_BYTES and error is None:
-            error = "E_CONTAINER_SIZE"
-            infos = infos[:0]
-        for info in infos:
-            name = info.filename
-            if name.endswith("/"):
-                directory_entries.add(name.rstrip("/"))
+            with archive.open(info) as entry:
+                if _BLOBS_FILE.match(name):
+                    digest_hex, size, truncated = _stream_sha256(entry, limit)
+                    blobs[name] = (digest_hex, size)
+                    total += size
+                    if truncated or total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
+                        error = error or (
+                            "E_CONTAINER_SIZE"
+                            if total > MAX_CONTAINER_UNCOMPRESSED_BYTES
+                            else "E_MANIFEST_BLOB"
+                        )
+                        break
+                    continue
+                data, size, truncated = _read_capped(entry, limit)
+        except (zipfile.BadZipFile, NotImplementedError, zlib.error, ValueError, EOFError, OSError, RuntimeError):
+            error = error or "E_CONTAINER_ZIP"
+            continue
+        total += size
+        if total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
+            error = error or "E_CONTAINER_SIZE"
+            break
+        if truncated:
+            if _TIMESTAMP_FILE.match(name):
+                files[name] = b""
+                oversized_timestamps.add(name)
                 continue
-            unix_mode = info.external_attr >> 16
-            if stat.S_ISLNK(unix_mode):
-                error = error or "E_CONTAINER_ENTRY"
-                continue
-            if info.flag_bits & 0x1:
-                error = error or "E_CONTAINER_ZIP"
-                continue
-            if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
-                error = error or "E_CONTAINER_ZIP"
-                continue
-            if not _is_safe_relative_path(name):
-                error = error or "E_CONTAINER_ENTRY"
-                continue
-            if name in files:
-                error = error or "E_CONTAINER_ENTRY"
-                continue
-            if info.file_size > MAX_CONTAINER_UNCOMPRESSED_BYTES:
-                error = error or "E_CONTAINER_SIZE"
-                continue
-            try:
-                data = archive.read(info)
-            except (
-                zipfile.BadZipFile,
-                NotImplementedError,
-                zlib.error,
-                ValueError,
-                EOFError,
-                OSError,
-                RuntimeError,
-            ):
-                error = error or "E_CONTAINER_ZIP"
-                continue
-            if len(data) > MAX_CONTAINER_UNCOMPRESSED_BYTES:
-                error = error or "E_CONTAINER_SIZE"
-                continue
-            files[name] = data
-    readable_present = any(
-        name == "readable" or name.startswith("readable/") for name in directory_entries
-    ) or any(name.startswith("readable/") for name in files)
+            error = "E_JSON_SIZE"
+            break
+        files[name] = data
     return ContainerInput(
         files=files,
+        blobs=blobs,
         error=error,
-        input_sha256=input_sha,
-        input_size=len(raw),
-        is_zip=True,
         readable_present=readable_present,
         directory_entries=directory_entries,
+        oversized_timestamps=frozenset(oversized_timestamps),
     )
 
 
@@ -509,10 +728,19 @@ def verify_container(
             ),
         )
     except WeaveError as error:
-        errors.append(error.code)
-        return _finish_container(
-            container_input, container, errors, notices, [], limitations_iter, active_skipper
-        )
+        if error.code in ("E_KEY_UNKNOWN", "E_SIG_UNVERIFIABLE") or active_skipper.skip_error(
+            error.code
+        ):
+            # S7/§14.5: an *unverifiable* container condition does not stop record
+            # processing; the manifest signature outcome is carried in
+            # container.errors and the records pipeline still runs.
+            errors.append(error.code)
+            manifest_signature_keys = ()
+        else:
+            errors.append(error.code)
+            return _finish_container(
+                container_input, container, errors, notices, [], limitations_iter, active_skipper
+            )
 
     # Step 6: level/chain completeness.
     try:
@@ -527,12 +755,14 @@ def verify_container(
         notices.append("N_CHAIN_CLAIM_UNVERIFIED")
         limitations.append(LIMITATION_CHAIN_CLAIM)
 
-    # Step 7: record listing consistency.
+    # Step 7: record listing consistency. S8.1: every independent listing defect
+    # is reported (sorted), with records: []; the pre-record one-error rule is
+    # unchanged for the other container checks.
     listing = _load_container_records(container_input)
-    try:
-        _check_records_listing(manifest, listing, container_input)
-    except WeaveError as error:
-        errors.append(error.code)
+    listing_errors = _check_records_listing(manifest, listing, container_input)
+    if listing_errors:
+        errors.extend(listing_errors)
+        container["record_count"] = 0
         return _finish_container(
             container_input, container, errors, notices, [], limitations_iter, active_skipper
         )
@@ -558,6 +788,7 @@ def verify_container(
         files=container_input.files,
         manifest_digest=manifest_digest,
         trust_anchor_fingerprints=trust_fingerprints,
+        oversized=frozenset(container_input.oversized_timestamps),
     )
     container["timestamps"] = [
         result.to_report(index) for index, result in enumerate(archive.results)
@@ -670,6 +901,18 @@ def _finish_container(
     skipper: CheckSkipper,
 ) -> ContainerVerification:
     """Assemble the container report and verdict."""
+    # Notices that describe what was seen are reported even when the container
+    # pipeline stops early (spec §14.6 / S1 decisions): a readable/ entry was
+    # present and an embedded previous manifest existed but its signature was
+    # not re-verified. The deterministic sorted report hides repetition.
+    if container_input.readable_present:
+        notices.append("N_READABLE_PRESENT")
+    if (
+        container.get("previous_manifest_digest") is not None
+        or "previous/manifest.json" in container_input.files
+    ):
+        notices.append("N_PREVIOUS_SIG_UNVERIFIED")
+        limitations.append(LIMITATION_PREVIOUS_SIG)
     entries = []
     for view in record_views:
         entry = _record_report_entry(view)
@@ -687,7 +930,7 @@ def _finish_container(
         "checks_disabled": sorted(set(skipper.tokens)),
         "container": container,
         "input": {"sha256": container_input.input_sha256, "size": container_input.input_size},
-        "limitations": _dedupe(limitations),
+        "limitations": limitation_list(limitations),
         "records": entries,
         "report_version": "1",
         "spec": "weave-record/1",
@@ -745,7 +988,7 @@ def _record_report_entry(view: verifier.RecordView) -> dict[str, Any]:
         kind = None
         stage = None
         origin = None
-        kind_known = False
+        kind_known = None  # F9: undetermined scalar -> null
         if isinstance(raw_value, dict):
             if isinstance(raw_value.get("id"), str):
                 record_id = raw_value["id"]
@@ -948,48 +1191,55 @@ def _load_container_records(container_input: ContainerInput) -> _RecordListing:
 
 def _check_records_listing(
     manifest: manifest_module.Manifest, listing: _RecordListing, container_input: ContainerInput
-) -> None:
-    """Check records/ contents against the manifest (spec §11.5)."""
+) -> list[str]:
+    """Check records/ contents against the manifest (spec §11.5/§11.6).
+
+    S8.1: the checks in this phase report every independent defect, sorted and
+    unique, instead of stopping at the first one; the caller reports
+    ``records: []``.
+    """
+    errors: set[str] = set()
     listed = {entry.digest: entry for entry in manifest.records}
     listed_hex = {entry.digest.partition(":")[2] for entry in manifest.records}
-    for relative_path, record in sorted(listing.by_path.items()):
+    for relative_path in sorted(container_input.files):
+        if not relative_path.startswith("records/"):
+            continue
+        if relative_path not in listing.by_path:
+            # A records/ file whose name is not records/<sha256>.json.
+            errors.add("E_MANIFEST_RECORD_EXTRA")
+            continue
+        record = listing.by_path[relative_path]
         match = _RECORDS_FILE.match(relative_path)
-        if match is None:
-            raise WeaveError("E_MANIFEST_RECORD_EXTRA", "malformed records/ file name")
+        if match is None:  # pragma: no cover - filtered by _load_container_records
+            errors.add("E_MANIFEST_RECORD_EXTRA")
+            continue
         if match.group(1) not in listed_hex:
-            raise WeaveError(
-                "E_MANIFEST_RECORD_EXTRA", "records/ contains a file not listed in the manifest"
-            )
+            errors.add("E_MANIFEST_RECORD_EXTRA")
+            continue
         if record.value is None or record.digest is None:
-            raise WeaveError("E_MANIFEST_RECORD_DIGEST", "record file is not canonical JSON")
+            errors.add("E_MANIFEST_RECORD_DIGEST")
+            continue
         if match.group(1) != record.digest.partition(":")[2]:
-            raise WeaveError(
-                "E_MANIFEST_RECORD_DIGEST",
-                "record digest does not match its file name",
-            )
-        if listed[record.digest].digest != record.digest:  # pragma: no cover - lookup by key
-            raise WeaveError(
-                "E_MANIFEST_RECORD_DIGEST",
-                "record digest does not match the manifest entry",
-            )
+            errors.add("E_MANIFEST_RECORD_DIGEST")
+            continue
+        record_entry = listed.get(record.digest)
+        if record_entry is None:  # pragma: no cover - guarded by listed_hex
+            errors.add("E_MANIFEST_RECORD_DIGEST")
+            continue
         # The manifest entry's id/kind must equal the record's own id/kind
         # (spec §11.2.1/§11.6, Q22): a tampered entry that keeps the digest but
         # relabels the record is a manifest consistency error.
-        record_entry = listed[record.digest]
         value = record.value
         if not isinstance(value, dict):
-            raise WeaveError("E_MANIFEST_RECORD_DIGEST", "record file is not an object")
-        record_id = value.get("id")
-        record_kind = value.get("kind")
-        if record_entry.id != record_id or record_entry.kind != record_kind:
-            raise WeaveError(
-                "E_MANIFEST_RECORDS",
-                "manifest entry id/kind does not match the record file",
-            )
+            errors.add("E_MANIFEST_RECORD_DIGEST")
+            continue
+        if record_entry.id != value.get("id") or record_entry.kind != value.get("kind"):
+            errors.add("E_MANIFEST_RECORDS")
     for entry in manifest.records:
         expected_path = "records/%s.json" % entry.digest.partition(":")[2]
         if expected_path not in listing.by_path:
-            raise WeaveError("E_MANIFEST_RECORD_MISSING", "a listed record file is missing")
+            errors.add("E_MANIFEST_RECORD_MISSING")
+    return sorted(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -998,11 +1248,7 @@ def _check_records_listing(
 
 
 def _check_blobs(manifest: manifest_module.Manifest, container_input: ContainerInput) -> None:
-    blob_files = {
-        relative_path: data
-        for relative_path, data in container_input.files.items()
-        if relative_path.startswith("blobs/")
-    }
+    blob_files = dict(container_input.blobs)
     listed = {blob.digest: blob for blob in manifest.blobs}
     if not listed:
         if blob_files or "blobs" in container_input.directory_entries:
@@ -1010,14 +1256,15 @@ def _check_blobs(manifest: manifest_module.Manifest, container_input: ContainerI
         return
     for digest, blob in listed.items():
         expected_path = "blobs/sha256/%s" % digest.partition(":")[2]
-        data = blob_files.pop(expected_path, None)
-        if data is None:
+        streamed = blob_files.pop(expected_path, None)
+        if streamed is None:
             raise WeaveError("E_MANIFEST_BLOB", "a listed blob file is missing")
-        if len(data) != blob.size:
+        digest_hex, size = streamed
+        if size != blob.size:
             raise WeaveError("E_MANIFEST_BLOB", "blob size does not match the manifest")
-        if len(data) > MAX_BLOB_BYTES:
+        if size > MAX_BLOB_BYTES:
             raise WeaveError("E_CONTAINER_SIZE", "blob exceeds the size limit")
-        if "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+        if "sha256:" + digest_hex != digest:
             raise WeaveError("E_MANIFEST_BLOB", "blob digest does not match the manifest")
     if blob_files:
         raise WeaveError("E_MANIFEST_BLOB", "blobs/ contains a file not listed in the manifest")
@@ -1028,6 +1275,10 @@ def _check_previous_manifest(
     container_input: ContainerInput,
     previous_container: Path | None,
 ) -> None:
+    if previous_container is not None and not previous_container.exists():
+        # S6/F15/§11.5: a missing --previous path is a usage/IO error (exit 2),
+        # checked before any chain verdict.
+        raise UsageError("--previous container does not exist")
     embedded = container_input.files.get("previous/manifest.json")
     if manifest.previous_manifest_digest is None:
         if embedded is not None:
@@ -1041,6 +1292,15 @@ def _check_previous_manifest(
             raise WeaveError(
                 "E_MANIFEST_CHAIN_UNEXPECTED",
                 "previous_manifest is null but previous/ contains a manifest",
+            )
+        if previous_container is not None:
+            # S6/§11.5: a supplied --previous chain input with a null
+            # previous_manifest is a chain error, never silently skipped (this is
+            # how a recipient detects an exporter that silently restarted the
+            # chain).
+            raise WeaveError(
+                "E_MANIFEST_CHAIN",
+                "a previous container was supplied but previous_manifest is null",
             )
         return
     if embedded is None:
@@ -1077,7 +1337,7 @@ def _check_previous_manifest(
     if previous_container is not None:
         try:
             supplied = _read_previous_manifest_digest(previous_container)
-        except WeaveError:
+        except (WeaveError, UsageError):
             raise
         except Exception as error:  # pragma: no cover - defensive
             raise WeaveError(
@@ -1091,7 +1351,9 @@ def _check_previous_manifest(
 
 def _read_previous_manifest_digest(previous_container: Path) -> str:
     if not previous_container.exists():
-        raise WeaveError("E_MANIFEST_CHAIN", "--previous container does not exist")
+        # S6/§11.5: a missing --previous path is a usage/IO error (exit 2), not a
+        # report-level chain verdict.
+        raise UsageError("--previous container does not exist")
     if previous_container.is_dir():
         manifest_path = previous_container / "manifest.json"
     elif zipfile.is_zipfile(previous_container):
@@ -1185,7 +1447,17 @@ def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None
     # Deterministic order: placeholders and erasures are already in manifest order.
     for erasure in erasures:
         body = erasure.envelope.body  # type: ignore[union-attr]
-        reference = refs.validate_reference(body["erased"])
+        if erasure.verdict != "valid":
+            # The erasure record is already invalid with its own code (for
+            # example E_KIND_BODY_SCHEMA for a missing body.erased, S7); the
+            # container is invalid regardless, so the cross-check never crashes
+            # on a member the record's own validation did not establish.
+            continue
+        erased_value = body.get("erased")
+        try:
+            reference = refs.validate_reference(erased_value)
+        except WeaveError:
+            continue
         matching = [
             placeholder
             for placeholder in placeholders
@@ -1266,14 +1538,15 @@ def _find_view(
 def _collect_record_limitations(
     record_views: list[verifier.RecordView], limitations: list[str]
 ) -> None:
-    if any(view.notices and "N_KEY_TOFU" in view.notices for view in record_views):
-        limitations.append(LIMITATION_TOFU)
-    if any(view.envelope is not None and not view.envelope.kind_known for view in record_views):
-        limitations.append(LIMITATION_UNKNOWN_KIND)
-    if any(view.placeholder is not None for view in record_views):
-        limitations.append(LIMITATION_ERASED_PLACEHOLDER)
-        limitations.append(LIMITATION_LABELS_ARE_CLAIMS)
-    if any(
-        view.envelope is not None and view.envelope.labels is not None for view in record_views
-    ):
-        limitations.append(LIMITATION_LABELS_ARE_CLAIMS)
+    """Add the record-derived limitation identifiers (same rule as a record target)."""
+    for view in record_views:
+        envelope = view.envelope
+        limitations.extend(
+            record_limitations(
+                notices=view.notices,
+                verdict=view.verdict or "unverifiable",
+                kind_known=envelope.kind_known if envelope is not None else False,
+                placeholder=view.placeholder is not None,
+                has_labels=envelope is not None and envelope.labels is not None,
+            )
+        )

@@ -154,3 +154,38 @@ def test_top_level_object_required() -> None:
     with pytest.raises(WeaveError) as raised:
         canonical.parse_file_bytes(b"[1]", require_object=True)
     assert raised.value.code == "E_JSON_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# S3 / S8(4): nesting depth and the number-class input-byte order
+# ---------------------------------------------------------------------------
+
+
+def test_json_depth_limit_counts_the_root_as_level_one() -> None:
+    deepest = canonical.parse_text(
+        "[" * canonical.MAX_JSON_DEPTH + "]" * canonical.MAX_JSON_DEPTH
+    )
+    assert isinstance(deepest, list)
+    with pytest.raises(WeaveError) as raised:
+        canonical.parse_text(
+            "[" * (canonical.MAX_JSON_DEPTH + 1) + "]" * (canonical.MAX_JSON_DEPTH + 1)
+        )
+    assert raised.value.code == "E_JSON_SIZE"
+
+
+def test_deeply_nested_json_never_crashes() -> None:
+    for depth in (1023, 5000):
+        with pytest.raises(WeaveError) as raised:
+            canonical.parse_text("[" * depth + "]" * depth)
+        assert raised.value.code == "E_JSON_SIZE"
+
+
+def test_minus_zero_and_float_follow_input_byte_order() -> None:
+    # S8(4): number-class violations are classified in input byte order within
+    # the numeric token pass; -0 is checked at its token position.
+    with pytest.raises(WeaveError) as raised:
+        canonical.parse_text('{"a":-0,"b":1.5}')
+    assert raised.value.code == "E_JSON_NOT_CANONICAL"
+    with pytest.raises(WeaveError) as raised:
+        canonical.parse_text('{"b":1.5,"a":-0}')
+    assert raised.value.code == "E_JSON_NUMBER_NOT_INTEGER"

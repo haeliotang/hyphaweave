@@ -55,6 +55,16 @@ from .errors import WeaveError
 
 MAX_TIMESTAMP_BYTES = 1_048_576
 
+#: S11/§13: total accuracy of one receipt, in seconds. A receipt whose
+#: normalised accuracy exceeds this (or whose conversion overflows a signed
+#: 64-bit microsecond value) is invalid with ``E_TS_SCHEMA`` and can never
+#: rescue a compromised-key signature.
+MAX_TS_ACCURACY_SECONDS = 86_400
+MAX_TS_ACCURACY_US = MAX_TS_ACCURACY_SECONDS * 1_000_000
+
+#: Signed 64-bit bound used by the rescue arithmetic (§9.4/S11).
+INT64_MAX = (1 << 63) - 1
+
 STATE_VERIFIED = "verified"
 STATE_PRESENT_UNVERIFIED = "present-unverified"
 STATE_INVALID = "invalid"
@@ -152,8 +162,19 @@ def verify_timestamp_archive(
     files: dict[str, bytes],
     manifest_digest: str,
     trust_anchor_fingerprints: frozenset[bytes] | None,
+    oversized: frozenset[str] = frozenset(),
 ) -> TimestampArchive:
-    """Verify every listed TSR of a container, including the renewal chain."""
+    """Verify every listed TSR of a container.
+
+    Order (S8.11): the listed ``.tsr`` files are materialised and their listed
+    digests checked first (``E_TS_FILE``; an oversized file is ``E_JSON_SIZE``),
+    then the renewal-chain structure (``E_TS_RENEWAL``), then every token's
+    checks 1-13.
+
+    ``oversized`` names listed ``.tsr`` files whose byte size exceeded the
+    ``MAX_TIMESTAMP_BYTES`` class limit while reading (S4): they are invalid
+    with ``E_JSON_SIZE`` and cannot be parsed.
+    """
     archive = TimestampArchive()
     manifest_raw_digest = _parse_digest_bytes(manifest_digest)
     entries: dict[str, dict] = {}
@@ -161,6 +182,53 @@ def verify_timestamp_archive(
         entries[entry["path"]] = entry
     if not entries:
         return archive
+    # Phase 1: every listed TSR must exist, be within the class limit and hash
+    # to the digest the attestation lists (§11.3 file-level checks).
+    file_errors: list[str] = []
+    file_data: dict[str, bytes] = {}
+    for path in sorted(entries):
+        listed_digest = str(entries[path].get("digest", ""))
+        if path in oversized:
+            archive.results.append(
+                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_JSON_SIZE")
+            )
+            if "E_JSON_SIZE" not in file_errors:
+                file_errors.append("E_JSON_SIZE")
+            continue
+        data = files.get(path)
+        if data is None:
+            archive.results.append(
+                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
+            )
+            if "E_TS_FILE" not in file_errors:
+                file_errors.append("E_TS_FILE")
+            continue
+        if "sha256:" + hashlib.sha256(data).hexdigest() != listed_digest:
+            archive.results.append(
+                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
+            )
+            if "E_TS_FILE" not in file_errors:
+                file_errors.append("E_TS_FILE")
+            continue
+        file_data[path] = data
+    if file_errors:
+        # A broken file chain stops the archive check before the renewal
+        # structure is judged; every listed receipt is invalid.
+        archive.errors.extend(file_errors)
+        invalid_code = "E_JSON_SIZE" if "E_JSON_SIZE" in file_errors else "E_TS_FILE"
+        archive.results = [
+            TimestampResult(
+                path=path,
+                digest=str(entries[path].get("digest", "")),
+                state=STATE_INVALID,
+                gen_time=None,
+                gen_time_ms=None,
+                error=invalid_code,
+            )
+            for path in sorted(entries)
+        ]
+        return archive
+    # Phase 2: renewal-chain structure (§12.2 row 14).
     chain, structure_error = _build_renewal_chain(entries)
     if structure_error is not None:
         archive.errors.append("E_TS_RENEWAL")
@@ -179,23 +247,9 @@ def verify_timestamp_archive(
     archive.chain_paths = tuple(chain)
     previous_bytes: bytes | None = None
     for path in chain:
+        data = file_data[path]
         entry = entries[path]
         listed_digest = str(entry.get("digest", ""))
-        data = files.get(path)
-        if data is None or len(data) > MAX_TIMESTAMP_BYTES:
-            archive.results.append(
-                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
-            )
-            archive.errors.append("E_TS_FILE")
-            previous_bytes = None
-            continue
-        if "sha256:" + hashlib.sha256(data).hexdigest() != listed_digest:
-            archive.results.append(
-                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
-            )
-            archive.errors.append("E_TS_FILE")
-            previous_bytes = data
-            continue
         expected_imprint = (
             manifest_raw_digest
             if previous_bytes is None
@@ -307,6 +361,10 @@ def verify_timestamp_token(
         gen_time = _format_ms(gen_time_ms)
         gen_time_us = _gen_time_to_us(gen_time_value)
         accuracy_us = _accuracy_to_us(tst_info)
+        if gen_time_us is None or gen_time_us + accuracy_us > INT64_MAX:
+            raise WeaveError(
+                "E_TS_SCHEMA", "genTime + accuracy overflows a signed 64-bit value"
+            )
 
         signer_info, signer_certificate_der = _verify_cms(signed_data, raw_content, gen_time_value)
         fingerprint = hashlib.sha256(signer_certificate_der).digest()
@@ -559,7 +617,10 @@ def _accuracy_to_us(tst_info) -> int:
     """Normalise TSTInfo accuracy (seconds/millis/micros) to microseconds.
 
     RFC 3161 ``Accuracy`` carries at most one of seconds, millis and micros; an
-    absent field counts as 0 (an absent accuracy is treated as exact).
+    absent field counts as 0 (an absent accuracy is treated as exact). S11: the
+    conversion is checked and bounded by ``MAX_TS_ACCURACY``; an overflow, a
+    negative total or a total above the bound is ``E_TS_SCHEMA`` (the receipt is
+    invalid and can never rescue a compromised-key signature).
     """
     try:
         accuracy = tst_info["accuracy"]
@@ -568,10 +629,20 @@ def _accuracy_to_us(tst_info) -> int:
     if accuracy is None or accuracy.native is None:
         return 0
     native = accuracy.native
-    seconds = native.get("seconds") or 0
-    millis = native.get("millis") or 0
-    micros = native.get("micros") or 0
-    return int(seconds) * 1_000_000 + int(millis) * 1000 + int(micros)
+    try:
+        seconds = int(native.get("seconds") or 0)
+        millis = int(native.get("millis") or 0)
+        micros = int(native.get("micros") or 0)
+    except (TypeError, ValueError) as error:
+        raise WeaveError("E_TS_SCHEMA", "accuracy components are not integers") from error
+    if seconds < 0 or millis < 0 or micros < 0:
+        raise WeaveError("E_TS_SCHEMA", "accuracy components are negative")
+    total = seconds * 1_000_000 + millis * 1000 + micros
+    if total > MAX_TS_ACCURACY_US:
+        raise WeaveError(
+            "E_TS_SCHEMA", "accuracy exceeds MAX_TS_ACCURACY"
+        )
+    return total
 
 
 def _format_ms(epoch_ms: int) -> str:

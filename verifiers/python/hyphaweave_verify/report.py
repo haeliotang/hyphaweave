@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deterministic report construction and serialization (spec §14.2).
+"""Deterministic report construction and serialization (spec §14.2/§14.6).
 
 The report shape is stable and versioned (``report_version: "1"``). Records are
 emitted in manifest order (or the single input record); errors and notices are
-sorted and de-duplicated; limitations are stable English strings. Input paths,
+sorted and de-duplicated; ``limitations`` is a sorted, unique array of the
+closed identifier set of spec §14.9 (no free prose, S12). Input paths,
 usernames, hostnames, the clock, the locale, the timezone and the environment
 never appear in a report.
 
@@ -24,46 +25,72 @@ from .errors import ERROR_CODES, EFFECT_INVALID, EFFECT_UNVERIFIABLE
 REPORT_VERSION = "1"
 SPEC = "weave-record/1"
 
-#: Stable limitation strings. A report lists only the ones that apply.
-LIMITATION_OFFLINE_CONTEXT = (
-    "Offline verification: only this container's records and the supplied keyset are in the "
-    "verification context; references to records outside the context resolve as missing."
+#: Closed set of limitation identifiers (spec §14.9, S12). A report lists only
+#: the ones that apply, sorted and unique; no prose is ever emitted.
+LIMITATION_OFFLINE_CONTEXT = "L_OFFLINE_CONTEXT"
+LIMITATION_CHAIN_CLAIM = "L_CHAIN_CLAIM_UNVERIFIED"
+LIMITATION_TOFU = "L_KEY_TRUST_TOFU"
+LIMITATION_TSA_TRUST = "L_TSA_TRUST_UNVERIFIED"
+LIMITATION_PREVIOUS_SIG = "L_PREVIOUS_SIG_UNVERIFIED"
+LIMITATION_ERASED_PLACEHOLDER = "L_ERASED_PLACEHOLDER"
+LIMITATION_ERASED_STANDALONE = "L_ERASED_STANDALONE"
+LIMITATION_LABELS_ARE_CLAIMS = "L_LABELS_ARE_CLAIMS"
+LIMITATION_UNKNOWN_KIND = "L_UNKNOWN_KIND_OPAQUE"
+LIMITATION_UNRESOLVED_LABEL_PROPAGATION = "L_LABEL_PROPAGATION_UNCHECKED"
+
+#: Every identifier the verifier may emit (used by tests and the vectors gate).
+LIMITATION_IDENTIFIERS: frozenset[str] = frozenset(
+    {
+        LIMITATION_OFFLINE_CONTEXT,
+        LIMITATION_CHAIN_CLAIM,
+        LIMITATION_TOFU,
+        LIMITATION_TSA_TRUST,
+        LIMITATION_PREVIOUS_SIG,
+        LIMITATION_ERASED_PLACEHOLDER,
+        LIMITATION_ERASED_STANDALONE,
+        LIMITATION_LABELS_ARE_CLAIMS,
+        LIMITATION_UNKNOWN_KIND,
+        LIMITATION_UNRESOLVED_LABEL_PROPAGATION,
+    }
 )
-LIMITATION_CHAIN_CLAIM = (
-    "The internal hash chain of a claimed L1/L2 container cannot be recomputed offline: "
-    "chain.status is unverified and level_verified is reported as L0."
-)
-LIMITATION_TOFU = (
-    "Key trust is trust-on-first-use from key-lifecycle records in the context; no certificate "
-    "authority, network lookup or pinned local trust store was consulted."
-)
-LIMITATION_TSA_TRUST = (
-    "No matching TSA trust anchor was available: timestamps are present-unverified and the "
-    "container cannot be reported valid."
-)
-LIMITATION_PREVIOUS_SIG = (
-    "The embedded previous manifest's own signature was not re-verified; only its digest was "
-    "checked against previous_manifest.digest."
-)
-LIMITATION_ERASED_PLACEHOLDER = (
-    "A weave.erased placeholder has no content: its integrity rests on the signed attestation, "
-    "the retained original digest and the manifest entry, not on a hash of the deleted record."
-)
-LIMITATION_ERASED_STANDALONE = (
-    "A standalone weave.erased placeholder has no container context, so the attestation "
-    "resolution is reported but the container cross-checks of the erasure rules cannot be applied."
-)
-LIMITATION_LABELS_ARE_CLAIMS = (
-    "Labels, consent coverage and licences are claims checked for consistency only; their truth "
-    "is not established offline."
-)
-LIMITATION_UNKNOWN_KIND = (
-    "An unregistered kind is transported and integrity-checked but its body is never interpreted "
-    "(K3 forward compatibility)."
-)
-LIMITATION_UNRESOLVED_LABEL_PROPAGATION = (
-    "Label propagation was not checked for unresolved derived_from references."
-)
+
+
+def limitation_list(values: Iterable[str]) -> list[str]:
+    """Return the sorted, unique limitation identifiers (spec §14.9)."""
+    return sorted(set(values))
+
+
+def record_limitations(
+    *,
+    notices: Iterable[str],
+    verdict: str,
+    kind_known: bool,
+    placeholder: bool,
+    has_labels: bool,
+    standalone: bool = False,
+) -> list[str]:
+    """Limitation identifiers that apply to one record's report entry.
+
+    The same construction is used for a standalone record target, for a
+    container's records and for the container aggregate (S12/F12.3): the opaque
+    kind limitation is reported only when the record verdict is ``valid``.
+    """
+    notice_set = set(notices)
+    result: list[str] = []
+    if "N_KEY_TOFU" in notice_set:
+        result.append(LIMITATION_TOFU)
+    if not kind_known and verdict == "valid":
+        result.append(LIMITATION_UNKNOWN_KIND)
+    if placeholder:
+        result.append(LIMITATION_ERASED_PLACEHOLDER)
+        if standalone:
+            result.append(LIMITATION_ERASED_STANDALONE)
+    if has_labels:
+        result.append(LIMITATION_LABELS_ARE_CLAIMS)
+    if "N_LABEL_PROPAGATION_UNCHECKED" in notice_set:
+        result.append(LIMITATION_UNRESOLVED_LABEL_PROPAGATION)
+    return limitation_list(result)
+
 
 
 def record_verdict(errors: Iterable[str]) -> str:
@@ -102,7 +129,7 @@ def record_entry(
     kind: str | None,
     stage: str | None,
     origin: dict[str, str] | None,
-    kind_known: bool,
+    kind_known: bool | None,
     verdict: str,
     errors: Iterable[str],
     notices: Iterable[str],
@@ -133,8 +160,8 @@ def build_report(
     *,
     target: str,
     verdict: str,
-    input_sha256: str,
-    input_size: int,
+    input_sha256: str | None,
+    input_size: int | None,
     records: list[dict[str, Any]],
     checks_disabled: Iterable[str] = (),
     container: dict[str, Any] | None = None,
@@ -142,14 +169,14 @@ def build_report(
     errors: Iterable[str] = (),
     notices: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Assemble the report object (spec §14.2)."""
+    """Assemble the report object (spec §14.6)."""
     summary = {"erased": 0, "invalid": 0, "unverifiable": 0, "valid": 0}
     for entry in records:
         summary[entry["verdict"]] = summary.get(entry["verdict"], 0) + 1
     report: dict[str, Any] = {
         "checks_disabled": sorted(set(checks_disabled)),
         "input": {"sha256": input_sha256, "size": input_size},
-        "limitations": list(limitations),
+        "limitations": limitation_list(limitations),
         "summary": summary,
         "records": records,
         "report_version": REPORT_VERSION,

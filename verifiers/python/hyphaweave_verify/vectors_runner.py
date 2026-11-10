@@ -16,7 +16,13 @@ executes each case in-process (no shelling out) and compares:
 * ``expected_resolution`` against the record's ``refs[].state`` in order (a
   standalone erased placeholder uses its ``attestation.state``);
 * ``expected_container`` as a recursive subset of ``report.container``;
-* ``records`` as per-record subsets matched by ``id``.
+* ``expected_input`` as a recursive subset of the report's top-level ``input``
+  object (``null`` matches only ``null``);
+* ``limitations`` as the exact sorted limitation-identifier array of §14.9;
+* ``notices_absent`` names notice codes that MUST NOT appear anywhere in the
+  aggregated report (container plus every record);
+* ``records`` as per-record matches by ``id``: ``verdict`` and ``errors`` are
+  exact, every other listed member is a recursive subset (F17).
 
 Argument tokens follow the contract: ``@keyset`` is the suite's
 ``keys/keyset`` directory, ``@case`` is the case directory, anything else is a
@@ -37,7 +43,12 @@ from . import container as container_module
 from . import report as report_module
 from . import verifier
 from .errors import CheckSkipper, UsageError, WeaveError
-from .report import record_verdict
+from .report import (
+    LIMITATION_OFFLINE_CONTEXT,
+    limitation_list,
+    record_limitations,
+    record_verdict,
+)
 
 TARGETS = ("record", "container")
 
@@ -205,6 +216,10 @@ def _run_record_case(
     skipper: CheckSkipper,
 ) -> dict[str, Any]:
     raw = input_path.read_bytes()
+    input_identity = {
+        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "size": len(raw),
+    }
     try:
         loaded = verifier.load_record_bytes(raw, source="record")
     except WeaveError as error:
@@ -215,7 +230,7 @@ def _run_record_case(
             kind=None,
             stage=None,
             origin=None,
-            kind_known=False,
+            kind_known=None,
             verdict=record_verdict(filtered) if filtered else "valid",
             errors=filtered,
             notices=[],
@@ -227,6 +242,8 @@ def _run_record_case(
             "errors": entry["errors"],
             "notices": [],
             "records": [entry],
+            "limitations": [LIMITATION_OFFLINE_CONTEXT],
+            "input": input_identity,
         }
     target_view, _ = verifier.verify_single_record(loaded, keyset_loaded, verified_timestamps=())
     entry = container_module._record_report_entry(target_view)
@@ -234,11 +251,31 @@ def _run_record_case(
     entry["errors"] = sorted(set(filtered_errors))
     if target_view.placeholder is None:
         entry["verdict"] = record_verdict(filtered_errors)
+    limitations = [
+        LIMITATION_OFFLINE_CONTEXT,
+        *report_module.record_limitations(
+            notices=target_view.notices,
+            verdict=entry["verdict"],
+            kind_known=(
+                target_view.envelope.kind_known
+                if target_view.envelope is not None
+                else False
+            ),
+            placeholder=target_view.placeholder is not None,
+            has_labels=(
+                target_view.envelope is not None
+                and target_view.envelope.labels is not None
+            ),
+            standalone=True,
+        ),
+    ]
     return {
         "verdict": entry["verdict"],
         "errors": entry["errors"],
         "notices": entry["notices"],
         "records": [entry],
+        "limitations": limitation_list(limitations),
+        "input": input_identity,
     }
 
 
@@ -256,6 +293,8 @@ def _actual_from_container_report(report: dict[str, Any]) -> dict[str, Any]:
         "notices": sorted(notices),
         "records": records,
         "container": container,
+        "limitations": list(report.get("limitations", ())),
+        "input": dict(report.get("input", {})),
     }
 
 
@@ -320,6 +359,27 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any], target: str) -> l
             "notices: expected subset %s, got %s"
             % (sorted(expected_notices), sorted(actual["notices"]))
         )
+    absent_notices = set(expected.get("notices_absent", []))
+    if absent_notices & set(actual["notices"]):
+        mismatches.append(
+            "notices_absent: forbidden notices present %s"
+            % (sorted(absent_notices & set(actual["notices"])),)
+        )
+    if "limitations" in expected:
+        expected_limitations = expected["limitations"]
+        if not isinstance(expected_limitations, list) or limitation_list(
+            expected_limitations
+        ) != list(actual["limitations"]):
+            mismatches.append(
+                "limitations: expected %r, got %r"
+                % (expected_limitations, actual["limitations"])
+            )
+    if "expected_input" in expected:
+        if not _recursive_subset(expected["expected_input"], actual.get("input")):
+            mismatches.append(
+                "expected_input: expected subset %r, got %r"
+                % (expected["expected_input"], actual.get("input"))
+            )
     if "expected_digest" in expected:
         expected_digest = expected["expected_digest"]
         records = actual["records"]
@@ -334,16 +394,25 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any], target: str) -> l
                 % (expected_digest, [entry.get("digest") for entry in records])
             )
     if "expected_resolution" in expected:
-        expected_resolution = expected["expected_resolution"]
+        expected_resolution = list(expected["expected_resolution"])
         states = _resolution_states(actual, target, actual["records"])
-        if list(expected_resolution) != states:
+        if len(expected_resolution) > len(states) or states[: len(expected_resolution)] != expected_resolution:
             mismatches.append(
                 "expected_resolution: expected %s, got %s"
-                % (list(expected_resolution), states)
+                % (expected_resolution, states)
             )
     if "expected_container" in expected:
         if not _recursive_subset(expected["expected_container"], actual.get("container")):
             mismatches.append("expected_container: subset mismatch")
+    if "records" in expected and expected["records"] == []:
+        # An explicit empty array asserts that the report lists no record
+        # entries at all (for example a container that stopped at the records
+        # listing); "" would silently pass and is not a valid expectation shape.
+        if actual["records"]:
+            mismatches.append(
+                "records: expected no record entries, got %d"
+                % (len(actual["records"]),)
+            )
     for expected_record in expected.get("records", []):
         if not isinstance(expected_record, dict):
             mismatches.append("records: malformed expected record entry")
@@ -357,7 +426,32 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any], target: str) -> l
         if match is None:
             mismatches.append("records: no record with id %r" % (record_id,))
             continue
-        if not _recursive_subset(expected_record, match):
+        if "verdict" in expected_record and expected_record["verdict"] != match.get(
+            "verdict"
+        ):
+            mismatches.append(
+                "records: verdict for id %r expected %r, got %r"
+                % (record_id, expected_record["verdict"], match.get("verdict"))
+            )
+            continue
+        if "errors" in expected_record and sorted(
+            set(expected_record["errors"])
+        ) != sorted(set(match.get("errors", ()))):
+            mismatches.append(
+                "records: errors for id %r expected %s, got %s"
+                % (
+                    record_id,
+                    sorted(set(expected_record["errors"])),
+                    sorted(set(match.get("errors", ()))),
+                )
+            )
+            continue
+        subset_expected = {
+            key: value
+            for key, value in expected_record.items()
+            if key not in ("id", "verdict", "errors")
+        }
+        if not _recursive_subset(subset_expected, match):
             mismatches.append("records: subset mismatch for id %r" % (record_id,))
     return mismatches
 
@@ -367,14 +461,19 @@ def _compare(expected: dict[str, Any], actual: dict[str, Any], target: str) -> l
 # ---------------------------------------------------------------------------
 
 
-def run_vectors(root: Path, *, default_tsa_trust: bytes | None = None) -> dict[str, Any]:
+def run_vectors(
+    root: Path,
+    *,
+    default_tsa_trust: bytes | None = None,
+    skipper: CheckSkipper | None = None,
+) -> dict[str, Any]:
     """Run every case under ``root``; return a deterministic vectors report."""
     if not root.exists() or not root.is_dir():
         raise UsageError("vector suite directory does not exist")
     cases = _discover_cases(root)
     if not cases:
         raise UsageError("no expected.json files found in the vector suite")
-    skipper = CheckSkipper.from_env()
+    active_skipper = skipper if skipper is not None else CheckSkipper()
     case_results: list[dict[str, Any]] = []
     input_hasher = hashlib.sha256()
     input_hasher.update(b"weave-vectors/1\n")
@@ -391,7 +490,7 @@ def run_vectors(root: Path, *, default_tsa_trust: bytes | None = None) -> dict[s
             if not isinstance(expected, dict):
                 raise UsageError("expected.json must be an object")
             suite_root = _find_suite_root(case_dir)
-            result = _run_case(case_dir, expected, suite_root, default_tsa_trust, skipper)
+            result = _run_case(case_dir, expected, suite_root, default_tsa_trust, active_skipper)
         except (UsageError, OSError, ValueError) as error:
             result = {
                 "id": case_dir.name,
@@ -409,7 +508,7 @@ def run_vectors(root: Path, *, default_tsa_trust: bytes | None = None) -> dict[s
         input_sha256="sha256:" + input_hasher.hexdigest(),
         input_size=input_size,
         records=[],
-        checks_disabled=skipper.tokens,
+        checks_disabled=active_skipper.tokens,
         limitations=[],
     )
     # Vectors report summary is case-based (decision #34 / spec §14.6):

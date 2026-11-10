@@ -61,7 +61,9 @@ def validate_origin(origin: Any, code: str = "E_ENV_ORIGIN") -> Origin:
         raise WeaveError(code, "origin.instance is not a key id")
     for member in origin:
         if member not in ("project", "instance"):
-            raise WeaveError("E_ENV_UNKNOWN_FIELD", "unknown member in origin object")
+            # S8.6/F2: a closed nested object reports the code of the section
+            # that owns it, not the envelope-level E_ENV_UNKNOWN_FIELD.
+            raise WeaveError(code, "unknown member in origin object")
     return Origin(project=project, instance=instance)
 
 

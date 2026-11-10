@@ -67,6 +67,9 @@ class KeyDeclaration:
     valid_until: str | None
     recorded_at: str
     record_digest: str
+    #: Where the declaration came from: ``"keyset"`` (the local trust input),
+    #: ``"container"`` or ``"record"``. Keyset declarations govern class/window (S1).
+    source: str = "context"
 
 
 @dataclass(frozen=True)
@@ -108,9 +111,25 @@ class KeyState:
     # -- construction -----------------------------------------------------
 
     def add_declaration(self, declaration: KeyDeclaration) -> None:
-        """Record a declaration; the earliest ``(recorded_at, digest)`` wins (Q12)."""
+        """Record a declaration; the keyset governs class/window (S1), then Q12.
+
+        A local-keyset declaration is authoritative for the key's class and
+        validity window: an in-context re-declaration never replaces it, not
+        even with a backdated ``recorded_at`` (S1). Among in-context
+        declarations the earliest ``(recorded_at, digest)`` wins (Q12).
+        """
         current = self.declarations.get(declaration.key_id)
-        if current is None or _declaration_order(declaration) < _declaration_order(current):
+        if current is None:
+            self.declarations[declaration.key_id] = declaration
+            return
+        current_from_keyset = current.source == "keyset"
+        new_from_keyset = declaration.source == "keyset"
+        if current_from_keyset and not new_from_keyset:
+            return
+        if new_from_keyset and not current_from_keyset:
+            self.declarations[declaration.key_id] = declaration
+            return
+        if _declaration_order(declaration) < _declaration_order(current):
             self.declarations[declaration.key_id] = declaration
 
     def add_rotation(self, rotation: KeyRotation) -> None:
@@ -246,6 +265,9 @@ class DeclarationContext(Protocol):
     def is_declared_key(self, key_id: str) -> bool:
         """Whether the key id is declared anywhere in the context."""
 
+    def governing_class(self, key_id: str, exclude_digest: str) -> str | None:
+        """The class of the key's governing declaration, excluding one digest (S1)."""
+
 
 def decode_public_key_material(value: object) -> bytes:
     """Decode declared key material: strict 32-byte base64url, no point checks.
@@ -312,22 +334,24 @@ def check_declared_semantics(
         if timestamp_sort_key(valid_from) > timestamp_sort_key(valid_until):
             raise WeaveError("E_KEY_VALIDITY", "valid_from is after valid_until")
     if declared_key not in verified_signature_keys:
-        # A missing self-signature is the kind's specific error; if the only
-        # entry by that key used an unknown algorithm, the signature cannot be
-        # checked at all (Q13).
-        if signature_entries_by_key.get(declared_key):
-            if context.is_declared_key(declared_key):
-                raise WeaveError(
-                    "E_SIG_UNVERIFIABLE",
-                    "the declared key's signature entries use an unknown algorithm",
-                )
-            raise WeaveError(
-                "E_KEY_UNKNOWN",
-                "the declared key has no declaration that can be resolved",
-            )
+        # §4.4 rule 4 / S7.4: unknown-algorithm entries are ignored (Q13), so an
+        # unknown-algorithm self-signature leaves the declared key without a
+        # valid self-signature. The dedicated kind code wins over a trust
+        # outcome (invalid is more conservative than unverifiable).
         raise WeaveError(
             "E_KEY_DECLARED_NOT_SELF_SIGNED",
             "no valid signature by the declared key",
+        )
+
+    # S1: a key id that already has a governing class (local keyset first, then
+    # the earliest valid in-context declaration) may not be reclassified. A
+    # same-class re-declaration is valid but never takes effect (see
+    # KeyState.add_declaration); a different class is invalid.
+    governing_class = context.governing_class(declared_key, record_digest)
+    if governing_class is not None and governing_class != key_type:
+        raise WeaveError(
+            "E_KEY_CLASS_CONFLICT",
+            "container declaration reclassifies a key that is already trusted",
         )
 
     if key_type in ("agent", "program", "device"):
@@ -380,6 +404,7 @@ def check_declared_semantics(
         valid_until=valid_until,
         recorded_at=recorded_at,
         record_digest=record_digest,
+        source=source if source == "keyset" else "context",
     )
 
 
