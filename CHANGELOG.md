@@ -129,6 +129,57 @@ semantics, so it is listed separately from the initial H0 snapshot:
   transitive dependency versions the verifier was tested with; CI installs with
   `-c constraints.txt`.
 
+### Revision 2 (decision 2026-11-10 #42)
+
+Revision 2 is a focused follow-up after the revision-1 re-verification. It
+changes the remaining trust-selection and timestamp-comparison behaviour:
+
+- **Trust roots now come only from the locally supplied keyset** (the `--keys`
+  directory, the verifier's local trust input under E4). A self-signed
+  `human`/`organization` declaration in that keyset is a root; a
+  `human`/`organization` declaration in the container or target must chain to
+  that trust through a valid counter-signature, otherwise it is `unverifiable`
+  with `E_KEY_UNTRUSTED` (and `N_SELF_ATTESTED_ROOT_KEY` when it is only
+  self-signed). There is no time-ordered root selection, backdating cannot create
+  a root, the keyset is evaluated before the container, and an untrusted container
+  declaration must not invalidate other declarations.
+- **Grant chains are evaluated at the verified record's claimed `recorded_at`**
+  for the whole chain, including ancestors; verifying a grant record itself uses
+  that grant's own `recorded_at`.
+- **Compromise-revocation rescue is strict and precision-aware:** a signature by
+  a compromised key is valid only with a verified external timestamp whose
+  `genTime + accuracy` is strictly before the revocation's `effective_at`
+  (missing `accuracy` counts as zero).
+- **Missing trust information is not forgery:** a timestamp receipt present but
+  without a trust anchor is `unverifiable` (`E_TS_UNTRUSTED`), while a signature
+  with no timestamp evidence at all is `invalid` (`E_KEY_COMPROMISED`).
+- **Wrong-class owner keys** are `invalid` (`E_KEY_OWNER_MISSING`), and the error
+  registry gains `E_KEY_UNTRUSTED` (effect `unverifiable`), making the closed
+  registry **113 error codes and 14 notices**.
+- **Vectors and the candidate regression set were regenerated** after the
+  semantic changes and the trust-model update: **294 vector cases**, and a
+  **candidate regression set of 179 cases / 617 files / 2.5 MB** across the 12
+  categories (verdicts: 71 valid, 1 erased, 100 invalid, 7 unverifiable;
+  `vectors/frozen/v0.1-candidate/`). The candidate regression set remains a
+  candidate; formal freezing still requires J1/J2 acceptance.
+- **Verification for this revision:** `pytest` reports **246 passed, 0 skipped**;
+  the conformance vectors pass **294/294** and the candidate set **179/179**. The
+  remaining gates also pass on the final tree: true source-mutation ablation
+  (109 mutations, 97 killed, 0 unpinned survivors, 11 documented equivalent plus
+  1 documented redundant, including both mandated counterexample mutations
+  killed), exhaustive byte-flip over the 144 positive cases (201,626 mutants;
+  197,480 invalid, 2,730 fail-closed `unverifiable`, 1,416 exempt bytes with
+  documented reasons; 0 survivors, 0 crashes), external cross-checks (RFC 8785
+  6/6, RFC 8032 5/5, Wycheproof 210/210 with all `acceptable` cases rejected),
+  schema/example/REUSE checks, the offline L0 manual verification, and the
+  candidate checks (616/616 SHA-256 entries, `check_frozen` PASS, selection rule
+  reproducible, deleting a case turns the check red). All gates were run
+  locally; this file does not claim that a GitHub Actions run has passed.
+- Pre-publication documentation updates: the repository is described as public
+  while the format remains a draft (README, README.zh-CN, positioning,
+  CONTRIBUTING, SECURITY), and Q33/P1/P2 were resolved in
+  `docs/open-questions.md`.
+
 ### Explicitly not yet true in this version
 
 - **The format is not accepted.** `weave-record/1` v0.1 has **not** been
@@ -146,9 +197,11 @@ semantics, so it is listed separately from the initial H0 snapshot:
 - **No project adapters.** Export and import adapters for the projects that will
   use `weave-record/1` live in those projects and are not part of this
   repository.
-- **Not published.** The repository is private and has not been pushed to a
-  public host; the CI workflow exists but has never run on GitHub. The verifier
-  has not been released to PyPI and is installed from this repository.
+- **Public, still draft.** The repository is public now, but that does not make
+  the format stable: it is a draft and has not passed J1/J2 acceptance. The
+  workflow in `.github/workflows/ci.yml` mirrors the local gates; this changelog
+  does not claim that a particular GitHub Actions run passed. The verifier has
+  not been released to PyPI and is installed from this repository.
 - **Some implementation-shape details remain PROVISIONAL.** They are listed in
   `docs/open-questions.md` §3; they do not change the decided behaviours.
 
