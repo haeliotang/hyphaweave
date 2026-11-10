@@ -1,6 +1,10 @@
 <!-- SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com> -->
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 
+<p align="center">
+  <img src="assets/hyphaweave-mono.svg" width="120" alt="Hyphaweave — Two threads, braided">
+</p>
+
 # Hyphaweave
 
 **独立系统之间的公共线。**
@@ -121,7 +125,7 @@ Hyphaweave 刻意**不**做以下事情：
 
 - 代码、JSON Schema 与一致性测试向量：**Apache-2.0**。
 - 规范与文档文字：**CC-BY-4.0**。
-- 品牌资产（本仓库目前没有任何品牌资产）：保留，标识为 `LicenseRef-Inceptless-Brand`。
+- 品牌资产（`assets/`）：项目 logo 保留，标识为 `LicenseRef-Inceptless-Brand`；可用于指代本项目，但不得暗示官方地位或背书。
 - `vectors/external/` 下的外部测试数据沿用其上游来源的许可，并记录在数据旁边。
 
 完整许可分层与官方许可证原文的 SHA-256 见 [`LICENSING.md`](LICENSING.md)。贡献前须接受 Inceptless 贡献者许可协议（CLA v1.0，已于 2026-11-10 生效，决定 #27/#28）；仓库目前是私有的，暂不接受外部贡献。详见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。

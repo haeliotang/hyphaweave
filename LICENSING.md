@@ -19,7 +19,7 @@ any other copyleft license.
 | JSON Schemas (`schemas/`) | `Apache-2.0` | Machine-readable part of the format; should be vendorable without friction. |
 | Conformance vectors and test data (`vectors/`, including the v0.1 candidate regression set and public test keys) | `Apache-2.0` | Test data that must be copyable into every implementation's test suite. |
 | Specification and prose documentation (`spec/`, `docs/`, root Markdown files) | `CC-BY-4.0` | Prose should be quotable and translatable with attribution; a software license is a poor fit for text. |
-| Brand assets (wordmarks, logos) | `LicenseRef-Inceptless-Brand`, all rights reserved | **None are present in this repository.** If brand assets are ever added, they are explicitly outside the licenses above and are not licensed for reuse or modification. |
+| Brand assets (`assets/`, project logo and icons) | `LicenseRef-Inceptless-Brand`, all rights reserved | The project logo is excluded from the licenses above. It may be used to refer to the project, but not in a way that suggests official status or endorsement. |
 | External data under `vectors/external/` | The upstream license recorded for each source | This repository redistributes unmodified official test data; each directory carries `SOURCE.json` / `PROVENANCE.md` with the source URL, commit, SHA-256 and license. Those terms continue to apply to those bytes. |
 
 Two of the three external sources are Apache-2.0. The RFC 8032 text is an IETF
@@ -34,6 +34,15 @@ or the repository root is prose (CC-BY-4.0). A JSON file is code-adjacent data
 a code, schema or vector directory follow that directory's license
 (Apache-2.0); their inline SPDX header is authoritative.
 
+## Brand assets
+
+The Inceptless name, the Hyphaweave name, and the project logo and icons in
+`assets/` are excluded from the licenses above and are reserved under
+`LicenseRef-Inceptless-Brand` (the reference text is
+`LICENSES/LicenseRef-Inceptless-Brand.txt`). They may be used to refer to the
+project, but not in a way that suggests official status or endorsement.
+Questions: support@inceptless.com.
+
 ## File-by-file SPDX information
 
 Every file in the repository carries SPDX information under the
@@ -44,8 +53,8 @@ Every file in the repository carries SPDX information under the
   one carrying the `SPDX-License-Identifier` tag (`CC-BY-4.0`).
 - Python files start with the same two tags as `#` comments.
 - YAML files start with the same two tags as `#` comments.
-- Files that cannot carry comments (JSON, binary test keys, PEM files) are
-  covered by `REUSE.toml` annotations.
+- Files that cannot carry comments (JSON, binary test keys, PEM files) and the
+  SVG logo are covered by `REUSE.toml` annotations.
 - `CLA.md` is copied byte-for-byte from the Inceptless CLA source, so it cannot
   carry an inline header; it is declared as CC-BY-4.0 prose in `REUSE.toml`.
 - The root `LICENSE` and the files in `LICENSES/` are the license texts

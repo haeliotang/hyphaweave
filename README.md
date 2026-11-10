@@ -1,6 +1,10 @@
 <!-- SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com> -->
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 
+<p align="center">
+  <img src="assets/hyphaweave-mono.svg" width="120" alt="Hyphaweave — Two threads, braided">
+</p>
+
 # Hyphaweave
 
 **The common thread between independent systems.**
@@ -187,8 +191,9 @@ version.
 
 - Code, JSON Schemas and conformance vectors: **Apache-2.0**.
 - Specification and documentation prose: **CC-BY-4.0**.
-- Brand assets (none are present in this repository): reserved under
-  `LicenseRef-Inceptless-Brand`.
+- Brand assets (`assets/`): the project logo is reserved under
+  `LicenseRef-Inceptless-Brand`; it may be used to refer to the project, but not
+  in a way that suggests official status or endorsement.
 - External test data under `vectors/external/` keeps the license of its
   upstream source, recorded next to the data.
 

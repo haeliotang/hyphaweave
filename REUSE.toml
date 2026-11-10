@@ -39,6 +39,15 @@ precedence = "override"
 SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
 SPDX-License-Identifier = "CC-BY-4.0"
 
+# Brand assets in assets/ are reserved under LicenseRef-Inceptless-Brand and are
+# deliberately outside the code and documentation licenses above. The custom
+# reference text lives in LICENSES/LicenseRef-Inceptless-Brand.txt.
+[[annotations]]
+path = ["assets/**", "LICENSES/LicenseRef-Inceptless-Brand.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Inceptless <support@inceptless.com>"
+SPDX-License-Identifier = "LicenseRef-Inceptless-Brand"
+
 # External test data keeps the license recorded by its upstream source (each
 # directory carries SOURCE.json and PROVENANCE.md). Upstream bytes follow the
 # entry below.
