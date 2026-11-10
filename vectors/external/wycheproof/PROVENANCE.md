@@ -50,7 +50,7 @@ So the gate expects **117 + 21 accept** and **64 + 8 reject**, with **zero**
 unexpected outcomes. (An earlier draft of the contract said all `acceptable`
 cases should be rejected; that is impossible for the 21 mixed-order vectors
 under the written profile, and the 2026-11-10 decision corrected the mapping.
-`docs/CONTRACT.md` §4/§18.3 and `docs/open-questions.md` Q1 say the same.)
+`spec/weave-record-1.md` §3.6 and `docs/open-questions.md` Q1 say the same.)
 
 Relevant test flags in this file: `Valid`, `Ktv` (known test vector),
 `TinkOverflow`, `InvalidSignature`, `InvalidEncoding`,

@@ -20,7 +20,7 @@ What it checks
 4. Every vector whose ``expected.json`` lists a structural error code
    (``E_ENV_*``, ``E_KIND_BODY_SCHEMA``, ``E_MANIFEST_SCHEMA``,
    ``E_MANIFEST_RECORDS``) is rejected by the schema layer.
-5. ``expected.json`` files and ``vectors/index.json`` match CONTRACT section 16.2.
+5. ``expected.json`` files and ``vectors/index.json`` match the case layout in `vectors/README.md`.
 
 The "schema layer" is JSON Schema validation plus a small, documented set of
 supplementary structural predicates for rules Draft 2020-12 cannot express:
@@ -577,7 +577,7 @@ def read_container_json(
 def manifest_record_identity_problems(
     container: ContainerReader, manifest: Any
 ) -> list[str]:
-    """manifest.records[] id/kind against the record file they list (CONTRACT 11.2.1).
+    """manifest.records[] id/kind against the record file they list (spec §11.2.1).
 
     JSON Schema cannot compare a manifest entry with another file, so this
     supplementary predicate reads ``records/<digest>.json`` and reports an
@@ -721,7 +721,7 @@ class VectorChecks:
                 cases.append(Case(category_dir.name, case_dir.name, case_dir))
         return cases, problems
 
-    # -- expected.json structure (CONTRACT 16.2) --------------------------- #
+    # -- expected.json structure (the case layout in `vectors/README.md`) --------------------------- #
 
     def check_expected(
         self, case: Case
@@ -1016,7 +1016,7 @@ class VectorChecks:
                         f"{field!r} but the index entry omits them"
                     )
 
-        # CONTRACT 16.2 does not require index ordering; gen_index.py emits
+        # the case layout does not require index ordering; gen_index.py emits
         # category order. Uniqueness and exact id coverage are checked above.
         self.stats["indexed"] = len(listed_ids)
 

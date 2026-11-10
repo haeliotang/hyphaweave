@@ -10,7 +10,7 @@ from the specification text only and deliberately does not import
 ``hyphaweave_verify``: the conformance vectors must not be produced by the
 reference verifier.
 
-WR-CJ v1 (see ``docs/CONTRACT.md`` §2 and the final spec):
+WR-CJ v1 (see the normative spec, `spec/weave-record-1.md` §1):
 
 * UTF-8 output, no BOM, no insignificant whitespace, no trailing newline;
 * object members sorted by the UTF-16 code-unit sequence of their names;
@@ -52,7 +52,7 @@ __all__ = [
 MAX_INT = (1 << 53) - 1
 MIN_INT = -((1 << 53) - 1)
 
-_MAX_RECORD_BYTES = 1_048_576  # MAX_RECORD_BYTES, CONTRACT §13
+_MAX_RECORD_BYTES = 1_048_576  # MAX_RECORD_BYTES, spec §13
 
 _STRING_ESCAPES = {
     '"': '\\"',

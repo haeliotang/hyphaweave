@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""The test-only WEAVE_VERIFY_SKIP_CHECKS hook (CONTRACT §14.5 / Q18)."""
+"""The test-only WEAVE_VERIFY_SKIP_CHECKS hook (spec §14.7 / Q18)."""
 
 from __future__ import annotations
 

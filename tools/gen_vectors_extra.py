@@ -10,7 +10,7 @@ and ``integrity-levels`` categories.  The first half (``jcs``, ``digest``,
 ``tools/gen_vectors.py``; both write the same case format and are catalogued by
 ``tools/gen_index.py``.
 
-Design rules (CONTRACT §16.2):
+Design rules (`vectors/README.md`):
 
 * Every case's expected verdict and error codes are **hand-authored** in the
   table below from the contract text.  The generator never imports, runs or
@@ -2390,7 +2390,7 @@ def write_all(*, check: bool, only: str | None = None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Frozen regression set (CONTRACT §16.2, gate 7)
+# Frozen regression set (`vectors/README.md`, gate 7)
 # ---------------------------------------------------------------------------
 
 FREEZE_VERSION = "v0.1"
@@ -2465,7 +2465,7 @@ def freeze_cases(*, source_commit: str, freeze_date: str) -> int:
         "",
         "# Frozen conformance vectors, %s" % FREEZE_VERSION,
         "",
-        "> **The conclusions in this directory must never change** (CONTRACT §16.2,",
+        "> **The conclusions in this directory must never change** (`vectors/README.md`,",
         "> K3). A later implementation or profile change must add new vectors; these",
         "> cases are copied verbatim from a gated state of the repository and keep",
         "> their expected verdicts, error codes, notices, digests and container",

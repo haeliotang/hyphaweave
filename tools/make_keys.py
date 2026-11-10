@@ -54,7 +54,7 @@ TSA_DIR = KEYS_DIR / "tsa"
 
 SEED_DOMAIN = b"weave-record/1/test-key/"
 
-# Requirement of CONTRACT §16.3 (at minimum); all are test keys.
+# Requirement of `vectors/README.md` (at minimum); all are test keys.
 KEY_NAMES: tuple[tuple[str, str], ...] = (
     ("human-1", "human"),
     ("human-2", "human"),

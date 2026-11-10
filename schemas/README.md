@@ -115,7 +115,7 @@ sync when the schemas or the contract change.
 1. **Canonical bytes (WR-CJ).** Duplicate member names, number spelling/range,
    escaping, BOM and trailing-LF rules are parse/profile rules, not schema rules.
 2. **Unicode details.** `id`/`model`/... lengths count Unicode code points in
-   JSON Schema, while CONTRACT states Unicode scalar values and UTF-8 bytes in
+   JSON Schema, while the specification states Unicode scalar values and UTF-8 bytes in
    places; lone surrogates cannot be rejected. This only differs for exotic
    strings that WR-CJ/UTF-8 handling rejects earlier.
 3. **Timestamp calendar validity.** The pattern pins exactly

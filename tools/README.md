@@ -5,7 +5,7 @@
 
 Everything here exists so that the conformance vectors under `vectors/` are
 produced by an implementation that is **independent of the reference
-verifier**. The hard rule (H0 prompt §2.3, CONTRACT §16.2) is:
+verifier**. The hard rule (H0 prompt §2.3; see `vectors/README.md`) is:
 
 > vector-generation scripts MUST NOT import `hyphaweave_verify`; every expected
 > verdict and error code in `expected.json` is hand-authored from the contract,
@@ -18,7 +18,7 @@ the end of a run that `hyphaweave_verify` was not imported.
 
 | file | purpose |
 |---|---|
-| `wcj.py` | Independent WR-CJ v1 canonicalizer and strict canonical-bytes parser. Own implementation of CONTRACT §2 (UTF-16 member order, ECMAScript escaping, integers only, duplicate-key/lone-surrogate rejection, optional single trailing LF). Errors carry the H0 code (`E_JSON_*`). |
+| `wcj.py` | Independent WR-CJ v1 canonicalizer and strict canonical-bytes parser. Own implementation of spec §1 (UTF-16 member order, ECMAScript escaping, integers only, duplicate-key/lone-surrogate rejection, optional single trailing LF). Errors carry the H0 code (`E_JSON_*`). |
 | `keyutil.py` | Strict unpadded base64url (§3.5), key ids (§3.4), Ed25519 sign/verify through `cryptography`, and the four domain-separation prefixes of §3. |
 | `recordlib.py` | Record/container construction: `weave-record/1` envelopes, record digests (§3.1), record and manifest signatures (§3.2/§3.3), manifest and directory-container file maps (§11), key-declaration / key-revocation records, and mutation helpers for negative containers. |
 

@@ -39,7 +39,7 @@ _B64URL_ALPHABET = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
 
-# Domain-separation prefixes, CONTRACT §3 (ASCII, each ends with one LF).
+# Domain-separation prefixes, spec §2.1 (ASCII, each ends with one LF).
 DIGEST_DOMAIN = b"weave-record/1/digest\n"
 SIG_DOMAIN = b"weave-record/1/sig\n"
 MANIFEST_DIGEST_DOMAIN = b"weave-record/1/manifest-digest\n"
@@ -55,7 +55,7 @@ def b64url_decode(text: str, *, expected_len: int | None = None) -> bytes:
     """Strict unpadded base64url decode.
 
     Rejects padding, whitespace, ``+``/``/``, impossible lengths and non-zero
-    unused trailing bits, as required by CONTRACT §3.5.
+    unused trailing bits, as required by spec §2.6.
     """
     if not isinstance(text, str):
         raise ValueError("base64url input must be a string")

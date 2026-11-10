@@ -33,7 +33,7 @@ REPO_ROOT = _TOOLS_DIR.parent
 KEYS_DIR = REPO_ROOT / "vectors" / "keys"
 
 # The examples in the specification use the project slug "example"; all test
-# data is synthetic (CONTRACT §0).
+# data is synthetic (spec §0).
 PROJECT = "example"
 FORMAT = "weave-record/1"
 
@@ -220,7 +220,7 @@ def note(
 
 
 def record_digest(record: dict[str, Any]) -> str:
-    """Record digest per CONTRACT §3.1 (JCS of the record without ``sigs``)."""
+    """Record digest per spec §2.2 (JCS of the record without ``sigs``)."""
     without_sigs = {name: value for name, value in record.items() if name != "sigs"}
     canonical = wcj.canonicalize(without_sigs)
     return wcj.sha256_digest(keyutil.DIGEST_DOMAIN + canonical)
@@ -256,7 +256,7 @@ def sig_message_for_manifest(manifest_digest_value: str) -> bytes:
 
 
 def manifest_digest(manifest_bytes: bytes) -> str:
-    """Manifest digest per CONTRACT §3.3 over canonical file bytes."""
+    """Manifest digest per spec §2.4 over canonical file bytes."""
     value = wcj.parse_strict(manifest_bytes)
     return wcj.sha256_digest(
         keyutil.MANIFEST_DIGEST_DOMAIN + wcj.canonicalize(value)
@@ -303,7 +303,7 @@ def _record_entries(
 def default_chain_head(records: Sequence[dict[str, Any]]) -> str:
     """A deterministic internal-chain-head *claim* for L1/L2 containers.
 
-    The head cannot be recomputed by an offline verifier (CONTRACT §11.2); any
+    The head cannot be recomputed by an offline verifier (spec §11.2); any
     syntactically valid digest string works.  We derive one that changes with
     the record set so the vector reads naturally.
     """
