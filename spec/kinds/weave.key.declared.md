@@ -53,8 +53,11 @@ permitted (additive evolution, K3, parent specification §7.5).
 
 1. **Key-id derivation.** `body.key` **MUST** equal the key-id derivation of the raw
    `public_key` bytes (`ed25519:` + first 32 lowercase hex of SHA-256 of the 32 raw bytes);
-   otherwise `E_KEY_ID_MISMATCH` (invalid). A `public_key` that is not strict unpadded
-   base64url of exactly 32 bytes is `E_KEY_PUBLIC_KEY` (invalid). **No point check happens
+   otherwise `E_KEY_ID_MISMATCH` (invalid). A `public_key` that is **missing** or is not
+   strict unpadded base64url of exactly 32 bytes is `E_KEY_PUBLIC_KEY` (invalid); the
+   missing-member case is decided before the generic `E_KIND_BODY_SCHEMA` and before any
+   trust judgement [S8③] decided (Inceptless decision 2026-11-11 #2; S8③). **No point check
+   happens
    here**: whether the 32 bytes decode to a canonical curve point, or whether that point is
    small-order or mixed-order, is checked only when a signature is verified (parent
    specification §2.5 and §3.4) [S1][M-11] decided (Inceptless decision 2026-11-10 #34;
@@ -75,7 +78,13 @@ permitted (additive evolution, K3, parent specification §7.5).
    (`--keys`), never from a container:
    - a keyset `weave.key.declared` of class `human`/`organization` that passes its own
      checks is a trusted root; it needs no cosignature and produces no
-     `N_SELF_ATTESTED_ROOT_KEY` (the keyset is the local trust statement);
+     `N_SELF_ATTESTED_ROOT_KEY` (the keyset is the local trust statement). Any keyset
+     declaration, whatever its class, governs the class and validity window of its key id;
+     an `agent`/`program`/`device` keyset declaration only pins class/window and does not
+     establish trust (T4);
+   - two structurally valid keyset declarations for one key id with a different class or a
+     different `(valid_from, valid_until)` pair (absent = unbounded) are a usage error
+     (exit 2); the operator must fix the keyset (T4);
    - a container/target declaration of class `human`/`organization` is valid only when its
      key is already trusted **as the same class** (for example the same key is trusted from
      the keyset) or when it carries a valid cosignature by a trusted human/organization key;
@@ -98,10 +107,12 @@ permitted (additive evolution, K3, parent specification §7.5).
    signature made outside the declared window (either before `valid_from` or after
    `valid_until`) is `E_KEY_EXPIRED` (invalid) [Q20] decided (Inceptless decision
    2026-11-10 #34; Q20).
-6. **Multiple declarations.** When a context contains several valid declarations for one
-   key id, the earliest claimed `recorded_at` (tie: lexicographically smallest record
-   digest) governs; this is declaration resolution, not root selection [Q12] decided
-   (Inceptless decision 2026-11-10 #34; Q12). A keyset declaration is authoritative for its
+6. **Multiple declarations.** When a context contains several semantically valid
+   declarations for one key id, the declaration with the smallest claimed `recorded_at`
+   governs, ties broken by the lexicographically smallest record digest (the same
+   deterministic "earlier" used everywhere); this is declaration resolution, not root
+   selection [Q12] decided (Inceptless decision 2026-11-10 #34; Q12; T4). A keyset
+   declaration is authoritative for its
    key's class and validity window and is never displaced by a container or target
    declaration, however early the latter's claimed `recorded_at`; a backdated redeclaration
    has no effect [S1] decided (Inceptless decision 2026-11-11 #2; S1).

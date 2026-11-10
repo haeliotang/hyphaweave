@@ -255,6 +255,11 @@ deeper than the value that contains it, and a scalar is a leaf value at its own 
 depth above `MAX_JSON_DEPTH` is `E_JSON_SIZE` and, like any size violation, is an invalid
 outcome, never a crash [S3] decided (Inceptless decision 2026-11-11 #2; S3).
 
+**UTF-8 validity is a whole-input precondition.** An input that is not valid UTF-8 is
+`E_JSON_INVALID` regardless of any structural violation (for example a depth violation) at a
+lower byte offset: UTF-8 decoding precedes the per-position classification of the table
+above (T17/A-L6). This is the only exception to the byte-order reading of this section.
+
 ### 1.10 Size
 
 See §13 for size limits; a WR-CJ document larger than its limit is `E_JSON_SIZE`.
@@ -560,7 +565,7 @@ S8/F2/F3).
 | `labels` | no | closed object; see §8.1; otherwise `E_ENV_LABELS` [H1] |
 | `salt` | conditional | 16 random bytes in base64url (§2.6). **REQUIRED** if `labels.sensitivity` is `personal` or `local-only` (`E_ENV_SALT_MISSING`); a malformed value is `E_ENV_SALT`; optional in every other case [G3c][Q3] decided (Inceptless decision 2026-11-10 #34; Q3) |
 | `body` | yes | a JSON object; absent or non-object is `E_ENV_BODY`; body semantics are the kind's (§7) |
-| `sigs` | conditional | array of 1–16 signature entries (§4.3), sorted by `key` ascending, unique keys; required by §4.4; errors `E_ENV_SIGS`, `E_ENV_SIG_KEY`, `E_ENV_SIG_VALUE` [E1][E6] |
+| `sigs` | conditional | array of 0–16 signature entries (§4.3), sorted by `key` ascending, unique keys; whether a record MUST carry signatures is decided by §4.4; errors `E_ENV_SIGS`, `E_ENV_SIG_KEY`, `E_ENV_SIG_VALUE`, and `E_SIG_REQUIRED` when signing is required but the array is absent or empty [E1][E6][S7①] |
 
 `id` is unique only within its `origin`; cross-system identity is by digest, never by
 `id` alone [B1]. The member `salt` is included in the record digest; it is deleted together
@@ -577,11 +582,11 @@ The five `stage` values name the acting system's relation to the claim:
 | `accepted` | the actor adopts the claim as its current position |
 | `rejected` | the actor rejects the claim |
 | `withdrawn` | the actor withdraws a claim it previously asserted |
-| `superseded` | the actor declares this claim replaced by a later record |
+| `superseded` | the actor declares this claim replaced by a later record; the later record carries the `supersedes` reference (§6.2) |
 
 Stage is an envelope value and a claim like any other; a `proposed` record is not an approval
 workflow item, and projects that need finer sub-states put them in `body`
-[decided by principle (Inceptless decision 2026-11-11 #2)].
+[T11; `docs/open-questions.md` §7 entry 15] decided by principle (Inceptless decision 2026-11-11 #5; T11).
 
 `recorded_at` is the time the source system wrote this record into its own storage.
 `occurred_at`, when present, is the claimed time at which the event described by the record
@@ -787,22 +792,30 @@ keyset whose `key_type` is `human` or `organization`, and which passes its own s
 self-signature and validity checks, establishes that key as a **trusted human/organization
 root**. Keyset declarations do not need a cosignature and never produce
 `N_SELF_ATTESTED_ROOT_KEY`; the keyset **is** the local trust statement [E4][Q12][R2] decided
-(Inceptless decision 2026-11-10 #42; R2).
+(Inceptless decision 2026-11-10 #42; R2). Any keyset `weave.key.declared` record, **whatever
+its `key_type`**, governs the class and validity window of its key id; only the
+`human`/`organization` ones establish trust roots, while an `agent`/`program`/`device`
+keyset declaration only pins that key id's class and window (it does not make the key
+trusted) (T4).
 
 The `trusted` set is context-level state built from the keyset first and then closed over the
 container/target declarations (an iterative fixed point, so a declaration may be trusted
 through a chain of co-signatures). A keyset declaration that fails its own checks (bad
 self-signature, inverted window, ...) establishes no trust, but it is not a usage error:
-only a keyset file that is not a structurally valid record is one (§14.1). A declaration in the container or in a record target is a
+only a keyset file that is not a structurally valid record is one (§14.1). **Two
+structurally valid keyset declarations for the same key id with a different `key_type` or a
+different `(valid_from, valid_until)` pair — absent means unbounded, and present-versus-absent
+counts as different — are a usage error (exit 2):** the operator must fix the keyset, and
+no report is produced. When there is no such conflict, only semantically valid declarations
+govern class and window, in the deterministic order below (T4). A declaration in the container or in a record target is a
 trust root only if its key is already in `trusted`:
 
 - a `human`/`organization` declaration in the container/target is **valid** only when its
-  key id is already trusted **as a human or organization key** (for example the same key is
-  declared and trusted in the keyset and the declaration keeps the same class), or when it
+  key id is already trusted **with the same class** (`human` or `organization`), or when it
   carries at least one valid cosignature made by a `trusted` human/organization key; a valid
   declaration adds its key id to `trusted`. A declaration for a key id that already has a
-  governing trusted class — from the keyset, or from an earlier valid context declaration —
-  but claims a **different** class is invalid with `E_KEY_CLASS_CONFLICT`. Same-class
+  governing class — from the keyset, or from an earlier valid context declaration — but
+  claims a **different** class is invalid with `E_KEY_CLASS_CONFLICT`. Same-class
   declarations of an already-trusted key are valid but never override the governing class
   or validity window: for a keyset key the keyset declaration governs, and a container
   declaration cannot extend the window or displace the keyset with a backdated
@@ -835,12 +848,14 @@ from the context rather than from the local keyset [Q12] decided (Inceptless dec
 2026-11-10 #34; Q12).
 
 When the context contains more than one valid declaration for the same key id, the
-declaration whose claimed `recorded_at` is **earliest** governs, and when two tie the
-declaration whose record digest is lexicographically smallest governs. A keyset declaration
+declaration whose claimed `recorded_at` is **earliest** governs; when two `recorded_at`
+values tie, the declaration whose record digest is lexicographically smallest governs. This
+"earlier" is always the same deterministic order, and the same sentence is used wherever
+declaration resolution is described. A keyset declaration
 is never displaced by a container or record-target declaration, however early the latter's
 claimed `recorded_at`: for a keyset key the keyset declaration governs the class and the
 validity window, and context declarations cannot change either [S1] decided (Inceptless
-decision 2026-11-11 #2; S1). Declarations that are not themselves valid never establish or
+decision 2026-11-11 #2; S1; T4). Declarations that are not themselves valid never establish or
 govern a key. This is declaration resolution, not root selection [Q12] decided (Inceptless
 decision 2026-11-10 #34; Q12).
 
@@ -947,8 +962,8 @@ first failing check determines the error [S3][Q10] decided (Inceptless decision 
 (PROVISIONAL, Appendix A P5):
 
 1. **Resolve.** If the parent reference cannot be resolved in the context, or resolves to a
-   record whose own verdict is invalid, the sub-grant is `unverifiable` with
-   `E_GRANT_UNRESOLVED`.
+   record whose own verdict is **invalid or unverifiable**, the sub-grant is `unverifiable`
+   with `E_GRANT_UNRESOLVED` (T17/A-L5).
 2. **Authorising action and capability.** If the resolved parent's `action` is not `grant`
    (for example it is a revocation record), or its `kinds` does not contain `weave.grant`,
    or its `actions` does not contain `grant`, the parent does not authorise delegation of
@@ -985,11 +1000,19 @@ first failing check determines the error [S3][Q10] decided (Inceptless decision 
    authorisation may legitimately be issued for future effect. Only its ancestors are judged
    at that time. Records covered by the grant are judged at each covered record's own
    `recorded_at`, so a covered record before the grant's `valid_from` is still
-   `E_GRANT_EXPIRED` [S9] decided (Inceptless decision 2026-11-11 #2; S9).
+   `E_GRANT_EXPIRED`. A grant **recorded after** its own validity window (a late-recorded or
+   "backdated" grant) is likewise accepted: the grant record itself is judged only through
+   its ancestors, and each covered record is judged at its own `recorded_at`, so a covered
+   record after the grant's `valid_until` is `E_GRANT_EXPIRED` (T17/A-L4)
+   [S9] decided (Inceptless decision 2026-11-11 #2; S9).
 7. **Depth.** H0 does not support chains with more than 8 **links** (edges) from the grant
    used by a record up to its root: a chain of 9 or more links is `unverifiable` with
    `E_GRANT_UNRESOLVED`. The bound is inclusive of 8 links — the cited grant plus at most 8
-   parent links — and it counts links, not records. A
+   parent links — and it counts links, not records. When the record being verified is
+   **itself** a `weave.grant`, its own link is not part of the chain: the record cites a
+   parent P, and the chain counted is P → … → root. A delegated grant record that cites a
+   depth-8 grant (8 links from P to the root) is therefore valid; a record whose cited
+   grant needs a 9th link is `E_GRANT_UNRESOLVED` (T8). A
    cycle cannot occur in a conforming grant chain: each grant record is identified by a
    digest that covers its `actor.grant` reference, so mutual parent references are not
    constructible (the record-reference graph is a DAG). The bound is fixed by the ruling
@@ -1005,7 +1028,8 @@ evaluate it for machine authorisation of an individual record (§5.6).
 
 The `revoke` object is closed: `{"revokes": <reference object>, "effective_at": <TS>,
 "reason": <string or null>}`. The reference MUST resolve to a `weave.grant` record with a
-matching digest (`E_GRANT_REVOKE_REF`, invalid). `effective_at <= recorded_at` is not
+matching digest **and `action == "grant"`**; a target that is not an authorising grant (for
+example another revocation record) is `E_GRANT_REVOKE_REF` (invalid). `effective_at <= recorded_at` is not
 imposed on grant revocations; a future `effective_at` is a scheduled revocation.
 
 The revocation record MUST be signed by an authorised revoker:
@@ -1095,9 +1119,9 @@ other side of the relation claims something different. The ten words read:
 | rel | reading of "A rel B" |
 |---|---|
 | `derived_from` | A was derived from B |
-| `handed_off_to` | A was handed off to B |
+| `handed_off_to` | A is the hand-off record and B is the record it hands the work over to |
 | `receipt_of` | A is a receipt of B |
-| `executed_as` | A was executed as B |
+| `executed_as` | A is the record describing the execution, and B is the record it was executed as |
 | `assessed_by` | A was assessed by B |
 | `compensated_by` | A was compensated by B |
 | `migrated_from` | A was migrated from B |
@@ -1108,6 +1132,11 @@ other side of the relation claims something different. The ten words read:
 For example a receipt record names its authorisation with `receipt_of` on the receipt side,
 and a corrected record names the original with `correction_of` on the correcting record
 [S15②] decided (Inceptless decision 2026-11-11 #2; S15).
+
+**`stage: superseded` has no outbound relation.** The record that has been superseded does
+not point at its successor with a `rel`; the **successor** record carries the
+`supersedes` reference targeting the superseded record. The stage value records the
+claimant's position, the `supersedes` reference records the link (T17/B-L6).
 
 ### 6.3 Resolution states — five states
 
@@ -1251,8 +1280,7 @@ accept the body shapes that its project exported while the kind was opaque, beca
 additive evolution is the mechanism by which old records stay verifiable [K3]. A change that
 cannot meet that is a breaking change under §0.3, not a registration. The frozen regression
 set (§16) pins the commitment: registering a kind MUST NOT change a conclusion fixed there
-[decided by principle (Inceptless decision 2026-11-11 #2); J1a review b, specification
-gap 2].
+[T11; `docs/open-questions.md` §7 entry 16] decided by principle (Inceptless decision 2026-11-11 #5; T11).
 
 ### 7.7 Per-kind pages are normative
 
@@ -1411,8 +1439,11 @@ Envelope: `actor.key` MUST equal `body.key`; `actor.type` MUST equal `body.key_t
 Semantic rules:
 
 1. **Key-id derivation.** `body.key` MUST equal the §2.5 derivation from `public_key`; a
-   mismatch is `E_KEY_ID_MISMATCH` (invalid). A `public_key` that is not strict unpadded
-   base64url of exactly 32 bytes is `E_KEY_PUBLIC_KEY` (invalid). A declaration does not
+   mismatch is `E_KEY_ID_MISMATCH` (invalid). A `public_key` that is **missing** or is not
+   strict unpadded base64url of exactly 32 bytes is `E_KEY_PUBLIC_KEY` (invalid). The
+   missing-member case reports `E_KEY_PUBLIC_KEY`, not the generic body-schema code, and it
+   is decided **before** `E_KIND_BODY_SCHEMA` and before any trust judgement
+   [S8③] decided (Inceptless decision 2026-11-11 #2; S8③). A declaration does not
    check whether the 32 bytes decode to a curve point or whether the point is small-order
    or mixed-order: those checks happen at signature verification (§2.5, §3.4) [E3][S1]
    decided (Inceptless decision 2026-11-10 #34; S1/M-11).
@@ -1439,7 +1470,10 @@ Semantic rules:
      structural, self-signature and validity checks establishes its key as a trusted
      human/organization root. Keyset declarations need no cosignature and never produce
      `N_SELF_ATTESTED_ROOT_KEY`: the keyset is the verifier's local trust statement
-     [E4][R2] decided (Inceptless decision 2026-11-10 #42; R2).
+     [E4][R2] decided (Inceptless decision 2026-11-10 #42; R2). Any keyset declaration,
+     whatever its `key_type`, governs its key id's class and validity window; an
+     `agent`/`program`/`device` keyset declaration only pins the class/window and does not
+     establish trust (T4).
    - **Container/target human/organization declarations.** A declaration of class
      `human`/`organization` in a container or record target is valid only when its key id is
      already trusted **as the same class**, or when it carries at least one valid
@@ -1461,8 +1495,11 @@ Semantic rules:
    The trusted set is context-level state (keyset first, then an iterative closure over the
    container/target declarations); container declarations that are untrusted never remove a
    keyset root. The keyset is authoritative for the class and validity window of a key it
-   declares: no container/target declaration can override either, and a backdated
-   `recorded_at` never wins [S1] decided (Inceptless decision 2026-11-11 #2; S1). Root
+   declares, whatever the declaration's class: no container/target declaration can override
+   either, and a backdated
+   `recorded_at` never wins [S1] decided (Inceptless decision 2026-11-11 #2; S1). Two
+   structurally valid keyset declarations for one key id with a different class or a
+   different `(valid_from, valid_until)` pair are a usage error (exit 2, §14.1) (T4). Root
    selection is never time-ordered: claimed `recorded_at` values do not
    decide which declaration is a root, so a backdated self-signed declaration cannot become
    one [R2] decided (Inceptless decision 2026-11-10 #42; R2).
@@ -1471,8 +1508,10 @@ Semantic rules:
    (invalid) [E5][Q20] decided (Inceptless decision 2026-11-10 #34; Q20).
 6. **Effects.** Once a declaration is trusted, signatures by the declared key can be
    verified within its declaration's validity rules (§9.4). Multiple declarations for the
-   same key id are resolved per §5.3; that is declaration resolution, not root selection
-   [Q12] decided (Inceptless decision 2026-11-10 #34; Q12).
+   same key id are resolved per §5.3: the semantically valid declaration with the smallest
+   claimed `recorded_at` governs, and a tie is broken by the lexicographically smallest
+   record digest; that is declaration resolution, not root selection
+   [Q12] decided (Inceptless decision 2026-11-10 #34; Q12; T4).
 
 A declaration is never a trust anchor by itself: roots come only from the verifier's local
 keyset input, and a container-only declaration can at most extend existing local trust
@@ -1494,7 +1533,10 @@ Semantic rules:
    bytes, and a public key, when present, MUST match its key id (`"ed25519:" + first 32 hex
    of SHA-256(raw)`); a contradiction or malformed value is `E_KEY_ROTATION_KEYS`
    (invalid; this kind uses that code, not `E_KEY_PUBLIC_KEY`) [M-11] decided
-   (Inceptless decision 2026-11-10 #34; M-11).
+   (Inceptless decision 2026-11-10 #34; M-11). This **structural** validation is part of
+   the kind body check and runs before signature verification, so it wins over an `E_SIG_*`
+   outcome (T13). Curve-point decoding failures during an actual signature check remain the
+   §3.4 codes.
 3. The new-key signature is verified against `body.new_public_key`; the old-key signature
    is verified against `body.old_public_key` when present, otherwise against the old key's
    declaration in context. If the needed key material is absent, the record is
@@ -1537,11 +1579,19 @@ for counter-signatures (§5.1) [Q30] decided (Inceptless decision 2026-11-10 #34
 The verifier collects **every** valid revocation in the verification context, including
 `weave.key.revoked` records supplied through the `--keys` keyset and records inside the
 container. The effect is independent of record order and of whether a revocation sits in the
-keyset or in the container [S2] decided (Inceptless decision 2026-11-11 #2; S2). If at least
-one valid `key-compromise` revocation exists, the compromise rule below applies and `T` is
-the **earliest** `effective_at` among the valid compromise revocations (the most conservative
-choice for rescue). Otherwise the key is revoked at the **earliest** `effective_at` among
-the valid `retired`/`other` revocations.
+keyset or in the container [S2] decided (Inceptless decision 2026-11-11 #2; S2). The
+`retired`/`other` family and the `key-compromise` family are evaluated **independently**;
+neither overrides the other (T2):
+
+1. **Retired/other family.** The signature is revoked if **any** valid `retired` or `other`
+   revocation of the signing key has `recorded_at >= effective_at`. The outcome is invalid
+   `E_KEY_REVOKED`, and timestamp evidence **cannot** rescue it.
+2. **Compromise family.** If **any** valid `key-compromise` revocation exists, the
+   compromise rescue rule below applies with `T` = the **earliest** `effective_at` among the
+   valid compromise revocations (the most conservative choice for rescue).
+3. **Combination.** If the retired/other family applies, the result is invalid
+   `E_KEY_REVOKED`; otherwise the compromise family outcome applies. The deterministic
+   "stricter result" rule is: invalid beats unverifiable beats valid.
 
 Let `T` be the claimed `effective_at` of a revocation of a key. Effects on signatures made
 by that key (the signature's claimed `recorded_at`; for a manifest signature the manifest's
@@ -1563,29 +1613,37 @@ exactly three outcomes [S2][R3][R4] decided (Inceptless decision 2026-11-10 #42;
    that passes every check of §12.2, including check 15 with a matching `--tsa-trust`
    anchor) for the manifest that contains the signature, whose timestamp plus accuracy is
    **strictly before** `T`:
-   `genTime + accuracy < T`, evaluated at microsecond precision. The comparison is
+   `genTime + accuracy < T`, evaluated at microsecond precision: microseconds are the unit
+   of the comparison while `genTime` itself is only known to whole milliseconds. The
+   comparison is
    `genTime_ms * 1000 + accuracy_us < T_ms * 1000`, where `genTime_ms` is the integer
-   millisecond conversion of §12.2 check 13 and `accuracy_us` is the receipt's accuracy
+   millisecond conversion of §12.2 check 13 — `genTime` is **truncated to whole
+   milliseconds** before the comparison, and its sub-millisecond digits never affect it —
+   and
+   `accuracy_us` is the receipt's accuracy
    converted to integer microseconds (seconds × 10⁶ + milliseconds × 10³ + microseconds;
-   an absent `accuracy` field means 0). The conversion and the comparison use checked
-   fixed-width arithmetic; arithmetic overflow, or an accuracy total above
-   `MAX_TS_ACCURACY` (§13), is `E_TS_SCHEMA` for the receipt (which cannot rescue and makes
-   the container invalid) [S11] decided (Inceptless decision 2026-11-11 #2; S11). Equality
+   an absent `accuracy` field means 0). Both conversions use checked fixed-width
+   arithmetic. If a conversion overflows or the accuracy total exceeds `MAX_TS_ACCURACY`
+   (§13), the receipt is **unusable evidence**, not a format error: it cannot rescue and
+   cannot support an L2 claim, and case 2 applies (unverifiable `E_TS_UNTRUSTED`)
+   [T3] decided (Inceptless decision 2026-11-11 #5; T3). Equality
    does **not** rescue: a receipt exactly at
    `T` (or later) proves only that the record existed at `T`, not before it.
-2. **Present but untrusted (unverifiable).** Timestamp receipts are present, but none of
-   them is verified and trusted (for example the verifier was given no `--tsa-trust`
-   anchor). The missing information makes the record `unverifiable` with
+2. **Present but untrusted or unusable (unverifiable).** Timestamp receipts are present,
+   but none of them is verified, trusted and usable (for example the verifier was given no
+   `--tsa-trust` anchor, or every receipt's accuracy is unusable per case 1). The missing
+   information makes the record `unverifiable` with
    `E_TS_UNTRUSTED`; it is not reported as invalid. The same applies to a manifest
-   signature judged on the manifest's timestamp chain.
+   signature judged on the manifest's timestamp chain, and to an L2 claim that relies on
+   unusable receipts (§12.5).
 3. **No rescue possible (invalid).** Either there is no timestamp evidence at all for the
    signature — a single-record target (no container and therefore no timestamp chain), a
    container that lists no receipts, or a claimed level below L2 — or the available
-   evidence positively fails to rescue it: at least one receipt is verified and trusted,
-   and no verified trusted receipt satisfies `genTime + accuracy < T` (all of them place
-   the signature at `T` or later). The record is invalid with `E_KEY_COMPROMISED`.
-   If some receipts are trusted (failing the bound) and some are untrusted, the trusted
-   evidence decides: the record is invalid.
+   evidence positively fails to rescue it: at least one receipt is verified, trusted and
+   usable, and no verified trusted usable receipt satisfies `genTime + accuracy < T` (all of
+   them place the signature at `T` or later). The record is invalid with `E_KEY_COMPROMISED`.
+   If some receipts are trusted (failing the bound) and some are untrusted or unusable, the
+   trusted usable evidence decides: the record is invalid.
 
 A renewal chain does not weaken the rule: if any receipt in the chain satisfies the strict
 `genTime + accuracy < T` bound under a trusted chain, the signature is rescued; otherwise
@@ -1614,14 +1672,32 @@ codes have different subjects: an untrusted **declaration** is itself `unverifia
 Multiple declarations for one key id are resolved as in §5.3 [Q12] decided (Inceptless
 decision 2026-11-10 #34; Q12).
 
-### 9.5 Revocation records are self-evidencing
+### 9.5 Revocation record validity and self-evidencing
 
-The revocation of the key that signed a `weave.key.revoked` record does not invalidate that
-revocation record; it is the revocation itself. Likewise, a `weave.key.declared` record
+A `weave.key.revoked` record takes effect only if it is **itself valid** (the same
+principle as S10 for grant revocations). In particular, a revocation signed by a key that
+was already revoked does not take effect (T9):
+
+- When deciding whether a revocation record **R** is valid, evaluate its signatures against
+  the key state produced by **prior** valid revocations, i.e. those ordered strictly before
+  R by ascending `(recorded_at, record digest)`. R's own effect, and the effect of later
+  records, is ignored for this judgement.
+- A signature by a key already revoked at R's `recorded_at` is invalid (the §9.4 outcome,
+  normally `E_KEY_REVOKED`), so **R is invalid and revokes nothing**; R still appears as an
+  invalid record in the container, which makes the container invalid, while the key state it
+  tried to change is unaffected.
+- **Self-revocation exemption.** The record revoking the very key that signed it is not
+  invalidated by its own revocation: a key may revoke itself.
+- **Mutual revocations** therefore resolve deterministically: the earlier
+  `(recorded_at, record digest)` revocation is valid and takes effect, the later one is
+  invalid.
+
+Likewise, a `weave.key.declared` record
 that supplies its own key is verifiable from its own `public_key` even though it may be the
 first time the key is seen in the context (self-declaration bootstrap) [E5][Q12]. A
 revocation is a claim by the revoker; H0 does not attempt to establish when a compromise
-actually happened beyond the timestamp evidence rule of §9.4.
+actually happened beyond the timestamp evidence rule of §9.4 [T9] decided (Inceptless
+decision 2026-11-11 #5; T9).
 
 ### 9.6 Grant revocation effects
 
@@ -1857,10 +1933,13 @@ members:
   2026-11-10 #34; Q13). A **required key** for the manifest signature is a key that resolves
   in the verification context through a `weave.key.declared` or `weave.key.rotated` record;
   it does not have to be trusted for the cryptographic equation, which is evaluated before
-  trust (§9.4). H0 does not additionally require the manifest signing key to equal
+  trust (§9.4). A **declared but untrusted** signing key therefore does not make the
+  manifest signature unverifiable: only absent key material or an **undeclared** signature
+  key produces `E_KEY_UNKNOWN`; the declaration's trust state is evaluated as for any other
+  signature (§9.4, T17/A-L8). H0 does not additionally require the manifest signing key to equal
   `manifest.origin.instance`; that binding is a security consideration (§15) and the
-  verification of that claim is left to the consumer [decided by principle (Inceptless
-  decision 2026-11-11 #2); H1 review a L-4].
+  verification of that claim is left to the consumer [T11; `docs/open-questions.md` §7 entry 17] decided by
+  principle (Inceptless decision 2026-11-11 #5; T11).
 - `timestamps` MUST be present (possibly empty) [Q21] decided (Inceptless decision
   2026-11-10 #34; Q21). It is empty for L0/L1 (`E_MANIFEST_LEVEL` otherwise) and MUST
   contain at least one entry for L2 (`E_MANIFEST_L2_NO_TIMESTAMP`).
@@ -1907,8 +1986,12 @@ target per-case layout remains implementation-defined (Appendix A P7)
   bytes MUST satisfy the canonical file form (§1.8) and parse as a manifest, its §2.4
   manifest digest MUST equal `previous_manifest.digest`, and its `format`/
   `manifest_version` MUST be supported. The file being missing is
-  `E_MANIFEST_CHAIN_MISSING`; a non-canonical, unparseable, unsupported-version or
-  digest-mismatching embedded manifest is `E_MANIFEST_CHAIN`.
+  `E_MANIFEST_CHAIN_MISSING`; a non-canonical, unparseable, unsupported-version,
+  depth-violating or digest-mismatching embedded manifest is `E_MANIFEST_CHAIN`. An
+  embedded previous manifest **above `MAX_MANIFEST_BYTES`** is instead a container-level
+  `E_JSON_SIZE` (invalid) detected at the previous-manifest-chain stage, with the
+  already-processed record verdicts reported as usual (§13, §14.5, T16); it is a
+  size-limit failure of a manifest-class file, not a chain inconsistency (T17/A-L7).
 - The previous manifest's `origin` MUST equal the current manifest's `origin`: the chain
   records the history of one publisher. A different origin is `E_MANIFEST_CHAIN` (invalid)
   [M-8] decided (Inceptless decision 2026-11-10 #34; M-8).
@@ -1917,17 +2000,20 @@ target per-case layout remains implementation-defined (Appendix A P7)
 - The previous manifest's own signature is not re-verified by default: the chain is a chain
   over manifest digests. A verifier MAY additionally verify the previous signature when the
   keys are available and MUST report `N_PREVIOUS_SIG_UNVERIFIED` when it does not; the
-  notice and the matching limitation (§14.9) are reported whenever `previous_manifest` is
-  non-null and the previous signature was not re-verified, even when an earlier container
-  check already failed [D1] decided (Inceptless decision 2026-11-11 #2; report-construction
-  rule).
+  notice and the matching limitation (§14.9) are reported if and only if
+  `previous_manifest` is non-null and the previous signature was not re-verified, including
+  when a later container check fails; when the manifest cannot be parsed and the previous
+  manifest is not reachable, neither is reported [D1] decided (Inceptless decision
+  2026-11-11 #2; report-construction rule; T12).
 - The `--previous <path>` command option accepts a container directory or its zip, exactly
   like the `container` command. It additionally requires that the supplied previous
   container's manifest digest equals `previous_manifest.digest`; a missing or unreadable
   supplied path is a usage or I/O error (exit 2, no report), while a supplied container
   whose manifest is unreadable or invalid, a digest mismatch, and a `--previous` given when
   `previous_manifest` is `null` are all `E_MANIFEST_CHAIN` (invalid)
-  [S6][S16/F15] decided (Inceptless decision 2026-11-11 #2; S6/F15). A receipt side needs
+  [S6][S16/F15] decided (Inceptless decision 2026-11-11 #2; S6/F15). A path that exists and
+  is readable but is **not a usable container** — a non-zip plain file, or a directory
+  without `manifest.json` — is `E_MANIFEST_CHAIN` as well (T17/A-L9). A receipt side needs
   this check to detect an exporter silently restarting its chain.
 
 The chain makes tampering with one container detectable in the next; it does not by itself
@@ -1970,10 +2056,14 @@ not JSON and are not canonicalised; they are hashed as raw bytes.
 
 `readable/` is an optional human-readable rendering directory. It is ignored entirely: not
 parsed, not hashed, not decompressed in the zip form, its CRC is not checked, not trusted,
-not listed in the manifest. Its presence or content never changes a verdict; a verifier
-MUST report the informational notice `N_READABLE_PRESENT` whenever an enumerated container
-contains a `readable/` entry, even if a later container check fails [Q19] decided
-(Inceptless decision 2026-11-11 #2; S16 report-construction rule; 2026-11-10 #34; Q19).
+not listed in the manifest, and in a directory container its bytes are never read, stat-ed
+or counted toward the container total (§13). Its presence or content never changes a
+verdict; a verifier
+MUST report the informational notice `N_READABLE_PRESENT` if and only if an enumerated
+container contains a `readable/` entry, including when a later container check fails; if
+entry enumeration itself fails before a `readable/` entry is observed, the notice is not
+reported [Q19] decided (Inceptless decision 2026-11-11 #2; S16 report-construction rule;
+2026-11-10 #34; Q19; T12).
 
 ### 11.9 Zip form
 
@@ -1981,29 +2071,49 @@ The zip form of a container contains exactly the same relative paths as the dire
 with `/` separators. It MUST NOT contain absolute paths, `..` segments, duplicate entry
 names, symbolic links, or entries that escape the root; per the closed registry these are
 `E_CONTAINER_ENTRY` (layout and entry-safety violations), as are unknown files under
-`signatures/` or `previous/`. Encrypted entries, unsupported compression, an archive that
-cannot be read as a zip, and a zip whose local file headers contradict the central
-directory are `E_CONTAINER_ZIP` [Q25] decided (Inceptless decision 2026-11-11 #2; S5;
-2026-11-10 #34; Q25). Entries MAY be stored or deflated; directory entries (names ending
-`/`) with zero data are ignored, while an entry carrying the DOS directory attribute but
-non-zero data is `E_CONTAINER_ZIP`. Content layout problems keep their content codes
+`signatures/` or `previous/`. Content layout problems keep their content codes
 (`E_MANIFEST_*`).
 
-**ZIP64 and archive framing.** ZIP64 archives MUST be accepted, including ZIP64
-end-of-central-directory records, locators and extra fields; entry counts and declared sizes
-remain subject to §13 [S5] decided (Inceptless decision 2026-11-11 #2; S5). The central
-directory is authoritative for entry names, sizes and CRCs; the local headers are not
-trusted for those values. The archive MUST begin at byte 0 with a local file header (a
-container archive always holds at least `manifest.json`, so it is never empty), the
-end-of-central-directory record MUST have a zero-length comment, and that record MUST end
-exactly at the last input byte. Bytes before the first local file header, a non-empty
-archive comment, and any bytes after the end-of-central-directory record are
-`E_CONTAINER_ZIP` [S5] decided (Inceptless decision 2026-11-11 #2; S5). The central
-directory is read before any content is decompressed: the verifier checks entry count, paths
-and declared sizes first, then decompresses each entry under a bounded output cap
-[S4] decided (Inceptless decision 2026-11-11 #2; S4). `readable/` entries are skipped by
-name and are never decompressed or CRC-checked (§11.8). A zip bomb is bounded by the §13
-limits (`E_CONTAINER_SIZE`), never a crash.
+The verifier parses the archive structure itself from the bytes; the verdict MUST NOT depend
+on the behaviour of a standard-library zip reader, which differs between library versions.
+The following structural rules are normative, and any violation is `E_CONTAINER_ZIP` unless
+stated otherwise (T6):
+
+1. **Local header versus central directory.** For each entry the local file header and the
+   central-directory record MUST agree on the raw file-name bytes, the whole
+   general-purpose flags word, the compression method, the CRC-32, the compressed size and
+   the uncompressed size. When general-purpose flag bit 3 (data descriptor) is set, the
+   local header's CRC and sizes are zero and the values in the data descriptor — which MAY
+   be prefixed with the signature `PK\x07\x08` — MUST equal the central directory's values
+   instead.
+2. **Every byte has a home.** The first local file header starts at offset 0; each entry's
+   data followed by its data descriptor (when present) ends exactly where the next local
+   file header begins; the central directory begins immediately after the last entry. Gaps,
+   pad bytes and overlapping ranges are rejected.
+3. **Counts and framing.** The end-of-central-directory entry count, and the ZIP64
+   end-of-central-directory entry count when present, and the central directory's size and
+   offset, MUST equal the actually parsed values. The end-of-central-directory record MUST
+   have a zero-length comment and MUST end exactly at the last input byte; bytes before the
+   first local header, a non-empty archive comment, and bytes after the record are
+   rejected. ZIP64 archives MUST be accepted, including ZIP64 end-of-central-directory
+   records, locators and extra fields; entry counts and declared sizes remain subject to
+   §13 [S5].
+4. **Entry classes.** Entries MAY be stored or deflated; directory entries (names ending
+   `/`) with zero data are ignored, while an entry carrying the DOS directory attribute but
+   non-zero data is rejected. Encrypted entries and unsupported compression methods are
+   rejected [Q25].
+5. **`readable/` entries.** They are not decompressed and their CRC is not checked, but they
+   still pass the path-safety, symbolic-link and duplicate-name checks of this section; a
+   violation is `E_CONTAINER_ENTRY` like any other entry (§11.8).
+
+The central directory is read before any content is decompressed: the verifier checks entry
+count, paths and declared sizes first, then decompresses each entry under a bounded output
+cap; decompressed output MUST NOT exceed the declared uncompressed size, and the declared
+sizes and the total uncompressed bytes are subject to §13 [S4] decided (Inceptless decision
+2026-11-11 #2; S4). A zip bomb is bounded by the §13 limits (`E_CONTAINER_SIZE`), never a
+crash. In both container forms the `MAX_CONTAINER_UNCOMPRESSED_BYTES` limit counts only the
+bytes the verifier actually reads: `readable/**` is never read, hashed or counted, and
+`tsa-cert-*` files are presence-only and not counted (T15).
 
 ### 11.10 Encrypted export
 
@@ -2049,16 +2159,22 @@ failing check is reported [S5] decided (Inceptless decision 2026-11-10 #34; S5).
 | 10 | The CMS signature verifies over `DER(SET OF SignedAttributes)` with the signer certificate's public key. | `E_TS_CMS` |
 | 11 | The signer certificate has the `id-kp-timeStamping` extended key usage; if a KeyUsage extension is present it contains `digitalSignature`. | `E_TS_CERT` |
 | 12 | The signer certificate's validity window contains `genTime` (not the current wall clock). | `E_TS_CERT` |
-| 13 | `genTime` is a valid GeneralizedTime and is converted to an integer number of milliseconds since the Unix epoch by truncating (flooring) any sub-millisecond digits. If the TSTInfo carries an `accuracy` field: `seconds`, when present, is a non-negative integer; `milliseconds` and `microseconds`, when present, are in 1–999; an absent component counts as 0. The components are converted to integer microseconds (`seconds × 10⁶ + milliseconds × 10³ + microseconds`) with **checked fixed-width arithmetic**; an absent `accuracy` field means `accuracy_us = 0`. Out-of-range or malformed components, a total above `MAX_TS_ACCURACY` (§13), and any arithmetic overflow in the conversion are `E_TS_SCHEMA`; an implementation MUST NOT wrap, panic or crash. Both values are retained for the §9.4 compromise rule. | `E_TS_SCHEMA` |
+| 13 | `genTime` is a valid GeneralizedTime and is converted to an integer number of milliseconds since the Unix epoch by truncating (flooring) any sub-millisecond digits. If the TSTInfo carries an `accuracy` field: `seconds`, when present, is a non-negative integer; `milliseconds` and `microseconds`, when present and explicitly encoded, are integers in 1–999; an absent component counts as 0. Malformed DER, a present component outside 1–999 (an explicit `0` included), negative or non-integer components are **format errors** → `E_TS_SCHEMA`. The components are converted to integer microseconds (`seconds × 10⁶ + milliseconds × 10³ + microseconds`) with **checked fixed-width arithmetic**; an absent `accuracy` field means `accuracy_us = 0`. A total above `MAX_TS_ACCURACY` (§13) or an arithmetic overflow in the conversion is **not** a format error: the receipt is **unusable evidence** (see below). Both values are retained for the §9.4 compromise rule. | `E_TS_SCHEMA` (format errors) / `E_TS_UNTRUSTED` (unusable-accuracy sub-case, unverifiable) |
 | 14 | The `timestamps[]` array of the attestation file forms exactly one renewal chain (§12.4): exactly one receipt with `renews == null`; every other `renews` names a listed, earlier receipt; no duplicate paths, no gaps, no second chain. | `E_TS_RENEWAL` |
 | 15 | The receipt is trusted under §12.3. | `E_TS_UNTRUSTED` (unverifiable) |
 
 Checks 1–14 are structural or cryptographic and make the container **invalid** when they
-fail. Within the timestamp phase the checks are ordered per receipt: checks 1–13 run for a
+fail, with one exception: the **unusable-accuracy** case of check 13 (a total above
+`MAX_TS_ACCURACY` or a conversion overflow) is not a format error. Such a receipt keeps its
+structural state, is reported `present-unverified`, and the container is **unverifiable**
+(`E_TS_UNTRUSTED`), never invalid; it cannot rescue a compromised-key signature and cannot
+support an L2 claim (T3). Within the timestamp phase the checks are ordered per receipt:
+checks 1–13 run for a
 receipt before the chain-shape check 14 is evaluated over the receipts that passed them, so
 `E_TS_FILE`, `E_TS_SCHEMA`, `E_TS_IMPRINT`, `E_TS_CMS` and `E_TS_CERT` precede
-`E_TS_RENEWAL` [S8⑪] decided (Inceptless decision 2026-11-11 #2; S8). Check 15 is a trust
-decision: without a matching anchor the receipt is reported
+`E_TS_RENEWAL`, and the structural/CMS checks 5–12 precede the accuracy check 13
+[S8⑪][T3] decided (Inceptless decision 2026-11-11 #5; T3; 2026-11-11 #2; S8). Check 15 is a
+trust decision: without a matching anchor the receipt is reported
 `present-unverified` and the container cannot be `valid` (`unverifiable`,
 `E_TS_UNTRUSTED`). An untrusted receipt also cannot rescue a signature by a compromised key
 (§9.4 case 2): the missing information makes that record `unverifiable` with
@@ -2104,12 +2220,15 @@ to the decision draft's renewal requirement [D3][S5] decided (Inceptless decisio
 
 - A claimed L2 MUST list at least one receipt (`E_MANIFEST_L2_NO_TIMESTAMP`), and L0/L1
   MUST list none (`E_MANIFEST_LEVEL`).
-- If any listed receipt fails checks 1–14 of §12.2, the container is **invalid**.
+- If any listed receipt fails checks 1–14 of §12.2 as a **format or cryptographic failure**,
+  the container is **invalid**.
 - Otherwise, if the chain is complete and every receipt is verified (including check 15,
-  with a matching anchor), `anchor_verified` is true and the L2 claim is verified at the
+  with a matching anchor) and every receipt's accuracy is **usable**, `anchor_verified` is
+  true and the L2 claim is verified at the
   report level described in §11.4.
-- Otherwise each unverified receipt is `present-unverified` and the container is
-  **unverifiable** (`E_TS_UNTRUSTED`), never `valid`.
+- Otherwise each unverified-or-unusable receipt is `present-unverified` and the container is
+  **unverifiable** (`E_TS_UNTRUSTED`), never `valid`. The unusable-accuracy case of
+  §12.2 check 13 belongs here, not to the invalid branch (T3).
 
 A verifier MUST NOT claim L2 merely because `.tsr` files exist, and MUST NOT accept a
 receipt whose CMS signature, imprint, certificate constraints, ESS attribute or
@@ -2142,7 +2261,7 @@ decision 2026-11-10 #34; Q5). The limit-to-code mapping in the table is fixed [Q
 | `MAX_TIMESTAMP_BYTES` | 1,048,576 (1 MiB) | one `.tsr` file | `E_JSON_SIZE` |
 | `MAX_RECORDS` | 100,000 | `manifest.records` entries | `E_MANIFEST_RECORDS` |
 | `MAX_CONTAINER_ENTRIES` | 200,000 | all zip entries / all files in a directory container | `E_CONTAINER_SIZE` |
-| `MAX_CONTAINER_UNCOMPRESSED_BYTES` | 1,073,741,824 (1 GiB) | total uncompressed bytes of a zip container | `E_CONTAINER_SIZE` |
+| `MAX_CONTAINER_UNCOMPRESSED_BYTES` | 1,073,741,824 (1 GiB) | total uncompressed bytes of a zip container; also the summed byte count of all files in a directory container | `E_CONTAINER_SIZE` |
 | `MAX_BLOB_BYTES` | 1,073,741,824 (1 GiB) | one blob | `E_MANIFEST_BLOB` |
 | `MAX_BLOBS` | 10,000 | `manifest.blobs` entries | `E_MANIFEST_SCHEMA` |
 | `MAX_REFS` | 256 | `refs` entries | `E_ENV_REFS` |
@@ -2152,24 +2271,36 @@ decision 2026-11-10 #34; Q5). The limit-to-code mapping in the table is fixed [Q
 | `MAX_GRANT_CHAIN` | 8 | grant-chain links (§5.5.2) and rotation steps of the revocation-authority walk (§5.5.4) | `E_GRANT_UNRESOLVED` / `E_GRANT_REVOKE_SIGNER` |
 | `MAX_JSON_DEPTH` | 32 | JSON **value nesting depth**: the top-level value is depth 1; every member value and every array element is one level deeper than the value that contains it; a scalar is a leaf value at its own depth | `E_JSON_SIZE` |
 | `MAX_LICENCE_NESTING` | 16 | parenthesis nesting depth of an SPDX licence expression (§8.7) | `E_ENV_LICENCE` |
-| `MAX_TS_ACCURACY` | 86,400 (seconds) | total `accuracy` of one RFC 3161 receipt (§12.2 check 13) | `E_TS_SCHEMA` |
+| `MAX_TS_ACCURACY` | 86,400 (seconds) | total `accuracy` of one RFC 3161 receipt (§12.2 check 13); exceeding it makes the receipt unusable evidence, not a format error | `E_TS_UNTRUSTED` (unverifiable) |
 
 Limits are checked on the streamed bytes, not on a fully materialised decompression. A zip
 whose decompression would exceed the uncompressed-byte limit is `E_CONTAINER_SIZE`
-(invalid). Implementations MUST NOT rely on filesystem-reported sizes for these checks;
+(invalid); the same total applies to a directory container, summing only the files the
+verifier actually reads (record, manifest, attestation, timestamp and blob files):
+`readable/**` is never read or counted, and `tsa-cert-*` files are presence-only and not
+counted (`E_CONTAINER_SIZE` when the read total is exceeded) (T15). A
+directory container whose record count exceeds `MAX_CONTAINER_ENTRIES` is likewise
+`E_CONTAINER_SIZE`. Implementations MUST NOT rely on filesystem-reported sizes for
+these checks;
 they MUST enforce them while reading: each file of a directory container is read through a
 probe bounded by its class limit plus one byte, the container total is accumulated while
 reading, and the zip central directory is inspected before any entry is decompressed
-[S4] decided (Inceptless decision 2026-11-11 #2; S4). A directory container whose
-`manifest.json`, `signatures/manifest.sig.json` or record file exceeds its class limit is
-invalid with `E_JSON_SIZE` and its report carries `records: []`; a `.tsr` file above
-`MAX_TIMESTAMP_BYTES` is a container-level `E_JSON_SIZE` reported by the timestamp phase
-while record processing continues (an oversized `.tsr` is not a record-level stop)
-[decided by principle (Inceptless decision 2026-11-11 #2); S4/S14]. A standalone record
+[S4] decided (Inceptless decision 2026-11-11 #2; S4).
+
+An in-container file above its class limit is a container-level `E_JSON_SIZE` (invalid). The
+report shape follows the §14.5 stage in which the failure is detected (T16): a
+`manifest.json` above `MAX_MANIFEST_BYTES` (manifest stage) yields the container defaults
+and `records: []`; an oversized `signatures/manifest.sig.json` (step 5) and an oversized
+`records/` file (records listing, step 7) fill the manifest-derived fields and report
+`records: []`; an embedded `previous/manifest.json` above `MAX_MANIFEST_BYTES` (step 10,
+after the record phase) and a `.tsr` above `MAX_TIMESTAMP_BYTES` (step 11) report
+`E_JSON_SIZE` while the record verdicts are reported as usual (`E_MANIFEST_CHAIN` for a
+depth/parse failure of the previous manifest keeps the same stage and shape, T17/A-L7). A
+standalone record
 target larger than `MAX_RECORD_BYTES` is read to at most `MAX_RECORD_BYTES + 1` bytes and
 reported as `E_JSON_SIZE` (invalid); its `input.sha256`/`input.size` are `null`, and an
 implementation MUST NOT read or hash the whole oversize file just to fill the report
-(decisions §4.7, §14.6). Implementations MUST NOT
+(§14.6, T16). Implementations MUST NOT
 crash because of nesting depth; the reference approach is non-recursive or
 bounded-recursion parsing and serialisation with an explicit depth counter checked before
 recursing [S3] decided (Inceptless decision 2026-11-11 #2; S3).
@@ -2204,7 +2335,14 @@ switch of §14.7 and takes effect only for the test-only check-skip hook.
   registered-kind body **schema** (the shape grammar of the kind page). A file that is
   structurally valid but whose first failing check is a kind semantic rule, a key-lifecycle
   rule, an actor or authorisation rule, or a cryptographic rule does not establish trust and
-  is ignored; it is not a usage error. The keyset is verified first; each valid
+  is ignored; it is not a usage error. **Two structurally valid keyset declarations for the
+  same key id whose `key_type` differs, or whose `(valid_from, valid_until)` pair differs
+  (absent = unbounded; present-versus-absent counts as different), are a usage error
+  (exit 2):** the ambiguity must be fixed by the operator, so no report is produced. When
+  there is no conflict, only semantically valid declarations govern class and window, in the
+  deterministic order of §5.3 (smallest `recorded_at`, tie by lexicographically smallest
+  record digest), and any keyset declaration — whatever its class — governs its key id's
+  class and window (T4). The keyset is verified first; each valid
   `weave.key.declared` of class `human`/`organization` in it is a trusted root, with no
   cosignature needed and no self-attestation notice (§5.3). Other keyset records
   participate in the verification context like container records: in particular
@@ -2309,6 +2447,17 @@ signature layer the Ed25519 cryptography of §3.4 runs before the key-lifecycle 
 applicable `E_SIG_*` code) even when its key is expired, revoked or compromised
 [S8⑪] decided (Inceptless decision 2026-11-11 #2; S8).
 
+Two documented ordering exceptions live inside the kind checks:
+
+- for `weave.key.declared`, a **missing** or malformed `body.public_key` reports
+  `E_KEY_PUBLIC_KEY` instead of the generic `E_KIND_BODY_SCHEMA` from step (6), and it is
+  decided before any trust judgement (§9.1 rule 1, T1);
+- for `weave.key.rotated`, the **structural** validation of `old_public_key` /
+  `new_public_key` (`E_KEY_ROTATION_KEYS`) is part of the kind body check and runs before
+  signature verification, so a structural error wins over an `E_SIG_*` outcome (§9.2
+  rule 2, T13). Curve-point decoding failures during an actual signature check remain
+  `E_SIG_*` (§3.4).
+
 Within step (2) the envelope sub-order is: required top-level members in §4.1 table order
 (`E_ENV_MISSING_FIELD`), then top-level closedness (`E_ENV_UNKNOWN_FIELD`), then each present
 member's grammar in §4.1 table order. A closed nested object applies the same
@@ -2349,15 +2498,20 @@ lexicographically and unique; an earlier stage that produced only `unverifiable`
 keeps those codes, so `container.errors` can carry both kinds. In particular the
 records-listing and consistency phase (§11.6) reports every independent violation it detects
 together (`E_MANIFEST_RECORD_MISSING`, `E_MANIFEST_RECORD_EXTRA`,
-`E_MANIFEST_RECORD_DIGEST`, `E_MANIFEST_RECORDS`), and a `manifest.json`,
-`signatures/manifest.sig.json` or record file above its §13 class limit is a container-level
-`E_JSON_SIZE` in the manifest or records stage. An `unverifiable` container condition does
+`E_MANIFEST_RECORD_DIGEST`, `E_MANIFEST_RECORDS`). An in-container file above its §13 class
+limit is a container-level `E_JSON_SIZE`, and the report shape follows the stage where it is
+detected (T16): `manifest.json` at the manifest stage → container fields default/`null` and
+`records: []`; the attestation file at step (5) and a `records/` file at step (7) →
+manifest-derived container fields filled and `records: []`; an embedded
+`previous/manifest.json` at step (10) and a `.tsr` at step (11) → the already-processed
+record verdicts are reported as usual. The reader MUST NOT abort the record phase for an
+oversize file that belongs to a later stage. An `unverifiable` container condition does
 not stop record processing and its code is retained in `container.errors`; in particular an
 unverifiable manifest signature (for example `E_KEY_UNKNOWN` with no keyset) does not stop
 the records listing or the per-record checks. Manifest signature verification establishes
 the cryptographic equation only; whether the signing declaration is trusted is evaluated at
 the key/record layer [S8①][S7②][S16/F16] decided (Inceptless decision 2026-11-11 #2;
-S8/S7/F16).
+S8/S7/F16; T16).
 
 Checks (7)–(10) of a record may need other records; they are evaluated with the
 deterministic resolution model of §6.4.
@@ -2369,9 +2523,8 @@ member names sorted ascending by UTF-16 code-unit order, two spaces of indentati
 item per line, empty arrays and objects inline as `[]`/`{}`, the `": "` name separator,
 `\\`, `\"`, `\b`, `\t`, `\n`, `\f` and `\r` shorthands, every other C0 control, every
 non-ASCII code point (including U+007F) and surrogate pairs emitted as lowercase `\uXXXX`,
-`/` never escaped, and exactly one trailing LF byte. This is the serialisation Python
-`json.dumps(..., sort_keys=True, indent=2, ensure_ascii=True)` produces for this report
-shape. The report contains no absolute paths, usernames, hostnames, current times,
+`/` never escaped, and exactly one trailing LF byte. The report contains no absolute
+paths, usernames, hostnames, current times,
 randomness or environment values. The stable report version is `report_version: "1"`
 [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11 #2; S8/F12):
 
@@ -2422,8 +2575,18 @@ Report rules:
   `"L0"`, `anchor_verified` `false`, `chain` `{"status":"absent"}`, `record_count` `0`,
   `timestamps` `[]`; `created_at` and `manifest_digest` are `null` until their checks pass,
   and `manifest_digest` is reported only after the manifest structure checks pass. A
-  records-listing failure reports `records: []` and all-zero `summary` counts
-  [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11 #2; S8/F12).
+  failure before per-record evaluation reports `records: []` and all-zero `summary` counts;
+  a failure at a later stage (for example the previous-manifest chain at step (10) or the
+  timestamp phase at step (11)) keeps the record verdicts it already produced. For an
+  in-container file above its §13 class limit the shape follows the stage where it is
+  detected (§14.5, T16): a `manifest.json` oversize leaves the container fields at their
+  defaults/`null`; an attestation-file or `records/` file oversize fills the manifest-derived
+  fields (`created_at`, `manifest_digest`, `level_claimed`, `level_verified`, `chain`,
+  `previous_manifest_digest`, `record_count`, `timestamps: []`) while `records` and
+  `summary` stay empty; a previous-manifest or `.tsr` oversize reports `E_JSON_SIZE` with
+  the processed records and their `summary` counts
+  [S8⑩][S16/F12][T16] decided (Inceptless decision 2026-11-11 #5; T16; 2026-11-11 #2;
+  S8/F12).
 - `records` holds one entry for a record target and the manifest-ordered entries for a
   container target. For a `weave.erased` entry, `records[].digest` is the §2.2 record
   digest computed over the placeholder object itself (not the placeholder's original-digest
@@ -2433,11 +2596,17 @@ Report rules:
 - `kind_known` is `false` for an unregistered kind; the notice `N_KIND_UNKNOWN_OPAQUE` is
   reported only when that record's final verdict is `valid` (§7.3)
   [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11 #2; S8/F12).
-- `N_KEY_TOFU` is reported on a record when at least one signature check in that record used
-  key material admitted through a context declaration rather than the local keyset, even if
-  the record or that signature then fails (§5.3). For the three key-lifecycle kinds only
-  the actor-key signature counts [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11
-  #2; S8/F12).
+- `N_KEY_TOFU` is the per-record form of the TOFU predicate of §14.9: it is reported on a
+  record if and only if at least one of that record's signature checks was context-trusted
+  (the verifying key material came from a context `weave.key.declared` rather than the
+  local keyset), even if that signature or the record then fails (§5.3). For the three
+  key-lifecycle kinds only the actor-key signature counts. The manifest signature never
+  produces a record notice; it contributes to `L_KEY_TRUST_TOFU` instead. A J1-style
+  container illustrates the split: a container-declared device key (owner-cosigned by a
+  keyset root) signs the manifest while no record signature uses context material — the
+  report carries `L_KEY_TRUST_TOFU` and no record carries `N_KEY_TOFU`
+  [S8⑩][S16/F12][T10] decided (Inceptless decision 2026-11-11 #5; T10; 2026-11-11 #2;
+  S8/F12).
 - `sigs[].state` is `ignored` for an unknown algorithm (§3.6), `invalid` when the
   cryptographic equation fails, `unverified` when the key state fails a §9.4 rule
   (expired, revoked, compromised) or when the key material is unavailable, and `valid` when
@@ -2463,8 +2632,10 @@ Report rules:
   `readable/` entry; `N_PREVIOUS_SIG_UNVERIFIED` is reported whenever
   `previous_manifest` is non-null and the previous signature was not re-verified. Both are
   retained even when an earlier container check failed: they describe conditions the
-  verifier already detected, and hiding them would make the report lose information
-  [decided by principle (Inceptless decision 2026-11-11 #2); confirmed by the Lead].
+  verifier already detected, and hiding them would make the report lose information. When
+  the condition cannot be determined (for example entry enumeration failed before a
+  `readable/` entry was observed), the notice is not reported
+  [S12][T12] decided (Inceptless decision 2026-11-11 #5; T12).
 - Errors and notices are sorted lexicographically and unique; they come only from the
   closed registry. `checks_disabled` is sorted, unique and contains only registered `E_*`
   codes; it is `[]` unless the test hook of §14.7 is active.
@@ -2487,14 +2658,17 @@ Report rules:
     **manifest digest** and `input.size` is the manifest byte size [Q27]. **(b)** When the
     raw `manifest.json` bytes were read within `MAX_MANIFEST_BYTES`, but the manifest is not
     a canonical, structurally valid manifest, or verification stopped before the manifest
-    structure stage (for example at entry enumeration, or because another container file
-    exceeded its size limit), `input.sha256` is the SHA-256 of the **raw `manifest.json`
-    bytes** and `input.size` is their byte size. **(c)** When `manifest.json` is absent,
+    structure stage (for example an entry-enumeration failure), `input.sha256` is the
+    SHA-256 of the **raw `manifest.json`
+    bytes** and `input.size` is their byte size. A later failure (for example an oversized
+    record file, or an oversize `.tsr`) is not tier (b): once the manifest is valid the
+    identity is tier (a), and the §14.5/T16 report shape applies. **(c)** When
+    `manifest.json` is absent,
     unreadable, or above `MAX_MANIFEST_BYTES`, both are `null`; a directory-snapshot hash is
     never reported.
   The general undetermined-field rule of this section applies to `input` in exactly the
-  `null` cases [S14][S16/F11] decided (Inceptless decision 2026-11-11 #2; S14/F11;
-  decisions §4.10).
+  `null` cases [S14][S16/F11][T16] decided (Inceptless decision 2026-11-11 #2; S14/F11;
+  2026-11-11 #5; T16).
 - For the `vectors` target, `summary` is `{"case_count": N, "matched": n,
   "mismatched": m}` and conformance for this target is `mismatched == 0`. The per-case
   result array layout and the representation of the `input` identity are
@@ -2513,16 +2687,20 @@ Report rules:
 
 ### 14.7 Test-only check hook
 
-For conformance testing only, the reference verifier exposes a check-skip hook. It is
+For conformance testing only, the H0 verifier exposes a check-skip hook. It is
 reachable only through the explicit global CLI switch `--test-hooks` (§14.1): the
 environment variable `WEAVE_VERIFY_SKIP_CHECKS` is read **only** when `--test-hooks` is
 present and is ignored entirely otherwise (no `checks_disabled` entry and no change to the
 report or the exit code). When active, the variable is a comma-separated list of registered
 error codes whose checks are treated as passed; unset or empty means normal operation.
-`checks_disabled` echoes the sorted, unique registered codes. A token that is not a
+`checks_disabled` echoes the sorted, unique registered codes. Token parsing is fixed:
+split on ASCII commas, trim ASCII whitespace around each token, ignore empty tokens, match
+registered error codes case-sensitively and exactly, and collapse duplicates. A token that
+is not a
 registered `E_*` code is a usage error: exit code 2, a message on standard error naming the
 sorted unknown tokens, and no report on standard output. The exit code is `3` whenever
-`checks_disabled` is non-empty, even if every reported verdict is `valid` (§14.8). The hook
+`checks_disabled` is non-empty, even if every reported verdict is `valid` and even when the
+verdict is `invalid` (§14.8). The hook
 is documented as test-only and MUST NOT be used as a production configuration. An
 independent implementation is not required to implement this hook to be conformant to the
 record format; it is required only for reproducing the H0 test-gate procedure
@@ -2548,20 +2726,38 @@ Every report lists what was **not** verified, using the closed identifier list o
 registry (`spec/error-codes.md`): a sorted, unique array of identifiers only, never free
 prose. A verifier MUST NOT emit an identifier outside the list, MUST NOT invent a
 limitation, and MUST NOT phrase a limitation as a passed check
-[S12] decided (Inceptless decision 2026-11-11 #2; S12).
+[S12] decided (Inceptless decision 2026-11-11 #2; S12). The emission conditions below are
+**if-and-only-if** conditions on decidable facts; when a condition cannot be determined, the
+identifier (and the corresponding notice) is **not** reported (T12).
 
-| identifier | emitted when |
+**TOFU predicate (single definition).** A signature check was **context-trusted** when the
+key material used to verify it came from a `weave.key.declared` declaration in the
+verification context (container or target records) rather than from the local keyset
+(`--keys`). Manifest-signature checks and record-signature checks both use this one
+definition [T10] decided (Inceptless decision 2026-11-11 #5; T10).
+
+| identifier | emitted if and only if |
 |---|---|
-| `L_OFFLINE_CONTEXT` | a record target or container is verified offline; references outside the context resolve as `missing` (always for record and container targets) |
-| `L_CHAIN_CLAIM_UNVERIFIED` | a claimed L1/L2 internal chain cannot be recomputed; `level_verified` is reported `L0` |
-| `L_KEY_TRUST_TOFU` | at least one key was trusted through context declarations rather than the local keyset (matching `N_KEY_TOFU`) |
-| `L_PREVIOUS_SIG_UNVERIFIED` | an embedded previous manifest exists and its own signature was not re-verified |
-| `L_TSA_TRUST_UNVERIFIED` | timestamps are present but no matching TSA anchor was supplied, so they are `present-unverified` |
-| `L_ERASED_PLACEHOLDER` | the verified input contains a `weave.erased` placeholder |
-| `L_ERASED_STANDALONE` | a standalone placeholder was verified with no container context, so the §10.3 cross-checks could not be applied |
-| `L_LABELS_ARE_CLAIMS` | labels, consent coverage or licence claims were checked for consistency only |
-| `L_UNKNOWN_KIND_OPAQUE` | an unregistered kind body was transported but not interpreted and the record's verdict is `valid` |
-| `L_LABEL_PROPAGATION_UNCHECKED` | a derivation reference could not be resolved, so strictest-label propagation could not be checked (§8.4) |
+| `L_OFFLINE_CONTEXT` | the target is a record or a container (not `vectors`): the verification context is the target plus the supplied keyset, and references outside it resolve as `missing` |
+| `L_CHAIN_CLAIM_UNVERIFIED` | `level_claimed` is `L1` or `L2` (the internal-chain claim cannot be recomputed), regardless of later failures |
+| `L_KEY_TRUST_TOFU` | at least one signature check in the report — a record signature or the manifest signature — was context-trusted per the TOFU predicate above |
+| `L_PREVIOUS_SIG_UNVERIFIED` | `previous_manifest` is non-null and the embedded previous manifest's own signature was not re-verified; this is reported even when a later container check fails, and is not reported when the manifest could not be parsed so that the previous manifest is not reachable |
+| `L_TSA_TRUST_UNVERIFIED` | timestamps are present and at least one receipt is not verified and trusted (no matching anchor), or its accuracy is unusable evidence (§12.2 check 13) |
+| `L_ERASED_PLACEHOLDER` | the verified input (container or record target) contains a `weave.erased` placeholder |
+| `L_ERASED_STANDALONE` | the target is a single `weave.erased` record with no container context, so the §10.3 cross-checks could not be applied |
+| `L_LABELS_ARE_CLAIMS` | the record target, or at least one record of the container, carries a `labels` member |
+| `L_UNKNOWN_KIND_OPAQUE` | at least one record has an unregistered kind and final verdict `valid` (the same condition as `N_KIND_UNKNOWN_OPAQUE`) |
+| `L_LABEL_PROPAGATION_UNCHECKED` | at least one derivation reference could not be resolved (the same condition as `N_LABEL_PROPAGATION_UNCHECKED`) |
+
+A `vectors`-target report carries `limitations: []`: it verifies no record or container,
+so none of the conditions above applies. The two notices that describe container-level
+undetermined or retained state are reported
+under the same if-and-only-if discipline: `N_READABLE_PRESENT` is emitted exactly when an
+enumerated container contains a `readable/` entry (if entry enumeration fails before a
+`readable/` entry is observed, it is not reported), and `N_PREVIOUS_SIG_UNVERIFIED` is
+emitted exactly when `previous_manifest` is non-null and the previous signature was not
+re-verified, including after a later container failure [T12] decided (Inceptless decision
+2026-11-11 #5; T12).
 
 ### 14.10 Independence and vectors
 
@@ -2665,15 +2861,16 @@ This section is informative except where it states a MUST.
 13. **Denial of service.** Size and resource limits (§13) bound hostile containers; a
     verifier MUST NOT crash or unboundedly decompress on a zip bomb, and MUST NOT overflow
     the stack on deeply nested JSON or deeply nested SPDX licence expressions
-    (`MAX_JSON_DEPTH`, `MAX_LICENCE_NESTING`, §13). The timestamp accuracy bound
-    (`MAX_TS_ACCURACY`) keeps rescuing comparisons inside fixed-width arithmetic [S3][S11].
+    (`MAX_JSON_DEPTH`, `MAX_LICENCE_NESTING`, §13). The timestamp accuracy rules keep
+    rescuing comparisons inside fixed-width arithmetic and make an over-bound receipt
+    unusable evidence (unverifiable), never a silently accepted rescue [S3][S11][T3].
 14. **Plain files only.** Containers are ordinary files with no executable content; a
     verifier MUST NOT execute or follow hints, URLs or `readable/` content.
 15. **Manifest signer binding is not established offline.** A manifest signature proves
     which key signed the manifest bytes; H0 does not require that key to be the key named by
     `manifest.origin.instance` (§11.3). A consumer that needs the publisher identity to be
     the origin instance must check the binding itself, against a key id pinned out of band
-    [H1 review a L-4].
+    [T11; `docs/open-questions.md` §7 entry 17] decided by principle (Inceptless decision 2026-11-11 #5; T11).
 
 ## 16. Governance, repository and implementation requirements
 
@@ -2683,7 +2880,7 @@ This section is informative except where it states a MUST.
   [K2].
 - **Adapters live in project repositories**; this repository contains only the
   specification, schemas, test vectors and reference verifiers [A1a].
-- **Two independent implementations**: the Python reference verifier and a second
+- **Two independent implementations**: the H0 Python verifier and a second
   independent verifier must both pass the same test vectors before version 1.0 [I4].
 - **Acceptance cases**: `weave-record/1` v0.1 is accepted only when the J1
   (Koinoweave → Traceweave) and J2 (Axioweave → Koinoweave) round trips pass with the
@@ -2765,7 +2962,7 @@ the locations given.
 | ruling | topic | normative location |
 |---|---|---|
 | S1 | a keyset-trusted key's class and validity window cannot be overridden by a container/target redeclaration; a different class is invalid with `E_KEY_CLASS_CONFLICT` | §5.3, §9.1, registry |
-| S2 | revocation effects are order-independent and include keyset records; compromise dominates retired/other; earliest `T` is used for rescue | §9.4, §14.1 |
+| S2 | revocation effects are order-independent and include keyset records; the retired/other and compromise families are independent (a retired/other hit is invalid `E_KEY_REVOKED` and never rescuable); the compromise family uses the earliest `T` for rescue | §9.4, §14.1 |
 | S3 | nesting limits: `MAX_JSON_DEPTH` → `E_JSON_SIZE`, `MAX_LICENCE_NESTING` → `E_ENV_LICENCE`, no stack crash | §1.9, §8.7, §13 |
 | S4 | bounded reads: per-class read limits, central directory before decompression, `readable/` never decompressed or CRC-checked | §11.1, §11.8, §11.9, §13 |
 | S5 | ZIP64 MUST be accepted; prefix bytes, archive comments and trailing bytes are `E_CONTAINER_ZIP` | §11.9 |
@@ -2781,6 +2978,29 @@ the locations given.
 | S15 | `recorded_at`/`occurred_at` definitions, `rel` direction with examples, salt stability | §2.8, §4.1.1, §6.2, §8.3 |
 | S16 | the F1–F17 dispositions (all adopted; F2 mandatory) — per-finding disposition table in `docs/open-questions.md` §6 | whole document; `docs/open-questions.md` §6 |
 | S17 | frozen candidate-set regeneration stays in the vectors area | outside this document (vectors) |
+
+The following rows are fixed by Inceptless decision **2026-11-11 #5** (S1-FIX1, T1–T17)
+and are normative at the locations given.
+
+| ruling | topic | normative location |
+|---|---|---|
+| T1 | a missing or malformed `body.public_key` is invalid `E_KEY_PUBLIC_KEY`, before `E_KIND_BODY_SCHEMA` and any trust judgement | §9.1, §14.5, `weave.key.declared.md` |
+| T2 | retired/other and compromise revocations are evaluated independently; the stricter result wins; a retired/other hit is `E_KEY_REVOKED` and never rescuable | §9.4, `weave.key.revoked.md` |
+| T3 | TSA accuracy: component range is a format error `E_TS_SCHEMA`; over-bound/overflow accuracy makes a receipt unusable evidence (`E_TS_UNTRUSTED`, container unverifiable, never rescuing); structure/CMS checks precede the accuracy cap; `genTime` truncated to ms for rescue | §9.4, §12.2, §12.5, §13 |
+| T4 | any-class keyset declaration governs class and window (only human/organization establish roots); conflicting keyset declarations are a usage error; deterministic earlier = `(recorded_at, record digest)` | §5.3, §9.1, §14.1 |
+| T5 | record `sigs` is structurally 0–16 entries; required signing is §4.4's rule | §4.1, §4.3 |
+| T6 | the verifier parses the zip structure itself: local/central field agreement (including data descriptors), no gaps or overlaps, EOCD/ZIP64 counts and framing, `readable/` path/type checks | §11.9, registry |
+| T7 | the frozen candidate set only grows (vectors area) | outside this document (vectors) |
+| T8 | depth counting when the verified record is itself a grant: its own link is not part of the chain | §5.5.2 step 7 |
+| T9 | a revocation record takes effect only if it is itself valid; deterministic `(recorded_at, record digest)` order; self-revocation exempt | §9.5, `weave.key.revoked.md` |
+| T10 | one TOFU predicate shared by `N_KEY_TOFU` and `L_KEY_TRUST_TOFU`; the manifest signature counts for the limitation | §14.6, §14.9, registry |
+| T11 | the five principle decisions recorded in `docs/open-questions.md` §7; internal-document references removed | whole document |
+| T12 | limitation and notice emission is if-and-only-if; `N_READABLE_PRESENT`/`N_PREVIOUS_SIG_UNVERIFIED` retention and "undetermined means not reported" | §14.9, §11.5, §11.8 |
+| T13 | rotated key-material structural errors (`E_KEY_ROTATION_KEYS`) precede signature verification | §9.2, §14.5 |
+| T14 | member ordering is UTF-16 code-unit order only | §14.6 |
+| T15 | the directory-container total byte cap counts only the files actually read | §13, §11.8, §11.9 |
+| T16 | container report shape for an oversize in-container file follows the §14.5 stage in which it is detected; `records: []` only before step (7) | §14.5, §14.6 |
+| T17 | the remaining review items (grant-revocation target action, late-recorded grants, unverifiable cited grant, UTF-8 precondition, previous-manifest size mapping, manifest signer trust, `--previous` path semantics, token parsing, relation direction, Appendix C/D) | §1.9, §5.5.2, §5.5.4, §6.2, §11.3, §11.5, §13, §14.6, §14.7, Appendix C |
 
 ### A.2 PROVISIONAL implementation shapes
 
@@ -2876,6 +3096,8 @@ per-case layout and input identity are explicitly implementation-defined (S8⑬/
 | `chain.algorithm` | `sha256` | §11.2 |
 | digest algorithm | `sha256` (H0) | §2.7 |
 | limitation identifiers | the ten closed `L_*` identifiers of §14.9 (registry: `spec/error-codes.md`) | §14.9, §14.6 |
+| resource limits | the `MAX_*` constants of §13 (including `MAX_JSON_DEPTH`, `MAX_LICENCE_NESTING`, `MAX_TS_ACCURACY`) | §13 |
+| exit codes | `0`, `1`, `2`, `3` | §14.8 |
 | error/notice codes | closed registry in `spec/error-codes.md` | §14.2 |
 
 ## Appendix D — Conformance summary
