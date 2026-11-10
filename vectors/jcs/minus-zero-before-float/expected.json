@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/minus-zero-before-float","input":"record.json","notes":"S8(4)/§1.6-§1.9: `-0` and a later float are classified at their token position among the number classes; `-0` comes first in input byte order, so the first number-class violation is the non-canonical -0.","target":"record","verdict":"invalid"}

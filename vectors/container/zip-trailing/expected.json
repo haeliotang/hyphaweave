@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-trailing","input":"container.zip","notes":"S5/§11.9: the end-of-central-directory record MUST end exactly at the last input byte; 32 trailing bytes are E_CONTAINER_ZIP.","target":"container","verdict":"invalid"}

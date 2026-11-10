@@ -48,30 +48,36 @@ frozen candidate set is validated separately and is not part of the index).
 ## Current inventory
 
 Authoritative source is `vectors/index.json`; regenerate with
-`tools/gen_index.py` after adding cases. At the time of writing (revision 2,
+`tools/gen_index.py` after adding cases. At the time of writing (revision 3,
 `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
 
 | category | cases |
 |---|---|
-| `jcs` | 24 |
+| `jcs` | 28 |
 | `digest` | 5 |
-| `sig` | 43 |
-| `ref` | 12 |
-| `stage` | 17 |
-| `actor` | 26 |
-| `labels` | 34 |
-| `erasure` | 11 |
-| `grant` | 29 |
-| `key-lifecycle` | 36 |
-| `container` | 28 |
-| `integrity-levels` | 29 |
-| **total** | **294** |
+| `sig` | 47 |
+| `ref` | 13 |
+| `stage` | 18 |
+| `actor` | 28 |
+| `labels` | 37 |
+| `erasure` | 12 |
+| `grant` | 35 |
+| `key-lifecycle` | 49 |
+| `container` | 38 |
+| `integrity-levels` | 33 |
+| **total** | **343** |
 
-Verdict distribution: `valid` 71, `erased` 1, `invalid` 200, `unverifiable` 22.
+Verdict distribution: `valid` 80, `erased` 1, `invalid` 236, `unverifiable` 26.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
-bound by the Ed25519 manifest signature.
+bound by the Ed25519 manifest signature. Revision 3 added the rulings of
+Inceptless decision 2026-11-11 #2 (keyset-governed key class/window,
+order-independent revocations, JSON/licence nesting limits, ZIP64 and archive
+prefix/trailing rejection, `--previous` chain continuity, container
+size-limit and listing multi-error semantics, pre-issued grants, grant-chain
+and revocation depth bounds, RFC 3161 accuracy bounds, limitation identifiers,
+container input identity, and the report-level rules of §14.6/§14.10).
 
 ## Running the vectors
 
@@ -106,15 +112,18 @@ bytes plus one trailing LF. Fields:
 | `notices` | optional | expected notice codes; matching is *subset* (a verifier may report additional notices) |
 | `args` | optional | verifier CLI arguments. Tokens: `@keyset` -> `vectors/keys/keyset`; `@case` -> the case directory; anything else is a path relative to the case directory (e.g. `keys`, `tsa.crt.pem`, `container.zip`) |
 | `expected_digest` | optional | expected `records[i].digest` for record targets (computed here by the independent generator, never by the verifier) |
-| `expected_resolution` | optional | expected ref-resolution states by reference index for records with `refs` |
-| `expected_container` | optional | recursive subset match against the report's `container` object |
-| `records` | optional | per-record subset expectations matched by `id` (e.g. `kind_known=false` for an unknown kind) |
+| `expected_resolution` | optional | expected ref-resolution states as a position map: element *i* is the state of the record report's reference *i* (a record target's `records[0]`, or the concatenation over the manifest-ordered records for a container target) |
+| `expected_container` | optional | recursive subset match against the report's `container` object; nested objects are recursive subsets and arrays compare element by element, recursively, with scalars and `null` exact |
+| `expected_input` | optional | recursive subset match against the report's top-level `input` object (`{"sha256": ...|null, "size": ...|null}`); a `null` expectation requires `null` |
+| `limitations` | optional | the report's exact `limitations` array: the sorted, unique closure of the closed `L_*` identifier set (§14.9) |
+| `notices_absent` | optional | notice codes that MUST NOT appear anywhere in the aggregated report (container plus every record) |
+| `records` | optional | per-record matches by `id`; `verdict` and `errors` compare exactly, every other listed member is a recursive subset (so a case can assert e.g. `"refs": []`, `"kind_known": null`); an explicit empty array `"records": []` asserts that the report's `records` array is empty (pre-record failures) |
 | `notes` | optional | why the case exists, and which specification section it exercises |
 
 Runner rules: `verdict` exact; `errors` as a set over the container's top-level
-and per-record errors; `notices` subset; `expected_digest`,
-`expected_resolution`, `expected_container` and `records` as above. Everything
-besides `expected.json` inside a case directory is input material.
+and per-record errors; `notices` subset; `limitations` exact; everything else as
+described in the table. Everything besides `expected.json` inside a case
+directory is input material.
 
 ## Test keys and key material
 
@@ -172,7 +181,7 @@ first `make_keys.py` run and then reused byte-for-byte.
 ## Gate 3 exceptions
 
 Gate 3(a) flips one seeded bit in every positive input and requires that the
-verifier never returns `valid`/`erased` afterwards. The two deliberately
+verifier never returns `valid`/`erased` afterwards. The deliberately
 unsigned positive records, the `weave.erased` placeholder shape, and the
 ignored unknown-algorithm signature entries (whose bytes are semantically inert)
 are documented in [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); everything
@@ -192,8 +201,11 @@ set; removing a case turns that gate red.
 
 ## Known coverage gaps
 
-Size-limit rejections (`E_JSON_SIZE`, `E_CONTAINER_SIZE`, and the largest
-manifest/blob limits) are not exercised by committed vectors because that would
-require multi-megabyte fixtures; they are covered by the verifier's unit tests.
-`expected.json` notes on individual cases document the exact specification rule
-each case is derived from.
+Size-limit rejections (`E_JSON_SIZE` for oversized records/manifests/attestation
+files/timestamp receipts, `E_CONTAINER_SIZE`, and the largest manifest/blob
+limits) are not exercised by committed vectors because that would require
+multi-megabyte fixtures; they are covered by the verifier's unit tests and the
+resource-limit gate. The JSON nesting limit (`MAX_JSON_DEPTH`, depth 32/33) and
+the licence nesting limit (`MAX_LICENCE_NESTING`, 16/17) *are* exercised by
+small committed vectors. `expected.json` notes on individual cases document the
+exact specification rule each case is derived from.

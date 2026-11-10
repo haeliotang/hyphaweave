@@ -16,14 +16,15 @@ cryptographic binding:
   the manifest digest, which commits every manifest/record/signature/timestamp
   byte through the container checks.
 
-There are exactly two deliberate exceptions whose *purpose* is to prove that an
-unsigned record can still be valid (a container signature covers it), and one
+There are exactly three deliberate exceptions whose *purpose* is to prove that
+an unsigned record can still be valid (a container signature covers it), and one
 structural class (`weave.erased`) that cannot be signed by design:
 
 | exception | why |
 |---|---|
 | `vectors/digest/record-unsigned` | Exists to exercise the record-digest construction without any signature material. A flipped body byte yields another perfectly valid record. |
 | `vectors/stage/valid-proposed-unsigned` | Exists to prove that a `proposed` record may rely on the container signature only. Same unboundness. |
+| `vectors/sig/proposed-empty-sigs` | Spec §4.4/S7(1): a `proposed` ordinary record is not required to be signed, so an explicit `sigs: []` is valid; no byte in the file is signature-covered, so flips can keep it valid. |
 | `vectors/sig/unknown-alg-optional` | A `proposed` record that is not required to be signed and whose only signature entry uses an unknown algorithm (ignored by Q13): effectively unsigned, so body flips need not change the verdict. |
 | `weave.erased` placeholders (e.g. `vectors/digest/record-erased-placeholder`) | The placeholder shape has no `sigs` by specification. A flip that keeps the placeholder structurally valid still yields `erased`, never `valid`; the QA harness lists such mutants as documented exceptions. |
 

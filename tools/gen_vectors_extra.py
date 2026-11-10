@@ -43,6 +43,7 @@ import datetime
 import hashlib
 import io
 import shutil
+import struct
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -92,6 +93,9 @@ class Case:
     expected_digest: bool = False
     expected_resolution: tuple[str, ...] | None = None
     expected_container: dict[str, Any] | None = None
+    expected_input: dict[str, Any] | None = None
+    limitations: tuple[str, ...] | None = None
+    notices_absent: tuple[str, ...] | None = None
     records: tuple[dict[str, Any], ...] | None = None
 
     @property
@@ -811,6 +815,7 @@ declare(
     "valid",
     build=lambda case_dir: container(SIMPLE_RECORDS()),
     args=("--keys", "@keyset"),
+    limitations=("L_OFFLINE_CONTEXT",),
     expected_container={
         "level_claimed": "L0",
         "level_verified": "L0",
@@ -1196,6 +1201,7 @@ declare(
     build=lambda case_dir: drop(
         wrap(recordlib.build_container(SIMPLE_RECORDS())), "container/manifest.json"
     ),
+    expected_input={"sha256": None, "size": None},
     notes="A container directory without manifest.json is E_MANIFEST_MISSING "
     "(§11.1), not "
     "a generic parse error.",
@@ -1470,6 +1476,7 @@ def root_grant(
     scope: Sequence[str] = ("example",),
     valid_from: str = recordlib.T0,
     valid_until: str | None = recordlib.T9,
+    recorded_at: str | None = None,
     transferable: bool = True,
     revocation: Sequence[str] | None = None,
 ) -> dict[str, Any]:
@@ -1496,7 +1503,7 @@ def root_grant(
         actor=recordlib.actor(granter),
         body=body,
         stage="accepted",
-        recorded_at=valid_from,
+        recorded_at=recorded_at if recorded_at is not None else valid_from,
         origin_instance=kid(granter),
     )
     return recordlib.signed(record, granter)
@@ -4802,6 +4809,1302 @@ declare(
     "at all the record is invalid E_KEY_COMPROMISED (L0 cases).",
 )
 
+# ---------------------------------------------------------------------------
+# S1 revision: keyset trust, revocation merging, ZIP64/zip edges, --previous,
+# the differential-fuzz Python defects, ambiguity rulings, future grants, grant
+# chain depth, TSA accuracy and limitation identifiers (decisions 2026-11-11
+# #2; rulings S1/S2/S5/S6/S7/S8/S9/S10/S11/S12/S14).
+# ---------------------------------------------------------------------------
+
+
+def _keyset_copy(name: str) -> bytes:
+    """Bytes of one committed keyset declaration (from vectors/keys/keyset)."""
+    return (recordlib.KEYS_DIR / "keyset" / name).read_bytes()
+
+
+def _wrap_internal(files: dict[str, bytes]) -> dict[str, bytes]:
+    return {"container/" + path: data for path, data in files.items()}
+
+
+def _manifest_signature_tampered(files: dict[str, bytes]) -> dict[str, bytes]:
+    """Replace the manifest signature value with a bit-flipped copy."""
+
+    def mutator(sigfile: dict[str, Any]) -> dict[str, Any]:
+        entry = dict(sigfile["signatures"][0])
+        entry["value"] = keyutil.b64url_encode(
+            _tampered_signature_value(entry["value"])
+        )
+        return {**sigfile, "signatures": [entry]}
+
+    return mutate_sigfile(files, mutator)
+
+
+# -- S5: ZIP64 and archive edges -------------------------------------------------
+
+
+_ZIP_EOCD_SIG = 0x06054B50
+_ZIP64_EOCD_SIG = 0x06064B50
+_ZIP64_LOCATOR_SIG = 0x07064B50
+_ARCHIVE_PREFIX = b"WEAVE-ZIP-PREFIX-0123456789abcd\x00"
+assert len(_ARCHIVE_PREFIX) == 32
+
+
+def _zip_entries(
+    files: dict[str, bytes],
+    extra: Sequence[tuple[str, bytes, int, int]] = (),
+) -> bytes:
+    """Deterministic STORED zip; *extra* adds ``(name, data, create_system, attr)``."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for path in sorted(files):
+            info = zipfile.ZipInfo(path, date_time=(2026, 11, 10, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            info.create_system = 3
+            archive.writestr(info, files[path])
+        for name, data, create_system, external_attr in extra:
+            info = zipfile.ZipInfo(name, date_time=(2026, 11, 10, 0, 0, 0))
+            info.create_system = create_system
+            info.external_attr = external_attr
+            archive.writestr(info, data)
+    return buffer.getvalue()
+
+
+def _patch_zip64(archive: bytes) -> bytes:
+    """Rewrite a small STORED archive in ZIP64 form, keeping the real entries.
+
+    The end-of-central-directory record's 16-bit entry counts are replaced by
+    ``0xFFFF`` and a ZIP64 EOCD record plus locator (carrying the real small
+    counts and the unchanged central-directory offset) are inserted directly
+    before it. A reader that follows the ZIP64 path accepts the archive; the
+    archived bytes are unchanged.
+    """
+    if len(archive) < 22:
+        raise SystemExit("zip64 patch: archive too short")
+    eocd_offset = len(archive) - 22
+    signature, = struct.unpack_from("<I", archive, eocd_offset)
+    if signature != _ZIP_EOCD_SIG:
+        raise SystemExit("zip64 patch: no end-of-central-directory record")
+    disk, cd_disk, entries_disk, entries_total, cd_size, cd_offset, comment = (
+        struct.unpack_from("<HHHHIIH", archive, eocd_offset + 4)
+    )
+    if comment != 0:
+        raise SystemExit("zip64 patch: archive comment not expected")
+    if entries_total != entries_disk:
+        raise SystemExit("zip64 patch: single-disk archive expected")
+    zip64_eocd = (
+        struct.pack("<I", _ZIP64_EOCD_SIG)
+        + struct.pack("<Q", 44)  # size of the remainder of this record
+        + struct.pack("<H", 45)  # version made by (4.5)
+        + struct.pack("<H", 45)  # version needed (4.5)
+        + struct.pack("<I", 0)  # this disk
+        + struct.pack("<I", 0)  # disk with the central directory
+        + struct.pack("<Q", entries_disk)
+        + struct.pack("<Q", entries_total)
+        + struct.pack("<Q", cd_size)
+        + struct.pack("<Q", cd_offset)
+    )
+    locator = struct.pack("<IIQI", _ZIP64_LOCATOR_SIG, 0, eocd_offset, 1)
+    eocd = bytearray(archive[eocd_offset:])
+    struct.pack_into("<HH", eocd, 8, 0xFFFF, 0xFFFF)
+    return archive[:eocd_offset] + zip64_eocd + locator + bytes(eocd)
+
+
+def _zip64_files() -> dict[str, bytes]:
+    """A valid container zip in ZIP64 form, with a zero-data directory entry."""
+    internal = recordlib.build_container(SIMPLE_RECORDS())
+    archive = _zip_entries(
+        internal,
+        extra=(("readable/", b"", 3, (0o40755 << 16) | 0x10),),
+    )
+    return {"container.zip": _patch_zip64(archive)}
+
+
+def _zip_with_prefix() -> dict[str, bytes]:
+    internal = recordlib.build_container(SIMPLE_RECORDS())
+    return {"container.zip": _ARCHIVE_PREFIX + _zip_entries(internal)}
+
+
+def _zip_with_trailing_bytes() -> dict[str, bytes]:
+    internal = recordlib.build_container(SIMPLE_RECORDS())
+    return {
+        "container.zip": _zip_entries(internal)
+        + b"TRAILING-BYTES-0123456789abcdef\x00"[:32]
+    }
+
+
+def _zip_dos_directory_attribute_with_data() -> dict[str, bytes]:
+    internal = recordlib.build_container(SIMPLE_RECORDS())
+    archive = _zip_entries(
+        internal,
+        extra=(
+            ("readable/dir-entry", b"directory-attribute-but-has-data", 0, 0x10),
+        ),
+    )
+    return {"container.zip": archive}
+
+
+declare(
+    "container",
+    "zip64-valid",
+    "container",
+    "container.zip",
+    "valid",
+    build=lambda case_dir: _zip64_files(),
+    args=("--keys", "@keyset"),
+    expected_container={
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "record_count": 1,
+    },
+    limitations=("L_OFFLINE_CONTEXT",),
+    notes="S5/§11.9: ZIP64 MUST be accepted. The fixture is the ordinary "
+    "deterministic STORED container zip rewritten in ZIP64 form (EOCD entry "
+    "counts 0xFFFF, ZIP64 EOCD record + locator carrying the real small counts, "
+    "central directory unchanged) and additionally contains a zero-data "
+    "directory entry, which is ignored.",
+)
+
+declare(
+    "container",
+    "zip-prefix",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_with_prefix(),
+    notes="S5/§11.9: the archive MUST start at byte 0 with a local file header; "
+    "32 deterministic bytes before the first local header are E_CONTAINER_ZIP "
+    "(the conservative reading).",
+)
+
+declare(
+    "container",
+    "zip-trailing",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_with_trailing_bytes(),
+    notes="S5/§11.9: the end-of-central-directory record MUST end exactly at the "
+    "last input byte; 32 trailing bytes are E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-dos-directory-attribute-with-data",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_dos_directory_attribute_with_data(),
+    notes="S5/§11.9: an entry carrying the DOS directory attribute but non-zero "
+    "data is not a directory entry and is E_CONTAINER_ZIP; zero-length "
+    "directory entries are ignored instead.",
+)
+
+# -- S6: --previous with an absent chain ----------------------------------------
+
+
+def _previous_without_chain_files() -> dict[str, bytes]:
+    current = _wrap_internal(recordlib.build_container(SIMPLE_RECORDS()))
+    previous = _wrap_internal(recordlib.build_container(SIMPLE_RECORDS()))
+    result = dict(current)
+    for path, data in previous.items():
+        result["previous-container/" + path[len("container/") :]] = data
+    return result
+
+
+declare(
+    "container",
+    "previous-without-chain",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _previous_without_chain_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S6/§11.5: the container has `previous_manifest: null`, but the caller "
+    "supplies a previous container. A supplied --previous requires a non-null "
+    "chain whose digest matches, so this is E_MANIFEST_CHAIN invalid (this is "
+    "how a receiver detects a silently restarted chain). The previous-manifest "
+    "chain is container step (10), after the record phase, so the container's "
+    "record has already been processed and is reported valid; the invalid "
+    "container error does not erase its verdict.",
+)
+
+# -- S7/S8: manifest signature continuation, listing multi-error, missing files --
+
+
+def _manifest_signature_unverifiable_continues_files() -> dict[str, bytes]:
+    files = _manifest_signature_tampered(recordlib.build_container(SIMPLE_RECORDS()))
+    record_rel = record_path(files)
+    original = files[record_rel]
+    files[record_rel] = bytes([original[0] ^ 0x01]) + original[1:]
+    return _wrap_internal(files)
+
+
+def _record_extra_and_missing_files() -> dict[str, bytes]:
+    files = recordlib.build_container(SIMPLE_RECORDS())
+    record_rel = record_path(files)
+    files["records/" + "ab" * 32 + ".json"] = files.pop(record_rel)
+    return _wrap_internal(files)
+
+
+def _manifest_sigfile_missing_files() -> dict[str, bytes]:
+    return drop(
+        _wrap_internal(recordlib.build_container(SIMPLE_RECORDS())),
+        "container/signatures/manifest.sig.json",
+    )
+
+
+def _manifest_unknown_member_files() -> dict[str, bytes]:
+    built = recordlib.build_container(SIMPLE_RECORDS())
+    return _wrap_internal(
+        recordlib.mutate_manifest(
+            built, lambda manifest: {**manifest, "extra": 1}, resign_with=("human-1",)
+        )
+    )
+
+
+def _attestation_unknown_member_files() -> dict[str, bytes]:
+    return _wrap_internal(
+        mutate_sigfile(
+            recordlib.build_container(SIMPLE_RECORDS()),
+            lambda sigfile: {**sigfile, "extra": 1},
+        )
+    )
+
+
+declare(
+    "container",
+    "manifest-sig-unverifiable-continues",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_MANIFEST_RECORD_DIGEST"),
+    build=lambda case_dir: _manifest_signature_unverifiable_continues_files(),
+    records=[],
+    expected_container={"record_count": 0},
+    notes="S7(2)/§14.5: an unverifiable manifest signature (here: no keyset, so "
+    "the signing key is not available, E_KEY_UNKNOWN) MUST NOT stop record "
+    "processing. The records-listing phase then finds a record file whose bytes "
+    "do not match its digest (E_MANIFEST_RECORD_DIGEST), so both container "
+    "errors are reported and no record verdicts are produced.",
+)
+
+declare(
+    "container",
+    "manifest-record-extra-and-missing",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_RECORD_EXTRA", "E_MANIFEST_RECORD_MISSING"),
+    build=lambda case_dir: _record_extra_and_missing_files(),
+    records=[],
+    expected_container={"record_count": 0},
+    notes="S8(1)/§11.6: the records-listing phase reports every independent "
+    "defect it detects. The manifest lists a record file that was renamed, so "
+    "that file is missing and the renamed file is extra (its name is "
+    "well-formed but unlisted); the complete sorted set is reported.",
+)
+
+declare(
+    "container",
+    "manifest-unsigned-missing-sigfile",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_UNSIGNED",),
+    build=lambda case_dir: _manifest_sigfile_missing_files(),
+    records=[],
+    notes="S8(2)/§11.1: the required attestation file signatures/manifest.sig.json "
+    "is absent. The registry assigns the no-signatures condition to "
+    "E_MANIFEST_UNSIGNED, not to a manifest schema error.",
+)
+
+declare(
+    "container",
+    "manifest-unknown-member",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _manifest_unknown_member_files(),
+    records=[],
+    notes="F2/S8(6): the manifest is a closed object owned by §11.2; an unknown "
+    "member is E_MANIFEST_SCHEMA (not the envelope-level E_ENV_UNKNOWN_FIELD).",
+)
+
+declare(
+    "container",
+    "attestation-unknown-member",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _attestation_unknown_member_files(),
+    records=[],
+    notes="F2/S8(6): the attestation file is a closed object owned by §11.3; an "
+    "unknown member is E_MANIFEST_SCHEMA.",
+)
+
+# -- S7(3): erasure crash regression and S7(4)/S8(3) declarations -----------------
+
+
+def _erasure_missing_target() -> dict[str, Any]:
+    attestation = erasure_record(erased_original())
+    body = dict(attestation["body"])
+    del body["erased"]
+    mutated = {name: value for name, value in attestation.items() if name != "sigs"}
+    mutated["body"] = body
+    return recordlib.signed(mutated, "human-1")
+
+
+declare(
+    "erasure",
+    "missing-target",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_KIND_BODY_SCHEMA",),
+    build=lambda case_dir: {"record.json": canonical(_erasure_missing_target())},
+    args=ERASURE_ARGS,
+    notes="S7(3): a weave.erasure body without the required `erased` reference is "
+    "a kind body schema error (E_KIND_BODY_SCHEMA); the reference verifier used "
+    "to crash on this input. The record is otherwise genuinely signed.",
+)
+
+
+def _declaration_without_public_key() -> dict[str, Any]:
+    body = {
+        "algorithm": "ed25519",
+        "key": kid("human-2"),
+        "key_type": "human",
+    }
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id="key-declared-missing-public-key",
+        actor=recordlib.actor("human-2"),
+        body=body,
+        stage="accepted",
+        recorded_at=recordlib.T0,
+        origin_instance=kid("human-2"),
+    )
+    return recordlib.signed(record, "human-2")
+
+
+def _declared_unknown_alg_selfsig() -> dict[str, Any]:
+    name = "agent-unknown-alg-selfsig"
+    record = derived_declaration(
+        record_id="key-declared-unknown-alg-selfsig",
+        key_name=name,
+        key_type="agent",
+        owner="human-1",
+        cosigners=("human-1",),
+    )
+    _private, _public, self_id = derived_key(name)
+    for entry in record["sigs"]:
+        if entry["key"] == self_id:
+            entry["alg"] = "ed25518"
+    return record
+
+
+declare(
+    "key-lifecycle",
+    "declared-missing-public-key",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_KEY_PUBLIC_KEY",),
+    build=lambda case_dir: {
+        "record.json": canonical(_declaration_without_public_key())
+    },
+    args=("--keys", "@keyset"),
+    notes="S8(3): a weave.key.declared without body.public_key is invalid "
+    "E_KEY_PUBLIC_KEY. The structure error precedes the trust judgement, and "
+    "invalid is more conservative than unverifiable.",
+)
+
+declare(
+    "key-lifecycle",
+    "declared-unknown-alg-selfsig",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_KEY_DECLARED_NOT_SELF_SIGNED",),
+    build=lambda case_dir: {
+        "record.json": canonical(_declared_unknown_alg_selfsig())
+    },
+    args=("--keys", "@keyset"),
+    notes="S7(4): the declaration's self-signature entry uses an unknown "
+    "algorithm and is ignored (§3.6), while the owner cosignature is a valid "
+    "known-algorithm signature. A known-algorithm declared-key signature exists "
+    "but not by the required signer, so the dedicated kind code "
+    "E_KEY_DECLARED_NOT_SELF_SIGNED applies (not E_KEY_UNKNOWN).",
+)
+
+# -- S1: governing keyset class and window --------------------------------------
+
+
+def _class_declaration(
+    key_name: str, claimed_type: str, record_id: str, recorded_at: str
+) -> dict[str, Any]:
+    material = key(key_name)
+    body = {
+        "algorithm": "ed25519",
+        "key": kid(key_name),
+        "key_type": claimed_type,
+        "public_key": material.public_b64url(),
+    }
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id=record_id,
+        actor={"type": claimed_type, "key": kid(key_name)},
+        body=body,
+        stage="accepted",
+        recorded_at=recorded_at,
+        origin_instance=kid(key_name),
+    )
+    return recordlib.signed(record, key_name)
+
+
+def _human_act_note(
+    key_name: str, record_id: str, recorded_at: str
+) -> dict[str, Any]:
+    record = recordlib.build_record(
+        kind="example.note",
+        id=record_id,
+        actor={"type": "human", "key": kid(key_name)},
+        body={"text": "human act"},
+        stage="accepted",
+        recorded_at=recorded_at,
+        origin_instance=kid(key_name),
+    )
+    return recordlib.signed(record, key_name)
+
+
+def _class_conflict_files(*, attack: bool) -> dict[str, bytes]:
+    records: list[dict[str, Any]] = []
+    if attack:
+        records.append(
+            _class_declaration(
+                "agent-1",
+                "human",
+                "key-class-conflict-declaration",
+                recordlib.EARLY,
+            )
+        )
+    records.append(
+        _human_act_note("agent-1", "key-class-conflict-note", recordlib.T4)
+    )
+    return _wrap_internal(recordlib.build_container(records))
+
+
+def _windowed_human2_keyset() -> dict[str, bytes]:
+    windowed = recordlib.key_declaration(
+        "human-2",
+        record_id="key-declared-human-2-windowed",
+        valid_until=recordlib.T2,
+    )
+    return {
+        "keyset/key-declared-human-1.json": _keyset_copy("key-declared-human-1.json"),
+        "keyset/key-declared-human-2.json": canonical(windowed),
+    }
+
+
+def _window_attack_files() -> dict[str, bytes]:
+    redeclared = recordlib.key_declaration(
+        "human-2",
+        record_id="key-declared-human-2-window-attack",
+        recorded_at=recordlib.EARLY,
+        valid_from=recordlib.EARLY,
+        valid_until=recordlib.LATE,
+    )
+    note = _human_act_note("human-2", "key-window-attack-note", recordlib.T4)
+    files = _windowed_human2_keyset()
+    files.update(_wrap_internal(recordlib.build_container([redeclared, note])))
+    return files
+
+
+def _window_control_files() -> dict[str, bytes]:
+    redeclared = recordlib.key_declaration(
+        "human-2",
+        record_id="key-declared-human-2-redeclaration-control",
+        recorded_at=recordlib.EARLY,
+    )
+    note = _human_act_note("human-2", "key-window-control-note", recordlib.T4)
+    return _wrap_internal(recordlib.build_container([redeclared, note]))
+
+
+declare(
+    "key-lifecycle",
+    "redeclare-class-conflict",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ACTOR_KEY_TYPE_MISMATCH", "E_KEY_CLASS_CONFLICT"),
+    build=lambda case_dir: _class_conflict_files(attack=True),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "key-class-conflict-declaration",
+            "verdict": "invalid",
+            "errors": ["E_KEY_CLASS_CONFLICT"],
+        },
+        {
+            "id": "key-class-conflict-note",
+            "verdict": "invalid",
+            "errors": ["E_ACTOR_KEY_TYPE_MISMATCH"],
+        },
+    ),
+    notes="S1/§5.3: `agent-1` is trusted from the local keyset as an agent, so a "
+    "backdated self-signed re-declaration claiming `human` cannot reclassify it: "
+    "the declaration is invalid E_KEY_CLASS_CONFLICT and the human-act record "
+    "signed by that key stays E_ACTOR_KEY_TYPE_MISMATCH.",
+)
+
+declare(
+    "key-lifecycle",
+    "redeclare-class-conflict-control",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ACTOR_KEY_TYPE_MISMATCH",),
+    build=lambda case_dir: _class_conflict_files(attack=False),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "key-class-conflict-note",
+            "verdict": "invalid",
+            "errors": ["E_ACTOR_KEY_TYPE_MISMATCH"],
+        },
+    ),
+    notes="S1 control group: the same container without the malicious "
+    "re-declaration has only the human-act mismatch, proving that the "
+    "E_KEY_CLASS_CONFLICT vector's declaration is what drives the attack.",
+)
+
+declare(
+    "key-lifecycle",
+    "redeclare-window-attack",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_EXPIRED",),
+    build=lambda case_dir: _window_attack_files(),
+    args=("--keys", "keyset"),
+    records=(
+        {
+            "id": "key-declared-human-2-window-attack",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": "key-window-attack-note",
+            "verdict": "invalid",
+            "errors": ["E_KEY_EXPIRED"],
+        },
+    ),
+    notes="S1/§5.3: the local keyset declares human-2 with valid_until=T2. A "
+    "backdated container re-declaration widening the window is same-class and "
+    "therefore valid, but it MUST NOT override the keyset's class or window: "
+    "the note signed by human-2 at T4 is E_KEY_EXPIRED.",
+)
+
+declare(
+    "key-lifecycle",
+    "redeclare-window-control",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _window_control_files(),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "key-declared-human-2-redeclaration-control",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {"id": "key-window-control-note", "verdict": "valid", "errors": []},
+    ),
+    notes="S1 control: a same-class re-declaration that does not change the "
+    "window is valid and leaves the trusted key usable, so the container is "
+    "valid.",
+)
+
+# -- S2: order-independent revocations and keyset revocations --------------------
+
+
+def _key_multi_revocation_files(order: str) -> dict[str, bytes]:
+    note = _human_act_note("human-2", "key-multi-revocation-note", recordlib.T4)
+    early = recordlib.key_revocation(
+        "human-2",
+        reason="retired",
+        effective_at=recordlib.T2,
+        recorded_at=recordlib.T3,
+        record_id="key-revoked-human-2-early",
+    )
+    early_digest = recordlib.record_digest(early)
+    for index in range(256):
+        late = recordlib.key_revocation(
+            "human-2",
+            reason="retired",
+            effective_at=recordlib.T6,
+            recorded_at=recordlib.T7,
+            record_id="key-revoked-human-2-late-%d" % index,
+        )
+        early_first = early_digest < recordlib.record_digest(late)
+        if early_first == (order == "early-first"):
+            return _wrap_internal(
+                recordlib.build_container([note, early, late])
+            )
+    raise SystemExit("no deterministic revocation record id gives the requested order")
+
+
+def _keyset_revocation_files() -> dict[str, bytes]:
+    revocation = recordlib.key_revocation(
+        "human-2",
+        reason="retired",
+        effective_at=recordlib.T2,
+        recorded_at=recordlib.T3,
+        record_id="key-revoked-human-2-keyset",
+        signer_name="human-1",
+    )
+    note = _human_act_note("human-2", "key-keyset-revocation-note", recordlib.T4)
+    files = {
+        "keyset/key-declared-human-1.json": _keyset_copy(
+            "key-declared-human-1.json"
+        ),
+        "keyset/key-declared-human-2.json": _keyset_copy(
+            "key-declared-human-2.json"
+        ),
+        "keyset/key-revoked-human-2-keyset.json": canonical(revocation),
+    }
+    files.update(_wrap_internal(recordlib.build_container([note])))
+    return files
+
+
+declare(
+    "key-lifecycle",
+    "multi-revocation-order-a",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _key_multi_revocation_files("early-first"),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "key-multi-revocation-note",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+    ),
+    notes="S2/§9.4: two retired revocations of human-2 with different "
+    "effective_at (T2 applies to the note at T4, T6 does not). This case has the "
+    "revocation set in one numeric-digest order; the conclusion must be the "
+    "same regardless of order.",
+)
+
+declare(
+    "key-lifecycle",
+    "multi-revocation-order-b",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _key_multi_revocation_files("late-first"),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "key-multi-revocation-note",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+    ),
+    notes="S2/§9.4: the same revocation set as multi-revocation-order-a, with "
+    "record bytes chosen so the numeric digests (and therefore the manifest "
+    "order) are reversed; the note is E_KEY_REVOKED in both orders because every "
+    "effective revocation in the context counts.",
+)
+
+declare(
+    "key-lifecycle",
+    "keyset-revocation",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _keyset_revocation_files(),
+    args=("--keys", "keyset"),
+    records=(
+        {
+            "id": "key-keyset-revocation-note",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+    ),
+    notes="S2/§14.1: revocations supplied by the local keyset take part in key "
+    "state exactly like container records. human-2 is revoked (retired, "
+    "effective T2) in the keyset, so the note signed at T4 is E_KEY_REVOKED.",
+)
+
+
+_COMPROMISE_EARLY = "2026-10-31T00:00:00.000Z"
+_COMPROMISE_LATE = "2026-11-02T00:00:00.000Z"
+
+
+def _compromise_multi_revocation_files(order: str) -> dict[str, bytes]:
+    note = record_signed_by(
+        "key-compromised",
+        "key-compromise-earliest-note",
+        recorded_at=recordlib.T4,
+        stage="accepted",
+    )
+    early = recordlib.key_revocation(
+        "key-compromised",
+        reason="key-compromise",
+        effective_at=_COMPROMISE_EARLY,
+        recorded_at=recordlib.T8,
+        record_id="key-revoked-compromise-earliest",
+    )
+    early_digest = recordlib.record_digest(early)
+    for index in range(256):
+        late = recordlib.key_revocation(
+            "key-compromised",
+            reason="key-compromise",
+            effective_at=_COMPROMISE_LATE,
+            recorded_at=recordlib.T8,
+            record_id="key-revoked-compromise-later-%d" % index,
+        )
+        early_first = early_digest < recordlib.record_digest(late)
+        if early_first == (order == "early-first"):
+
+            def builder(imprint: bytes):
+                return [
+                    ("signatures/timestamp-1.tsr", _crafted_tsr(imprint), None)
+                ]
+
+            files = _build_timestamped_container(
+                [note, early, late], builder, level="L2"
+            )
+            return {**wrap(files), TSA_CERT_NAME: TSA_CERT()}
+    raise SystemExit("no deterministic revocation record id gives the requested order")
+
+
+declare(
+    "key-lifecycle",
+    "compromise-earliest-revocation-a",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED",),
+    build=lambda case_dir: _compromise_multi_revocation_files("early-first"),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    records=(
+        {
+            "id": "key-compromise-earliest-note",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+        },
+    ),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": True,
+    },
+    notes="S2/§9.4: with two key-compromise revocations the rescue bound uses the "
+    "earliest effective_at (2026-10-31). The trusted receipt's genTime "
+    "(2026-11-01) is not before it, so the signature is not rescued: "
+    "E_KEY_COMPROMISED. The revocation set is in one numeric-digest order.",
+)
+
+declare(
+    "key-lifecycle",
+    "compromise-earliest-revocation-b",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED",),
+    build=lambda case_dir: _compromise_multi_revocation_files("late-first"),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    records=(
+        {
+            "id": "key-compromise-earliest-note",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+        },
+    ),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": True,
+    },
+    notes="S2/§9.4: same compromise revocation set as "
+    "compromise-earliest-revocation-a in the reversed numeric-digest order; the "
+    "earliest effective_at governs, so the conclusion does not depend on order.",
+)
+
+# -- S9: grants issued for future effect ---------------------------------------
+
+
+def _preissued_grant() -> dict[str, Any]:
+    return root_grant(
+        record_id="grant-preissued-root",
+        kinds=("example.note",),
+        actions=("propose", "accept"),
+        valid_from=recordlib.T1,
+        valid_until=recordlib.T9,
+        recorded_at=recordlib.T0,
+    )
+
+
+def _preissued_grant_covered_files() -> dict[str, bytes]:
+    grant = _preissued_grant()
+    note = agent_action(
+        grant,
+        record_id="grant-preissued-covered-note",
+        recorded_at=recordlib.T2,
+        stage="accepted",
+    )
+    return _wrap_internal(recordlib.build_container([grant, note]))
+
+
+def _preissued_grant_before_valid_from_files() -> dict[str, bytes]:
+    grant = _preissued_grant()
+    note = agent_action(
+        grant,
+        record_id="grant-preissued-early-note",
+        recorded_at=recordlib.T0,
+        stage="accepted",
+    )
+    return _wrap_internal(recordlib.build_container([grant, note]))
+
+
+declare(
+    "grant",
+    "root-valid-from-after-recorded",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda case_dir: {
+        "record.json": canonical(_preissued_grant())
+    },
+    args=GRANT_ARGS,
+    limitations=("L_OFFLINE_CONTEXT",),
+    notes="S9/§5.5.2: a grant may be issued for future effect. The grant record's "
+    "own validity window is not compared with its own recorded_at, so this "
+    "pre-issued root grant (recorded_at T0, valid_from T1) is valid.",
+)
+
+declare(
+    "grant",
+    "pre-issued-grant-covers-record",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _preissued_grant_covered_files(),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "grant-preissued-root", "verdict": "valid", "errors": []},
+        {"id": "grant-preissued-covered-note", "verdict": "valid", "errors": []},
+    ),
+    notes="S9/§5.4: the grant covers other records at each covered record's own "
+    "recorded_at; the agent note at T2 is inside the grant's T1..T9 window.",
+)
+
+declare(
+    "grant",
+    "record-before-grant-valid-from",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_GRANT_EXPIRED",),
+    build=lambda case_dir: _preissued_grant_before_valid_from_files(),
+    args=GRANT_ARGS,
+    records=(
+        {
+            "id": "grant-preissued-early-note",
+            "verdict": "unverifiable",
+            "errors": ["E_GRANT_EXPIRED"],
+        },
+    ),
+    notes="S9/§5.4: a record covered by the pre-issued grant is judged at its own "
+    "recorded_at; before valid_from the grant is not yet valid, so the note is "
+    "unverifiable E_GRANT_EXPIRED.",
+)
+
+# -- S10: invalid revocations do not revoke; chain depth boundary ----------------
+
+
+def _invalid_grant_revocation_ineffective_files() -> dict[str, bytes]:
+    grant = root_grant(
+        record_id="grant-invalid-revocation-target",
+        kinds=("example.note",),
+        actions=("propose", "accept"),
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T9,
+    )
+    revocation = grant_revocation(
+        grant,
+        record_id="grant-invalid-revocation-record",
+        signer="org-1",
+        effective_at=recordlib.T2,
+    )
+    note = agent_action(
+        grant,
+        record_id="grant-invalid-revocation-note",
+        recorded_at=recordlib.T4,
+        stage="accepted",
+    )
+    return _wrap_internal(recordlib.build_container([grant, revocation, note]))
+
+
+def _grant_chain_records(
+    links: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    root = root_grant(
+        record_id="grant-depth-root",
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "propose", "accept"),
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T9,
+        transferable=True,
+    )
+    records = [root]
+    parent = root
+    grantee = "agent-2"
+    final_grantee = grantee
+    for index in range(links):
+        final_grantee = grantee
+        sub_granter = "agent-1" if index % 2 == 0 else "agent-2"
+        child = delegated_grant(
+            parent,
+            record_id="grant-depth-%d" % (index + 1),
+            sub_granter=sub_granter,
+            grantee=grantee,
+            kinds=("weave.grant", "example.note"),
+            actions=("grant", "propose", "accept"),
+            valid_from=recordlib.T0,
+            valid_until=recordlib.T9,
+            transferable=True,
+        )
+        records.append(child)
+        parent = child
+        grantee = "agent-1" if index % 2 == 0 else "agent-2"
+    return records, parent, final_grantee
+
+
+def _grant_chain_files(links: int, *, note_id: str) -> dict[str, bytes]:
+    records, deepest, final_grantee = _grant_chain_records(links)
+    note = agent_action(
+        deepest,
+        record_id=note_id,
+        key_name=final_grantee,
+        recorded_at=recordlib.T4,
+        stage="accepted",
+    )
+    return _wrap_internal(recordlib.build_container(records + [note]))
+
+
+declare(
+    "grant",
+    "invalid-revocation-ineffective",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_GRANT_REVOKE_SIGNER",),
+    build=lambda case_dir: _invalid_grant_revocation_ineffective_files(),
+    args=GRANT_ARGS,
+    records=(
+        {
+            "id": "grant-invalid-revocation-target",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": "grant-invalid-revocation-record",
+            "verdict": "invalid",
+            "errors": ["E_GRANT_REVOKE_SIGNER"],
+        },
+        {
+            "id": "grant-invalid-revocation-note",
+            "verdict": "valid",
+            "errors": [],
+        },
+    ),
+    notes="S10(a)/§5.5.4: a grant revocation signed by an unauthorised key is "
+    "invalid and does not revoke the target grant, so the agent note recorded "
+    "after its effective_at stays valid; the container is invalid because of the "
+    "bad revocation record itself.",
+)
+
+declare(
+    "grant",
+    "chain-depth-8-valid",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _grant_chain_files(8, note_id="grant-depth-8-note"),
+    args=GRANT_ARGS,
+    notes="S10/§5.5.2 step 7: the depth bound is an inclusive endpoint. Eight "
+    "parent links (nine grants) from the deepest grant to the root are supported, "
+    "so the chain and the record citing its deepest grant are valid.",
+)
+
+declare(
+    "grant",
+    "chain-depth-9-links",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_GRANT_UNRESOLVED",),
+    build=lambda case_dir: _grant_chain_files(9, note_id="grant-depth-9-note"),
+    args=GRANT_ARGS,
+    records=(
+        {
+            "id": "grant-depth-9-note",
+            "verdict": "unverifiable",
+            "errors": ["E_GRANT_UNRESOLVED"],
+        },
+    ),
+    notes="S10/§5.5.2 step 7: one more link than the inclusive bound of eight is "
+    "unverifiable E_GRANT_UNRESOLVED at the ninth link (the closed-form root "
+    "cannot be reached within the supported depth).",
+)
+
+# -- S11/S12: TSA accuracy bound and limitation identifiers ---------------------
+
+
+declare(
+    "integrity-levels",
+    "l2-accuracy-over-limit",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_SCHEMA",),
+    build=lambda case_dir: _crafted_l2_files(
+        case_dir,
+        tsr_factory=lambda imprint: _crafted_tsr(
+            imprint, accuracy=(86_401, 0, 0)
+        ),
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    notes="S11/§13: MAX_TS_ACCURACY is 86,400 seconds. A test-TSA-signed receipt "
+    "with accuracy.seconds = 86,401 is E_TS_SCHEMA (invalid), so the container is "
+    "invalid and the receipt can never be rescue evidence.",
+)
+
+declare(
+    "integrity-levels",
+    "l2-accuracy-overflow",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_SCHEMA",),
+    build=lambda case_dir: _crafted_l2_files(
+        case_dir,
+        tsr_factory=lambda imprint: _crafted_tsr(
+            imprint, accuracy=(10**13, 0, 0)
+        ),
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    notes="S11/§12.2 row 13: converting accuracy.seconds = 10^13 to integer "
+    "microseconds overflows a signed 64-bit value; that is E_TS_SCHEMA, reported "
+    "as a container error without crashing.",
+)
+
+declare(
+    "integrity-levels",
+    "l2-without-trust-limitations",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_TS_UNTRUSTED",),
+    build=lambda case_dir: _crafted_l2_files(case_dir, trust_name=None),
+    args=LEVEL_ARGS,
+    expected_container={"level_claimed": "L2", "anchor_verified": False},
+    limitations=(
+        "L_CHAIN_CLAIM_UNVERIFIED",
+        "L_OFFLINE_CONTEXT",
+        "L_TSA_TRUST_UNVERIFIED",
+    ),
+    notes="S12/§14.9: the report lists limitation identifiers only. Timestamps "
+    "are present but no matching anchor was supplied, so the container is "
+    "unverifiable (E_TS_UNTRUSTED) and the report carries L_TSA_TRUST_UNVERIFIED "
+    "plus the always-present L_OFFLINE_CONTEXT.",
+)
+
+
+def _context_trusted_tofu_files() -> dict[str, bytes]:
+    private, public, key_id = derived_key("context-trusted-human")
+    body = {
+        "algorithm": "ed25519",
+        "key": key_id,
+        "key_type": "human",
+        "public_key": keyutil.b64url_encode(public),
+    }
+    declaration = recordlib.build_record(
+        kind="weave.key.declared",
+        id="key-declared-context-trusted",
+        actor={"type": "human", "key": key_id},
+        body=body,
+        stage="accepted",
+        recorded_at=recordlib.T0,
+        origin_instance=key_id,
+    )
+    signatures = [
+        _derived_signature(private, key_id, declaration),
+        recordlib.sig_entry(declaration, "human-1"),
+    ]
+    signatures.sort(key=lambda entry: entry["key"])
+    declaration["sigs"] = signatures
+    consent_body = {
+        "purpose": "vector test consent",
+        "scope": ["test-scope"],
+        "valid_from": recordlib.T0,
+        "valid_until": None,
+        "data_subject": None,
+        "terms": None,
+    }
+    consent = recordlib.build_record(
+        kind="weave.consent.granted",
+        id="consent-context-trusted",
+        actor={"type": "human", "key": key_id},
+        body=consent_body,
+        stage="accepted",
+        recorded_at=recordlib.T0,
+        origin_instance=key_id,
+    )
+    consent["sigs"] = [_derived_signature(private, key_id, consent)]
+    return _wrap_internal(recordlib.build_container([declaration, consent]))
+
+
+declare(
+    "key-lifecycle",
+    "context-trusted-tofu-limitations",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _context_trusted_tofu_files(),
+    args=("--keys", "@keyset"),
+    notices=("N_KEY_TOFU",),
+    limitations=("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT"),
+    records=(
+        {"id": "key-declared-context-trusted", "verdict": "valid", "errors": []},
+        {"id": "consent-context-trusted", "verdict": "valid", "errors": []},
+    ),
+    notes="S12/§14.9: a fresh human key is declared in the container and trusted "
+    "through the keyset root's cosignature. The signature material came from a "
+    "context declaration, so the report carries N_KEY_TOFU and the limitation "
+    "identifiers L_KEY_TRUST_TOFU and L_OFFLINE_CONTEXT.",
+)
+
+# -- S8(11): check-order precedence (crypto before lifecycle, file before renewal) --
+
+
+def _compromise_sig_invalid_precedence_files() -> dict[str, bytes]:
+    revocation = recordlib.key_revocation(
+        "key-compromised",
+        reason="key-compromise",
+        effective_at=recordlib.T2,
+        recorded_at=recordlib.T3,
+        record_id="key-revoked-compromise-precedence",
+    )
+    note = record_signed_by(
+        "key-compromised",
+        "key-compromise-precedence-note",
+        recorded_at=recordlib.T4,
+        stage="accepted",
+    )
+    entries = [dict(entry) for entry in note["sigs"]]
+    raw = keyutil.b64url_decode(entries[0]["value"], expected_len=64)
+    entries[0]["value"] = keyutil.b64url_encode(bytes([raw[0] ^ 0x01]) + raw[1:])
+    note["sigs"] = entries
+    return _wrap_internal(recordlib.build_container([revocation, note]))
+
+
+declare(
+    "key-lifecycle",
+    "compromise-sig-invalid-precedence",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_SIG_INVALID",),
+    build=lambda case_dir: _compromise_sig_invalid_precedence_files(),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "key-compromise-precedence-note",
+            "verdict": "invalid",
+            "errors": ["E_SIG_INVALID"],
+        },
+    ),
+    notes="S8(11)/§14.5: the Ed25519 cryptographic steps run before the "
+    "lifecycle checks. This record is signed by a key-compromise-revoked key "
+    "AND its signature value is tampered, so the first failing check is the "
+    "cryptographic one: E_SIG_INVALID, not E_KEY_COMPROMISED.",
+)
+
+
+def _l2_ts_file_before_renewal_files() -> dict[str, bytes]:
+    def builder(imprint: bytes):
+        first = _crafted_tsr(imprint)
+        second = _crafted_tsr(_sha256_bytes(first + imprint))
+        return [
+            ("signatures/timestamp-1.tsr", first, None),
+            (
+                "signatures/timestamp-2.tsr",
+                second,
+                "signatures/timestamp-1.tsr",
+            ),
+        ]
+
+    files = _build_timestamped_container(SIMPLE_RECORDS(), builder, level="L2")
+
+    def mutator(sigfile: dict[str, Any]) -> dict[str, Any]:
+        timestamps = [dict(entry) for entry in sigfile["timestamps"]]
+        timestamps[0]["digest"] = "sha256:" + "99" * 32
+        timestamps[1]["renews"] = "signatures/timestamp-3.tsr"
+        return {**sigfile, "timestamps": timestamps}
+
+    files = mutate_sigfile(files, mutator)
+    return {**wrap(files), TSA_CERT_NAME: TSA_CERT()}
+
+
+declare(
+    "integrity-levels",
+    "l2-ts-file-before-renewal",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_FILE",),
+    build=lambda case_dir: _l2_ts_file_before_renewal_files(),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    notes="S8(11)/§12.2: a listed receipt whose bytes do not match its listed "
+    "digest (E_TS_FILE) is reported before the broken renewal chain "
+    "(E_TS_RENEWAL): the listed checks run in order and report the first "
+    "failing check. The receipt file itself is intact; only its listed digest "
+    "is wrong.",
+)
+
+
 # === END CASE SECTIONS ===
 
 
@@ -4895,6 +6198,12 @@ def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
         expected["expected_resolution"] = list(case.expected_resolution)
     if case.expected_container is not None:
         expected["expected_container"] = case.expected_container
+    if case.expected_input is not None:
+        expected["expected_input"] = case.expected_input
+    if case.limitations is not None:
+        expected["limitations"] = list(case.limitations)
+    if case.notices_absent is not None:
+        expected["notices_absent"] = list(case.notices_absent)
     if case.records is not None:
         expected["records"] = list(case.records)
     if case.notes:
@@ -5039,8 +6348,18 @@ def select_frozen_cases(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return [selected[case_id] for case_id in sorted(selected)]
 
 
-def freeze_cases(*, source_commit: str, freeze_date: str) -> int:
-    """Copy the representative set verbatim into vectors/frozen/<version>/."""
+def freeze_cases(
+    *, source_commit: str, freeze_date: str, delta_markdown: str | None = None
+) -> int:
+    """Copy the representative set verbatim into vectors/frozen/<version>/.
+
+    ``delta_markdown`` is an optional reviewed "what changed in this
+    regeneration" section appended to ``FROZEN.md`` before the checksums are
+    computed (S17 requires every changed case to be listed with its old and new
+    conclusion and the ruling it belongs to). The delta text is review
+    documentation for one regeneration and is not committed separately, so a
+    later ``--freeze`` run must supply the text for that regeneration itself.
+    """
     rows = _all_case_expected()
     selected = select_frozen_cases(rows)
     destination = VECTORS_DIR / "frozen" / FREEZE_VERSION
@@ -5133,6 +6452,9 @@ def freeze_cases(*, source_commit: str, freeze_date: str) -> int:
             "",
         ]
     )
+    if delta_markdown:
+        lines.append(delta_markdown.rstrip("\n"))
+        lines.append("")
     (destination / "FROZEN.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (destination / "FROZEN_CASE_COUNT").write_text(
         "%d\n" % len(selected), encoding="utf-8"
@@ -5185,6 +6507,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="YYYY-MM-DD",
         help="freeze date recorded in FROZEN.md (default: today, UTC)",
     )
+    parser.add_argument(
+        "--frozen-delta",
+        metavar="PATH",
+        help="reviewed delta section appended to FROZEN.md (S17 regeneration "
+        "documentation; read before the checksums are computed)",
+    )
     arguments = parser.parse_args(argv)
     if arguments.freeze:
         if not arguments.frozen_source_commit:
@@ -5195,8 +6523,13 @@ def main(argv: list[str] | None = None) -> int:
         freeze_date = arguments.freeze_date or datetime.datetime.now(
             datetime.timezone.utc
         ).strftime("%Y-%m-%d")
+        delta_markdown = None
+        if arguments.frozen_delta:
+            delta_markdown = Path(arguments.frozen_delta).read_text(encoding="utf-8")
         return freeze_cases(
-            source_commit=arguments.frozen_source_commit, freeze_date=freeze_date
+            source_commit=arguments.frozen_source_commit,
+            freeze_date=freeze_date,
+            delta_markdown=delta_markdown,
         )
     problems = write_all(check=arguments.check, only=arguments.only)
     if "hyphaweave_verify" in sys.modules:
