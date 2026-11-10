@@ -129,6 +129,10 @@ struct SigFacts {
     unknown_keys: Vec<String>,
     /// First invalid known-algorithm signature in array order.
     first_invalid: Option<Code>,
+    /// First unverifiable known-algorithm signature in array order whose code
+    /// is not `E_KEY_UNKNOWN` (for example `E_TS_UNTRUSTED` from the §9.4
+    /// compromise rule).
+    first_unverifiable: Option<Code>,
 }
 
 impl SigFacts {
@@ -247,6 +251,11 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
             return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
         }
     }
+    if let Some(code) = facts.first_unverifiable {
+        if !world.options.skipped(code) {
+            return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
+        }
+    }
 
     // Ordinary records: required-signer failure is reported immediately after
     // (5), before the kind body check (§14.5, §4.4).
@@ -361,6 +370,7 @@ fn collect_signatures(
         known_count: 0,
         unknown_keys: Vec::new(),
         first_invalid: None,
+        first_unverifiable: None,
     };
     let revocation_self_key = revocation_self_key(record);
     for entry in sigs {
@@ -376,6 +386,12 @@ fn collect_signatures(
         let ignore_revocation = revocation_self_key
             .as_deref()
             .filter(|key| *key == entry.key);
+        let owner_cosignature = envelope.kind == "weave.key.declared"
+            && record
+                .object
+                .get_object("body")
+                .and_then(|body| body.get_str("owner"))
+                .is_some_and(|owner| owner == entry.key);
         let resolution = world.check_signature(
             &entry.key,
             &entry.decoded_value,
@@ -384,6 +400,7 @@ fn collect_signatures(
             self_material.as_deref(),
             false,
             ignore_revocation,
+            owner_cosignature,
         );
         match &resolution.state {
             SigState::Valid => {
@@ -404,8 +421,14 @@ fn collect_signatures(
                     state: "invalid".to_owned(),
                 });
             }
-            SigState::Unverified(_) => {
-                facts.unknown_keys.push(entry.key.clone());
+            SigState::Unverified(code) => {
+                if *code == e::KEY_UNKNOWN {
+                    facts.unknown_keys.push(entry.key.clone());
+                } else if facts.first_unverifiable.is_none() {
+                    // §9.4 case 2 (E_TS_UNTRUSTED) and similar established-key
+                    // outcomes: unverifiable, but not an unknown-key failure.
+                    facts.first_unverifiable = Some(*code);
+                }
                 facts.states.push(SigReportEntry {
                     key: entry.key.clone(),
                     state: "unverified".to_owned(),
@@ -540,43 +563,55 @@ fn check_kind_semantics(
                 Err(e::SIG_UNVERIFIABLE)
             }
         }
-        KindBody::Grant(grant) => {
-            if !facts.any_valid(&envelope.actor.key) {
-                return Err(if facts.has_verifiable_known_signature() {
-                    match grant.action {
-                        GrantActionKind::Grant => e::GRANT_GRANTER,
-                        GrantActionKind::Revoke => e::GRANT_REVOKE_SIGNER,
-                    }
-                } else {
-                    e::SIG_UNVERIFIABLE
-                });
-            }
-            match grant.action {
-                GrantActionKind::Grant => world.check_grant_record_chain(index, envelope.recorded_at),
-                GrantActionKind::Revoke => {
-                    let Some(revoke) = grant.revoke.as_ref() else {
-                        return Err(e::GRANT_SCHEMA);
-                    };
-                    let resolution = world.resolve(&revoke.revokes);
-                    let Some(target) = resolution.target_slot else {
-                        return Err(e::GRANT_REVOKE_REF);
-                    };
-                    if resolution.target_kind.as_deref() != Some("weave.grant") {
-                        return Err(e::GRANT_REVOKE_REF);
-                    }
-                    let authorised = world.authorised_revoker_keys(target);
-                    let signer_ok = facts
-                        .valid_keys
-                        .keys()
-                        .any(|key| authorised.iter().any(|allowed| allowed == key));
-                    if signer_ok {
-                        Ok(())
+        KindBody::Grant(grant) => match grant.action {
+            GrantActionKind::Grant => {
+                if !facts.any_valid(&envelope.actor.key) {
+                    return Err(if facts.has_verifiable_known_signature() {
+                        e::GRANT_GRANTER
                     } else {
-                        Err(e::GRANT_REVOKE_SIGNER)
-                    }
+                        e::SIG_UNVERIFIABLE
+                    });
+                }
+                world.check_grant_record_chain(index, envelope.recorded_at)
+            }
+            GrantActionKind::Revoke => {
+                // §5.5.4 order: the revoked grant reference is checked before
+                // the signer-authority rule.
+                let Some(revoke) = grant.revoke.as_ref() else {
+                    return Err(e::GRANT_SCHEMA);
+                };
+                let target = match world.identity_match(&revoke.revokes) {
+                    Some(target) => target,
+                    None => return Err(e::GRANT_REVOKE_REF),
+                };
+                if world.record_of(target).map(RecordFile::kind) != Some("weave.grant") {
+                    return Err(e::GRANT_REVOKE_REF);
+                }
+                // The target must be an authorising grant, not a revocation
+                // record (§5.5.4: "a weave.grant record" that authorises).
+                match world.body_of(target) {
+                    Some(KindBody::Grant(body)) if body.action == GrantActionKind::Grant => {}
+                    _ => return Err(e::GRANT_REVOKE_REF),
+                }
+                if !facts.any_valid(&envelope.actor.key) {
+                    return Err(if facts.has_verifiable_known_signature() {
+                        e::GRANT_REVOKE_SIGNER
+                    } else {
+                        e::SIG_UNVERIFIABLE
+                    });
+                }
+                let authorised = world.authorised_revoker_keys(target);
+                let signer_ok = facts
+                    .valid_keys
+                    .keys()
+                    .any(|key| authorised.iter().any(|allowed| allowed == key));
+                if signer_ok {
+                    Ok(())
+                } else {
+                    Err(e::GRANT_REVOKE_SIGNER)
                 }
             }
-        }
+        },
         KindBody::ConsentGranted(_) => check_consent_signer(envelope, facts),
         KindBody::ConsentRevoked(revoked) => {
             check_consent_signer(envelope, facts)?;

@@ -938,6 +938,7 @@ impl World {
         &self,
         key_id: &str,
         self_material: Option<&[u8]>,
+        allow_untrusted_declaration: bool,
     ) -> Option<SignatureMaterial> {
         if let Some(bytes) = self_material {
             if bytes.len() == 32 {
@@ -957,13 +958,27 @@ impl World {
                 window: Some((trusted.valid_from, trusted.valid_until)),
             });
         }
-        self.rotation_material
-            .get(key_id)
-            .map(|material| SignatureMaterial {
+        if let Some(material) = self.rotation_material.get(key_id) {
+            return Some(SignatureMaterial {
                 public_key: material.public_key,
                 class: Some(material.class.clone()),
                 window: None,
-            })
+            });
+        }
+        if allow_untrusted_declaration {
+            // Manifest attestation signatures (§11.3) are satisfied by a
+            // signature by a *declared* key; the declaration need not be a
+            // trust root (a container declaration that is E_KEY_UNTRUSTED still
+            // declares the key that signed the manifest).
+            return self
+                .declaration_public_key(key_id)
+                .map(|public_key| SignatureMaterial {
+                    public_key,
+                    class: self.declared_class_any(key_id),
+                    window: None,
+                });
+        }
+        None
     }
 
     /// Checks one signature through the context: key resolution, the §3.4
@@ -983,6 +998,7 @@ impl World {
         self_material: Option<&[u8]>,
         manifest: bool,
         ignore_revocation_for: Option<&str>,
+        allow_untrusted_declaration: bool,
     ) -> SignatureResolution {
         if signature.len() != 64 {
             let code = if manifest {
@@ -992,7 +1008,11 @@ impl World {
             };
             return SignatureResolution::invalid(code);
         }
-        let Some(material) = self.resolve_signature_material(key_id, self_material) else {
+        let Some(material) = self.resolve_signature_material(
+            key_id,
+            self_material,
+            manifest || allow_untrusted_declaration,
+        ) else {
             return SignatureResolution {
                 state: SigState::Unverified(e::KEY_UNKNOWN),
                 key_class: self.declared_class_any(key_id),
@@ -1161,6 +1181,34 @@ impl World {
         let _ = had_parseable;
         // The origin+id exists but no record carries the referenced digest.
         Resolution::simple(UNVERIFIABLE)
+    }
+
+    /// Finds a context record by `(origin, id, digest)` identity, ignoring the
+    /// target's own verdict. Used by the erasure cross-checks, which concern the
+    /// recorded identity rather than the record's individual verdict.
+    pub(crate) fn identity_match(&self, reference: &RefObject) -> Option<usize> {
+        let lookup = (
+            reference.origin.project.clone(),
+            reference.id.clone(),
+        );
+        let indices = self.by_origin_id.get(&lookup)?;
+        for &index in indices {
+            let Some(record) = self.slots[index].record.as_ref() else {
+                continue;
+            };
+            let matches = match &record.parsed {
+                crate::envelope::ParsedRecord::Erased(placeholder) => {
+                    placeholder.digest == reference.digest
+                }
+                crate::envelope::ParsedRecord::Normal(_) => {
+                    record.digest() == reference.digest
+                }
+            };
+            if matches {
+                return Some(index);
+            }
+        }
+        None
     }
 
     /// The record of a slot, when parseable.
@@ -1486,6 +1534,7 @@ impl World {
                 None,
                 true,
                 None,
+                true,
             );
             match resolution.state {
                 SigState::Valid => any_verified = true,
@@ -1612,6 +1661,9 @@ impl World {
                 outcome.container_errors.push(e::ERASE_DIGEST_MISMATCH);
             }
             // Rule 2: the placeholder's attestation must resolve to this record.
+            // Cross-checks use identity+digest matching, not the target's own
+            // verdict: an erasure record can be invalid for its own reasons
+            // (E_ERASE_ACTOR) while still being the attested record.
             let Some(erasure_record) = self.slots[erasure_slot].record.clone() else {
                 continue;
             };
@@ -1657,18 +1709,15 @@ impl World {
             if placeholder_count > 1 {
                 outcome.container_errors.push(e::ERASE_CONTRADICTION);
             }
-            // Rule 2 from the placeholder side: attestation must resolve to a
-            // live erasure record whose erased reference names this placeholder's
-            // original digest.
-            let attestation = self.resolve(&placeholder.attestation);
+            // Rule 2 from the placeholder side: the attestation reference must
+            // resolve to an erasure record (§10.3). The digest agreement between
+            // the erasure record's `erased` reference and the placeholder's
+            // original digest is rule 1, reported from the erasure-record side as
+            // E_ERASE_DIGEST_MISMATCH.
             let mut resolved_ok = false;
-            if attestation.state == FOUND {
-                if let Some(target) = attestation.target_slot {
-                    if let Some(KindBody::Erasure(body)) = self.slots[target].body.clone() {
-                        if body.erased.digest == placeholder.digest {
-                            resolved_ok = true;
-                        }
-                    }
+            if let Some(target) = self.identity_match(&placeholder.attestation) {
+                if self.slots[target].kind() == Some("weave.erasure") {
+                    resolved_ok = true;
                 }
             }
             if !resolved_ok {
