@@ -3,11 +3,13 @@
 
 # Offline verification of a `weave-record/1` L0 container
 
-**Status:** normative companion to `spec/weave-record-1.md`. This document describes how a
-person can verify a signed **L0** container by hand, offline, with nothing but common tools.
-It relies only on the byte-level rules of the specification; it does not use the reference
-verifier and does not need this repository. The worked example in §9 has been executed on
-`vectors/container/l0-minimal/` and its real output is pasted there.
+**Status:** normative companion to `spec/weave-record-1.md`, revision 1. This document
+describes how a person can verify a signed **L0** container by hand, offline, with nothing
+but common tools. It relies only on the byte-level rules of the specification; it does not
+use the reference verifier and does not need this repository. The worked example in §9 has
+been executed on `vectors/container/l0-minimal/` and its real output is pasted there. The
+manual procedure deliberately does not cover L2 timestamps or the L1 chain claim; those are
+declared limitations in §8.
 
 **Decision tags:** [A1c] [C4] [C5] [D1] [D2] [E5] [I1] [I2] [I4] [Q8].
 
@@ -17,9 +19,10 @@ verifier and does not need this repository. The worked example in §9 has been e
   sequence of small readable steps.
 - `sha256sum` — any implementation (GNU coreutils, or the macOS/Darwin build).
 - **OpenSSL 3.x** for Ed25519 raw-signature verification. The macOS system `openssl` is
-  LibreSSL and cannot do `pkeyutl -rawin`; on macOS use Homebrew's OpenSSL, for example
-  `/opt/homebrew/opt/openssl@3/bin/openssl` (OpenSSL 3.6.2 at the time of writing). The
-  examples use `$OSSL` for the path.
+  LibreSSL and cannot do `pkeyutl -rawin`; on such a machine set
+  `OSSL=/opt/homebrew/opt/openssl@3/bin/openssl` (or point it at any OpenSSL 3.x binary).
+  The examples use `${OSSL:-openssl}` and abort with a clear error if the selected binary
+  is not OpenSSL 3.x.
 - A JSON viewer. The examples use `jq` (a common JSON viewer/processor) to pick values out
   of JSON; any viewer works — you can read a value on screen and paste it into a shell
   variable instead. Verdicts never depend on the viewer.
@@ -41,7 +44,18 @@ in your shell.
 ```bash
 # Run from the repository root; adjust C if your container is elsewhere.
 C=vectors/container/l0-minimal/container
-OSSL=/opt/homebrew/opt/openssl@3/bin/openssl
+
+# OpenSSL 3.x is required (Ed25519 raw verify). LibreSSL (the macOS system `openssl`)
+# cannot do `pkeyutl -rawin`, so override $OSSL explicitly on such a machine:
+#   OSSL=/opt/homebrew/opt/openssl@3/bin/openssl
+# On a system whose `openssl` is already OpenSSL 3.x, the default below works.
+OSSL=${OSSL:-openssl}
+if ! "$OSSL" version 2>/dev/null | grep -q '^OpenSSL 3\.'; then
+  echo "error: \$OSSL must be OpenSSL 3.x (LibreSSL cannot verify Ed25519 raw signatures)" >&2
+  "$OSSL" version >&2 2>/dev/null || true
+  exit 2
+fi
+echo "using: $("$OSSL" version)"
 
 W=$(mktemp -d "${TMPDIR:-/tmp}/weave-l0.XXXXXX")
 echo "work directory: $W"
@@ -451,7 +465,12 @@ exiting nonzero if any check fails.
 # Uses only sha256sum, OpenSSL 3.x, jq (JSON viewer) and POSIX base utilities.
 set -u
 C=vectors/container/l0-minimal/container
-OSSL=/opt/homebrew/opt/openssl@3/bin/openssl
+OSSL=${OSSL:-openssl}
+if ! "$OSSL" version 2>/dev/null | grep -q '^OpenSSL 3\.'; then
+  echo "error: \$OSSL must be OpenSSL 3.x (LibreSSL cannot verify Ed25519 raw signatures)" >&2
+  exit 2
+fi
+echo "using: $("$OSSL" version)"
 W=$(mktemp -d "${TMPDIR:-/tmp}/weave-l0.XXXXXX")
 rc=0
 
@@ -600,12 +619,15 @@ exit "$rc"
 ### Worked-example output (actually executed)
 
 The script above was saved to a scratch file (`verify-l0.sh`) and executed from the
-repository root with `bash verify-l0.sh`. Its standard output and exit code are reproduced
-verbatim below, followed by what each step demonstrated. The run is deterministic: no
-network, no current time, no locale.
+repository root as
+`OSSL=/opt/homebrew/opt/openssl@3/bin/openssl bash verify-l0.sh` (the macOS system
+`openssl` is LibreSSL, which the version guard rejects). Its standard output and exit code
+are reproduced verbatim below, followed by what each step demonstrated. The run is
+deterministic: no network, no current time, no locale.
 
 ```text
-$ bash verify-l0.sh
+$ OSSL=/opt/homebrew/opt/openssl@3/bin/openssl bash verify-l0.sh
+using: OpenSSL 3.6.2 7 Apr 2026 (Library: OpenSSL 3.6.2 7 Apr 2026)
 == 1. layout ==
 ./manifest.json
 ./records/e08150ddc301c6ebd26f577a4e71a060b5a575ff287a6fe25bbbc62da664379d.json
@@ -641,8 +663,6 @@ true
 previous_manifest=null
 first container: no previous manifest
 == result: ALL CHECKS PASSED ==
-$ echo $?
-0
 ```
 
 **Exit code 0** — every check passed, agreeing with the vector's `expected.json`
