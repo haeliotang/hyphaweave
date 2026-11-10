@@ -2475,18 +2475,26 @@ Report rules:
   a field is omitted only where this section says it is conditional (`container` for
   non-container targets, `attestation` for non-placeholder records, `cases` for
   non-`vectors` targets) [S16/F9] decided (Inceptless decision 2026-11-11 #2; S16/F9).
-- `input.sha256`/`input.size` identify the target input: for a record target, the record
-  file bytes; for a zip container, the archive bytes (whose identity may be streamed from
-  the archive file, which is read anyway); for a directory container, the digest and byte
-  size of the raw `manifest.json` bytes whenever those bytes can be read — even when the
-  manifest is structurally invalid. `input.sha256` and `input.size` are both `null` whenever
-  the identity cannot be determined within the enforced limits: a record target larger than
-  `MAX_RECORD_BYTES` is read only up to `MAX_RECORD_BYTES + 1` bytes (the whole file is
-  never read or streamed just to fill the report), and a directory container whose
-  `manifest.json` is absent, unreadable, or above `MAX_MANIFEST_BYTES` reports `null` for
-  both (a directory-snapshot hash is never reported). The general undetermined-field rule of
-  this section applies to `input` in exactly these cases
-  [S14][S16/F11] decided (Inceptless decision 2026-11-11 #2; S14/F11; decisions §4.7).
+- `input.sha256`/`input.size` identify the target input:
+  - for a record target, the record file bytes. If the file is larger than
+    `MAX_RECORD_BYTES`, at most `MAX_RECORD_BYTES + 1` bytes are read (the whole file is
+    never read or streamed just to fill the report), the record is `E_JSON_SIZE`, and both
+    `input` fields are `null`;
+  - for a zip container, the archive bytes (whose identity may be streamed from the archive
+    file, which is read anyway);
+  - for a directory container, the identity is two-tier. **(a)** Once `manifest.json` has
+    parsed and its structure has been validated (§11.2), `input.sha256` is the §2.4
+    **manifest digest** and `input.size` is the manifest byte size [Q27]. **(b)** When the
+    raw `manifest.json` bytes were read within `MAX_MANIFEST_BYTES`, but the manifest is not
+    a canonical, structurally valid manifest, or verification stopped before the manifest
+    structure stage (for example at entry enumeration, or because another container file
+    exceeded its size limit), `input.sha256` is the SHA-256 of the **raw `manifest.json`
+    bytes** and `input.size` is their byte size. **(c)** When `manifest.json` is absent,
+    unreadable, or above `MAX_MANIFEST_BYTES`, both are `null`; a directory-snapshot hash is
+    never reported.
+  The general undetermined-field rule of this section applies to `input` in exactly the
+  `null` cases [S14][S16/F11] decided (Inceptless decision 2026-11-11 #2; S14/F11;
+  decisions §4.10).
 - For the `vectors` target, `summary` is `{"case_count": N, "matched": n,
   "mismatched": m}` and conformance for this target is `mismatched == 0`. The per-case
   result array layout and the representation of the `input` identity are
