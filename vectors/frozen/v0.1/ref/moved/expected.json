@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"ref","errors":[],"id":"ref/moved","input":"container","notes":"Same origin+id exists but with a different digest: 'moved' notice, the referring record stays valid (§6).","notices":["N_REF_MOVED"],"target":"container","verdict":"valid"}

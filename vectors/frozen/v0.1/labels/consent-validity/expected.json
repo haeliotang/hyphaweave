@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":["E_CONSENT_VALIDITY"],"id":"labels/consent-validity","input":"container","notes":"A weave.consent.granted record with valid_from > valid_until is invalid with E_CONSENT_VALIDITY (§7.5, H3).","target":"container","verdict":"invalid"}

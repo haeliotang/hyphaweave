@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/personal-with-salt","input":"record.json","notes":"personal records MUST carry a 16-byte base64url salt (§5, §9).","target":"record","verdict":"valid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":[],"id":"sig/valid-two-signers-sorted","input":"record.json","notes":"Two signatures, keys sorted ascending; both verify.","target":"record","verdict":"valid"}

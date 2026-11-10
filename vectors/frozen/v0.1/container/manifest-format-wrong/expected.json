@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_FORMAT"],"id":"container/manifest-format-wrong","input":"container","notes":"manifest.format is not weave-record/1; re-sealed so the digest and signature are internally consistent and only the format check fails.","target":"container","verdict":"invalid"}

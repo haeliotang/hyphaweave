@@ -1,0 +1,1 @@
+{"category":"actor","errors":["E_ENV_ACTOR"],"id":"actor/human-with-agent-members","input":"record.json","notes":"Agent-only members are forbidden on non-agent actors (§5.1).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":["E_LABEL_LOCAL_ONLY_EXPORTED"],"id":"labels/local-only-exported","input":"container","notes":"A local-only record may never appear in an export container (H2, §9.3); the container is invalid.","target":"container","verdict":"invalid"}

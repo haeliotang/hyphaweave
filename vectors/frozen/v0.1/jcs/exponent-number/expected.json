@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NUMBER_NOT_INTEGER"],"id":"jcs/exponent-number","input":"record.json","notes":"Exponent notation is not an integer literal under WR-CJ (§2.6).","target":"record","verdict":"invalid"}
