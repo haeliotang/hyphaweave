@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"erasure","errors":["E_KIND_BODY_SCHEMA"],"id":"erasure/reason-invalid","input":"record.json","notes":"The erasure reason is a closed enum (§10.2); an unknown value is a kind body schema failure. Genuinely signed so the check is reached.","target":"record","verdict":"invalid"}

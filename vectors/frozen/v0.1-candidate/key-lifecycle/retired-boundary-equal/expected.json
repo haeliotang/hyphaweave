@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_REVOKED"],"id":"key-lifecycle/retired-boundary-equal","input":"container","notes":"Boundary Q11/M-2: recorded_at == effective_at belongs to the revocation, so the signature is E_KEY_REVOKED invalid.","target":"container","verdict":"invalid"}
