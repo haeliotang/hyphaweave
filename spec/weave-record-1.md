@@ -1128,6 +1128,11 @@ be `weave.consent.granted` or `weave.consent.revoked`; resolving to any other ki
 `E_REF_KIND_MISMATCH` (invalid). An unresolvable consent reference produces the notice
 `N_CONSENT_UNRESOLVED` and does not by itself change the record verdict [H1][H3].
 
+A `weave.consent.granted` record whose `valid_until` is not `null` MUST satisfy
+`valid_from <= valid_until` (`E_CONSENT_VALIDITY`, invalid). A `weave.consent.revoked`
+record's `revokes` reference MUST resolve to a `weave.consent.granted` record;
+otherwise it is `E_CONSENT_REVOKE_REF` (invalid) [H3].
+
 Withdrawal is immediate [H3]: if the consent referred to by a record is revoked, then any
 record whose claimed `recorded_at` is greater than or equal to the revocation's
 `effective_at` is invalid with `E_CONSENT_REVOKED`. A record with
@@ -1572,7 +1577,8 @@ members:
 file form (§1.8) and the manifest signature is what makes the manifest digest and the
 timestamp list trustworthy. Optional `tsa-cert-<n>.pem` files in `signatures/` are allowed
 and are never trusted on their own (§12.3); every `.tsr` file in `signatures/` MUST appear
-in `timestamps`, and every listed `.tsr` MUST exist.
+in `timestamps`, and every listed `.tsr` MUST exist and hash to its listed digest
+(`E_TS_FILE`, invalid).
 
 ### 11.4 Integrity levels and their reporting
 
