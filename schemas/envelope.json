@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/envelope.json",
   "title": "weave-record/1 record envelope",
-  "description": "JSON Schema Draft 2020-12 for a normal weave-record/1 record envelope (CONTRACT 5). An unknown-kind record body must be an object and is otherwise unconstrained here; the registered-kind schemas under kinds/ constrain it further. Rules JSON Schema cannot express (cross-field equalities, signature ordering, duplicate references, ...) are enforced by tools/check_schemas.py and listed in schemas/README.md.",
+  "description": "JSON Schema Draft 2020-12 for a normal weave-record/1 record envelope. An unknown-kind record body must be an object and is otherwise unconstrained here; the registered-kind schemas under kinds/ constrain it further. Rules JSON Schema cannot express (cross-field equalities, signature ordering, duplicate references, ...) are enforced by tools/check_schemas.py and listed in schemas/README.md.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -149,12 +149,12 @@
   "$defs": {
     "stage": {
       "title": "record stage",
-      "description": "Closed stage vocabulary (CONTRACT 5; DECISIONS G1).",
+      "description": "Closed stage vocabulary: proposed, accepted, rejected, withdrawn, superseded.",
       "enum": ["proposed", "accepted", "rejected", "withdrawn", "superseded"]
     },
     "actor": {
       "title": "record actor",
-      "description": "Closed actor object (CONTRACT 5.1). An agent must name its model, the human it acts for, its grant reference and an idempotency key, except for the three key-lifecycle kinds (CONTRACT 5.1 exception); those four members are forbidden for every other actor type. The kind-dependent agent requirement lives at the record root because it needs the sibling kind member.",
+      "description": "Closed actor object. An agent must name its model, the human it acts for, its grant reference and an idempotency key, except for the three key-lifecycle kinds (those are key self-descriptions, not delegated actions); the four members are forbidden for every other actor type. The kind-dependent agent requirement lives at the record root because it needs the sibling kind.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "key"],
@@ -201,14 +201,14 @@
     },
     "model": {
       "title": "agent model identifier",
-      "description": "provider/model@version: ASCII, 1-256 bytes (CONTRACT 5.1).",
+      "description": "provider/model@version: ASCII, 1-256 bytes.",
       "type": "string",
       "maxLength": 256,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._+-]*$"
     },
     "idempotency_key": {
       "title": "idempotency key",
-      "description": "1-256 Unicode scalar values, no C0/C1/DEL control characters (CONTRACT 5.1).",
+      "description": "1-256 Unicode scalar values, no C0/C1/DEL control characters.",
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
@@ -216,7 +216,7 @@
     },
     "rel": {
       "title": "reference relation",
-      "description": "Closed rel vocabulary (CONTRACT 6).",
+      "description": "Closed rel vocabulary: the eight base provenance relations plus supersedes and correction_of. Erasure and revocation are expressed through body references, not through rel values.",
       "enum": [
         "derived_from",
         "handed_off_to",
@@ -227,14 +227,12 @@
         "migrated_from",
         "reshaped_from",
         "supersedes",
-        "correction_of",
-        "erases",
-        "revokes"
+        "correction_of"
       ]
     },
     "ref_entry": {
       "title": "record reference entry",
-      "description": "One entry of the envelope refs array (CONTRACT 5 / 6). Exact structural duplicates are rejected by uniqueItems; semantically duplicate entries (same rel and target origin/id/digest with different hints) are caught by tools/check_schemas.py.",
+      "description": "One entry of the envelope refs array. Exact structural duplicates are rejected by uniqueItems; semantically duplicate entries (same rel and target origin/id/digest with different hints) are caught by tools/check_schemas.py.",
       "type": "object",
       "additionalProperties": false,
       "required": ["rel", "ref"],
@@ -249,12 +247,12 @@
     },
     "sensitivity": {
       "title": "sensitivity label",
-      "description": "Closed sensitivity vocabulary, ordered public < internal < personal < local-only (CONTRACT 9; DECISIONS H1).",
+      "description": "Closed sensitivity vocabulary, ordered public < internal < personal < local-only.",
       "enum": ["public", "internal", "personal", "local-only"]
     },
     "labels": {
       "title": "record labels",
-      "description": "Closed labels object (CONTRACT 4.1 / 9; DECISIONS H1). labels is optional and sensitivity may be omitted (Lead ruling: absence of a sensitivity label is not a structural error; label propagation reports E_LABEL_DOWNGRADE when a resolved derived_from input is non-public). The consent member, when present, references a weave.consent.* record.",
+      "description": "Closed labels object. labels is optional and sensitivity may be omitted; absence of a sensitivity label is not a structural error (label propagation reports the downgrade when a resolved derivation input is non-public). The consent member, when present, references a weave.consent.* record.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -271,13 +269,13 @@
     },
     "salt": {
       "title": "record salt",
-      "description": "Unpadded base64url of exactly 16 random bytes: 22 characters, final character constrained to the alphabet that leaves the four unused bits zero (CONTRACT 3.5 / 5; DECISIONS G3c).",
+      "description": "Unpadded base64url of exactly 16 random bytes: 22 characters, final character constrained to the alphabet that leaves the four unused bits zero.",
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$"
     },
     "spdx_expression": {
       "title": "SPDX licence expression",
-      "description": "SPDX licence expression, syntax-checked only (CONTRACT 9; DECISIONS H1). Approximation: identifiers [A-Za-z0-9][A-Za-z0-9.+-]*, uppercase AND/OR/WITH operators, parentheses nested at most two deep; full SPDX grammar (precedence, exception identifiers, licence-list membership) is checked by the verifier, never offline membership. See schemas/README.md.",
+      "description": "SPDX licence expression, syntax-checked only. Approximation: identifiers [A-Za-z0-9][A-Za-z0-9.+-]*, uppercase AND/OR/WITH operators, parentheses nested at most two levels; full SPDX grammar (precedence, exception identifiers, licence-list membership) is checked by the verifier, never offline membership. See schemas/README.md.",
       "type": "string",
       "pattern": "^(?:(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*|\\((?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*|\\((?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*\\)))*$"
     }

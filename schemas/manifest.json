@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/manifest.json",
   "title": "weave-record/1 container manifest",
-  "description": "JSON Schema Draft 2020-12 for manifest.json of a weave-record/1 container (CONTRACT 11.2). This document also carries the shared $defs reused by envelope.json, ref.json and the kind schemas, plus $defs.manifest_attestation for signatures/manifest.sig.json (CONTRACT 11.3). Rules JSON Schema cannot express are enforced by tools/check_schemas.py and listed in schemas/README.md.",
+  "description": "JSON Schema Draft 2020-12 for manifest.json of a weave-record/1 container. This document also carries the shared $defs reused by envelope.json, ref.json and the kind schemas, plus $defs.manifest_attestation for signatures/manifest.sig.json. Rules JSON Schema cannot express are enforced by tools/check_schemas.py and listed in schemas/README.md.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -113,7 +113,7 @@
   "$defs": {
     "origin": {
       "title": "origin",
-      "description": "Project slug plus the publishing instance key id (CONTRACT 5). Shared by the record envelope, references and the manifest.",
+      "description": "Project slug plus the publishing instance key id. Shared by the record envelope, references and the manifest.",
       "type": "object",
       "additionalProperties": false,
       "required": ["project", "instance"],
@@ -129,33 +129,33 @@
       }
     },
     "key_id": {
-      "title": "key id",
-      "description": "ed25519: + the first 32 lowercase hex characters of SHA-256 over the 32-byte raw RFC 8032 public key (CONTRACT 3.4).",
+      "title": "ed25519 key id",
+      "description": "ed25519: followed by the first 32 lowercase hex characters of SHA-256 over the 32-byte raw RFC 8032 public key.",
       "type": "string",
       "pattern": "^ed25519:[0-9a-f]{32}$"
     },
     "digest": {
       "title": "digest string",
-      "description": "sha256: followed by exactly 64 lowercase hex characters (CONTRACT 3.6). H0 only registers sha256 in structurally checked manifest positions.",
+      "description": "sha256: followed by exactly 64 lowercase hex characters. Container positions (records, previous_manifest, chain head, blobs, attestation digest) require sha256 in H0.",
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "timestamp": {
       "title": "timestamp literal",
-      "description": "RFC 3339 UTC with exactly three fractional digits and literal Z, years 0000-9999, seconds 00-59 (CONTRACT 0; no leap second). Calendar validity is not expressible; see schemas/README.md.",
+      "description": "RFC 3339 UTC with exactly three fractional digits and a literal Z, years 0000-9999, seconds 00-59. Calendar validity is not expressible in JSON Schema; see schemas/README.md.",
       "type": "string",
       "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
     },
     "kind_name": {
       "title": "kind name",
-      "description": "Registered or opaque kind name (CONTRACT 7): dot/dash separated lowercase segments, at most 128 ASCII bytes.",
+      "description": "Registered or opaque kind name: dot/dash separated lowercase segments, at most 128 ASCII bytes. The specification additionally requires a project segment; see schemas/README.md.",
       "type": "string",
       "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z][a-z0-9]*)*$",
       "maxLength": 128
     },
     "record_id": {
       "title": "record id",
-      "description": "1-256 Unicode scalar values, no C0/C1/DEL control characters, no leading or trailing U+0020 (CONTRACT 5). Lone surrogates cannot be rejected by JSON Schema; see schemas/README.md.",
+      "description": "1-256 Unicode scalar values, no C0/C1/DEL control characters, no leading or trailing U+0020. Lone surrogates cannot be rejected by JSON Schema; see schemas/README.md.",
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
@@ -163,37 +163,112 @@
     },
     "public_key": {
       "title": "Ed25519 public key",
-      "description": "Unpadded base64url encoding of the 32-byte raw RFC 8032 public key: 43 characters, final character constrained to the alphabet that leaves the two unused bits zero (CONTRACT 3.5).",
+      "description": "Unpadded base64url encoding of 32 raw bytes: 43 characters, final character constrained to the alphabet that leaves the two unused bits zero. Structural checks only; point validity and subgroup order are checked when a signature is verified.",
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
     },
     "signature_value": {
       "title": "Ed25519 signature value",
-      "description": "Unpadded base64url encoding of a 64-byte Ed25519 signature: 86 characters, final character constrained to the alphabet that leaves the four unused bits zero (CONTRACT 3.5).",
+      "description": "Unpadded base64url encoding of a 64-byte Ed25519 signature: 86 characters, final character constrained to the alphabet that leaves the four unused bits zero.",
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
     },
+    "algorithm_name": {
+      "title": "signature algorithm name",
+      "description": "Signature algorithm name: a lowercase ASCII token, at most 32 bytes (for example ed25519). Unknown algorithm names are structurally valid; their signature entries are ignored semantically.",
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "generic_key_id": {
+      "title": "generic signature key id",
+      "description": "Key id shape accepted for signature algorithms other than ed25519: an algorithm-name token, a colon, and 1-128 lowercase hex characters. Entries with unknown algorithms are structurally valid but semantically ignored.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]{1,128}$"
+    },
+    "generic_signature_value": {
+      "title": "generic signature value",
+      "description": "Strict unpadded base64url of 1-2048 bytes for signature algorithms other than ed25519. The three alternatives select the character-count classes congruent to 0, 2 and 3 modulo 4 (the only valid unpadded base64url lengths); the final character of the classes with unused bits is constrained to the zero-unused-bits alphabet.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9_-]{4}){1,682}$"
+        },
+        {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9_-]{4}){0,682}[A-Za-z0-9_-][AQgw]$"
+        },
+        {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9_-]{4}){0,682}[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048]$"
+        }
+      ]
+    },
     "signature": {
       "title": "signature entry",
-      "description": "One per-record or manifest signature (CONTRACT 5.2 / 11.3). Ordering by key and per-key uniqueness are enforced by tools/check_schemas.py.",
+      "description": "One per-record or manifest signature with the algorithm-agility condition: alg=ed25519 requires an ed25519 key id and a 64-byte value; other algorithm names accept the generic key id and generic base64url value and are semantically ignored by H0 verifiers. Ordering by key and per-key uniqueness are enforced by tools/check_schemas.py.",
       "type": "object",
       "additionalProperties": false,
       "required": ["alg", "key", "value"],
       "properties": {
         "alg": {
-          "const": "ed25519"
+          "$ref": "#/$defs/algorithm_name"
         },
         "key": {
-          "$ref": "#/$defs/key_id"
+          "type": "string"
         },
         "value": {
-          "$ref": "#/$defs/signature_value"
+          "type": "string"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["alg"],
+            "properties": {
+              "alg": {
+                "const": "ed25519"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/key_id"
+              },
+              "value": {
+                "$ref": "#/$defs/signature_value"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["alg"],
+            "properties": {
+              "alg": {
+                "not": {
+                  "const": "ed25519"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/generic_key_id"
+              },
+              "value": {
+                "$ref": "#/$defs/generic_signature_value"
+              }
+            }
+          }
+        }
+      ]
     },
     "signatures": {
       "title": "signature set",
-      "description": "Non-empty array of 1-16 signatures (CONTRACT 5.2). Sorted by key ascending with unique keys; enforced by tools/check_schemas.py.",
+      "description": "Non-empty array of 1-16 signature entries. Sorted by key ascending with unique keys; enforced by tools/check_schemas.py.",
       "type": "array",
       "minItems": 1,
       "maxItems": 16,
@@ -204,7 +279,7 @@
     },
     "manifest_record": {
       "title": "manifest record entry",
-      "description": "One entry of manifest.records (CONTRACT 11.2). Entries are sorted by digest ascending and digests are unique; enforced by tools/check_schemas.py.",
+      "description": "One entry of manifest.records. Entries are sorted by digest ascending with unique digests, and their id/kind must equal the listed record file; enforced by tools/check_schemas.py.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "digest"],
@@ -227,7 +302,7 @@
     },
     "previous_manifest": {
       "title": "previous manifest reference",
-      "description": "Digest of the previous container manifest (CONTRACT 11.2 / D1).",
+      "description": "Digest of the previous container manifest. When non-null, previous/manifest.json must exist, must hash to this digest and must carry the same origin (the origin check is a verifier rule).",
       "type": "object",
       "additionalProperties": false,
       "required": ["digest"],
@@ -239,7 +314,7 @@
     },
     "chain": {
       "title": "internal chain head",
-      "description": "L1/L2 internal hash-chain claim (CONTRACT 11.2 / A1c). Offline verification cannot recompute it; a verifier reports it unverified.",
+      "description": "L1/L2 internal hash-chain claim. Offline verification cannot recompute it; a verifier reports it unverified.",
       "type": "object",
       "additionalProperties": false,
       "required": ["algorithm", "head"],
@@ -254,7 +329,7 @@
     },
     "blob": {
       "title": "blob entry",
-      "description": "One content-addressed blob entry of manifest.blobs (CONTRACT 11.2). Sorted by digest ascending with unique digests; enforced by tools/check_schemas.py.",
+      "description": "One content-addressed blob entry of manifest.blobs. Sorted by digest ascending with unique digests; enforced by tools/check_schemas.py.",
       "type": "object",
       "additionalProperties": false,
       "required": ["digest", "size"],
@@ -269,25 +344,40 @@
         }
       }
     },
+    "timestamp_path": {
+      "title": "timestamp receipt path",
+      "description": "Container-relative path of one RFC 3161 timestamp receipt: signatures/timestamp-<n>.tsr with n a decimal integer >= 1.",
+      "type": "string",
+      "pattern": "^signatures/timestamp-[1-9][0-9]*\\.tsr$"
+    },
     "manifest_timestamp": {
       "title": "manifest timestamp entry",
-      "description": "One L2 RFC 3161 timestamp receipt listed by signatures/manifest.sig.json (CONTRACT 11.3). Sorted by path ascending; enforced by tools/check_schemas.py.",
+      "description": "One RFC 3161 timestamp receipt listed by signatures/manifest.sig.json. renews is null for the single chain head and otherwise names the preceding receipt in the re-stamping chain (the chain structure is enforced by tools/check_schemas.py; imprint and CMS verification belong to the verifier). Entries are sorted by path ascending with unique paths.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["digest", "path"],
+      "required": ["digest", "path", "renews"],
       "properties": {
         "digest": {
           "$ref": "#/$defs/digest"
         },
         "path": {
-          "type": "string",
-          "pattern": "^signatures/timestamp-[1-9][0-9]*\\.tsr$"
+          "$ref": "#/$defs/timestamp_path"
+        },
+        "renews": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp_path"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
     "manifest_attestation": {
       "title": "manifest signature file",
-      "description": "Shape of signatures/manifest.sig.json (CONTRACT 11.3). The digest binds the exact manifest.json canonical bytes, never manifest.json itself. timestamps is always present (an empty array for L0/L1, at least one entry for L2); whether the list is compatible with manifest.level is a cross-file rule that JSON Schema cannot express.",
+      "description": "Shape of signatures/manifest.sig.json. The digest binds the exact manifest.json canonical bytes, never manifest.json itself. timestamps is always present (empty for L0/L1, a single renewal chain for L2); whether the list is compatible with manifest.level is a cross-file rule that JSON Schema cannot express.",
       "type": "object",
       "additionalProperties": false,
       "required": ["format", "digest", "signatures", "timestamps"],

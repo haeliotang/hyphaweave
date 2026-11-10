@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.erasure.json",
   "title": "weave.erasure record",
-  "description": "Registered kind weave.erasure (CONTRACT 7.7; DECISIONS G3a/G3b). Stage must be accepted and the actor must be a human. Container cross-checks (referenced placeholder digest, attestation back-reference, no live original) are verifier rules listed in schemas/README.md.",
+  "description": "Registered kind weave.erasure: attest the erasure of a record, with reason, basis and execution time. Stage must be accepted; the permitted actor classes and the grant requirement for automated executors (E_ERASE_ACTOR) are verifier rules. Container cross-checks (referenced placeholder digest, attestation back-reference, no live original) are verifier rules listed in schemas/README.md.",
   "allOf": [
     {
       "$ref": "../envelope.json"
@@ -15,13 +15,6 @@
         },
         "stage": {
           "const": "accepted"
-        },
-        "actor": {
-          "properties": {
-            "type": {
-              "const": "human"
-            }
-          }
         },
         "body": {
           "type": "object",

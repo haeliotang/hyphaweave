@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/ref.json",
   "title": "weave-record/1 reference",
-  "description": "JSON Schema Draft 2020-12 for the reference object used by refs, labels.consent, actor.grant and kind bodies (CONTRACT 6; DECISIONS B2/B4/B5). Hints are discovery aids only and never carry identity.",
+  "description": "JSON Schema Draft 2020-12 for the reference object used by refs, labels.consent, actor.grant and kind bodies. Hints are discovery aids only and never carry identity.",
   "type": "object",
   "additionalProperties": false,
   "required": ["origin", "id", "digest"],
@@ -32,7 +32,7 @@
   "$defs": {
     "digest": {
       "title": "reference digest",
-      "description": "Digest string of the referenced record. H0 checks sha256 strictly (exactly 64 lowercase hex characters); any other syntactically well-formed algorithm name is structurally valid but unsupported, so resolution becomes unverifiable instead of a record error (CONTRACT 3.6, DECISIONS B3, CONTRACT 22 Q13). Manifest positions, by contrast, require sha256 (CONTRACT 11.2 / 3.6).",
+      "description": "Digest string of the referenced record: <algorithm>:<lowercase hex>. H0 checks sha256 strictly (exactly 64 lowercase hex characters). Any other syntactically well-formed algorithm token is structurally valid but unsupported, so the reference resolves to unverifiable instead of producing a record error; unknown-algorithm entries are ignored semantically. Container positions, by contrast, require sha256.",
       "oneOf": [
         {
           "type": "string",

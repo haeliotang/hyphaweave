@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.consent.revoked.json",
   "title": "weave.consent.revoked record",
-  "description": "Registered kind weave.consent.revoked (CONTRACT 7.6; DECISIONS H3). Stage must be accepted and the actor must be a human or organization. The revokes target must resolve to a weave.consent.granted record; that is a verifier rule.",
+  "description": "Registered kind weave.consent.revoked: revoke a consent record. Stage must be accepted and the actor must be a human or organization. The revokes target must resolve to a weave.consent.granted record; that is a verifier rule.",
   "allOf": [
     {
       "$ref": "../envelope.json"

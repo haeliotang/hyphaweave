@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.grant.json",
   "title": "weave.grant record",
-  "description": "Registered kind weave.grant (CONTRACT 7.4; DECISIONS 8 rule 2). Stage must be accepted. Body.action selects exactly one of the two exact bodies: action=grant with a grant object, action=revoke with a revoke object. Authorization semantics (root vs delegated grant, transferability, delegation containment, revocation signer, revokes target) are verifier rules listed in schemas/README.md.",
+  "description": "Registered kind weave.grant: authorise a grantee key for kinds/actions/scope or revoke a grant. Stage must be accepted. body.action selects exactly one of the two exact bodies: action=grant with a grant object (including the optional revocation key list), action=revoke with a revoke object. Chain evaluation, delegation subsetting, transferability, revocation signer rules and the revokes target are verifier rules listed in schemas/README.md.",
   "allOf": [
     {
       "$ref": "../envelope.json"
@@ -58,7 +58,7 @@
   "$defs": {
     "grant": {
       "title": "weave.grant grant body",
-      "description": "The grant body of an action=grant record (CONTRACT 7.4). All listed members are present; nullable members are present as null. Unknown members are not part of the exact body shape.",
+      "description": "The grant body of an action=grant record. All listed members are present; nullable members are present as null. revocation lists up to eight unique ed25519 key ids that may revoke this grant; when absent the issuer key and its explicit rotation successors may revoke it (a verifier rule).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -140,12 +140,21 @@
         },
         "remedy": {
           "type": ["string", "null"]
+        },
+        "revocation": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../manifest.json#/$defs/key_id"
+          }
         }
       }
     },
     "revoke": {
       "title": "weave.grant revoke body",
-      "description": "The revoke body of an action=revoke record (CONTRACT 7.4). The revokes target must resolve to a grant; that is a verifier rule.",
+      "description": "The revoke body of an action=revoke record. The revokes target must resolve to a grant; that is a verifier rule.",
       "type": "object",
       "additionalProperties": false,
       "required": ["revokes", "effective_at", "reason"],

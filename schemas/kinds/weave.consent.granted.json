@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/kinds/weave.consent.granted.json",
   "title": "weave.consent.granted record",
-  "description": "Registered kind weave.consent.granted (CONTRACT 7.5; DECISIONS H3). Stage must be accepted and the actor must be a human or organization. Cross-field rule valid_from <= valid_until cannot be expressed by JSON Schema; see schemas/README.md.",
+  "description": "Registered kind weave.consent.granted: record informed consent with purpose, scope and validity. Stage must be accepted and the actor must be a human or organization. The valid_from <= valid_until rule cannot be expressed by JSON Schema; see schemas/README.md.",
   "allOf": [
     {
       "$ref": "../envelope.json"
