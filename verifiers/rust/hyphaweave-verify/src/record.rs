@@ -22,7 +22,7 @@ use crate::envelope::{
     self, Envelope, ParsedRecord, RecordFile, RefObject, SIGNER_CONSTRAINED_KINDS,
 };
 use crate::error_codes::{e, n, Code};
-use crate::kinds::{self, GrantActionKind, KindBody, RevokeReason};
+use crate::kinds::{GrantActionKind, KindBody, RevokeReason};
 use crate::options::{UsageError, VerifyOptions};
 use crate::report::{
     AttestationReport, InputIdentity, RecordReport, RefReport, Report, SigReportEntry, Summary,
@@ -33,10 +33,7 @@ use crate::report::{
 ///
 /// # Errors
 /// Returns a [`UsageError`] when the keyset input is not structurally valid.
-pub fn verify_record_target(
-    bytes: &[u8],
-    options: &VerifyOptions,
-) -> Result<Report, UsageError> {
+pub fn verify_record_target(bytes: &[u8], options: &VerifyOptions) -> Result<Report, UsageError> {
     let parsed = envelope::parse_record_file(bytes);
     let mut world = World::from_results(vec![parsed], options)?;
     let evaluated = world.evaluate_all();
@@ -45,6 +42,7 @@ pub fn verify_record_target(
         report.verdict = Verdict::Invalid;
         report
     });
+    let limitations = world.limitations(None);
     let records = vec![record];
     let verdict = records[0].verdict;
     let summary = count_verdicts(&records);
@@ -61,7 +59,7 @@ pub fn verify_record_target(
         records,
         container: None,
         summary: Summary::Verdicts(summary),
-        limitations: Vec::new(),
+        limitations,
         cases: Vec::new(),
         verifier: crate::report::VerifierInfo {
             name: crate::VERIFIER_NAME.to_owned(),
@@ -133,6 +131,9 @@ struct SigFacts {
     /// is not `E_KEY_UNKNOWN` (for example `E_TS_UNTRUSTED` from the §9.4
     /// compromise rule).
     first_unverifiable: Option<Code>,
+    /// An actor-key signature was established from context declarations (the
+    /// reference report calls this trust-on-first-use).
+    tofu: bool,
 }
 
 impl SigFacts {
@@ -163,10 +164,7 @@ impl SigFacts {
 pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordReport {
     let mut report = world.empty_report(index);
     let Some(record) = world.record_of(index).cloned() else {
-        let code = world
-            .slot(index)
-            .parse_error
-            .unwrap_or(e::JSON_INVALID);
+        let code = world.slot(index).parse_error.unwrap_or(e::JSON_INVALID);
         report.verdict = if world.options.skipped(code) {
             Verdict::Valid
         } else {
@@ -176,7 +174,25 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
         return report;
     };
 
+    if let ParsedRecord::Invalid(partial) = &record.parsed {
+        // Check (2) failed: report the received metadata and the first code.
+        report.errors = vec![partial.code];
+        report.verdict = if world.options.skipped(partial.code) {
+            Verdict::Valid
+        } else {
+            effect(partial.code)
+        };
+        return report;
+    }
+
     if let ParsedRecord::Erased(placeholder) = &record.parsed {
+        world.note_limitation("erased");
+        // The reference report adds the labels/consent/erasure-claims
+        // limitation for a placeholder in a container context, but not for a
+        // standalone placeholder record target.
+        if world.container_context {
+            world.note_limitation("labels");
+        }
         let mut notices: Vec<Code> = Vec::new();
         let resolution = world.resolve(&placeholder.attestation);
         report.attestation = Some(AttestationReport {
@@ -199,10 +215,6 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
         return report;
     };
     let mut notices: Vec<Code> = Vec::new();
-    if !envelope::is_registered_kind(&envelope.kind) {
-        // §7.3: an unregistered but syntactically valid kind is opaque.
-        notices.push(n::KIND_UNKNOWN_OPAQUE);
-    }
 
     // (3) `sigs` presence and format (§4.3) and the §4.4 absence rule.
     let signer_constrained = SIGNER_CONSTRAINED_KINDS.contains(&envelope.kind.as_str());
@@ -210,12 +222,25 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
     let raw_sigs = record.object.get("sigs");
     let absent_or_empty = match raw_sigs {
         None => true,
-        Some(value) => value.as_array().is_some_and(<[crate::value::Value]>::is_empty),
+        Some(value) => value
+            .as_array()
+            .is_some_and(<[crate::value::Value]>::is_empty),
     };
-    if signature_required && absent_or_empty {
-        if !world.options.skipped(e::SIG_REQUIRED) {
-            return finish(world, report, index, Some(e::SIG_REQUIRED), notices, Vec::new(), Vec::new());
-        }
+    if absent_or_empty && !envelope::is_registered_kind(&envelope.kind) {
+        // The reference report adds the opaque-kind limitation for records whose
+        // signature structure pass trivially succeeded (absent/empty `sigs` too).
+        world.note_limitation("unreg");
+    }
+    if signature_required && absent_or_empty && !world.options.skipped(e::SIG_REQUIRED) {
+        return finish(
+            world,
+            report,
+            index,
+            Some(e::SIG_REQUIRED),
+            notices,
+            Vec::new(),
+            Vec::new(),
+        );
     }
     let sigs = match envelope::parse_sigs(&record.object) {
         Ok(sigs) => sigs.unwrap_or_default(),
@@ -223,37 +248,69 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
             if world.options.skipped(code) {
                 Vec::new()
             } else {
-                return finish(world, report, index, Some(code), notices, Vec::new(), Vec::new());
+                return finish(
+                    world,
+                    report,
+                    index,
+                    Some(code),
+                    notices,
+                    Vec::new(),
+                    Vec::new(),
+                );
             }
         }
     };
+    if !envelope::is_registered_kind(&envelope.kind) {
+        // §7.3 transport of an unregistered kind: the body is never interpreted.
+        // The reference report adds this limitation once the `sigs` structure
+        // pass succeeded (not for envelope/signature-format failures).
+        world.note_limitation("unreg");
+    }
 
     // (4)/(5) key resolution, Ed25519 verification, key lifecycle.
     let facts = collect_signatures(world, &record, &envelope, &sigs);
+    if facts.tofu {
+        notices.push(n::KEY_TOFU);
+        world.note_limitation("keytrust");
+    }
 
-    if !facts.unknown_keys.is_empty() {
+    if !facts.unknown_keys.is_empty() && !world.options.skipped(e::KEY_UNKNOWN) {
         // §3.6: an entry whose key cannot be established is not ignored.
-        if !world.options.skipped(e::KEY_UNKNOWN) {
-            notices.push(n::KEY_UNDECLARED);
+        notices.push(n::KEY_UNDECLARED);
+        return finish(
+            world,
+            report,
+            index,
+            Some(e::KEY_UNKNOWN),
+            notices,
+            facts.states,
+            Vec::new(),
+        );
+    }
+    if let Some(code) = facts.first_invalid {
+        if !world.options.skipped(code) {
             return finish(
                 world,
                 report,
                 index,
-                Some(e::KEY_UNKNOWN),
+                Some(code),
                 notices,
                 facts.states,
                 Vec::new(),
             );
         }
     }
-    if let Some(code) = facts.first_invalid {
-        if !world.options.skipped(code) {
-            return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
-        }
-    }
     if let Some(code) = facts.first_unverifiable {
         if !world.options.skipped(code) {
-            return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
+            return finish(
+                world,
+                report,
+                index,
+                Some(code),
+                notices,
+                facts.states,
+                Vec::new(),
+            );
         }
     }
 
@@ -266,28 +323,65 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
             e::SIG_UNVERIFIABLE
         };
         if !world.options.skipped(code) {
-            return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
+            return finish(
+                world,
+                report,
+                index,
+                Some(code),
+                notices,
+                facts.states,
+                Vec::new(),
+            );
         }
     }
 
     // (6) kind body schema.
+
+    // §14.9 label claims are checked for consistency only.
+    if envelope.labels.is_some() {
+        world.note_limitation("labels");
+    }
     let body = match world.body_of(index).cloned() {
         Some(body) => body,
         None => {
             let code = world.body_error(index).unwrap_or(e::KIND_BODY_SCHEMA);
             if !world.options.skipped(code) {
-                return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
+                return finish(
+                    world,
+                    report,
+                    index,
+                    Some(code),
+                    notices,
+                    facts.states,
+                    Vec::new(),
+                );
             }
             KindBody::Opaque
         }
     };
 
     // (7) kind semantics.
-    match check_kind_semantics(world, index, &record, &envelope, &body, &facts, &mut notices) {
+    match check_kind_semantics(
+        world,
+        index,
+        &record,
+        &envelope,
+        &body,
+        &facts,
+        &mut notices,
+    ) {
         Ok(()) => {}
         Err(code) => {
             if !world.options.skipped(code) {
-                return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
+                return finish(
+                    world,
+                    report,
+                    index,
+                    Some(code),
+                    notices,
+                    facts.states,
+                    Vec::new(),
+                );
             }
         }
     }
@@ -297,7 +391,15 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
         Ok(()) => {}
         Err(code) => {
             if !world.options.skipped(code) {
-                return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
+                return finish(
+                    world,
+                    report,
+                    index,
+                    Some(code),
+                    notices,
+                    facts.states,
+                    Vec::new(),
+                );
             }
         }
     }
@@ -307,25 +409,43 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
         Ok(()) => {}
         Err(code) => {
             if !world.options.skipped(code) {
-                return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
+                return finish(
+                    world,
+                    report,
+                    index,
+                    Some(code),
+                    notices,
+                    facts.states,
+                    Vec::new(),
+                );
             }
         }
     }
 
     // (10) reference resolution and kind contradictions.
-    let refs = match check_references(world, &envelope, &mut notices) {
-        Ok(refs) => refs,
-        Err(code) => {
-            if !world.options.skipped(code) {
-                return finish(world, report, index, Some(code), notices, facts.states, Vec::new());
-            }
-            Vec::new()
+    let (refs, reference_result) = check_references(world, &envelope, &mut notices);
+    if let Err(code) = reference_result {
+        if !world.options.skipped(code) {
+            return finish(
+                world,
+                report,
+                index,
+                Some(code),
+                notices,
+                facts.states,
+                refs,
+            );
         }
-    };
+    }
 
     // §4.4 human-signature notice.
     if envelope.stage == "accepted" && !facts.any_valid_of_class(&["human"]) {
         notices.push(n::NO_HUMAN_SIGNATURE);
+    }
+    // §7.3 opaque-kind notice (the report marks an opaque kind on an otherwise
+    // valid record).
+    if !envelope::is_registered_kind(&envelope.kind) {
+        notices.push(n::KIND_UNKNOWN_OPAQUE);
     }
 
     finish(world, report, index, None, notices, facts.states, refs)
@@ -371,6 +491,7 @@ fn collect_signatures(
         unknown_keys: Vec::new(),
         first_invalid: None,
         first_unverifiable: None,
+        tofu: false,
     };
     let revocation_self_key = revocation_self_key(record);
     for entry in sigs {
@@ -402,6 +523,15 @@ fn collect_signatures(
             ignore_revocation,
             owner_cosignature,
         );
+        if resolution.material_from_context
+            && (entry.key == envelope.actor.key
+                || !matches!(
+                    envelope.kind.as_str(),
+                    "weave.key.declared" | "weave.key.rotated" | "weave.key.revoked"
+                ))
+        {
+            facts.tofu = true;
+        }
         match &resolution.state {
             SigState::Valid => {
                 facts
@@ -416,9 +546,19 @@ fn collect_signatures(
                 if facts.first_invalid.is_none() {
                     facts.first_invalid = Some(*code);
                 }
+                // A cryptographically valid signature whose key state fails
+                // (§9.4 expiry/revocation/compromise) is reported as
+                // `unverified`: the signature itself verified, the key state is
+                // what could not be established as valid at the claimed time.
+                let state = if matches!(*code, e::KEY_EXPIRED | e::KEY_REVOKED | e::KEY_COMPROMISED)
+                {
+                    "unverified"
+                } else {
+                    "invalid"
+                };
                 facts.states.push(SigReportEntry {
                     key: entry.key.clone(),
-                    state: "invalid".to_owned(),
+                    state: state.to_owned(),
                 });
             }
             SigState::Unverified(code) => {
@@ -465,15 +605,37 @@ fn self_material_for(record: &RecordFile, key: &str) -> Option<Vec<u8>> {
             }
         }
         "weave.key.rotated" => {
-            if body.get_str("new_key") == Some(key) {
-                let text = body.get_str("new_public_key")?;
-                b64::decode_exact(text, 32).ok()
-            } else if body.get_str("old_key") == Some(key) {
-                let text = body.get_str("old_public_key")?;
-                b64::decode_exact(text, 32).ok()
-            } else {
-                None
+            // The explicit material is usable for the named key only when it
+            // actually hashes to that key id (§9.2 rule 2: a contradiction is
+            // E_KEY_ROTATION_KEYS and must not be papered over). When the pair
+            // is inconsistent, no self material is used at all; the signature
+            // keys are then established from their declarations instead.
+            let public_key_for = |id_member: &str, key_member: &str| {
+                let id = body.get_str(id_member)?;
+                let text = body.get_str(key_member)?;
+                let bytes = b64::decode_exact(text, 32).ok()?;
+                if digest::derive_key_id(&bytes) == id {
+                    Some((id, bytes))
+                } else {
+                    None
+                }
+            };
+            let new_binding = public_key_for("new_key", "new_public_key");
+            let old_binding = match body.get_str("old_public_key") {
+                Some(_) => public_key_for("old_key", "old_public_key"),
+                None => None,
+            };
+            let old_consistent = body.get_str("old_public_key").is_none() || old_binding.is_some();
+            let new_consistent = new_binding.is_some();
+            if !new_consistent || !old_consistent {
+                return None;
             }
+            if new_binding.as_ref().is_some_and(|(id, _)| *id == key) {
+                return new_binding.map(|(_, bytes)| bytes);
+            }
+            old_binding
+                .filter(|(id, _)| *id == key)
+                .map(|(_, bytes)| bytes)
         }
         _ => None,
     }
@@ -552,7 +714,8 @@ fn check_kind_semantics(
             let signer_ok = match revoked.reason {
                 RevokeReason::Compromise => facts.any_valid_of_class(&["human", "organization"]),
                 RevokeReason::Retired | RevokeReason::Other => {
-                    facts.any_valid(&revoked.key) || facts.any_valid_of_class(&["human", "organization"])
+                    facts.any_valid(&revoked.key)
+                        || facts.any_valid_of_class(&["human", "organization"])
                 }
             };
             if signer_ok {
@@ -668,10 +831,7 @@ fn check_kind_semantics(
 }
 
 fn check_consent_signer(envelope: &Envelope, facts: &SigFacts) -> Result<(), Code> {
-    if !matches!(
-        envelope.actor.actor_type.as_str(),
-        "human" | "organization"
-    ) {
+    if !matches!(envelope.actor.actor_type.as_str(), "human" | "organization") {
         return Err(e::ACTOR_KEY_TYPE_MISMATCH);
     }
     if facts.any_valid_of_class(&["human", "organization"]) {
@@ -707,10 +867,7 @@ fn check_actor(
         let human_signature = facts.valid_keys.iter().any(|(key, class)| {
             key != &envelope.actor.key
                 && matches!(class.as_deref(), Some("human" | "organization"))
-                && !matches!(
-                    envelope.actor.actor_type.as_str(),
-                    "human" | "organization"
-                )
+                && !matches!(envelope.actor.actor_type.as_str(), "human" | "organization")
         });
         if human_signature {
             return Err(e::ACTOR_HUMAN_KEY);
@@ -718,11 +875,9 @@ fn check_actor(
     }
     // For ordinary kinds every signing key's class must match actor.type (§5.1).
     if !SIGNER_CONSTRAINED_KINDS.contains(&envelope.kind.as_str()) {
-        for class in facts.valid_keys.values() {
-            if let Some(class) = class {
-                if class != &envelope.actor.actor_type {
-                    return Err(e::ACTOR_KEY_TYPE_MISMATCH);
-                }
+        for class in facts.valid_keys.values().flatten() {
+            if class != &envelope.actor.actor_type {
+                return Err(e::ACTOR_KEY_TYPE_MISMATCH);
             }
         }
     }
@@ -742,7 +897,11 @@ fn check_actor(
             return Err(e::GRANT_NOT_APPLICABLE);
         };
         if !usable.spec.kinds.iter().any(|kind| kind == &envelope.kind)
-            || !usable.spec.actions.iter().any(|candidate| candidate == action)
+            || !usable
+                .spec
+                .actions
+                .iter()
+                .any(|candidate| candidate == action)
         {
             return Err(e::GRANT_NOT_APPLICABLE);
         }
@@ -820,7 +979,7 @@ fn check_references(
     world: &mut World,
     envelope: &Envelope,
     notices: &mut Vec<Code>,
-) -> Result<Vec<RefReport>, Code> {
+) -> (Vec<RefReport>, Result<(), Code>) {
     let mut refs = Vec::with_capacity(envelope.refs.len());
     for (index, entry) in envelope.refs.iter().enumerate() {
         let resolution = world.resolve(&entry.reference);
@@ -828,11 +987,17 @@ fn check_references(
             "missing" => notices.push(n::REF_MISSING),
             "unverifiable" => notices.push(n::REF_UNVERIFIABLE),
             "found" => {
-                if let (Some(claim), Some(actual)) =
-                    (entry.reference.kind.as_deref(), resolution.target_kind.as_deref())
-                {
+                if let (Some(claim), Some(actual)) = (
+                    entry.reference.kind.as_deref(),
+                    resolution.target_kind.as_deref(),
+                ) {
                     if actual != "weave.erased" && claim != actual {
-                        return Err(e::REF_KIND_MISMATCH);
+                        refs.push(RefReport {
+                            index,
+                            rel: entry.rel.clone(),
+                            state: resolution.state.to_owned(),
+                        });
+                        return (refs, Err(e::REF_KIND_MISMATCH));
                     }
                 }
             }
@@ -844,5 +1009,5 @@ fn check_references(
             state: resolution.state.to_owned(),
         });
     }
-    Ok(refs)
+    (refs, Ok(()))
 }

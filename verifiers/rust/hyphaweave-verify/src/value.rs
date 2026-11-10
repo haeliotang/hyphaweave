@@ -89,7 +89,9 @@ impl Object {
 
     /// Iterates over members in input order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
-        self.entries.iter().map(|(key, value)| (key.as_str(), value))
+        self.entries
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
     }
 
     /// Iterates over member names in input order.
@@ -233,6 +235,12 @@ impl From<bool> for Value {
 impl From<i64> for Value {
     fn from(number: i64) -> Self {
         Self::Int(number)
+    }
+}
+
+impl From<i32> for Value {
+    fn from(number: i32) -> Self {
+        Self::Int(i64::from(number))
     }
 }
 

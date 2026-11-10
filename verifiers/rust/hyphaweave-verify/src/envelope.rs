@@ -144,13 +144,40 @@ pub struct ErasedPlaceholder {
     pub attestation: RefObject,
 }
 
+/// Metadata reported for a record whose envelope structure is invalid.
+///
+/// The report format (§14.6) reports fields that could be determined before the
+/// failing check; the reference verifier extracts these best-effort values from
+/// the received object even when the envelope is rejected, so an independent
+/// implementation mirrors that for byte-identical reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialEnvelope {
+    /// The envelope-structure error code.
+    pub code: Code,
+    /// Own record digest (the JSON bytes were canonical).
+    pub digest: String,
+    /// Raw `id` member when it is a string.
+    pub id: Option<String>,
+    /// Raw `kind` member when it is a string.
+    pub kind: Option<String>,
+    /// Whether the raw kind is registered by this version.
+    pub kind_known: bool,
+    /// Raw `stage` member when it is a string.
+    pub stage: Option<String>,
+    /// Raw origin object when it has string `project`/`instance` members.
+    pub origin: Option<Origin>,
+}
+
 /// A record file: the parsed JSON object plus its structured interpretation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParsedRecord {
     /// A normal envelope.
     Normal(Box<Envelope>),
     /// A `weave.erased` placeholder.
-    Erased(ErasedPlaceholder),
+    Erased(Box<ErasedPlaceholder>),
+    /// A record whose envelope structure is invalid; the report can still name
+    /// the fields that were received.
+    Invalid(Box<PartialEnvelope>),
 }
 
 /// A parsed record file.
@@ -165,30 +192,33 @@ pub struct RecordFile {
 }
 
 impl RecordFile {
-    /// Kind name.
+    /// Kind name (the raw claim when the envelope is invalid).
     #[must_use]
     pub fn kind(&self) -> &str {
         match &self.parsed {
             ParsedRecord::Normal(envelope) => &envelope.kind,
             ParsedRecord::Erased(_) => "weave.erased",
+            ParsedRecord::Invalid(partial) => partial.kind.as_deref().unwrap_or(""),
         }
     }
 
-    /// Envelope id.
+    /// Envelope id (the raw claim when the envelope is invalid).
     #[must_use]
     pub fn id(&self) -> &str {
         match &self.parsed {
             ParsedRecord::Normal(envelope) => &envelope.id,
             ParsedRecord::Erased(placeholder) => &placeholder.id,
+            ParsedRecord::Invalid(partial) => partial.id.as_deref().unwrap_or(""),
         }
     }
 
     /// Origin.
     #[must_use]
-    pub fn origin(&self) -> &Origin {
+    pub fn origin(&self) -> Option<&Origin> {
         match &self.parsed {
-            ParsedRecord::Normal(envelope) => &envelope.origin,
-            ParsedRecord::Erased(placeholder) => &placeholder.origin,
+            ParsedRecord::Normal(envelope) => Some(&envelope.origin),
+            ParsedRecord::Erased(placeholder) => Some(&placeholder.origin),
+            ParsedRecord::Invalid(partial) => partial.origin.as_ref(),
         }
     }
 
@@ -197,7 +227,7 @@ impl RecordFile {
     pub fn envelope(&self) -> Option<&Envelope> {
         match &self.parsed {
             ParsedRecord::Normal(envelope) => Some(envelope),
-            ParsedRecord::Erased(_) => None,
+            ParsedRecord::Erased(_) | ParsedRecord::Invalid(_) => None,
         }
     }
 
@@ -207,6 +237,16 @@ impl RecordFile {
         match &self.parsed {
             ParsedRecord::Normal(_) => None,
             ParsedRecord::Erased(placeholder) => Some(placeholder),
+            ParsedRecord::Invalid(_) => None,
+        }
+    }
+
+    /// Envelope-structure failure metadata, when the record is invalid at check (2).
+    #[must_use]
+    pub fn invalid(&self) -> Option<&PartialEnvelope> {
+        match &self.parsed {
+            ParsedRecord::Invalid(partial) => Some(partial),
+            _ => None,
         }
     }
 
@@ -225,11 +265,43 @@ impl RecordFile {
 pub fn parse_record_file(bytes: &[u8]) -> Result<RecordFile, Code> {
     let object = json::parse_canonical_object(bytes, limits::MAX_RECORD_BYTES)?;
     let parsed = if object.get_str("kind") == Some("weave.erased") {
-        ParsedRecord::Erased(parse_placeholder(&object)?)
+        match parse_placeholder(&object) {
+            Ok(placeholder) => ParsedRecord::Erased(Box::new(placeholder)),
+            Err(code) => ParsedRecord::Invalid(Box::new(partial_envelope(&object, code))),
+        }
     } else {
-        ParsedRecord::Normal(Box::new(parse_envelope(&object)?))
+        match parse_envelope(&object) {
+            Ok(envelope) => ParsedRecord::Normal(Box::new(envelope)),
+            Err(code) => ParsedRecord::Invalid(Box::new(partial_envelope(&object, code))),
+        }
     };
     Ok(RecordFile { object, parsed })
+}
+
+/// Best-effort report metadata for a record whose envelope structure failed
+/// check (2): the canonical JSON parsed, so the digest and any individually
+/// readable envelope fields are reported.
+fn partial_envelope(object: &Object, code: Code) -> PartialEnvelope {
+    let raw_string = |name: &str| object.get_str(name).map(str::to_owned);
+    let kind = raw_string("kind");
+    let kind_known = kind.as_deref().is_some_and(is_registered_kind);
+    let origin = object.get_object("origin").and_then(|origin| {
+        let project = origin.get_str("project")?;
+        let instance = origin.get_str("instance")?;
+        Some(Origin {
+            project: project.to_owned(),
+            instance: instance.to_owned(),
+        })
+    });
+    PartialEnvelope {
+        code,
+        digest: digest::record_digest(object),
+        id: raw_string("id"),
+        kind,
+        kind_known,
+        stage: raw_string("stage"),
+        origin,
+    }
 }
 
 /// The seven registered normal kinds whose stage **MUST** be `accepted` (§4.4).
@@ -246,17 +318,17 @@ pub const SIGNER_CONSTRAINED_KINDS: [&str; 7] = [
 /// True when the kind is registered by version 0.1 of the format (§7.2).
 #[must_use]
 pub fn is_registered_kind(kind: &str) -> bool {
-    match kind {
+    matches!(
+        kind,
         "weave.consent.granted"
-        | "weave.consent.revoked"
-        | "weave.erased"
-        | "weave.erasure"
-        | "weave.grant"
-        | "weave.key.declared"
-        | "weave.key.revoked"
-        | "weave.key.rotated" => true,
-        _ => false,
-    }
+            | "weave.consent.revoked"
+            | "weave.erased"
+            | "weave.erasure"
+            | "weave.grant"
+            | "weave.key.declared"
+            | "weave.key.revoked"
+            | "weave.key.rotated"
+    )
 }
 
 const TOP_LEVEL_MEMBERS: [&str; 13] = [
@@ -317,10 +389,7 @@ fn parse_envelope(object: &Object) -> Result<Envelope, Code> {
     }
 
     let stage = object.get_str("stage").ok_or(e::ENV_STAGE)?;
-    if !matches!(
-        stage,
-        "proposed" | "accepted" | "rejected" | "withdrawn" | "superseded"
-    ) {
+    if !is_stage(stage) {
         return Err(e::ENV_STAGE);
     }
     // §4.4/§7.2: the seven registered signer-constrained kinds are `accepted`
@@ -367,7 +436,10 @@ fn parse_envelope(object: &Object) -> Result<Envelope, Code> {
     // §8.3: personal and local-only records must carry a salt.
     if salt.is_none() {
         if let Some(labels) = &labels {
-            if matches!(labels.sensitivity.as_deref(), Some("personal" | "local-only")) {
+            if matches!(
+                labels.sensitivity.as_deref(),
+                Some("personal" | "local-only")
+            ) {
                 return Err(e::ENV_SALT_MISSING);
             }
         }
@@ -400,14 +472,8 @@ fn parse_placeholder(object: &Object) -> Result<ErasedPlaceholder, Code> {
             _ => return Err(e::ENV_FORMAT),
         }
     }
-    const PLACEHOLDER_MEMBERS: [&str; 6] = [
-        "format",
-        "kind",
-        "origin",
-        "id",
-        "digest",
-        "attestation",
-    ];
+    const PLACEHOLDER_MEMBERS: [&str; 6] =
+        ["format", "kind", "origin", "id", "digest", "attestation"];
     for required in PLACEHOLDER_MEMBERS {
         if !object.contains(required) {
             return Err(e::KIND_BODY_SCHEMA);
@@ -425,22 +491,25 @@ fn parse_placeholder(object: &Object) -> Result<ErasedPlaceholder, Code> {
     if object.get_str("kind") != Some("weave.erased") {
         return Err(e::KIND_BODY_SCHEMA);
     }
-    let digest_text = object
-        .get_str("digest")
-        .ok_or(e::KIND_BODY_SCHEMA)?;
+    let digest_text = object.get_str("digest").ok_or(e::KIND_BODY_SCHEMA)?;
     if digest::parse_digest_string(digest_text).is_none() {
         return Err(e::KIND_BODY_SCHEMA);
     }
-    let attestation = parse_ref_object(
-        object.get("attestation").ok_or(e::KIND_BODY_SCHEMA)?,
-    )
-    .map_err(|_| e::KIND_BODY_SCHEMA)?;
+    let attestation = parse_ref_object(object.get("attestation").ok_or(e::KIND_BODY_SCHEMA)?)
+        .map_err(|_| e::KIND_BODY_SCHEMA)?;
     Ok(ErasedPlaceholder {
         origin,
         id: id_text.to_owned(),
         digest: digest_text.to_owned(),
         attestation,
     })
+}
+
+fn is_stage(stage: &str) -> bool {
+    matches!(
+        stage,
+        "proposed" | "accepted" | "rejected" | "withdrawn" | "superseded"
+    )
 }
 
 fn parse_origin(value: &Value) -> Result<Origin, Code> {
@@ -788,15 +857,16 @@ pub fn parse_sigs(object: &Object) -> Result<Option<Vec<SigEntry>>, Code> {
                     digest::is_algorithm_name(algorithm)
                         && !hex.is_empty()
                         && hex.len() <= 128
-                        && hex.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                        && hex
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
                 }
                 None => false,
             };
             if !valid_key {
                 return Err(e::ENV_SIGS);
             }
-            b64::decode_range(value, 1, limits::MAX_SIG_VALUE_BYTES)
-                .map_err(|_| e::ENV_SIGS)?
+            b64::decode_range(value, 1, limits::MAX_SIG_VALUE_BYTES).map_err(|_| e::ENV_SIGS)?
         };
         if let Some(previous) = &previous_key {
             // Ascending by key, unique keys.
@@ -863,7 +933,9 @@ pub fn parse_signature_array(value: &Value) -> Result<Vec<SigEntry>, Code> {
                     digest::is_algorithm_name(algorithm)
                         && !hex.is_empty()
                         && hex.len() <= 128
-                        && hex.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                        && hex
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
                 }
                 None => false,
             };

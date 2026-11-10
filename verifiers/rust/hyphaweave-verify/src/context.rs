@@ -28,16 +28,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::digest;
 use crate::ed25519;
-use crate::envelope::{
-    self, Origin, ParsedRecord, RecordFile, RefObject, SigEntry, SIGNER_CONSTRAINED_KINDS,
-};
+use crate::envelope::{self, ParsedRecord, RecordFile, RefObject, SigEntry};
 use crate::error_codes::{e, n, Code};
 use crate::json::utf16_cmp;
 use crate::kinds::{self, GrantActionKind, KindBody, RevokeReason};
 use crate::options::{UsageError, VerifyOptions};
-use crate::report::{
-    AttestationReport, ContainerReport, RecordReport, RefReport, SigReportEntry, Verdict,
-};
+use crate::report::{RecordReport, Verdict};
 use crate::time::Timestamp;
 use crate::timestamp::ChainEvidence;
 
@@ -64,6 +60,20 @@ impl SigState {
     }
 }
 
+/// Where a verified signature's public-key material came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MaterialSource {
+    /// Material supplied by the record under verification itself (§9.5).
+    SelfRecord,
+    /// Material from a trusted declaration in the verification context.
+    TrustedDeclaration,
+    /// Material from a declared but untrusted declaration (manifest signatures
+    /// and declaration owner cosignatures only).
+    UntrustedDeclaration,
+    /// Explicit `weave.key.rotated` material (§9.2 rule 5).
+    Rotation,
+}
+
 /// Full result of checking one signature entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SignatureResolution {
@@ -71,6 +81,12 @@ pub(crate) struct SignatureResolution {
     pub state: SigState,
     /// Key class from the governing declaration or explicit rotation material.
     pub key_class: Option<String>,
+    /// Where the public-key material came from.
+    pub material_source: Option<MaterialSource>,
+    /// True when the material came from the verification context (a declaration
+    /// or explicit rotation material) rather than from the record itself; the
+    /// reference report calls this trust-on-first-use.
+    pub material_from_context: bool,
 }
 
 impl SignatureResolution {
@@ -78,6 +94,8 @@ impl SignatureResolution {
         Self {
             state: SigState::Invalid(code),
             key_class: None,
+            material_source: None,
+            material_from_context: false,
         }
     }
 }
@@ -147,8 +165,6 @@ pub(crate) struct DeclInfo {
 /// Trusted key state derived from a governing declaration.
 #[derive(Clone, Debug)]
 pub(crate) struct TrustedKey {
-    /// Governing declaration slot.
-    pub declaration_slot: usize,
     /// Key class.
     pub class: String,
     /// Raw public key.
@@ -166,8 +182,6 @@ pub(crate) struct RotationMaterial {
     pub public_key: [u8; 32],
     /// Class named by the rotation's `actor.type`.
     pub class: String,
-    /// Rotation slot that supplied the material.
-    pub rotation_slot: usize,
 }
 
 /// One record slot of the context.
@@ -182,6 +196,8 @@ pub(crate) struct Slot {
     pub body: Option<KindBody>,
     /// Body error, reported at check (6).
     pub body_error: Option<Code>,
+    /// Envelope-structure failure code, reported at check (2).
+    pub envelope_error: Option<Code>,
     /// Declaration candidate, when the record is a parseable key declaration.
     pub decl: Option<DeclInfo>,
     /// Declaration trust outcome.
@@ -211,6 +227,7 @@ impl Slot {
             digest: None,
             body: None,
             body_error: None,
+            envelope_error: None,
             decl: None,
             decl_issue: DeclIssue::None,
             source,
@@ -221,16 +238,6 @@ impl Slot {
     /// Kind name, when known.
     pub(crate) fn kind(&self) -> Option<&str> {
         self.record.as_ref().map(RecordFile::kind)
-    }
-
-    /// Envelope id, when known.
-    pub(crate) fn id(&self) -> Option<&str> {
-        self.record.as_ref().map(RecordFile::id)
-    }
-
-    /// Origin, when known.
-    pub(crate) fn origin(&self) -> Option<&Origin> {
-        self.record.as_ref().map(RecordFile::origin)
     }
 }
 
@@ -274,14 +281,8 @@ pub struct CrossCheckOutcome {
 /// A usable grant for authorisation (or grant-chain) checks.
 #[derive(Clone, Debug)]
 pub(crate) struct UsableGrant {
-    /// Slot of the grant record.
-    pub slot: usize,
     /// Grant specification from the body.
     pub spec: kinds::GrantSpec,
-    /// Key that issued the grant (its `actor.key`).
-    pub granter_key: String,
-    /// Actor class that issued the grant.
-    pub granter_type: String,
 }
 
 /// One target's verification context.
@@ -295,6 +296,13 @@ pub struct World {
     /// Trusted keys that came from the local keyset (no `N_KEY_TOFU`).
     pub(crate) keyset_roots: BTreeSet<String>,
     pub(crate) rotation_material: BTreeMap<String, RotationMaterial>,
+    /// Report-limitation flags collected while verifying (§14.9; the reference
+    /// report emits prose only for the features that were actually present).
+    pub(crate) limitation_flags: BTreeSet<&'static str>,
+    /// True when this context verifies a container target (as opposed to one
+    /// standalone record); some limitations are container-only in the reference
+    /// report.
+    pub(crate) container_context: bool,
 }
 
 impl World {
@@ -337,6 +345,8 @@ impl World {
             trusted: BTreeMap::new(),
             keyset_roots: BTreeSet::new(),
             rotation_material: BTreeMap::new(),
+            limitation_flags: BTreeSet::new(),
+            container_context: false,
         };
         for result in results {
             let slot = match result {
@@ -351,6 +361,12 @@ impl World {
                     "keyset file is not a structurally valid record: {code}"
                 ))
             })?;
+            if let Some(partial) = record.invalid() {
+                return Err(UsageError(format!(
+                    "keyset file is not a structurally valid record: {}",
+                    partial.code
+                )));
+            }
             // Signature presence/format is part of the structural check (§14.1).
             envelope::parse_sigs(&record.object).map_err(|code| {
                 UsageError(format!(
@@ -377,28 +393,38 @@ impl World {
                 };
                 (record.digest(), record.kind().to_owned())
             };
+            let invalid_code = self.slots[index]
+                .record
+                .as_ref()
+                .and_then(|record| record.invalid().map(|partial| partial.code));
             if let Some(record) = &self.slots[index].record {
-                let origin = record.origin().clone();
-                let id = record.id().to_owned();
-                self.by_origin_id
-                    .entry((origin.project, id))
-                    .or_default()
-                    .push(index);
+                if let Some(origin) = record.origin() {
+                    let (project, instance) = (origin.project.clone(), origin.instance.clone());
+                    let id = record.id().to_owned();
+                    self.by_origin_id
+                        .entry((project.clone(), id))
+                        .or_default()
+                        .push(index);
+                    let _ = instance;
+                }
             }
             self.slots[index].digest = Some(digest_string);
+            if let Some(code) = invalid_code {
+                self.slots[index].envelope_error = Some(code);
+                continue;
+            }
             if kind == "weave.erased" {
                 continue;
             }
             let body_result = {
-                let record = self.slots[index]
-                    .record
-                    .as_ref()
-                    .expect("record present");
+                let record = self.slots[index].record.as_ref().expect("record present");
                 kinds::parse_body(record)
             };
             match body_result {
                 Ok(body) => {
-                    if self.slots[index].source == SlotSource::Keyset && !matches!(body, KindBody::Opaque) {
+                    if self.slots[index].source == SlotSource::Keyset
+                        && !matches!(body, KindBody::Opaque)
+                    {
                         // The kind body is part of the keyset structural check.
                         // (A parse failure was turned into a usage error below.)
                     }
@@ -426,6 +452,11 @@ impl World {
     #[must_use]
     pub fn slot_count(&self) -> usize {
         self.target_count
+    }
+
+    /// Marks this context as verifying a container target (§14.9 report detail).
+    pub fn set_container_context(&mut self) {
+        self.container_context = true;
     }
 
     /// Attaches pre-verified timestamp evidence (used by the §9.4 compromise
@@ -463,7 +494,7 @@ impl World {
             kind: None,
             stage: None,
             origin: None,
-            kind_known: None,
+            kind_known: Some(false),
             verdict: Verdict::Invalid,
             errors: Vec::new(),
             notices: Vec::new(),
@@ -472,26 +503,99 @@ impl World {
             attestation: None,
         };
         if let Some(record) = &slot.record {
-            report.id = Some(record.id().to_owned());
-            report.kind = Some(record.kind().to_owned());
-            report.kind_known = Some(envelope::is_registered_kind(record.kind()));
-            match record.origin().clone() {
-                origin => {
-                    report.origin = Some(crate::report::OriginReport {
-                        project: origin.project,
-                        instance: origin.instance,
-                    })
-                }
-            }
             match &record.parsed {
-                ParsedRecord::Normal(env) => report.stage = Some(env.stage.clone()),
-                ParsedRecord::Erased(_) => report.stage = None,
+                ParsedRecord::Normal(envelope) => {
+                    report.id = Some(envelope.id.clone());
+                    report.kind = Some(envelope.kind.clone());
+                    report.kind_known = Some(envelope::is_registered_kind(&envelope.kind));
+                    report.stage = Some(envelope.stage.clone());
+                    report.origin = Some(crate::report::OriginReport {
+                        project: envelope.origin.project.clone(),
+                        instance: envelope.origin.instance.clone(),
+                    });
+                }
+                ParsedRecord::Erased(placeholder) => {
+                    report.id = Some(placeholder.id.clone());
+                    report.kind = Some("weave.erased".to_owned());
+                    report.kind_known = Some(true);
+                    report.origin = Some(crate::report::OriginReport {
+                        project: placeholder.origin.project.clone(),
+                        instance: placeholder.origin.instance.clone(),
+                    });
+                }
+                ParsedRecord::Invalid(partial) => {
+                    report.id = partial.id.clone();
+                    report.kind = partial.kind.clone();
+                    report.kind_known = Some(partial.kind_known);
+                    report.stage = partial.stage.clone();
+                    report.origin =
+                        partial
+                            .origin
+                            .as_ref()
+                            .map(|origin| crate::report::OriginReport {
+                                project: origin.project.clone(),
+                                instance: origin.instance.clone(),
+                            });
+                }
             }
         }
         if let Some(code) = slot.parse_error {
             report.errors.push(code);
         }
         report
+    }
+
+    /// Records that a §14.9 limitation applies to this run.
+    pub(crate) fn note_limitation(&mut self, flag: &'static str) {
+        self.limitation_flags.insert(flag);
+    }
+
+    /// Builds the report's `limitations` prose (§14.9). The specification fixes
+    /// the duty to list what was not verified, not the wording; the H1 verifier
+    /// mirrors the reference report wording so gate 3 can compare bytes.
+    #[must_use]
+    pub(crate) fn limitations(
+        &self,
+        container: Option<&crate::report::ContainerReport>,
+    ) -> Vec<String> {
+        const OFFLINE: &str = "Offline verification: only this container's records and the supplied keyset are in the verification context; references to records outside the context resolve as missing.";
+        const CHAIN: &str = "The internal hash chain of a claimed L1/L2 container cannot be recomputed offline: chain.status is unverified and level_verified is reported as L0.";
+        const NO_ANCHOR: &str = "No matching TSA trust anchor was available: timestamps are present-unverified and the container cannot be reported valid.";
+        const PREVIOUS: &str = "The embedded previous manifest's own signature was not re-verified; only its digest was checked against previous_manifest.digest.";
+        const KEY_TRUST: &str = "Key trust is trust-on-first-use from key-lifecycle records in the context; no certificate authority, network lookup or pinned local trust store was consulted.";
+        const UNREGISTERED: &str = "An unregistered kind is transported and integrity-checked but its body is never interpreted (K3 forward compatibility).";
+        const ERASED: &str = "A weave.erased placeholder has no content: its integrity rests on the signed attestation, the retained original digest and the manifest entry, not on a hash of the deleted record.";
+        const LABELS: &str = "Labels, consent coverage and licences are claims checked for consistency only; their truth is not established offline.";
+        let mut out = vec![OFFLINE.to_owned()];
+        let chain_unverified = container
+            .and_then(|container| container.chain.as_ref())
+            .is_some_and(|chain| chain.status == "unverified");
+        if chain_unverified {
+            out.push(CHAIN.to_owned());
+        }
+        if container.is_some_and(|container| {
+            container.level_claimed.as_deref() == Some("L2")
+                && container.anchor_verified == Some(false)
+                && !container.timestamps.is_empty()
+        }) {
+            out.push(NO_ANCHOR.to_owned());
+        }
+        if container.is_some_and(|container| container.previous_manifest_digest.is_some()) {
+            out.push(PREVIOUS.to_owned());
+        }
+        if self.limitation_flags.contains("keytrust") {
+            out.push(KEY_TRUST.to_owned());
+        }
+        if self.limitation_flags.contains("unreg") {
+            out.push(UNREGISTERED.to_owned());
+        }
+        if self.limitation_flags.contains("erased") {
+            out.push(ERASED.to_owned());
+        }
+        if self.limitation_flags.contains("labels") {
+            out.push(LABELS.to_owned());
+        }
+        out
     }
 
     /// Evaluates every target record, in slot order.
@@ -522,13 +626,15 @@ impl World {
             if slot.kind() != Some("weave.key.declared") {
                 continue;
             }
-            if slot.record.is_none() {
+            if slot.record.is_none() || slot.envelope_error.is_some() {
                 continue;
             }
             let Some(KindBody::KeyDeclared(body)) = slot.body.as_ref() else {
                 continue;
             };
-            let Some(public_key) = <Vec<u8> as TryInto<[u8; 32]>>::try_into(body.public_key.clone()).ok() else {
+            let Some(public_key) =
+                <Vec<u8> as TryInto<[u8; 32]>>::try_into(body.public_key.clone()).ok()
+            else {
                 continue;
             };
             infos.push((
@@ -616,7 +722,6 @@ impl World {
                 self.trusted.insert(
                     key,
                     TrustedKey {
-                        declaration_slot: index,
                         class: info.class,
                         public_key: info.public_key,
                         valid_from: info.valid_from,
@@ -676,12 +781,8 @@ impl World {
                 return None;
             }
         }
-        let Some(record) = self.slots[index].record.clone() else {
-            return None;
-        };
-        let Some(digest_string) = self.slots[index].digest.clone() else {
-            return None;
-        };
+        let record = self.slots[index].record.clone()?;
+        let digest_string = self.slots[index].digest.clone()?;
         let message = digest::record_signature_message(&digest_string);
         let self_signature_valid =
             self.declaration_self_signature_valid(&record, &decl, &body.key, &message);
@@ -701,13 +802,13 @@ impl World {
             // cosignature. A container/target declaration needs a cosignature by
             // an already trusted human/organization key.
             if is_keyset {
-                self.insert_trusted(&body.key, index, &decl);
+                self.insert_trusted(&body.key, &decl);
                 self.slots[index].decl_issue = DeclIssue::None;
                 return Some(body.key);
             }
             let cosigned = self.declaration_cosigned_by_trusted(&record, &message, &body.key);
             if cosigned {
-                self.insert_trusted(&body.key, index, &decl);
+                self.insert_trusted(&body.key, &decl);
                 self.slots[index].decl_issue = DeclIssue::None;
                 return Some(body.key);
             }
@@ -740,20 +841,19 @@ impl World {
             self.slots[index].decl_issue = DeclIssue::OwnerUntrusted;
             return None;
         }
-        self.insert_trusted(&body.key, index, &decl);
+        self.insert_trusted(&body.key, &decl);
         self.slots[index].decl_issue = DeclIssue::None;
         Some(body.key)
     }
 
-    fn insert_trusted(&mut self, key: &str, index: usize, decl: &DeclInfo) {
+    fn insert_trusted(&mut self, key: &str, decl: &DeclInfo) {
         self.trusted.insert(
             key.to_owned(),
             TrustedKey {
-                declaration_slot: index,
                 class: decl.class.clone(),
                 public_key: decl.public_key,
                 valid_from: decl.valid_from,
-                valid_until: decl.valid_until
+                valid_until: decl.valid_until,
             },
         );
     }
@@ -771,7 +871,9 @@ impl World {
                 }
             }
         }
-        self.rotation_material.get(key).map(|material| material.class.clone())
+        self.rotation_material
+            .get(key)
+            .map(|material| material.class.clone())
     }
 
     fn declaration_self_signature_valid(
@@ -861,31 +963,29 @@ impl World {
             let Some(KindBody::KeyRotated(body)) = self.slots[index].body.clone() else {
                 continue;
             };
-            let class = self
-                .slots[index]
+            let class = self.slots[index]
                 .record
                 .as_ref()
                 .and_then(RecordFile::envelope)
                 .map(|envelope| envelope.actor.actor_type.clone())
                 .unwrap_or_default();
-            if let Ok(public_key) = <Vec<u8> as TryInto<[u8; 32]>>::try_into(body.new_public_key.clone()) {
+            if let Ok(public_key) =
+                <Vec<u8> as TryInto<[u8; 32]>>::try_into(body.new_public_key.clone())
+            {
                 self.rotation_material
                     .entry(body.new_key.clone())
                     .or_insert(RotationMaterial {
                         public_key,
                         class: class.clone(),
-                        rotation_slot: index,
                     });
             }
             if let Some(old_public_key) = &body.old_public_key {
-                if let Ok(public_key) = <Vec<u8> as TryInto<[u8; 32]>>::try_into(old_public_key.clone()) {
+                if let Ok(public_key) =
+                    <Vec<u8> as TryInto<[u8; 32]>>::try_into(old_public_key.clone())
+                {
                     self.rotation_material
                         .entry(body.old_key.clone())
-                        .or_insert(RotationMaterial {
-                            public_key,
-                            class,
-                            rotation_slot: index,
-                        });
+                        .or_insert(RotationMaterial { public_key, class });
                 }
             }
         }
@@ -898,19 +998,11 @@ impl World {
         self.trusted
             .get(key)
             .map(|trusted| trusted.class.clone())
-            .or_else(|| self.rotation_material.get(key).map(|material| material.class.clone()))
-    }
-
-    /// True when the key is trusted (has a governing trusted declaration).
-    #[must_use]
-    pub(crate) fn key_is_trusted(&self, key: &str) -> bool {
-        self.trusted.contains_key(key)
-    }
-
-    /// True when the key came from the local keyset rather than the context.
-    #[must_use]
-    pub(crate) fn key_is_keyset_root(&self, key: &str) -> bool {
-        self.keyset_roots.contains(key)
+            .or_else(|| {
+                self.rotation_material
+                    .get(key)
+                    .map(|material| material.class.clone())
+            })
     }
 }
 
@@ -925,6 +1017,8 @@ struct SignatureMaterial {
     /// Validity window from the governing trusted declaration, when the
     /// material came from one.
     window: Option<(Option<Timestamp>, Option<Timestamp>)>,
+    /// Provenance of the material.
+    source: MaterialSource,
 }
 
 impl World {
@@ -948,6 +1042,7 @@ impl World {
                     public_key,
                     class: self.key_class(key_id),
                     window: None,
+                    source: MaterialSource::SelfRecord,
                 });
             }
         }
@@ -956,6 +1051,7 @@ impl World {
                 public_key: trusted.public_key,
                 class: Some(trusted.class.clone()),
                 window: Some((trusted.valid_from, trusted.valid_until)),
+                source: MaterialSource::TrustedDeclaration,
             });
         }
         if let Some(material) = self.rotation_material.get(key_id) {
@@ -963,6 +1059,7 @@ impl World {
                 public_key: material.public_key,
                 class: Some(material.class.clone()),
                 window: None,
+                source: MaterialSource::Rotation,
             });
         }
         if allow_untrusted_declaration {
@@ -976,6 +1073,7 @@ impl World {
                     public_key,
                     class: self.declared_class_any(key_id),
                     window: None,
+                    source: MaterialSource::UntrustedDeclaration,
                 });
         }
         None
@@ -989,6 +1087,7 @@ impl World {
     /// attestation-file error mapping of a manifest signature;
     /// `ignore_revocation_for` suppresses revocation effects for the key of a
     /// revocation record itself (§9.5, self-evidencing).
+    #[allow(clippy::too_many_arguments)] // mirrors the §3.4/§9.4 check list
     pub(crate) fn check_signature(
         &mut self,
         key_id: &str,
@@ -1016,20 +1115,43 @@ impl World {
             return SignatureResolution {
                 state: SigState::Unverified(e::KEY_UNKNOWN),
                 key_class: self.declared_class_any(key_id),
+                material_source: None,
+                material_from_context: false,
             };
         };
+        let material_source = Some(material.source);
+        let material_from_context = material.source != MaterialSource::SelfRecord;
         if let Err(code) = ed25519::verify(&material.public_key, signature, message) {
-            let mapped = if manifest { e::MANIFEST_SIG_INVALID } else { code };
-            return SignatureResolution::invalid(mapped);
+            let mapped = if manifest {
+                e::MANIFEST_SIG_INVALID
+            } else {
+                code
+            };
+            return SignatureResolution {
+                state: SigState::Invalid(mapped),
+                key_class: material.class.clone(),
+                material_source,
+                material_from_context,
+            };
         }
         if let Some((Some(valid_from), _)) = material.window {
             if claimed_at < valid_from {
-                return SignatureResolution::invalid(e::KEY_EXPIRED);
+                return SignatureResolution {
+                    state: SigState::Invalid(e::KEY_EXPIRED),
+                    key_class: material.class,
+                    material_source,
+                    material_from_context,
+                };
             }
         }
         if let Some((_, Some(valid_until))) = material.window {
             if claimed_at > valid_until {
-                return SignatureResolution::invalid(e::KEY_EXPIRED);
+                return SignatureResolution {
+                    state: SigState::Invalid(e::KEY_EXPIRED),
+                    key_class: material.class,
+                    material_source,
+                    material_from_context,
+                };
             }
         }
         if ignore_revocation_for != Some(key_id) {
@@ -1042,19 +1164,33 @@ impl World {
                             return SignatureResolution {
                                 state: SigState::Valid,
                                 key_class: material.class,
+                                material_source,
+                                material_from_context,
                             };
                         }
                         if self.evidence.has_receipts() && bounds.is_empty() {
                             return SignatureResolution {
                                 state: SigState::Unverified(e::TS_UNTRUSTED),
                                 key_class: material.class,
+                                material_source,
+                                material_from_context,
                             };
                         }
-                        return SignatureResolution::invalid(e::KEY_COMPROMISED);
+                        return SignatureResolution {
+                            state: SigState::Invalid(e::KEY_COMPROMISED),
+                            key_class: material.class,
+                            material_source,
+                            material_from_context,
+                        };
                     }
                     RevokeReason::Retired | RevokeReason::Other => {
                         if claimed_at >= effective_at {
-                            return SignatureResolution::invalid(e::KEY_REVOKED);
+                            return SignatureResolution {
+                                state: SigState::Invalid(e::KEY_REVOKED),
+                                key_class: material.class,
+                                material_source,
+                                material_from_context,
+                            };
                         }
                     }
                 }
@@ -1063,6 +1199,8 @@ impl World {
         SignatureResolution {
             state: SigState::Valid,
             key_class: material.class,
+            material_source,
+            material_from_context,
         }
     }
 
@@ -1116,7 +1254,6 @@ impl World {
 // ---------------------------------------------------------------------------
 
 const FOUND: &str = "found";
-const MOVED: &str = "moved";
 const MISSING: &str = "missing";
 const ERASED: &str = "erased";
 const UNVERIFIABLE: &str = "unverifiable";
@@ -1130,10 +1267,7 @@ impl World {
         if parsed.algorithm != "sha256" {
             return Resolution::simple(UNVERIFIABLE);
         }
-        let lookup = (
-            reference.origin.project.clone(),
-            reference.id.clone(),
-        );
+        let lookup = (reference.origin.project.clone(), reference.id.clone());
         let Some(indices) = self.by_origin_id.get(&lookup).cloned() else {
             return Resolution::simple(MISSING);
         };
@@ -1155,6 +1289,11 @@ impl World {
                             target_kind: Some("weave.erased".to_owned()),
                             target_sensitivity: None,
                         };
+                    }
+                }
+                ParsedRecord::Invalid(_) => {
+                    if record.digest() == reference.digest {
+                        return Resolution::simple(UNVERIFIABLE);
                     }
                 }
                 ParsedRecord::Normal(_) => {
@@ -1187,10 +1326,7 @@ impl World {
     /// target's own verdict. Used by the erasure cross-checks, which concern the
     /// recorded identity rather than the record's individual verdict.
     pub(crate) fn identity_match(&self, reference: &RefObject) -> Option<usize> {
-        let lookup = (
-            reference.origin.project.clone(),
-            reference.id.clone(),
-        );
+        let lookup = (reference.origin.project.clone(), reference.id.clone());
         let indices = self.by_origin_id.get(&lookup)?;
         for &index in indices {
             let Some(record) = self.slots[index].record.as_ref() else {
@@ -1200,9 +1336,8 @@ impl World {
                 crate::envelope::ParsedRecord::Erased(placeholder) => {
                     placeholder.digest == reference.digest
                 }
-                crate::envelope::ParsedRecord::Normal(_) => {
-                    record.digest() == reference.digest
-                }
+                crate::envelope::ParsedRecord::Normal(_) => record.digest() == reference.digest,
+                crate::envelope::ParsedRecord::Invalid(_) => false,
             };
             if matches {
                 return Some(index);
@@ -1271,27 +1406,18 @@ impl World {
         match actor.actor_type.as_str() {
             "human" | "organization" => {}
             "agent" => {
-                self.grant_chain_check(index, at, 0)?;
+                self.grant_chain_check(index, 0)?;
             }
             _ => return Err(e::GRANT_UNRESOLVED),
         }
         self.grant_chain_validity(index, at)?;
-        Ok(UsableGrant {
-            slot: index,
-            spec,
-            granter_key: actor.key,
-            granter_type: actor.actor_type,
-        })
+        let _ = actor;
+        Ok(UsableGrant { spec })
     }
 
     /// Checks the delegation-chain structure of `slot` against its parents
     /// (§5.5.2 steps 1–5, 7).
-    fn grant_chain_check(
-        &mut self,
-        slot: usize,
-        at: Timestamp,
-        depth: usize,
-    ) -> Result<(), Code> {
+    fn grant_chain_check(&mut self, slot: usize, depth: usize) -> Result<(), Code> {
         if depth > crate::limits::MAX_GRANT_CHAIN {
             return Err(e::GRANT_UNRESOLVED);
         }
@@ -1345,7 +1471,7 @@ impl World {
                     return Err(e::GRANT_GRANTER);
                 }
                 self.check_grant_is_subset(&actor.key, &child_spec, &parent_spec)?;
-                self.grant_chain_check(parent_slot, at, depth + 1)
+                self.grant_chain_check(parent_slot, depth + 1)
             }
             _ => Err(e::GRANT_UNRESOLVED),
         }
@@ -1591,6 +1717,7 @@ impl World {
                     placeholder_slots.push(index);
                     let _ = placeholder;
                 }
+                ParsedRecord::Invalid(_) => {}
                 ParsedRecord::Normal(envelope) => {
                     if let Some(labels) = &envelope.labels {
                         if labels.sensitivity.as_deref() == Some("local-only") {
@@ -1684,10 +1811,7 @@ impl World {
             // Rule 1 + 3: a live record with the same identity and the original
             // digest contradicts the placeholder; two placeholders for the same
             // target are also a contradiction.
-            let lookup = (
-                placeholder.origin.project.clone(),
-                placeholder.id.clone(),
-            );
+            let lookup = (placeholder.origin.project.clone(), placeholder.id.clone());
             let candidates = self.by_origin_id.get(&lookup).cloned().unwrap_or_default();
             let mut placeholder_count = 0usize;
             for candidate in candidates {
@@ -1704,6 +1828,7 @@ impl World {
                             outcome.container_errors.push(e::ERASE_CONTRADICTION);
                         }
                     }
+                    ParsedRecord::Invalid(_) => {}
                 }
             }
             if placeholder_count > 1 {
@@ -1728,6 +1853,10 @@ impl World {
         outcome.container_errors.dedup();
         outcome.container_notices.sort_unstable();
         outcome.container_notices.dedup();
+        // §14.7 test-only hook: skipped checks are treated as passed.
+        outcome
+            .container_errors
+            .retain(|code| !self.options.skipped(code));
         outcome
     }
 }
@@ -1754,7 +1883,7 @@ impl World {
         };
         match actor.actor_type.as_str() {
             "human" | "organization" => {}
-            "agent" => self.grant_chain_check(index, at, 0)?,
+            "agent" => self.grant_chain_check(index, 0)?,
             _ => return Err(e::GRANT_UNRESOLVED),
         }
         self.grant_chain_validity(index, at)
