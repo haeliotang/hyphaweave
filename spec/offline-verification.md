@@ -3,15 +3,16 @@
 
 # Offline verification of a `weave-record/1` L0 container
 
-**Status:** normative companion to `spec/weave-record-1.md`, revision 1. This document
+**Status:** normative companion to `spec/weave-record-1.md`, revision 2. This document
 describes how a person can verify a signed **L0** container by hand, offline, with nothing
 but common tools. It relies only on the byte-level rules of the specification; it does not
-use the reference verifier and does not need this repository. The worked example in §9 has
-been executed on `vectors/container/l0-minimal/` and its real output is pasted there. The
-manual procedure deliberately does not cover L2 timestamps or the L1 chain claim; those are
-declared limitations in §8.
+use the reference verifier. The worked example in §9 has been executed on
+`vectors/container/l0-minimal/` with the repository's test key set as the **local trust
+input** (see §3 and §9), and its real output is pasted there. The manual procedure
+deliberately does not cover L2 timestamps or the L1 chain claim; those are declared
+limitations in §8.
 
-**Decision tags:** [A1c] [C4] [C5] [D1] [D2] [E5] [I1] [I2] [I4] [Q8].
+**Decision tags:** [A1c] [C4] [C5] [D1] [D2] [E5] [I1] [I2] [I4] [Q8] [R2].
 
 ## 0. What you need
 
@@ -28,6 +29,15 @@ declared limitations in §8.
   variable instead. Verdicts never depend on the viewer.
 - `xxd`, `printf`, `cat`, `head`, `tail`, `wc`, `od`, `tr`, `cut`, `cmp` are ordinary base
   utilities used to move bytes around. No verifier, no library, no network.
+
+The manual procedure checks **bytes**, not trust. Trust in the signing key comes from a
+**local trust input**: a keyset directory the reader already trusts (the same role `--keys`
+plays for a verifier). In the worked example this is `vectors/keys/keyset`, the repository's
+public test key set. A container that only contains its own self-signed human/organization
+declaration does not create trust: as a container-only declaration it is `unverifiable`
+(`E_KEY_UNTRUSTED`) and carries `N_SELF_ATTESTED_ROOT_KEY`; with a local keyset that already
+trusts that key it is valid. Trust roots come only from the local keyset, never from the
+container itself (specification §5.3) — this is decision 2026-11-10 #42 [R2].
 
 This procedure verifies an **L0** container: a directory (or an unzipped zip) with
 `manifest.json`, `signatures/manifest.sig.json` and `records/*.json`. Such a container may
@@ -137,7 +147,13 @@ unzip -l container.zip        # entry names; there must be no absolute paths, no
 Every public key used by the container must be declared in a `weave.key.declared` record
 (specification §9.1). The key id is **not** the SHA-256 of the key's text; it is
 `"ed25519:" + first 32 lowercase hex characters of SHA-256(32 raw public-key bytes)`
-(specification §2.5, correction v0.1.1). Anyone can derive it:
+(specification §2.5, correction v0.1.1). Anyone can derive it.
+
+Deriving key ids checks self-consistency, not trust: for the container to be trustworthy the
+verifier (or the reader) must already trust at least one `human`/`organization` key in the
+local trust input — for the worked example, the repository keyset directory
+`vectors/keys/keyset` (§9 step 2b). A self-signed declaration inside the container alone is
+not a root (§5.3 of the specification).
 
 ```bash
 : > "$W/keys.tsv"     # key_id <TAB> path-to-pem
@@ -401,14 +417,17 @@ available, repeat steps 3–5 on it to check its signature too.
    digest. For records required to be per-record signed (accepted records; key, grant,
    consent and erasure records), the absence of a valid signature is a defect.
 4. Declared keys have self-consistent key ids: the id is the SHA-256 of the raw 32-byte
-   public key (first 32 hex), and the self-signature verifies.
+   public key (first 32 hex), and the self-signature verifies. This is byte-level
+   consistency; whether the key is *trusted* depends on the local keyset input (§9
+   step 2b).
 
 **It does not prove** (these are the honest limits, also reported as `limitations` by a
 verifier):
 
-1. **Identity.** A signature proves possession of the private key behind a key id. Key
-   declarations are self-asserted (trust on first use); nothing says the key belongs to a
-   particular human or organisation. There is no CA here.
+1. **Identity.** A signature proves possession of the private key behind a key id. Trust
+   roots come only from the reader's local keyset; a container cannot establish its own
+   root. Nothing says the trusted key belongs to a particular human or organisation, and
+   there is no CA here [R2].
 2. **Time.** `created_at`, `recorded_at` and `occurred_at` are claims. L0 has no external
    timestamp, so "this container was signed no later than X" cannot be proven. A verifier
    must not treat claimed times as trusted.
@@ -438,25 +457,32 @@ verifier):
 ## 9. Worked example on `vectors/container/l0-minimal/`
 
 The case `vectors/container/l0-minimal/` contains `expected.json` (the vector's expected
-verdict: `valid`, one record, `level_verified: "L0"`) and a `container/` directory that is
-the export itself. Its complete file inventory is:
+verdict: `valid` with `args: ["--keys", "@keyset"]`, one record, `level_verified: "L0"`)
+and a `container/` directory that is the export itself. Its complete file inventory is:
 
 | file (relative to the case dir) | bytes |
 |---|---|
-| `expected.json` | 635 |
+| `expected.json` | 812 |
 | `container/manifest.json` | 365 |
 | `container/records/e08150ddc301c6ebd26f577a4e71a060b5a575ff287a6fe25bbbc62da664379d.json` | 634 |
 | `container/signatures/manifest.sig.json` | 306 |
 
-The container is self-contained: the only record is the `weave.key.declared` record of the
-signing key (human-1, key id `ed25519:333f90d1d9dfb653b78df977b9b13ff2`), so the manual
-procedure needs no external keyset and no verifier. Every JSON file ends with exactly one
-LF, which is what makes the trailing-LF rule of §1.8 matter for the worked example.
+The container's **bytes** are self-contained: the only record is the `weave.key.declared`
+record of the signing key (human-1, key id `ed25519:333f90d1d9dfb653b78df977b9b13ff2`), so
+the checks below need no verifier and no network. The **trust** input is the repository's
+local keyset `vectors/keys/keyset`, which already trusts human-1 as a human key: with it the
+container is valid; without it the container-only self-signed declaration is
+`unverifiable` (`E_KEY_UNTRUSTED` + `N_SELF_ATTESTED_ROOT_KEY`) and the container is
+`unverifiable`. Step 2b below performs the trust-input check by hand. Every JSON file ends
+with exactly one LF, which is what makes the trailing-LF rule of §1.8 matter for the worked
+example.
 
 The worked example runs the procedure above end to end with a single shell script, so the
 command/actual-output pairing is unambiguous. The script defines the same helpers as §1 and
-performs steps 1–7 on `C=vectors/container/l0-minimal/container`, printing one line per check and
-exiting nonzero if any check fails.
+performs steps 1–7 plus the local-trust check 2b on
+`C=vectors/container/l0-minimal/container`, printing one line per check and
+exiting nonzero if any check fails. The bytes are unchanged by the local-trust step: the
+`container/` file sizes below are the bytes that the manual procedure hashes.
 
 ```bash
 #!/usr/bin/env bash
@@ -531,6 +557,34 @@ if compgen -G "vectors/keys/*.pub.bin" >/dev/null; then
     want=$(jq -r '.key_id' "$base.json"); got=$(keyid_of_raw "$bin")
     echo "$(basename "$bin"): $got $([ "$got" = "$want" ] && echo MATCH || { fail "test-key id mismatch"; echo MISMATCH; })"
   done
+fi
+
+echo "== 2b. local trust input (keyset) =="
+KS=vectors/keys/keyset
+SIGNER=$(jq -r '.signatures[0].key' "$C/signatures/manifest.sig.json")
+ksfile=""
+for f in "$KS"/*.json; do
+  [ "$(jq -r '.body.key // empty' "$f")" = "$SIGNER" ] || continue
+  case "$(jq -r '.body.key_type // empty' "$f")" in
+    human|organization) ksfile=$f; break ;;
+  esac
+done
+if [ -z "$ksfile" ]; then
+  echo "local trust: NO trusted human/organization declaration for $SIGNER in $KS"
+  echo "=> container-only self-signed declaration is untrusted: E_KEY_UNTRUSTED + N_SELF_ATTESTED_ROOT_KEY"
+  fail "signer is not a local keyset root"
+else
+  ks_digest=$(record_digest "$ksfile")
+  b64url_decode "$(jq -r '.body.public_key' "$ksfile")" "$W/ks.raw" || fail "keyset public_key"
+  raw_to_pem "$W/ks.raw" "$W/ks.pem"
+  { printf 'weave-record/1/sig\n'; printf '%s' "$ks_digest"; } > "$W/ks.msg"
+  ks_sig=$(jq -r --arg k "$SIGNER" '.sigs[] | select(.key==$k) | .value' "$ksfile" | head -1)
+  b64url_decode "$ks_sig" "$W/ks.sig.bin" || fail "keyset signature value"
+  if "$OSSL" pkeyutl -verify -pubin -inkey "$W/ks.pem" -rawin -in "$W/ks.msg" -sigfile "$W/ks.sig.bin" >/dev/null 2>&1; then
+    echo "local trust root: $SIGNER self-signed in $ksfile SIGNATURE VALID"
+  else
+    fail "keyset root declaration self-signature invalid"
+  fi
 fi
 
 echo "== 3. manifest digest =="
@@ -623,7 +677,9 @@ repository root as
 `OSSL=/opt/homebrew/opt/openssl@3/bin/openssl bash verify-l0.sh` (the macOS system
 `openssl` is LibreSSL, which the version guard rejects). Its standard output and exit code
 are reproduced verbatim below, followed by what each step demonstrated. The run is
-deterministic: no network, no current time, no locale.
+deterministic: no network, no current time, no locale. Step 2b is the local trust input
+required by decision 2026-11-10 #42 [R2]: without the keyset the same container is
+`unverifiable` with `E_KEY_UNTRUSTED` and `N_SELF_ATTESTED_ROOT_KEY`.
 
 ```text
 $ OSSL=/opt/homebrew/opt/openssl@3/bin/openssl bash verify-l0.sh
@@ -644,6 +700,8 @@ key-new.pub.bin: ed25519:bbecfa632505e9d2df3c49b3e70e613f MATCH
 key-old.pub.bin: ed25519:f6a2edbfb48098da6eb9018c5ee78673 MATCH
 org-1.pub.bin: ed25519:34b835597028e3382ae0ee25dbe7e3e6 MATCH
 program-1.pub.bin: ed25519:43a1178e89cdbd81a024c9e60369d4a7 MATCH
+== 2b. local trust input (keyset) ==
+local trust root: ed25519:333f90d1d9dfb653b78df977b9b13ff2 self-signed in vectors/keys/keyset/key-declared-human-1.json SIGNATURE VALID
 == 3. manifest digest ==
 computed=sha256:d3ddf34c3b7371a3a4b4e29473590c5688124e6362b384f3911509b4494b09a3
 declared=sha256:d3ddf34c3b7371a3a4b4e29473590c5688124e6362b384f3911509b4494b09a3
@@ -676,6 +734,13 @@ first container: no previous manifest
   `ed25519:333f90d1d9dfb653b78df977b9b13ff2`. The same derivation reproduces all ten
   published test-key ids in `vectors/keys/` (`*.pub.bin`), which are exactly the bytes the
   rule hashes.
+- **Step 2b — local trust input.** The container's manifest signer is
+  `ed25519:333f90d1d9dfb653b78df977b9b13ff2`; the local keyset
+  `vectors/keys/keyset` contains a self-signed `human` declaration for exactly that key, and
+  its self-signature verifies with the same byte helpers. That declaration is the reader's
+  local trust root for this container (decision 2026-11-10 #42 [R2]). Without this local
+  input the container-only declaration would be untrusted (`E_KEY_UNTRUSTED`) and the
+  container unverifiable, even though every byte-level check above still passes.
 - **Step 3 — manifest digest and the trailing LF.** The manifest digest is computed over
   the canonical manifest bytes with the optional single trailing LF removed, producing
   `sha256:d3ddf34c3b7371a3a4b4e29473590c5688124e6362b384f3911509b4494b09a3`, which equals

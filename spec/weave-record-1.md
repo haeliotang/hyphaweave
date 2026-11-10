@@ -7,6 +7,10 @@
 passed the J1 and J2 round-trip acceptance cases, and only one independent verifier
 implementation exists. This document is the normative specification of the draft.
 **Version:** `weave-record/1`.
+**Revision:** draft v0.1, revision 2 (Inceptless decision 2026-11-10 #42). Revision 2 makes
+key trust roots a local keyset input (R2), fixes the grant-chain verification time (R1),
+the compromise-rescue accuracy bound (R3) and its unverifiable/invalid split (R4), the owner
+class error code (R5), and the `genTime` cross-reference (R6).
 **Editors:** Inceptless.
 **Licence:** this specification text is licensed CC BY 4.0; code and test vectors for the
 format are licensed Apache-2.0.
@@ -19,11 +23,14 @@ disagreements are recorded as open questions.
 
 **Ruling tags.** Normative content that is fixed by a ruling of Inceptless decision
 2026-11-10 #34 is tagged `decided (Inceptless decision 2026-11-10 #34)` together with the
-ruling identifier, for example `[S1]` or `[Q1]`. No decision may be invented: a statement
+ruling identifier, for example `[S1]` or `[Q1]`; content fixed by a later decision is
+tagged with that decision's date and number. Revision 2 of this document implements rulings
+[R1]–[R6] of Inceptless decision 2026-11-10 #42. No decision may be invented: a statement
 that no ruling covers is labelled PROVISIONAL [S8] decided (Inceptless decision
 2026-11-10 #34; S8). Content that no ruling covers is marked
 **PROVISIONAL** and recorded as an open question; PROVISIONAL items are listed in
-Appendix A. Ruling identifiers S1–S8 and Q1–Q33 are those of the ruling document.
+Appendix A. Ruling identifiers S1–S8 and Q1–Q33 are those of the decision 2026-11-10 #34 ruling
+document, and R1–R6 those of decision 2026-11-10 #42.
 Decision-draft identifiers (`[C1]`, `[B3]`, `[E6]`, `[G3a]`, `[I2]`, `[K3]`, …) tie
 paragraphs back to the decision draft. `[§8.1]`-style tags cite a section of the decision
 draft, not of this document. Cross-references to this document are written as `§1.8` and
@@ -364,7 +371,7 @@ All times in this format (`recorded_at`, `occurred_at`, `created_at`, `valid_fro
 [F1][F2][F4]. `recorded_at` and `occurred_at` have no ordering requirement relative to each
 other. A malformed timestamp is `E_ENV_TIME` in the envelope; in kind bodies and manifests
 the error code is the one listed by the kind page or `E_MANIFEST_SCHEMA` respectively;
-`genTime` of an RFC 3161 token is converted per §12.3. The canonical serialisation of a TS
+`genTime` of an RFC 3161 token is converted per §12.2 check 13. The canonical serialisation of a TS
 value is exactly its 24 ASCII bytes. The grammar is fixed by the ruling [Q6] decided
 (Inceptless decision 2026-11-10 #34).
 
@@ -683,29 +690,59 @@ self-descriptions, and their kind pages permit owner/previous-key co-signatures,
 human/organization signature on them is **not** `E_ACTOR_HUMAN_KEY` [Q30] decided
 (Inceptless decision 2026-11-10 #34; Q30).
 
-### 5.3 Key trust: trust on first use, no pinning
+### 5.3 Key trust: roots come only from the local keyset
 
-The verifier accepts a public key when a valid `weave.key.declared` record for it exists in
-the verification context or in the externally supplied keyset, or when a valid
-`weave.key.rotated` record in the context explicitly lists the key in its
-`old_public_key`/`new_public_key` member. A rotation record's explicit public-key members
-are declarations of those two keys: they are verification material for the rotation record
-and for other records signed by those keys. What is forbidden is inferring a key that no
-record states, by walking an `old_key → new_key` chain (§9.2 rule 5). There is no
-certificate authority, no network lookup and no revocation distribution beyond records in
-context; the local decision is trust-on-first-use [E4][M-12] decided (Inceptless decision
-2026-11-10 #34; M-12). H0 does **not** implement pinning: there is no
-pinned-trust input beyond the keyset, and the verifier MUST NOT require one. The verifier
-reports the notice `N_KEY_TOFU` for keys accepted this way, so a human reader can see that
-trust came from the context itself rather than from a pre-existing local trust store [Q12]
-decided (Inceptless decision 2026-11-10 #34; Q12).
+There is no certificate authority, no network lookup and no revocation distribution beyond
+records in the verification context. Trust roots are supplied **only by the verifier's local
+keyset input** (`--keys <dir>`, the E4 "local trust"): a `weave.key.declared` record in the
+keyset whose `key_type` is `human` or `organization`, and which passes its own structural,
+self-signature and validity checks, establishes that key as a **trusted human/organization
+root**. Keyset declarations do not need a cosignature and never produce
+`N_SELF_ATTESTED_ROOT_KEY`; the keyset **is** the local trust statement [E4][Q12][R2] decided
+(Inceptless decision 2026-11-10 #42; R2).
 
-When the verification context contains more than one valid declaration for the same key id,
-the declaration whose claimed `recorded_at` is **earliest** governs, and when two tie the
+The `trusted` set is context-level state built from the keyset first and then closed over the
+container/target declarations (an iterative fixed point, so a declaration may be trusted
+through a chain of co-signatures). A keyset declaration that fails its own checks (bad
+self-signature, inverted window, ...) establishes no trust, but it is not a usage error:
+only a keyset file that is not a structurally valid record is one (§14.1). A declaration in the container or in a record target is a
+trust root only if its key is already in `trusted`:
+
+- a `human`/`organization` declaration in the container/target is **valid** when its key id
+  is already in `trusted` (for example the same key is declared and trusted in the keyset),
+  or when it carries at least one valid cosignature made by a `trusted`
+  human/organization key; a valid declaration adds its key id to `trusted`;
+- otherwise it is `unverifiable` with `E_KEY_UNTRUSTED`, and when its only signature is its
+  own it also carries the notice `N_SELF_ATTESTED_ROOT_KEY`. An untrusted declaration
+  **MUST NOT** make any other declaration invalid and MUST NOT become trusted;
+- `agent`/`program`/`device` declarations require their owner to be in `trusted`
+  (§9.1 rules 3–4); an owner that resolves but is not trusted makes the declaration
+  `unverifiable` with `E_KEY_UNTRUSTED`.
+
+With no `--keys` input there are no roots: every human/organization declaration in a
+container or record target is untrusted (`E_KEY_UNTRUSTED`; plus
+`N_SELF_ATTESTED_ROOT_KEY` when only self-signed), and automated declarations whose owner
+chain does not reach a trusted key are `E_KEY_UNTRUSTED`. There is **no** time-ordered root
+selection: claimed `recorded_at` values never decide which declaration is a root; a backdated
+self-signed declaration cannot become one [R2] decided (Inceptless decision 2026-11-10 #42;
+R2). This closes the self-attested-root attack where a container could nominate its own root
+by claiming an early time.
+
+A public key can also be supplied as verification material by a valid `weave.key.rotated`
+record in the context that explicitly lists it in `old_public_key`/`new_public_key`; that is
+material, not a trust root. What is forbidden is inferring a key that no record states, by
+walking an `old_key → new_key` chain (§9.2 rule 5) [M-12] decided (Inceptless decision
+2026-11-10 #34; M-12). H0 does **not** implement pinning beyond the keyset input; the
+verifier MUST NOT require any other local trust store. The verifier reports `N_KEY_TOFU` for
+keys accepted through declarations in the context, so a human reader can see that trust came
+from the context rather than from the local keyset [Q12] decided (Inceptless decision
+2026-11-10 #34; Q12).
+
+When the context contains more than one valid declaration for the same key id, the
+declaration whose claimed `recorded_at` is **earliest** governs, and when two tie the
 declaration whose record digest is lexicographically smallest governs. Declarations that are
-not themselves valid (for any reason) never establish or govern a key [Q12] decided
-(Inceptless decision 2026-11-10 #34; Q12). The tie-break rule is an implementation-shape
-detail (PROVISIONAL, Appendix A P2).
+not themselves valid never establish or govern a key. This is declaration resolution, not
+root selection [Q12] decided (Inceptless decision 2026-11-10 #34; Q12).
 
 ### 5.4 Agent authorisation: every agent record needs a covering grant
 
@@ -730,8 +767,10 @@ proposal). The envelope presence requirements are in §4.2; the semantic coverag
 - at that time the grant MUST NOT be revoked: a `weave.grant` revocation of this grant with
   `effective_at <= recorded_at` gives `E_GRANT_REVOKED` (unverifiable); the boundary
   belongs to revocation (equal counts as revoked);
-- the whole grant chain, including ancestors, is checked at the record's claimed
-  `recorded_at`, per §5.5 [S3][M-3][Q11][Q13] decided (Inceptless decision 2026-11-10 #34).
+- the whole grant chain, including all ancestors, is judged at the claimed `recorded_at`
+  of the record being verified (and, when the record being verified is itself a
+  `weave.grant`, at that grant's own claimed `recorded_at`), per §5.5.2 step 6
+  [S3][M-3][Q11][Q13][R1] decided (Inceptless decision 2026-11-10 #34; #42/R1).
 
 A missing `actor.grant` member is an envelope error (`E_ENV_ACTOR_GRANT_MISSING`); a grant
 that is present but unresolvable is `unverifiable`, a grant that is resolvable but wrong is
@@ -824,12 +863,17 @@ first failing check determines the error [S3][Q10] decided (Inceptless decision 
      the parent means unbounded; a `null` child under a bounded parent exceeds it).
    Any violation is `E_GRANT_DELEGATION_EXCEEDS` (invalid). The `scope` set-comparison is an
    implementation shape (PROVISIONAL, Appendix A P9).
-6. **Ancestor validity.** Each ancestor link is evaluated at the claimed `recorded_at` of
-   the descendant grant that used it: an ancestor revoked at that time
-   (`effective_at <= recorded_at`) makes the chain `unverifiable` with `E_GRANT_REVOKED`;
-   an ancestor outside its validity window at that time makes it `unverifiable` with
-   `E_GRANT_EXPIRED`; any such failure anywhere in the chain makes the whole chain
-   unverifiable (decided (Inceptless decision 2026-11-10 #34; M-2/S3)).
+6. **Chain validity at the verification time.** The entire chain — the cited grant and
+   every ancestor — is judged at the claimed `recorded_at` of the record currently being
+   verified. When the record being verified is itself a `weave.grant`, the chain is judged
+   at that grant's own claimed `recorded_at` (it is the record being verified). At that
+   time: a grant or ancestor revoked with `effective_at <= recorded_at` makes the chain
+   `unverifiable` with `E_GRANT_REVOKED`; a grant or ancestor outside its validity window
+   makes it `unverifiable` with `E_GRANT_EXPIRED`; the equality boundaries count as
+   revoked. Any such failure anywhere in the chain makes the whole chain unverifiable.
+   This rule replaces the earlier per-link evaluation time: there is one time for the whole
+   chain, the verification time of the record, which is exactly the same time used for the
+   directly cited grant [R1] decided (Inceptless decision 2026-11-10 #42; R1).
 7. **Depth.** H0 does not support chains with more than 8 links from the grant used by a
    record up to its root: a deeper chain is `unverifiable` with `E_GRANT_UNRESOLVED`. A
    cycle cannot occur in a conforming grant chain: each grant record is identified by a
@@ -1214,35 +1258,53 @@ Semantic rules:
    key over the record signature message; otherwise `E_KEY_DECLARED_NOT_SELF_SIGNED`
    (invalid) [E5].
 3. **Owner binding.** For `key_type` in `agent`, `program`, `device`, `body.owner` MUST be
-   present; a missing owner is `E_KEY_OWNER_MISSING` (invalid). The owner MUST resolve to a
-   declaration in the verification context, and that declaration's class MUST be `human` or
-   `organization`; the owner declaration itself does **not** have to be valid (it only
-   identifies the owning principal). An owner that cannot be resolved makes the declaration
-   `unverifiable` with `E_KEY_UNKNOWN` (invalid evidence, not a structural error).
-4. **Cosignature.** A key declaration MUST be cosigned as follows:
-   - for `agent`, `program` and `device`: at least one valid signature by a key declared
-     with class `human` or `organization` and key id equal to `body.owner`;
-   - for `human` and `organization`: the declaration is processed as part of the set of
-     human/organization declarations in the context, in ascending order of claimed
-     `recorded_at` (ties broken by lexicographically smallest record digest). A declaration
-     with a valid cosignature by a key already in the established human/organization set is
-     valid and is added to that set; otherwise, if the established set is empty, the
-     declaration is a **root** and may be self-signed only, and the verifier MUST emit
-     `N_SELF_ATTESTED_ROOT_KEY`; otherwise the declaration is invalid with
-     `E_KEY_DECLARED_NOT_COSIGNED`.
-   The cosignature requirement is [S4][Q33] decided (Inceptless decision 2026-11-10 #34;
-   S4/Q33). The root-determination order is an implementation shape (PROVISIONAL,
-   Appendix A P1); the tie-break between equal `recorded_at` values is a further
-   implementation shape (PROVISIONAL, Appendix A P2).
+   present and its declaration MUST resolve in the verification context, and that
+   declaration's class MUST be `human` or `organization`. A missing owner is
+   `E_KEY_OWNER_MISSING` (invalid); a resolving owner whose declaration class is not
+   `human`/`organization` is also `E_KEY_OWNER_MISSING` (invalid) [R5] decided (Inceptless
+   decision 2026-11-10 #42; R5); an owner that cannot be resolved makes the declaration
+   `unverifiable` with `E_KEY_UNKNOWN`. The owner declaration itself does not have to be
+   otherwise valid (it only identifies the owning principal), but the owner key must be in
+   the trusted set (rule 4): an owner that resolves but is not trusted makes the declaration
+   `unverifiable` with `E_KEY_UNTRUSTED` [R2] decided (Inceptless decision 2026-11-10 #42;
+   R2).
+4. **Cosignature and trust roots.** A declaration is trusted as follows:
+   - **Keyset declarations (local trust input).** A `weave.key.declared` record supplied
+     through `--keys` whose `key_type` is `human` or `organization` and which passes its own
+     structural, self-signature and validity checks establishes its key as a trusted
+     human/organization root. Keyset declarations need no cosignature and never produce
+     `N_SELF_ATTESTED_ROOT_KEY`: the keyset is the verifier's local trust statement
+     [E4][R2] decided (Inceptless decision 2026-11-10 #42; R2).
+   - **Container/target human/organization declarations.** A declaration of class
+     `human`/`organization` in a container or record target is valid when its key id is
+     already in the trusted set, or when it carries at least one valid cosignature by a
+     trusted human/organization key; a valid declaration adds its key id to the trusted set.
+     Otherwise it is `unverifiable` with `E_KEY_UNTRUSTED`, and when its only signature is
+     its own it also carries `N_SELF_ATTESTED_ROOT_KEY`. An untrusted declaration MUST NOT
+     make any other declaration invalid and MUST NOT become trusted. With no keyset there
+     are no roots, so every container/target human/organization declaration is untrusted
+     in this way [R2] decided (Inceptless decision 2026-11-10 #42; R2).
+   - **Automated declarations (`agent`, `program`, `device`).** At least one valid signature
+     by the key named in `body.owner` is required; a missing or invalid owner cosignature is
+     `E_KEY_DECLARED_NOT_COSIGNED` (invalid). The owner must be in the trusted set, else the
+     declaration is `unverifiable` with `E_KEY_UNTRUSTED` [S4][Q33][R2] decided
+     (Inceptless decision 2026-11-10 #42; R2).
+   The trusted set is context-level state (keyset first, then an iterative closure over the
+   container/target declarations); container declarations that are untrusted never remove a
+   keyset root. Root selection is never time-ordered: claimed `recorded_at` values do not
+   decide which declaration is a root, so a backdated self-signed declaration cannot become
+   one [R2] decided (Inceptless decision 2026-11-10 #42; R2).
 5. **Validity window.** When both `valid_from` and `valid_until` are present,
    `valid_from` MUST be less than or equal to `valid_until`; otherwise `E_KEY_VALIDITY`
    (invalid) [E5][Q20] decided (Inceptless decision 2026-11-10 #34; Q20).
-6. **Effects.** Once a declaration is valid in context, signatures by the declared key can
-   be verified within its declaration's validity rules (§9.4). Multiple declarations for
-   the same key id are resolved per §5.3 [Q12] decided (Inceptless decision 2026-11-10
-   #34; Q12).
+6. **Effects.** Once a declaration is trusted, signatures by the declared key can be
+   verified within its declaration's validity rules (§9.4). Multiple declarations for the
+   same key id are resolved per §5.3; that is declaration resolution, not root selection
+   [Q12] decided (Inceptless decision 2026-11-10 #34; Q12).
 
-The declaration itself is not a trust anchor; trust remains trust-on-first-use (§5.3).
+A declaration is never a trust anchor by itself: roots come only from the verifier's local
+keyset input, and a container-only declaration can at most extend existing local trust
+(§5.3).
 
 ### 9.2 `weave.key.rotated`
 
@@ -1308,18 +1370,42 @@ claimed `created_at`):
 |---|---|---|
 | `retired` (and `other`, treated as retired) | `recorded_at >= T` | invalid (`E_KEY_REVOKED`) |
 | `retired` / `other` | `recorded_at < T` | unaffected |
-| `key-compromise` | **always** | valid **only if** the record is covered by a verified RFC 3161 timestamp whose `genTime` is at or before `T`; otherwise invalid (`E_KEY_COMPROMISED`) |
+| `key-compromise` | **always** | see the three cases below |
 
 The `key-compromise` rule deliberately ignores `recorded_at`: claims of time are not
 evidence, and a thief who holds the key can backdate a record. Only an external timestamp
 over the manifest that contains the record, verified under §12, can establish that the
-record existed before the compromise. The timestamp used for this comparison is the
-earliest `genTime` among the verified receipts of the manifest's timestamp chain; when a
-renewal chain is present the earliest verified link is the evidence of age. A
-single-record target has no timestamp evidence, so a signature by a compromised key is
-invalid there. For a manifest signature the same test uses the manifest's timestamp chain
-[S2] decided (Inceptless decision 2026-11-10 #34; S2). The choice of "earliest verified
-`genTime`" as the comparison value is an implementation shape (PROVISIONAL, Appendix A P8).
+record existed before the compromise. For a signature by a compromised key there are
+exactly three outcomes [S2][R3][R4] decided (Inceptless decision 2026-11-10 #42; R3/R4):
+
+1. **Rescued (valid).** There exists at least one **verified, trusted** receipt (a receipt
+   that passes every check of §12.2, including check 15 with a matching `--tsa-trust`
+   anchor) for the manifest that contains the signature, whose timestamp plus accuracy is
+   **strictly before** `T`:
+   `genTime + accuracy < T`, evaluated at microsecond precision. The comparison is
+   `genTime_ms * 1000 + accuracy_us < T_ms * 1000`, where `genTime_ms` is the integer
+   millisecond conversion of §12.2 check 13 and `accuracy_us` is the receipt's accuracy
+   converted to integer microseconds (seconds × 10⁶ + milliseconds × 10³ + microseconds;
+   an absent `accuracy` field means 0). Equality does **not** rescue: a receipt exactly at
+   `T` (or later) proves only that the record existed at `T`, not before it.
+2. **Present but untrusted (unverifiable).** Timestamp receipts are present, but none of
+   them is verified and trusted (for example the verifier was given no `--tsa-trust`
+   anchor). The missing information makes the record `unverifiable` with
+   `E_TS_UNTRUSTED`; it is not reported as invalid. The same applies to a manifest
+   signature judged on the manifest's timestamp chain.
+3. **No rescue possible (invalid).** Either there is no timestamp evidence at all for the
+   signature — a single-record target (no container and therefore no timestamp chain), a
+   container that lists no receipts, or a claimed level below L2 — or the available
+   evidence positively fails to rescue it: at least one receipt is verified and trusted,
+   and no verified trusted receipt satisfies `genTime + accuracy < T` (all of them place
+   the signature at `T` or later). The record is invalid with `E_KEY_COMPROMISED`.
+   If some receipts are trusted (failing the bound) and some are untrusted, the trusted
+   evidence decides: the record is invalid.
+
+A renewal chain does not weaken the rule: if any receipt in the chain satisfies the strict
+`genTime + accuracy < T` bound under a trusted chain, the signature is rescued; otherwise
+the outcome is case 2 or 3 as above. For a manifest signature the same test uses the
+manifest's timestamp chain [S2] decided (Inceptless decision 2026-11-10 #34; S2).
 
 Validity windows of declarations:
 
@@ -1331,9 +1417,15 @@ Validity windows of declarations:
 Both directions are one rule: a signature outside the declared window is invalid
 [Q20][M-4] decided (Inceptless decision 2026-11-10 #34; Q20).
 
-A signature by a key with no declaration and no explicit rotation-record material anywhere
-in the verification context is `unverifiable` (`E_KEY_UNKNOWN`); this applies to manifest
-signatures as well [E4][Q12][M-12] decided (Inceptless decision 2026-11-10 #34; M-12).
+A signature by a key with no **trusted** declaration and no explicit rotation-record
+material anywhere in the verification context is `unverifiable` (`E_KEY_UNKNOWN`): only
+trusted declarations enter key state, so a declaration that exists but is untrusted does
+not make its key usable, and signatures by it stay in the "key cannot be established"
+bucket rather than becoming invalid; this applies to manifest signatures as well. The two
+codes have different subjects: an untrusted **declaration** is itself `unverifiable` with
+`E_KEY_UNTRUSTED`, while a **signature** by the key of an untrusted declaration is
+`unverifiable` with `E_KEY_UNKNOWN` [E4][Q12][M-12][R2] decided (Inceptless decision
+2026-11-10 #42; R2).
 Multiple declarations for one key id are resolved as in §5.3 [Q12] decided (Inceptless
 decision 2026-11-10 #34; Q12).
 
@@ -1359,10 +1451,13 @@ Q11).
 ### 9.7 Grant chains across records
 
 Grants may delegate (root grant → delegated sub-grant → records using the sub-grant). The
-verifier evaluates the chain as specified in §5.5.2 and §5.4. An unresolvable or invalid
-parent link makes the dependent grant unusable, and records using it `unverifiable`
-(`E_GRANT_UNRESOLVED` or the specific chain error of §5.5.2). Grants are only usable within
-their validity windows, and revocation at the usage time makes them unusable.
+verifier evaluates the chain as specified in §5.5.2 and §5.4: one verification time for the
+whole chain, the claimed `recorded_at` of the record being verified (or of the grant itself
+when a grant record is verified). An unresolvable or invalid parent link makes the
+dependent grant unusable, and records using it `unverifiable` (`E_GRANT_UNRESOLVED` or the
+specific chain error of §5.5.2). Grants are only usable within their validity windows, and
+revocation as of the verification time makes them unusable [R1] decided (Inceptless
+decision 2026-11-10 #42; R1).
 
 ### 9.8 Continuous chains are out of scope for H0
 
@@ -1723,14 +1818,17 @@ failing check is reported [S5] decided (Inceptless decision 2026-11-10 #34; S5).
 | 10 | The CMS signature verifies over `DER(SET OF SignedAttributes)` with the signer certificate's public key. | `E_TS_CMS` |
 | 11 | The signer certificate has the `id-kp-timeStamping` extended key usage; if a KeyUsage extension is present it contains `digitalSignature`. | `E_TS_CERT` |
 | 12 | The signer certificate's validity window contains `genTime` (not the current wall clock). | `E_TS_CERT` |
-| 13 | `genTime` is a valid GeneralizedTime and is converted to an integer number of milliseconds since the Unix epoch by truncating (flooring) any sub-millisecond digits; all comparisons in §12 use that integer. | `E_TS_SCHEMA` |
+| 13 | `genTime` is a valid GeneralizedTime and is converted to an integer number of milliseconds since the Unix epoch by truncating (flooring) any sub-millisecond digits. If the TSTInfo carries an `accuracy` field: `seconds`, when present, is a non-negative integer; `milliseconds` and `microseconds`, when present, are in 1–999; an absent component counts as 0. The components are converted to integer microseconds (`seconds × 10⁶ + milliseconds × 10³ + microseconds`); an absent `accuracy` field means `accuracy_us = 0`. Out-of-range or malformed components are `E_TS_SCHEMA`. Both values are retained for the §9.4 compromise rule. | `E_TS_SCHEMA` |
 | 14 | The `timestamps[]` array of the attestation file forms exactly one renewal chain (§12.4): exactly one receipt with `renews == null`; every other `renews` names a listed, earlier receipt; no duplicate paths, no gaps, no second chain. | `E_TS_RENEWAL` |
 | 15 | The receipt is trusted under §12.3. | `E_TS_UNTRUSTED` (unverifiable) |
 
 Checks 1–14 are structural or cryptographic and make the container **invalid** when they
 fail. Check 15 is a trust decision: without a matching anchor the receipt is reported
 `present-unverified` and the container cannot be `valid` (`unverifiable`,
-`E_TS_UNTRUSTED`).
+`E_TS_UNTRUSTED`). An untrusted receipt also cannot rescue a signature by a compromised key
+(§9.4 case 2): the missing information makes that record `unverifiable` with
+`E_TS_UNTRUSTED`, not invalid [R3][R4] decided (Inceptless decision 2026-11-10 #42;
+R3/R4).
 
 ### 12.3 Trust anchors
 
@@ -1787,9 +1885,12 @@ receipt whose CMS signature, imprint, certificate constraints, ESS attribute or
 A verified timestamp proves that a timestamp authority signed an imprint at some time (and
 that the stated constraints held); it does not prove the content is true. It is the only
 evidence that a record or a manifest existed before a claimed time, and it is therefore the
-evidence used by the `key-compromise` rule of §9.4. The exact "earliest verified `genTime`"
-selection for that rule is an implementation shape (PROVISIONAL, Appendix A P8)
-[D3][A1c][S2] decided (Inceptless decision 2026-11-10 #34; S2).
+evidence used by the `key-compromise` rule of §9.4. That rule requires a **trusted** receipt
+whose `genTime + accuracy` is **strictly before** the revocation's effective time `T`
+(§9.4 case 1); a receipt that is present but untrusted leaves the record `unverifiable` with
+`E_TS_UNTRUSTED` (§9.4 case 2), and the absence of any timestamp evidence makes it invalid
+with `E_KEY_COMPROMISED` (§9.4 case 3) [D3][A1c][S2][R3][R4] decided (Inceptless decision
+2026-11-10 #42; R3/R4).
 
 ## 13. Size and resource limits
 
@@ -1838,13 +1939,16 @@ hyphaweave-verify vectors <dir> [--tsa-trust <pem>]
 hyphaweave-verify --help | --version
 ```
 
-- `--keys <dir>` supplies external key-lifecycle records: the top-level `*.json` files in
-  the directory. Each file MUST be a structurally valid record under this specification
-  (canonical bytes, envelope, signatures where present, kind body and the kind's
-  self-consistency rules); a file that is not such a record is a usage error (exit 2). A
-  record that parses and is structurally valid but fails semantic or cryptographic checks
-  does not establish trust; that is not a usage error. Keyset records are key material and
-  lifecycle context, not part of a container.
+- `--keys <dir>` supplies the verifier's **local trust input**: the top-level `*.json`
+  files in the directory. Each file MUST be a structurally valid record under this
+  specification (canonical bytes, envelope, signatures where present, kind body and the
+  kind's self-consistency rules); a file that is not such a record is a usage error
+  (exit 2). A record that parses and is structurally valid but fails semantic or
+  cryptographic checks does not establish trust; that is not a usage error. The keyset is
+  verified first; each valid `weave.key.declared` of class `human`/`organization` in it is a
+  trusted root, with no cosignature needed and no self-attestation notice (§5.3). Container
+  and record-target declarations can extend this local trust but can never create a root
+  [R2] decided (Inceptless decision 2026-11-10 #42; R2).
 - `--tsa-trust <pem>` supplies L2 trust anchors (§12.3).
 - `--previous <dir>` additionally requires the supplied previous container's manifest
   digest to equal `previous_manifest.digest` (§11.5).
@@ -1907,10 +2011,10 @@ top-level verdict of a container is never `erased`.
 
 ### 14.4 Blocking conditions that force `unverifiable`
 
-The following conditions MUST NOT lead to `valid`: `E_KEY_UNKNOWN`, `E_SIG_UNVERIFIABLE`,
-`E_GRANT_UNRESOLVED`, `E_GRANT_REVOKED`, `E_GRANT_EXPIRED`, `E_TS_UNTRUSTED`, and the
-notice `N_KEY_UNDECLARED` when a signature cannot be checked at all because no key material
-is available. A claimed L2 without a matching trust anchor is `unverifiable` (§12.5). Any
+The following conditions MUST NOT lead to `valid`: `E_KEY_UNKNOWN`, `E_KEY_UNTRUSTED`,
+`E_SIG_UNVERIFIABLE`, `E_GRANT_UNRESOLVED`, `E_GRANT_REVOKED`, `E_GRANT_EXPIRED`,
+`E_TS_UNTRUSTED`, and the notice `N_KEY_UNDECLARED` when a signature cannot be checked at
+all because no key material is available. A claimed L2 without a matching trust anchor is `unverifiable` (§12.5). Any
 `unverifiable` record makes the container `unverifiable` (not invalid). A verifier MUST NOT
 silently pass a check it could not perform; it reports the gap in `limitations`.
 
@@ -2045,7 +2149,8 @@ structurally sound attestation of an erasure is a successful verification.
 ### 14.9 Limitations reporting
 
 Every report lists what was not verified. At minimum, when applicable: an unverified L1
-chain claim; an unverified or absent L2 timestamp trust; TOFU keys; unresolved
+chain claim; an unverified or absent L2 timestamp trust; keys trusted only through context
+declarations rather than the local keyset; untrusted self-attested declarations; unresolved
 authorisation or consent; unknown kinds not understood; continuous multi-container chains
 out of scope. A verifier MUST NOT phrase a limitation as a passed check.
 
@@ -2079,10 +2184,14 @@ This section is informative except where it states a MUST.
    mandatory. Omitting the `x = 0, x_0 = 1` rule or the small-order check enables the
    identity-key forgery; relying on a library that accepts mixed-order keys causes
    cross-implementation divergence [S1][Q1].
-4. **Trust on first use.** In-context key declarations are trusted on first use; an
-   attacker who can inject a declaration and a matching key into the context can make
-   records appear valid. This is inherent in a CA-less design; users should pin key ids out
-   of band for high-value evidence, and reports mark TOFU-accepted keys [E4][Q12].
+4. **Trust roots are local input.** Roots come only from the verifier's keyset
+   (`--keys`), never from the container: a container that supplies its own self-signed
+   human/organization declaration is `unverifiable` (`E_KEY_UNTRUSTED`) and cannot promote
+   itself to a trust root, no matter what `recorded_at` it claims. In-context declarations
+   can extend existing local trust through co-signatures but can never create it. This is
+   the structural defence against the self-attested-root attack; users should pin key ids
+   out of band for high-value evidence, and reports mark context-accepted keys and
+   untrusted self-attested declarations [E4][Q12][R2].
 5. **Compromise is not cured by backdating.** The `key-compromise` rule (§9.4) deliberately
    ignores claimed time; without a verified pre-compromise timestamp, a signature by a
    compromised key is invalid. This is the only honest offline treatment [E5][S2].
@@ -2152,9 +2261,9 @@ at its location in the body of this document.
 | ruling | topic | normative location |
 |---|---|---|
 | S1 | complete clause 5.1.3 of RFC 8032 decoding, point-based small-order test, mixed-order rejection, fixed verification order and per-step codes | §2.5, §3.2–§3.4 |
-| S2 | compromise revocation: a signature by a compromised key is valid only with a verified timestamp at or before the effective time | §9.4, §12.5–§12.6 |
+| S2 | compromise revocation: a signature by a compromised key is valid only with a verified trusted timestamp whose `genTime + accuracy` is strictly before the effective time; untrusted receipts make it unverifiable, no timestamp evidence makes it invalid | §9.4, §12.5–§12.6 |
 | S3 | delegated sub-grants must be subsets of their parent (kinds, actions, scope, window); no privilege escalation | §5.5.2 |
-| S4 | key declarations must be self-signed and cosigned (owner or previous key); only the root bootstrap is exempt | §9.1 |
+| S4 | key declarations must be self-signed; automated keys need the owner's cosignature; human/organization declarations are trusted only through the local keyset or a trusted cosignature chain (revision 2 refines the root rule) | §5.3, §9.1 |
 | S5 | the RFC 3161 verification profile is a fixed MUST table; L2 is reported as L0 plus a verified anchor | §11.4, §12 |
 | S6 | the frozen set becomes `vectors/frozen/v0.1-candidate/` pending J1/J2 acceptance | outside this document (vectors) |
 | S7 | gate 3 uses real source ablation and per-byte bit flips | outside this document (tooling) |
@@ -2191,7 +2300,13 @@ at its location in the body of this document.
 | Q30 | explicit kind-page signer rules are authoritative for the seven signer-constrained kinds | §5.1–§5.2 |
 | Q31 | kind-specific signer codes take precedence over `E_SIG_REQUIRED` when a known-signature exists but the required signer is wrong | §4.4, §14.5 |
 | Q32 | erased references are not kind-checked; erasure digest/attestation code split | §4.5, §6.3, §10.3 |
-| Q33 | root human/organization key bootstrap: first key may be self-attested, with `N_SELF_ATTESTED_ROOT_KEY` | §9.1 |
+| Q33 | trust roots come only from the local keyset (`--keys`); a container/target self-signed human/organization declaration is `unverifiable` (`E_KEY_UNTRUSTED`) with `N_SELF_ATTESTED_ROOT_KEY` and is never a root; no time-ordered root selection | §5.3, §9.1 |
+| R1 | the whole grant chain is judged at the verified record's claimed `recorded_at` (a grant record itself uses its own) | §5.4, §5.5.2 step 6, §9.7 |
+| R2 | roots come only from the local keyset; container/target declarations are `E_KEY_UNTRUSTED` unless chained to a trusted root; keyset roots are never invalidated by container declarations | §5.3, §9.1, kinds/weave.key.declared |
+| R3 | compromise rescue requires `genTime + accuracy < T` (strict; accuracy in microseconds, absent = 0) | §9.4, §12.2 check 13 |
+| R4 | receipts present but untrusted → `unverifiable` `E_TS_UNTRUSTED`; no timestamp evidence → invalid `E_KEY_COMPROMISED` | §9.4, §12.5 |
+| R5 | an owner whose class is not human/organization → invalid `E_KEY_OWNER_MISSING` | §9.1 rule 3 |
+| R6 | `genTime` conversion cross-reference fixed; vector inventory updated | §2.8, §12.2 |
 
 ### A.2 PROVISIONAL implementation shapes
 
@@ -2200,16 +2315,19 @@ normative in this document, but the shape itself was not decided by the ruling d
 is recorded as PROVISIONAL in `docs/open-questions.md`. A verifier MUST follow the shape
 stated here; a later ruling may change it.
 
+P1 and P2 (time-ordered root selection and its tie-break) are **resolved by decision
+2026-11-10 #42 (R2)** and are no longer provisional: roots come only from the local keyset
+and no time-ordered root selection exists. P8 (the "earliest verified `genTime`" rescue
+comparison) is **resolved by decision 2026-11-10 #42 (R3)**: the rescue rule is now the
+strict `genTime + accuracy < T` comparison of §9.4.
+
 | id | item | normative location |
 |---|---|---|
-| P1 | deterministic root-declaration ordering algorithm for Q33 (process human/organization declarations by claimed `recorded_at`, maintaining the established-key set) | §9.1 |
-| P2 | tie-break between declarations with the same claimed `recorded_at`: lexicographically smallest record digest | §5.3, §9.1 |
 | P3 | delegated-grant chain depth bound of 8 | §5.5.2, §13 |
 | P4 | revocation-authority walk over explicit rotation successors, depth bound 8 | §5.5.4 |
 | P5 | exact precedence order among the delegation-chain error codes | §5.5.2 |
 | P6 | renewal-chain representation (`timestamps[].renews`, the `SHA-256(previous receipt ‖ manifest digest)` imprint formula, single chain) | §11.3, §12.4 |
 | P7 | report field shapes: `level_verified` always `L0`, `anchor_verified`, `timestamps[]` entries, `vectors` summary and per-case layout | §11.4, §14.6 |
-| P8 | the S2 rescue comparison uses the earliest verified `genTime_ms` of the manifest's timestamp chain | §9.4, §12.6 |
 | P9 | `scope` compared as a set of strings for delegation subsetting | §5.5.2 |
 | P10 | `N_NO_HUMAN_SIGNATURE` determination and its precedence relative to `E_SIG_UNVERIFIABLE` | §4.4, §14.5 |
 | P11 | example-classification annotations used by the specification-example checker (non-normative tooling convention) | §14.10 |

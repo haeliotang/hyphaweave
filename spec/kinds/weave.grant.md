@@ -101,11 +101,13 @@ error; the exact code precedence is PROVISIONAL, see the parent specification Ap
    child `scope` ⊆ parent `scope` as a set of strings, child `valid_from` >= parent
    `valid_from`, child `valid_until` <= parent `valid_until` (`null` = unbounded; a `null`
    child under a bounded parent exceeds it) → otherwise `E_GRANT_DELEGATION_EXCEEDS`.
-6. **Ancestor validity.** Each ancestor link is evaluated at the claimed `recorded_at` of the
-   descendant grant that used it: an ancestor revoked at that time
-   (`effective_at <= recorded_at`, equality counts) → `E_GRANT_REVOKED` (unverifiable); an
-   ancestor outside its window at that time → `E_GRANT_EXPIRED` (unverifiable). Any failing
-   link makes the whole chain unverifiable.
+6. **Chain validity at the verification time.** The whole chain — the cited grant and every
+   ancestor — is judged at the claimed `recorded_at` of the record being verified; when the
+   record being verified is itself a `weave.grant`, that grant's own `recorded_at` is used.
+   At that time: a grant or ancestor revoked (`effective_at <= recorded_at`, equality
+   counts) → `E_GRANT_REVOKED` (unverifiable); a grant or ancestor outside its validity
+   window → `E_GRANT_EXPIRED` (unverifiable). Any failing link makes the whole chain
+   unverifiable (R1).
 7. **Depth.** Up to 8 links from the grant used by a record to its root; deeper chains are
    `unverifiable` (`E_GRANT_UNRESOLVED`). A cycle is not constructible for digest
    references; the key-id rotation graph used by the revocation rule is bounded separately.
@@ -117,7 +119,7 @@ stage (including `proposed`): the grant must be an `action == "grant"` grant who
 `grantee.key` equals `actor.key`, whose `kinds` contains the record's kind, whose `actions`
 contains the stage's action (`propose`/`accept`/`reject`/`withdraw`/`supersede`), and which
 is inside its validity window and not revoked at the record's claimed `recorded_at`; the
-whole chain is evaluated at that time. Outcomes: unresolvable → `E_GRANT_UNRESOLVED`
+whole chain is evaluated at that same time, the single verification time (R1). Outcomes: unresolvable → `E_GRANT_UNRESOLVED`
 (unverifiable); revoked → `E_GRANT_REVOKED` (unverifiable); outside window →
 `E_GRANT_EXPIRED` (unverifiable); grantee mismatch → `E_GRANT_GRANTEE_MISMATCH` (invalid);
 kind/action not covered → `E_GRANT_NOT_APPLICABLE` (invalid). A grant reference to a

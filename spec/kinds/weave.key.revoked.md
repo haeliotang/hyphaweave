@@ -13,9 +13,11 @@ Q20)` where it implements those rulings.
 Announces that a key must no longer be trusted, and why. The reason is load-bearing:
 
 - `key-compromise` is **retroactive without relying on claimed time**: any signature by the
-  compromised key is valid only when a verified RFC 3161 timestamp proves the signed
-  manifest existed at or before the revocation's effective time. A thief cannot backdate
-  `recorded_at` to evade the revocation.
+  compromised key is valid only when a verified, trusted RFC 3161 timestamp proves the
+  signed manifest existed strictly before the revocation's effective time
+  (`genTime + accuracy < T`; equality does not rescue). A thief cannot backdate
+  `recorded_at` to evade the revocation; without any timestamp evidence the signature is
+  invalid, and with only untrusted receipts it is unverifiable.
 - `retired` (and `other`, treated as retired) applies only to signatures claimed after the
   effective time.
 
@@ -51,13 +53,20 @@ Announces that a key must no longer be trusted, and why. The reason is load-bear
    after `effective_at` is invalid (`E_KEY_REVOKED`); a signature claimed earlier is
    unaffected. The boundary belongs to revocation (equality counts as revoked) [Q11][M-2]
    decided (Inceptless decision 2026-11-10 #34; Q11).
-3. **Compromise (S2).** After a `key-compromise` revocation with effective time `T`, **every**
-   signature by the revoked key is invalid (`E_KEY_COMPROMISED`) unless the signed record is
-   covered by a verified RFC 3161 timestamp whose `genTime` is at or before `T` (`genTime`
-   converted to integer milliseconds, parent specification §12.2). The claimed
-   `recorded_at` is **not** evidence: it is attacker-controlled. For a manifest signature
-   the same test uses the manifest's timestamp chain; a single-record target has no
-   timestamp evidence and is invalid [S2] decided (Inceptless decision 2026-11-10 #34; S2).
+3. **Compromise (S2/R3/R4).** After a `key-compromise` revocation with effective time `T`,
+   a signature by the revoked key has exactly three outcomes (parent specification §9.4):
+   - **rescued (valid)** only when a verified, trusted receipt of the manifest that contains
+     the signature satisfies `genTime + accuracy < T` (strict; µs precision; absent
+     `accuracy` = 0; equality does not rescue);
+   - **unverifiable** (`E_TS_UNTRUSTED`) when timestamp receipts are present but none is
+     verified and trusted (for example no matching `--tsa-trust` anchor);
+   - **invalid** (`E_KEY_COMPROMISED`) when there is no timestamp evidence at all (single
+     record target, no listed receipts, or a claimed level below L2), or when trusted
+     receipt evidence exists but none of it satisfies `genTime + accuracy < T` (all of it
+     places the signature at `T` or later).
+   The claimed `recorded_at` is **not** evidence: it is attacker-controlled. For a manifest
+   signature the same test uses the manifest's timestamp chain [S2][R3][R4] decided
+   (Inceptless decision 2026-11-10 #42; R3/R4).
 4. **Self-evidencing.** A revocation of the key that signed this record does not invalidate
    this record; it is the revocation itself (parent specification §9.5).
 5. **Revocation is a claim.** `effective_at` is a claim by the revoker; H0 does not
@@ -73,7 +82,8 @@ Announces that a key must no longer be trusted, and why. The reason is load-bear
 | `E_SIG_REQUIRED` | invalid | `sigs` is absent or an empty array |
 | `E_KIND_BODY_SCHEMA` | invalid | body shape, reason vocabulary or code grammar violation |
 | `E_KEY_REVOKED` | invalid | a retired-key signature at or after `effective_at` |
-| `E_KEY_COMPROMISED` | invalid | a compromised-key signature without pre-compromise verified timestamp |
+| `E_KEY_COMPROMISED` | invalid | a compromised-key signature with no timestamp evidence at all |
+| `E_TS_UNTRUSTED` | unverifiable | receipts present but none is verified and trusted (cannot rescue the signature) |
 | `E_KEY_UNKNOWN` | unverifiable | a signer's key is not available in context |
 | `N_KEY_TOFU`, `N_KEY_UNDECLARED` | notice | trust-on-first-use reporting |
 
