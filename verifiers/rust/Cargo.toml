@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
+# SPDX-License-Identifier: Apache-2.0
+#
+# Workspace for the H1 Rust verifier of weave-record/1. The library crate
+# `hyphaweave-verify` is the embeddable verifier; `hyphaweave-verify-rs` is the
+# command-line front end. See README.md.
+
+[workspace]
+resolver = "2"
+members = ["hyphaweave-verify", "hyphaweave-verify-rs"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+sha2 = "0.10.9"
+curve25519-dalek = { version = "4.1.3", default-features = false, features = ["alloc", "precomputed-tables"] }
+miniz_oxide = "0.8.9"
+der = { version = "0.7.10", features = ["alloc", "derive", "oid"] }
+cms = "0.2.3"
+x509-cert = "0.2.5"
+spki = "0.7.3"
+const-oid = "0.9.6"
+rsa = { version = "0.9.8", features = ["sha2"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "pkcs8", "alloc"] }
+p384 = { version = "0.13.1", default-features = false, features = ["ecdsa", "pkcs8", "alloc"] }
+signature = "2.2.0"

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
+# SPDX-License-Identifier: Apache-2.0
+#
+# `hyphaweave-verify`: library crate implementing the weave-record/1 verifier.
+
+[package]
+name = "hyphaweave-verify"
+version = "0.1.0"
+description = "weave-record/1 verifier (H1, independent implementation)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2.workspace = true
+curve25519-dalek.workspace = true
+miniz_oxide.workspace = true
+der.workspace = true
+cms.workspace = true
+x509-cert.workspace = true
+spki.workspace = true
+const-oid.workspace = true
+rsa.workspace = true
+p256.workspace = true
+p384.workspace = true
+signature.workspace = true

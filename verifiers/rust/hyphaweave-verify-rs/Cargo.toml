@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
+# SPDX-License-Identifier: Apache-2.0
+#
+# `hyphaweave-verify-rs`: command-line front end for the library crate.
+
+[package]
+name = "hyphaweave-verify-rs"
+version = "0.1.0"
+description = "weave-record/1 verifier CLI (H1, independent implementation)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+hyphaweave-verify = { path = "../hyphaweave-verify" }
