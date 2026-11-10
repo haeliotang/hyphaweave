@@ -26,11 +26,18 @@ The "schema layer" is JSON Schema validation plus a small, documented set of
 supplementary structural predicates for rules Draft 2020-12 cannot express:
 
 - ``manifest.records`` sorted by digest ascending with unique digests;
+- ``manifest.records[]`` ``id``/``kind`` equal to the record file they list;
 - ``manifest.records[].chain_index`` unique for L1/L2;
 - ``manifest.blobs`` sorted by digest ascending with unique digests;
 - signature arrays sorted by key ascending with unique keys (record ``sigs`` and
   the manifest attestation ``signatures``);
-- manifest attestation ``timestamps`` sorted by path ascending with unique paths;
+- the signature geometry condition per entry (``alg=ed25519`` pairs with an
+  ed25519 key id and a 64-byte value, other algorithm names with the generic key
+  id and generic 1-2048-byte base64url value);
+- ``weave.grant`` ``grant.revocation`` key lists with unique ed25519 key ids;
+- manifest attestation ``timestamps`` sorted by path ascending with unique paths
+  and one acyclic renewal chain (exactly one ``renews=null`` head, every
+  ``renews`` path listed, no receipt renewed twice);
 - semantically duplicate ``refs`` entries (same ``rel`` and target
   ``origin``/``id``/``digest`` even if the ``hints`` differ).
 
@@ -119,6 +126,18 @@ RESOLUTION_STATES = ("found", "moved", "missing", "erased", "unverifiable")
 CODE_RE = re.compile(r"^[EN]_[A-Z0-9_]+$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 RECORD_MIRROR_FIELDS = ("id", "category", "target", "input", "verdict")
+
+# Signature geometry (Q13 algorithm agility): the JSON Schema already encodes
+# these conditions; the predicates below re-check them as structural fallbacks.
+ED25519_KEY_RE = re.compile(r"^ed25519:[0-9a-f]{32}$")
+ED25519_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]{85}[AQgw]$")
+GENERIC_KEY_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]{1,128}$")
+GENERIC_VALUE_RES = (
+    re.compile(r"^(?:[A-Za-z0-9_-]{4}){1,682}$"),
+    re.compile(r"^(?:[A-Za-z0-9_-]{4}){0,682}[A-Za-z0-9_-][AQgw]$"),
+    re.compile(r"^(?:[A-Za-z0-9_-]{4}){0,682}[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048]$"),
+)
+TIMESTAMP_PATH_RE = re.compile(r"^signatures/timestamp-[1-9][0-9]*\.tsr$")
 
 
 # --------------------------------------------------------------------------- #
@@ -371,6 +390,52 @@ class SchemaSet:
 # --------------------------------------------------------------------------- #
 
 
+def _signature_geometry_problems(entries: list[Any], what: str) -> list[str]:
+    """Re-check the per-entry signature geometry condition structurally.
+
+    ``alg`` names the algorithm; ``alg == "ed25519"`` requires an ed25519 key id
+    and a 64-byte value, every other algorithm token accepts the generic key id
+    (algorithm token + 1-128 lowercase hex) and strict unpadded base64url of
+    1-2048 bytes. Entries with unknown algorithms stay structurally valid and
+    are ignored semantically by H0 verifiers.
+    """
+
+    problems: list[str] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        alg = entry.get("alg")
+        key = entry.get("key")
+        value = entry.get("value")
+        if not (
+            isinstance(alg, str) and isinstance(key, str) and isinstance(value, str)
+        ):
+            continue
+        if alg == "ed25519":
+            if not ED25519_KEY_RE.match(key):
+                problems.append(
+                    f"{what}[{index}].key is not an ed25519 key id although "
+                    "alg is ed25519"
+                )
+            if not ED25519_VALUE_RE.match(value):
+                problems.append(
+                    f"{what}[{index}].value is not a strict 64-byte unpadded "
+                    "base64url value although alg is ed25519"
+                )
+        else:
+            if not GENERIC_KEY_RE.match(key):
+                problems.append(
+                    f"{what}[{index}].key does not match the generic key id "
+                    f"shape (algorithm token + 1-128 lowercase hex) for alg {alg!r}"
+                )
+            if not any(rx.match(value) for rx in GENERIC_VALUE_RES):
+                problems.append(
+                    f"{what}[{index}].value is not strict unpadded base64url of "
+                    f"1-2048 bytes for alg {alg!r}"
+                )
+    return problems
+
+
 def envelope_supplement(doc: Any) -> list[str]:
     problems: list[str] = []
     if not isinstance(doc, dict):
@@ -414,6 +479,7 @@ def envelope_supplement(doc: Any) -> list[str]:
             problems.extend(
                 _ordered_unique_problems(keys, "sigs", "key")  # type: ignore[arg-type]
             )
+        problems.extend(_signature_geometry_problems(sigs, "sigs"))
     return problems
 
 
@@ -457,6 +523,74 @@ def manifest_supplement(doc: Any) -> list[str]:
     return problems
 
 
+def _renewal_chain_problems(timestamps: list[Any]) -> list[str]:
+    """Structural sanity of the timestamp re-stamping chain.
+
+    Exactly one receipt is the chain head (``renews`` is null); every other
+    ``renews`` value names a listed receipt, no receipt is renewed twice and the
+    links are acyclic, so the listed receipts form one path ending at the head.
+    The array order is the required path order; it is independent of the chain
+    order, which is defined by the ``renews`` links. Imprint and CMS
+    verification of the chain belong to the verifier.
+    """
+
+    problems: list[str] = []
+    if not timestamps or not all(isinstance(entry, dict) for entry in timestamps):
+        return problems
+    if not all("renews" in entry for entry in timestamps):
+        return problems
+    paths = [entry.get("path") for entry in timestamps]
+    if not all(isinstance(path, str) for path in paths):
+        return problems
+    listed = set(paths)
+    renews = [entry.get("renews") for entry in timestamps]
+    heads = [index for index, value in enumerate(renews) if value is None]
+    if len(heads) != 1:
+        problems.append(
+            "manifest timestamps must contain exactly one chain head "
+            f"(renews=null), found {len(heads)}"
+        )
+    targets: list[str] = []
+    for index, renews_path in enumerate(renews):
+        if renews_path is None:
+            continue
+        if not isinstance(renews_path, str):
+            problems.append(
+                f"manifest timestamps[{index}].renews must be a timestamp path or null"
+            )
+            continue
+        targets.append(renews_path)
+        if renews_path not in listed:
+            problems.append(
+                f"manifest timestamps[{index}].renews points to {renews_path!r} "
+                "which is not listed"
+            )
+    branched = sorted({target for target in targets if targets.count(target) > 1})
+    if branched:
+        problems.append(
+            "manifest timestamps renew the same receipt more than once "
+            f"(the renewal chain must be single): {', '.join(branched)}"
+        )
+    # Acycle check: following renews links must terminate at the head.
+    parents = {
+        entry["path"]: entry.get("renews")
+        for entry in timestamps
+        if isinstance(entry.get("path"), str)
+    }
+    for start in parents:
+        seen: list[str] = []
+        current = parents[start]
+        while isinstance(current, str):
+            if current in seen or current == start:
+                problems.append(
+                    f"manifest timestamps renewal chain contains a cycle at {start!r}"
+                )
+                break
+            seen.append(current)
+            current = parents.get(current)
+    return problems
+
+
 def attestation_supplement(doc: Any) -> list[str]:
     problems: list[str] = []
     if not isinstance(doc, dict):
@@ -473,6 +607,9 @@ def attestation_supplement(doc: Any) -> list[str]:
                     keys, "manifest signatures", "key"  # type: ignore[arg-type]
                 )
             )
+        problems.extend(
+            _signature_geometry_problems(signatures, "manifest signatures")
+        )
 
     timestamps = doc.get("timestamps")
     if isinstance(timestamps, list):
@@ -485,6 +622,7 @@ def attestation_supplement(doc: Any) -> list[str]:
                     paths, "manifest timestamps", "path"  # type: ignore[arg-type]
                 )
             )
+            problems.extend(_renewal_chain_problems(timestamps))
     return problems
 
 
@@ -577,7 +715,7 @@ def read_container_json(
 def manifest_record_identity_problems(
     container: ContainerReader, manifest: Any
 ) -> list[str]:
-    """manifest.records[] id/kind against the record file they list (spec §11.2.1).
+    """manifest.records[] id/kind against the record file they list.
 
     JSON Schema cannot compare a manifest entry with another file, so this
     supplementary predicate reads ``records/<digest>.json`` and reports an
@@ -621,6 +759,37 @@ def manifest_record_identity_problems(
             problems.append(
                 f"manifest.records[{index}].kind is {entry_kind!r} but {name} "
                 f"has kind {record_kind!r}"
+            )
+    return problems
+
+
+def kind_body_supplement(document: Any) -> list[str]:
+    """Kind-specific structural fallbacks for rules JSON Schema cannot express."""
+
+    problems: list[str] = []
+    if not isinstance(document, dict) or document.get("kind") != "weave.grant":
+        return problems
+    body = document.get("body")
+    if not isinstance(body, dict) or body.get("action") != "grant":
+        return problems
+    grant = body.get("grant")
+    if not isinstance(grant, dict):
+        return problems
+    revocation = grant.get("revocation")
+    if revocation is None:
+        return problems
+    if not isinstance(revocation, list):
+        return problems
+    keys = [key for key in revocation if isinstance(key, str)]
+    if len(keys) != len(revocation):
+        return problems
+    problems.extend(
+        _unique_problems(keys, "weave.grant.grant.revocation", "key")
+    )
+    for index, key in enumerate(keys):
+        if not ED25519_KEY_RE.match(key):
+            problems.append(
+                f"weave.grant.grant.revocation[{index}] is not an ed25519 key id"
             )
     return problems
 
@@ -887,10 +1056,31 @@ class VectorChecks:
                         problems.append(
                             f"expected.json records[{index}].id must be a string"
                         )
-                    if record.get("verdict") not in VERDICTS:
+                    # records[] entries are per-record report subsets: only the ids
+                    # are required, and verdict/kind_known/errors are optional.
+                    if "verdict" in record and record["verdict"] not in VERDICTS:
                         problems.append(
                             f"expected.json records[{index}].verdict must be one of "
                             f"{VERDICTS}"
+                        )
+                    if "kind_known" in record and not isinstance(
+                        record["kind_known"], bool
+                    ):
+                        problems.append(
+                            f"expected.json records[{index}].kind_known must be a "
+                            "boolean"
+                        )
+                    record_errors = record.get("errors")
+                    if record_errors is not None and (
+                        not isinstance(record_errors, list)
+                        or not all(
+                            isinstance(code, str) and CODE_RE.match(code)
+                            for code in record_errors
+                        )
+                    ):
+                        problems.append(
+                            f"expected.json records[{index}].errors must be an array "
+                            "of E_*/N_* codes"
                         )
 
         notes = expected.get("notes")
@@ -1066,6 +1256,7 @@ class VectorChecks:
         else:
             problems = self.schemas.violations(document, self.schemas.envelope)
         problems.extend(envelope_supplement(document))
+        problems.extend(kind_body_supplement(document))
         return problems
 
     def _report(self, problems: list[str], prefix: str) -> list[str]:

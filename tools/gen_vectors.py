@@ -38,6 +38,7 @@ _TOOLS_DIR = Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
+import edcraft
 import keyutil
 import recordlib
 import wcj
@@ -46,6 +47,8 @@ REPO_ROOT = _TOOLS_DIR.parent
 VECTORS_DIR = REPO_ROOT / "vectors"
 
 SIG_DOMAIN_WRONG = b"weave-record/2/sig\n"
+MANIFEST_DOMAIN = b"weave-record/1/manifest\n"
+MIXED_ORDER_SEED = hashlib.sha256(b"weave-record/1/test-key/mixed-order-a").digest()
 IDENTITY_POINT = b"\x01" + b"\x00" * 31
 BASE_POINT = bytes.fromhex(
     "5866666666666666666666666666666666666666666666666666666666666666"
@@ -149,7 +152,7 @@ def build_container(records: Sequence[dict[str, Any]], **kwargs: Any) -> dict[st
 
 
 def pretty(value: Any) -> bytes:
-    """Non-canonical pretty-printed JSON (whitespace violates WR-CJ §2.8)."""
+    """Non-canonical pretty-printed JSON (whitespace violates WR-CJ §1.8)."""
     return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
@@ -295,17 +298,28 @@ def grant_ref(grant: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def consent_ref(consent: dict[str, Any]) -> dict[str, Any]:
+    """Reference to a consent record (kind weave.consent.granted)."""
+    return recordlib.make_ref(
+        consent["origin"]["instance"],
+        consent["id"],
+        recordlib.record_digest(consent),
+        kind="weave.consent.granted",
+    )
+
+
 def consent_revoked(
     record_id: str,
     *,
     revokes: dict[str, Any],
+    effective_at: str = recordlib.T0,
     recorded_at: str = recordlib.T0,
     signer: str = "human-1",
 ) -> dict[str, Any]:
     """A ``weave.consent.revoked`` record citing *revokes*."""
     body = {
         "revokes": revokes,
-        "effective_at": recordlib.T0,
+        "effective_at": effective_at,
         "reason": None,
     }
     record = recordlib.build_record(
@@ -375,7 +389,107 @@ def consent_grant(
 
 
 # ---------------------------------------------------------------------------
-# jcs cases: WR-CJ bytes, strict parsing and the canonical-file rule (§2)
+# Ed25519 boundary-crafting helpers (see tools/edcraft.py)
+# ---------------------------------------------------------------------------
+
+
+def _seed(name: str = "human-1") -> bytes:
+    return recordlib.key(name).seed
+
+
+def _edge_point(name: str) -> bytes:
+    raw = (recordlib.KEYS_DIR / "edge-points" / (name + ".pub.bin")).read_bytes()
+    if len(raw) != 32:
+        raise SystemExit("edge point %r is not 32 bytes" % name)
+    return raw
+
+
+def _hostile_declaration(public_raw: bytes, record_id: str, signature_maker) -> dict[str, Any]:
+    """A ``weave.key.declared`` target whose body declares a hostile public key.
+
+    The declaration record is the target so that its own body supplies the key
+    material; the crafted signature is made over the record's signature
+    message.  The full Ed25519 profile must reject the key at the signature
+    verification step (before any declaration semantics are evaluated).
+    """
+    public_key_id = keyutil.key_id(public_raw)
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id=record_id,
+        actor={"type": "human", "key": public_key_id},
+        body={
+            "algorithm": "ed25519",
+            "key": public_key_id,
+            "key_type": "human",
+            "public_key": keyutil.b64url_encode(public_raw),
+        },
+        stage="accepted",
+        recorded_at=recordlib.T0,
+        origin_instance=public_key_id,
+    )
+    signature = signature_maker(recordlib.sig_message(record))
+    return set_sigs(
+        record,
+        [
+            {
+                "alg": "ed25519",
+                "key": public_key_id,
+                "value": keyutil.b64url_encode(signature),
+            }
+        ],
+    )
+
+
+def _crafted_record(
+    record: dict[str, Any], *, key_name: str = "human-1", signature_maker
+) -> dict[str, Any]:
+    """A normal record whose single signature is crafted for its sig message."""
+    signature = signature_maker(recordlib.sig_message(record))
+    return set_sigs(
+        record,
+        [
+            {
+                "alg": "ed25519",
+                "key": _kid(key_name),
+                "value": keyutil.b64url_encode(signature),
+            }
+        ],
+    )
+
+
+def _unknown_sig_entry(value_length: int = 32) -> dict[str, str]:
+    """One Q13 unknown-algorithm signature entry (structurally valid)."""
+    return {
+        "alg": "example-sig",
+        "key": "example-key:ab",
+        "value": keyutil.b64url_encode(bytes(range(value_length))),
+    }
+
+
+def _small_order_a_declaration(index: int) -> dict[str, Any]:
+    """A key.declared target for canonical small-order public key *index*."""
+    encoding = edcraft.EXPECTED_SMALL_ORDER_ENCODINGS[index]
+    return _hostile_declaration(
+        encoding,
+        "sig-29-%02d" % index,
+        lambda message: edcraft.small_order_signature(encoding, message),
+    )
+
+
+def _mixed_order_declaration(record_id: str) -> dict[str, Any]:
+    """A key.declared target for the mixed-order public key with a valid signature."""
+    public_raw = edcraft.mixed_order_public(MIXED_ORDER_SEED)
+    return _hostile_declaration(
+        public_raw,
+        record_id,
+        lambda message: edcraft.mixed_order_key_and_signature(
+            MIXED_ORDER_SEED, message
+        )[1],
+    )
+
+
+# ---------------------------------------------------------------------------
+# jcs cases: WR-CJ bytes, strict parsing and the canonical-file rule (§1)
 # ---------------------------------------------------------------------------
 
 JCS_TRICKY_BODY = {
@@ -433,7 +547,7 @@ declare(
     build=lambda: {
         name: data.rstrip(b"\n") for name, data in rec(recordlib.note("jcs-3")).items()
     },
-    notes="Canonical bytes without the optional trailing LF are also valid (§2.8).",
+    notes="Canonical bytes without the optional trailing LF are also valid (§1.8).",
 )
 
 declare(
@@ -450,7 +564,7 @@ declare(
             b'{"actor":1,"actor":',
         )
     ),
-    notes="Duplicate member names are rejected during parsing at any depth (§2.4).",
+    notes="Duplicate member names are rejected during parsing at any depth (§1.4).",
 )
 
 declare(
@@ -484,7 +598,7 @@ declare(
             b'"n":1.5',
         )
     ),
-    notes="WR-CJ numbers must be integers: a decimal number is rejected (§2.6).",
+    notes="WR-CJ numbers must be integers: a decimal number is rejected (§1.6).",
 )
 
 declare(
@@ -501,7 +615,7 @@ declare(
             b'"n":1e3',
         )
     ),
-    notes="Exponent notation is not an integer literal under WR-CJ (§2.6).",
+    notes="Exponent notation is not an integer literal under WR-CJ (§1.6).",
 )
 
 declare(
@@ -518,7 +632,7 @@ declare(
             b'"n":9007199254740992',
         )
     ),
-    notes="Integers above 2^53-1 are rejected by the range check (§2.6).",
+    notes="Integers above 2^53-1 are rejected by the range check (§1.6).",
 )
 
 declare(
@@ -535,7 +649,7 @@ declare(
             b'"n":-0',
         )
     ),
-    notes="'-0' parses as zero but is not the canonical spelling '0' (§2.6).",
+    notes="'-0' parses as zero but is not the canonical spelling '0' (§1.6).",
 )
 
 declare(
@@ -568,7 +682,7 @@ declare(
     "invalid",
     errors=("E_JSON_NOT_CANONICAL",),
     build=lambda: raw(recordlib.canonical_file(recordlib.note("jcs-12")) + b"\n"),
-    notes="At most one trailing LF is tolerated (§2.8).",
+    notes="At most one trailing LF is tolerated (§1.8).",
 )
 
 declare(
@@ -598,7 +712,7 @@ declare(
             b'"\\ud800"',
         )
     ),
-    notes="A lone surrogate escape is not a Unicode scalar value (§2.2).",
+    notes="A lone surrogate escape is not a Unicode scalar value (§1.2).",
 )
 
 declare(
@@ -639,7 +753,7 @@ declare(
     build=lambda: raw(
         b"\xef\xbb\xbf" + recordlib.canonical_file(recordlib.note("jcs-17"))
     ),
-    notes="A UTF-8 BOM is rejected as invalid JSON input (§2.2).",
+    notes="A UTF-8 BOM is rejected as invalid JSON input (§1.2).",
 )
 
 declare(
@@ -656,8 +770,116 @@ declare(
 )
 
 
+declare(
+    "jcs",
+    "integer-below-min",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_NUMBER_RANGE",),
+    build=lambda: raw(
+        replace_once(
+            recordlib.canonical_file(recordlib.note("jcs-19", body={"n": -1})),
+            b'"n":-1',
+            b'"n":-9007199254740992',
+        )
+    ),
+    notes="Integers below -(2^53-1) are rejected by the range check (spec §1.6).",
+)
+
+declare(
+    "jcs",
+    "multiple-violations-dup-then-float",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_DUPLICATE_KEY",),
+    build=lambda: raw(
+        replace_once(
+            recordlib.canonical_file(recordlib.note("jcs-20", body={"text": "x"})),
+            b'"body":{"text":',
+            b'"body":{"dup":1,"dup":1.5,"text":',
+        )
+    ),
+    notes="The first violation in byte order wins: the repeated member name is "
+    "read before its value, so this file reports the duplicate key, not the "
+    "float (spec §1.9, error precedence).",
+)
+
+declare(
+    "jcs",
+    "multiple-violations-float-then-dup",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_NUMBER_NOT_INTEGER",),
+    build=lambda: raw(
+        replace_once(
+            recordlib.canonical_file(recordlib.note("jcs-21", body={"text": "x"})),
+            b'"body":{"text":',
+            b'"body":{"dup":1.5,"dup":1,"text":',
+        )
+    ),
+    notes="The float value is read before the duplicate member name, so the "
+    "float is the first violation in byte order.",
+)
+
+declare(
+    "jcs",
+    "plus-one-sign",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_INVALID",),
+    build=lambda: raw(
+        replace_once(
+            recordlib.canonical_file(recordlib.note("jcs-22", body={"text": "x"})),
+            b'"body":{"text":',
+            b'"body":{"n":+1,"text":',
+        )
+    ),
+    notes="'(+1)' was intended as a number but is not JSON number syntax: a "
+    "syntax error, not a numeric-range error (spec §1.9).",
+)
+
+declare(
+    "jcs",
+    "leading-zero",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_INVALID",),
+    build=lambda: raw(
+        replace_once(
+            recordlib.canonical_file(recordlib.note("jcs-23", body={"text": "x"})),
+            b'"body":{"text":',
+            b'"body":{"n":01,"text":',
+        )
+    ),
+    notes="'01' is not a JSON number: a syntax error, not a numeric-range "
+    "error.",
+)
+
+declare(
+    "jcs",
+    "dot-five",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_INVALID",),
+    build=lambda: raw(
+        replace_once(
+            recordlib.canonical_file(recordlib.note("jcs-24", body={"text": "x"})),
+            b'"body":{"text":',
+            b'"body":{"n":.5,"text":',
+        )
+    ),
+    notes="'.5' is not JSON number syntax: a syntax error, not a "
+    "number-not-integer error.",
+)
+
 # ---------------------------------------------------------------------------
-# digest cases: record digest construction (§3.1)
+# digest cases: record digest construction (§2.2)
 # ---------------------------------------------------------------------------
 
 declare(
@@ -722,7 +944,7 @@ declare(
         }
     ),
     expected_digest="auto",
-    notes="A weave.erased placeholder has no sigs; records[0].digest is the §3.1 "
+    notes="A weave.erased placeholder has no sigs; records[0].digest is the §2.2 "
     "digest over the placeholder, records[0].verdict is 'erased', its attestation "
     "reference resolves to 'missing' (reported in the separate attestation object, "
     "refs stays empty) and the top-level verdict is 'erased'.",
@@ -750,12 +972,12 @@ declare(
     )(recordlib.note("digest-5")),
     args=("--keys", "@keyset"),
     notes="A records/ file whose content no longer hashes to the manifest entry "
-    "digest is a manifest/records inconsistency (§11.5).",
+    "digest is a manifest/records inconsistency (§11.6).",
 )
 
 
 # ---------------------------------------------------------------------------
-# signature cases: §3.2 message, §4 profile boundaries, sigs array format
+# signature cases: §2.3 message, §3 Ed25519 profile, sigs array format
 # ---------------------------------------------------------------------------
 
 declare(
@@ -798,7 +1020,7 @@ declare(
         )
     )(recordlib.note("sig-3")),
     args=("--keys", "@keyset"),
-    notes="A flipped signature byte fails the Ed25519 equation (§4.4).",
+    notes="A flipped signature byte fails the Ed25519 equation (§3.4).",
 )
 
 declare(
@@ -812,7 +1034,7 @@ declare(
         lambda base: rec(set_sigs(base, [wrong_signature(base)]))
     )(recordlib.note("sig-4")),
     args=("--keys", "@keyset"),
-    notes="A signature made under 'weave-record/2/sig\\n' must not verify (§3).",
+    notes="A signature made under 'weave-record/2/sig\\n' must not verify (§2.1).",
 )
 
 declare(
@@ -864,7 +1086,7 @@ declare(
         )
     )(recordlib.note("sig-6")),
     args=("--keys", "@keyset"),
-    notes="Signing the record serialization instead of the digest is invalid (§3.2).",
+    notes="Signing the record serialization instead of the digest is invalid (§2.3).",
 )
 
 declare(
@@ -910,7 +1132,7 @@ declare(
         )
     )(recordlib.note("sig-8")),
     args=("--keys", "@keyset"),
-    notes="sigs must be sorted by key ascending (§5.2).",
+    notes="sigs must be sorted by key ascending (§4.3).",
 )
 
 declare(
@@ -926,7 +1148,7 @@ declare(
         )(recordlib.sig_entry(base, "human-1"))
     )(recordlib.note("sig-9")),
     args=("--keys", "@keyset"),
-    notes="The same signing key may appear only once in sigs (§5.2).",
+    notes="The same signing key may appear only once in sigs (§4.3).",
 )
 
 declare(
@@ -942,7 +1164,7 @@ declare(
     ),
     args=("--keys", "@keyset"),
     notes="An accepted record must carry a valid signature by actor.key, not only "
-    "by some other declared key (§5.3: E_SIG_REQUIRED).",
+    "by some other declared key (§4.4: E_SIG_REQUIRED).",
 )
 
 declare(
@@ -953,7 +1175,7 @@ declare(
     "invalid",
     errors=("E_SIG_REQUIRED",),
     build=lambda: rec(recordlib.note("sig-10", stage="accepted")),
-    notes="An accepted record must carry a valid per-record signature (§5.3).",
+    notes="An accepted record must carry a valid per-record signature (§4.4).",
 )
 
 declare(
@@ -969,7 +1191,7 @@ declare(
         )(recordlib.sig_entry(base, "human-1"))
     )(recordlib.note("sig-11")),
     args=("--keys", "@keyset"),
-    notes="Padded base64url is rejected for signature values (§3.5).",
+    notes="Padded base64url is rejected for signature values (§2.6).",
 )
 
 declare(
@@ -985,7 +1207,7 @@ declare(
         )(recordlib.sig_entry(base, "human-1"))
     )(recordlib.note("sig-12")),
     args=("--keys", "@keyset"),
-    notes="'+' and '/' are not in the base64url alphabet (§3.5).",
+    notes="'+' and '/' are not in the base64url alphabet (§2.6).",
 )
 
 declare(
@@ -1006,23 +1228,7 @@ declare(
         )(recordlib.sig_entry(base, "human-1"))
     )(recordlib.note("sig-13")),
     args=("--keys", "@keyset"),
-    notes="Non-zero unused trailing bits are not canonical base64url (§3.5).",
-)
-
-declare(
-    "sig",
-    "unknown-alg",
-    "record",
-    "record.json",
-    "invalid",
-    errors=("E_ENV_SIG_ALG",),
-    build=lambda: (
-        lambda base: (
-            lambda entry: rec(set_sigs(base, [dict(entry, alg="ed448")]))
-        )(recordlib.sig_entry(base, "human-1"))
-    )(recordlib.note("sig-14")),
-    args=("--keys", "@keyset"),
-    notes="H0 registers only alg=ed25519 (§5.2).",
+    notes="Non-zero unused trailing bits are not canonical base64url (§2.6).",
 )
 
 declare(
@@ -1038,84 +1244,7 @@ declare(
         )(recordlib.sig_entry(base, "human-1"))
     )(recordlib.note("sig-15")),
     args=("--keys", "@keyset"),
-    notes="Key ids are exactly 'ed25519:' plus 32 lowercase hex chars (§3.4).",
-)
-
-declare(
-    "sig",
-    "small-order-R",
-    "record",
-    "record.json",
-    "invalid",
-    errors=("E_SIG_SMALL_ORDER_R",),
-    build=lambda: (
-        lambda base: rec(
-            set_sigs(
-                base,
-                [
-                    {
-                        "alg": "ed25519",
-                        "key": _kid("human-1"),
-                        "value": keyutil.b64url_encode(SMALL_ORDER_R + b"\x00" * 32),
-                    }
-                ],
-            )
-        )
-    )(recordlib.note("sig-16")),
-    args=("--keys", "@keyset"),
-    notes="R is the identity-point encoding: small-order R must be rejected (§4.3).",
-)
-
-declare(
-    "sig",
-    "noncanonical-R",
-    "record",
-    "record.json",
-    "invalid",
-    errors=("E_SIG_NONCANONICAL_R",),
-    build=lambda: (
-        lambda base: rec(
-            set_sigs(
-                base,
-                [
-                    {
-                        "alg": "ed25519",
-                        "key": _kid("human-1"),
-                        "value": keyutil.b64url_encode(NONCANONICAL_R + b"\x00" * 32),
-                    }
-                ],
-            )
-        )
-    )(recordlib.note("sig-17")),
-    args=("--keys", "@keyset"),
-    notes="R encodes y = p (>= p): a non-canonical encoding is rejected (§4.2).",
-)
-
-declare(
-    "sig",
-    "S-out-of-range",
-    "record",
-    "record.json",
-    "invalid",
-    errors=("E_SIG_S_OUT_OF_RANGE",),
-    build=lambda: (
-        lambda base: (
-            lambda raw_sig: rec(
-                set_sigs(
-                    base,
-                    [
-                        {
-                            "alg": "ed25519",
-                            "key": _kid("human-1"),
-                            "value": keyutil.b64url_encode(raw_sig[:32] + ED25519_L),
-                        }
-                    ],
-                )
-            )
-        )(_key("human-1").sign(recordlib.sig_message(base)))
-    )(recordlib.note("sig-18")),
-    args=("--keys", "@keyset"),
-    notes="S >= L is rejected before the equation check (§4.3).",
+    notes="Key ids are exactly 'ed25519:' plus 32 lowercase hex chars (§2.5).",
 )
 
 declare(
@@ -1143,70 +1272,515 @@ declare(
     )(recordlib.note("sig-19")),
     args=(),
     notes="A key with no weave.key.declared anywhere in context is unverifiable "
-    "(§10.2), not invalid.",
+    "(§5.3), not invalid.",
 )
-
-
-def _hostile_public_key_declaration(public_raw: bytes, record_id: str, signature: bytes) -> dict[str, Any]:
-    """A ``weave.key.declared`` target whose body public key is hostile."""
-    bad_id = keyutil.key_id(public_raw)
-    record = recordlib.build_record(
-        kind="weave.key.declared",
-        id=record_id,
-        actor={"type": "human", "key": bad_id},
-        body={
-            "algorithm": "ed25519",
-            "key": bad_id,
-            "key_type": "human",
-            "public_key": keyutil.b64url_encode(public_raw),
-        },
-        stage="accepted",
-        recorded_at=recordlib.T0,
-        origin_instance=bad_id,
-    )
-    return set_sigs(
-        record,
-        [{"alg": "ed25519", "key": bad_id, "value": keyutil.b64url_encode(signature)}],
-    )
 
 
 declare(
     "sig",
-    "noncanonical-public-key",
+    "unknown-alg",
+    "record",
+    "record.json",
+    "unverifiable",
+    errors=("E_SIG_UNVERIFIABLE",),
+    build=lambda: rec(
+        set_sigs(
+            recordlib.note("sig-22", stage="accepted"),
+            [_unknown_sig_entry()],
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Q13: an unknown-algorithm signature entry is ignored. The record is "
+    "required to be signed and has no verifiable required signature, so it is "
+    "unverifiable (spec §3.6, signature aggregation).",
+)
+
+declare(
+    "sig",
+    "unknown-alg-with-known-valid",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: (
+        lambda base: rec(
+            set_sigs(
+                base,
+                sorted(
+                    [recordlib.sig_entry(base, "human-1"), _unknown_sig_entry()],
+                    key=lambda entry: entry["key"],
+                ),
+            )
+        )
+    )(recordlib.note("sig-23", stage="accepted")),
+    args=("--keys", "@keyset"),
+    notes="Q13: the unknown-algorithm entry is ignored while a known Ed25519 "
+    "signature by actor.key verifies, so the record is valid (spec §3.6).",
+)
+
+declare(
+    "sig",
+    "unknown-alg-optional",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(
+        set_sigs(recordlib.note("sig-24"), [_unknown_sig_entry()])
+    ),
+    notes="Q13: a proposed record does not need a per-record signature; its "
+    "ignored unknown-algorithm entry leaves the record valid (spec §3.6).",
+)
+
+declare(
+    "sig",
+    "manifest-prefix-in-record",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_INVALID",),
+    build=lambda: (
+        lambda base: rec(
+            set_sigs(
+                base,
+                [
+                    {
+                        "alg": "ed25519",
+                        "key": _kid("human-1"),
+                        "value": keyutil.b64url_encode(
+                            recordlib.key("human-1").sign(
+                                MANIFEST_DOMAIN
+                                + recordlib.record_digest(base).encode("ascii")
+                            )
+                        ),
+                    }
+                ],
+            )
+        )
+    )(recordlib.note("sig-25", stage="accepted")),
+    args=("--keys", "@keyset"),
+    notes="Cross-purpose domain separation, record direction: a signature made "
+    "with the manifest domain prefix must not verify as a record signature "
+    "(spec §2.1, §2.3).",
+)
+
+declare(
+    "sig",
+    "noncanonical-A",
     "record",
     "record.json",
     "invalid",
     errors=("E_SIG_NONCANONICAL_A",),
     build=lambda: rec(
-        _hostile_public_key_declaration(
-            b"\xed" + b"\xff" * 30 + b"\x7f", "sig-20", b"\x00" * 64
+        _hostile_declaration(
+            edcraft.noncanonical_encoding(index=0, sign_bit=0),
+            "sig-26",
+            lambda message: edcraft.noncanonical_a_forgery(),
         )
     ),
-    notes="A declared public key whose encoding is y >= p is rejected with "
-    "E_SIG_NONCANONICAL_A (§4.2). The declaration record is the target so that "
-    "its own body supplies the key being validated.",
+    notes="A declared public key encoding with y = p (>= p) fails RFC 8032 "
+    "decoding before any equation work (spec §3.2, §3.4).",
 )
 
 declare(
     "sig",
-    "small-order-public-key-forgery",
+    "x0-sign-bit-A",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_NONCANONICAL_A",),
+    build=lambda: rec(
+        _hostile_declaration(
+            edcraft.x0_sign_one_identity_encoding(),
+            "sig-27",
+            edcraft.x0_sign_bit_a_forgery,
+        )
+    ),
+    notes="Public-key encoding 01..80: y = 1 but x = 0 and the RFC 8032 sign "
+    "bit is 1, so decoding fails. Decoders that omit this rule read the "
+    "identity and accept the crafted identity forgery, hence the full profile "
+    "rejects it here (spec §3.2).",
+)
+
+declare(
+    "sig",
+    "mixed-order-A",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_MIXED_ORDER_A",),
+    build=lambda: rec(_mixed_order_declaration("sig-28")),
+    notes="Public key A = [a]B + T with T of order 8: [8]A != identity and "
+    "[L]A != identity, so it is mixed order. The crafted signature makes the "
+    "cofactorless equation hold (k == 0 mod 8), so removing the mixed-order "
+    "check would accept it (spec §3.4).",
+)
+
+declare(
+    "sig",
+    "small-order-A-00",
     "record",
     "record.json",
     "invalid",
     errors=("E_SIG_SMALL_ORDER_A",),
-    build=lambda: rec(
-        _hostile_public_key_declaration(
-            IDENTITY_POINT,
-            "sig-21",
-            # Classic identity-key forgery: [S]B = R + [k]A with A = identity,
-            # S = 1, R = B; accepted by a verifier missing the small-order check.
-            BASE_POINT + (1).to_bytes(32, "little"),
-        )
-    ),
-    notes="Identity-key forgery (small-order A) must be rejected (§4.3).",
+    build=lambda index=0: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 0 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
 )
 
+declare(
+    "sig",
+    "small-order-A-01",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_A",),
+    build=lambda index=1: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 1 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
+)
 
+declare(
+    "sig",
+    "small-order-A-02",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_A",),
+    build=lambda index=2: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 2 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
+)
+
+declare(
+    "sig",
+    "small-order-A-03",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_A",),
+    build=lambda index=3: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 3 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
+)
+
+declare(
+    "sig",
+    "small-order-A-04",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_A",),
+    build=lambda index=4: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 4 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
+)
+
+declare(
+    "sig",
+    "small-order-A-05",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_A",),
+    build=lambda index=5: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 5 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
+)
+
+declare(
+    "sig",
+    "small-order-A-06",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_A",),
+    build=lambda index=6: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 6 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
+)
+
+declare(
+    "sig",
+    "small-order-A-07",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_A",),
+    build=lambda index=7: rec(_small_order_a_declaration(index)),
+    notes="Public key is small-order encoding 7 of the canonical set: the "
+    "crafted signature satisfies the cofactorless equation only because k is a "
+    "multiple of 8. With the small-order check removed a verifier reaches the "
+    "next subgroup check (E_SIG_MIXED_ORDER_A) for the six points of order 8; "
+    "with both subgroup checks removed the record would be valid (spec §3.3, §3.4).",
+)
+
+declare(
+    "sig",
+    "x0-sign-bit-R",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_NONCANONICAL_R",),
+    build=lambda: rec(
+        _crafted_record(
+            recordlib.note("sig-30", stage="accepted"),
+            signature_maker=lambda message: edcraft.x0_sign_bit_r_signature(
+                _seed(), message
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is 01..80: y = 1 with x = 0 and the sign bit set, so R "
+    "decoding fails. A decoder that omits the rule reads R as the identity and "
+    "the crafted equation holds (spec §3.2).",
+)
+
+declare(
+    "sig",
+    "small-order-R-00",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=0: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 0 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "small-order-R-01",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=1: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 1 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "small-order-R-02",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=2: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 2 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "small-order-R-03",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=3: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 3 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "small-order-R-04",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=4: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 4 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "small-order-R-05",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=5: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 5 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "small-order-R-06",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=6: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 6 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "small-order-R-07",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_SMALL_ORDER_R",),
+    build=lambda index=7: rec(
+        _crafted_record(
+            recordlib.note("sig-31-%02d" % index, stage="accepted"),
+            signature_maker=lambda message, index=index: edcraft.small_order_r_signature(
+                _seed(), message, edcraft.torsion_encodings()[index]
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R is small-order encoding 7 of the canonical set; the "
+    "identity encoding's equation would hold without the small-order check, the "
+    "other seven can never satisfy it with a prime-order key (spec §3.3).",
+)
+
+declare(
+    "sig",
+    "noncanonical-R",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_NONCANONICAL_R",),
+    build=lambda: rec(
+        _crafted_record(
+            recordlib.note("sig-32", stage="accepted"),
+            signature_maker=lambda message: edcraft.noncanonical_r_signature(
+                _seed(), message
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="Signature R has y = p (>= p), which is not a valid point encoding "
+    "(spec §3.2).",
+)
+
+declare(
+    "sig",
+    "S-equals-L",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_S_OUT_OF_RANGE",),
+    build=lambda: rec(
+        _crafted_record(
+            recordlib.note("sig-33", stage="accepted"),
+            signature_maker=lambda message: edcraft.s_out_of_range_signature(
+                _seed(), message
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="S = L is not a canonical scalar; the S range check runs before any "
+    "point decoding (spec §3.4).",
+)
+
+declare(
+    "sig",
+    "S-L-plus-1",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_S_OUT_OF_RANGE",),
+    build=lambda: rec(
+        _crafted_record(
+            recordlib.note("sig-34", stage="accepted"),
+            signature_maker=lambda message: edcraft.s_out_of_range_signature(
+                _seed(), message, value=edcraft.L + 1
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="S = L + 1 is out of range; the boundary is S < L (spec §3.4).",
+)
 # ---------------------------------------------------------------------------
 # ref cases: reference shape, resolution states and kind claims (§6)
 # ---------------------------------------------------------------------------
@@ -1260,7 +1834,7 @@ declare(
     notices=("N_REF_UNVERIFIABLE",),
     expected_resolution=("unverifiable",),
     notes="An unsupported digest algorithm makes that reference unverifiable, not "
-    "the record invalid (§3.6, §6).",
+    "the record invalid (§2.7, §6).",
 )
 
 declare(
@@ -1318,7 +1892,7 @@ declare(
     "invalid",
     errors=("E_ENV_REFS",),
     build=lambda: rec(recordlib.note("ref-5", refs=[_missing_ref(), _missing_ref()])),
-    notes="Duplicate reference entries are rejected (§5).",
+    notes="Duplicate reference entries are rejected (§4).",
 )
 
 declare(
@@ -1424,8 +1998,8 @@ declare(
     "valid",
     build=lambda: _ref_container(claim_kind="example.note"),
     args=("--keys", "@keyset"),
-    notes="Positive control for the previous case: a matching kind claim is fine.",    expected_container={"level_claimed": "L0", "level_verified": "L0", "record_count": 2},
-
+    expected_container={"level_claimed": "L0", "level_verified": "L0", "record_count": 2},
+    notes="Positive control for the previous case: a matching kind claim is fine.",
 )
 
 declare(
@@ -1436,8 +2010,9 @@ declare(
     "valid",
     build=lambda: _ref_container(claim_kind="example.note"),
     args=("--keys", "@keyset"),
-    notes="A reference whose origin+id+digest resolve to a valid record is 'found'.",    expected_container={"level_claimed": "L0", "level_verified": "L0", "record_count": 2},
-
+    expected_container={"level_claimed": "L0", "level_verified": "L0", "record_count": 2},
+    notes="A reference whose origin+id+digest resolve to a valid record is "
+    "'found'.",
 )
 
 declare(
@@ -1450,15 +2025,20 @@ declare(
         claim_kind="example.note", ref_digest="sha256:" + "ef" * 32
     ),
     args=("--keys", "@keyset"),
-    notices=("N_REF_MOVED",),
-    notes="Same origin+id exists but with a different digest: 'moved' notice, the "
-    "referring record stays valid (§6).",
+    notices=("N_REF_UNVERIFIABLE",),
+    notes="Same origin+id exists but with a different digest: the reference "
+    "resolves to 'unverifiable', not 'moved'. 'moved' would mean the record was "
+    "found at another location via hints with a matching digest; an offline "
+    "verifier never fetches hints, so it reports unverifiable + "
+    "N_REF_UNVERIFIABLE (spec §6.3).",
 )
+# ---------------------------------------------------------------------------
+# stage cases: envelope structure and stage semantics (spec §4)
+# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# stage cases: envelope structure and stage semantics (§5, §7)
-# ---------------------------------------------------------------------------
+UNKNOWN_KIND_RECORD_ID = "stage-6"
+
 
 def _bad_key_type_declaration() -> dict[str, Any]:
     """A self-signed weave.key.declared record whose key_type is not registered."""
@@ -1509,7 +2089,7 @@ declare(
     "record.json",
     "valid",
     build=lambda: rec(recordlib.note("stage-3")),
-    notes="A proposed record may rely on the container signature only (§5.3).",
+    notes="A proposed record may rely on the container signature only (§4.4).",
 )
 
 declare(
@@ -1520,7 +2100,7 @@ declare(
     "invalid",
     errors=("E_ENV_STAGE",),
     build=lambda: rec(recordlib.note("stage-4", stage="published")),
-    notes="stage uses the closed vocabulary of §5.",
+    notes="stage uses the closed vocabulary of §4.",
 )
 
 declare(
@@ -1547,7 +2127,7 @@ declare(
         "human-1",
     ),
     args=("--keys", "@keyset"),
-    notes="weave.grant MUST use stage=accepted (§5.3, §7.4).",
+    notes="weave.grant MUST use stage=accepted (§4.4, §5.5).",
 )
 
 declare(
@@ -1566,7 +2146,7 @@ declare(
         "human-2",
     ),
     args=("--keys", "@keyset"),
-    notes="weave.key.declared MUST use stage=accepted (§5.3, §7.1).",
+    notes="weave.key.declared MUST use stage=accepted (§4.4, §9.1).",
 )
 
 declare(
@@ -1590,15 +2170,16 @@ declare(
     build=lambda: rec(
         recordlib.build_record(
             kind="koinoweave.receipt",
-            id="stage-6",
+            id=UNKNOWN_KIND_RECORD_ID,
             actor=recordlib.actor("human-1"),
             body={"opaque": True, "n": 1},
         )
     ),
     notices=("N_KIND_UNKNOWN_OPAQUE",),
+    records=({"id": UNKNOWN_KIND_RECORD_ID, "kind_known": False},),
     notes="An unregistered but well-formed kind is opaque: verified at the "
-    "envelope level and reported as not understood, never invalidated for being "
-    "unknown (§7, K3).",
+    "envelope level, reported as not understood (kind_known false plus "
+    "N_KIND_UNKNOWN_OPAQUE) and never invalidated for being unknown (spec §7.3).",
 )
 
 declare(
@@ -1627,7 +2208,7 @@ declare(
     "invalid",
     errors=("E_ENV_UNKNOWN_FIELD",),
     build=lambda: rec(with_field(recordlib.note("stage-8"), "extra", 1)),
-    notes="The envelope is a closed object (§5).",
+    notes="The envelope is a closed object (§4).",
 )
 
 declare(
@@ -1655,7 +2236,7 @@ declare(
             {"project": "Example", "instance": _kid("human-1")},
         )
     ),
-    notes="The origin project is a lowercase slug (§5).",
+    notes="The origin project is a lowercase slug (§4).",
 )
 
 declare(
@@ -1666,7 +2247,7 @@ declare(
     "invalid",
     errors=("E_ENV_ID",),
     build=lambda: rec(with_field(recordlib.note("stage-11"), "id", " leading-space")),
-    notes="ids may not have leading/trailing spaces or control characters (§5).",
+    notes="ids may not have leading/trailing spaces or control characters (§4).",
 )
 
 declare(
@@ -1679,7 +2260,7 @@ declare(
     build=lambda: rec(
         with_field(recordlib.note("stage-12"), "recorded_at", "2026-11-01T00:00:00Z")
     ),
-    notes="Timestamps are RFC 3339 UTC with exactly three fractional digits and Z (§0).",
+    notes="Timestamps are RFC 3339 UTC with exactly three fractional digits and Z (§2.8).",
 )
 
 declare(
@@ -1690,7 +2271,7 @@ declare(
     "invalid",
     errors=("E_ENV_BODY",),
     build=lambda: rec(with_field(recordlib.note("stage-13"), "body", [])),
-    notes="body must be a JSON object (§5).",
+    notes="body must be a JSON object (§4).",
 )
 
 declare(
@@ -1706,12 +2287,12 @@ declare(
             recorded_at=recordlib.T0,
         )
     ),
-    notes="occurred_at is a claim with no ordering rule against recorded_at (§5).",
+    notes="occurred_at is a claim with no ordering rule against recorded_at (§4).",
 )
 
 
 # ---------------------------------------------------------------------------
-# actor cases: actor shape, compatibility and agent obligations (§5.1, §8)
+# actor cases: actor shape, compatibility and agent obligations (§4.2, §5)
 # ---------------------------------------------------------------------------
 
 declare(
@@ -1733,7 +2314,7 @@ declare(
     "valid",
     build=lambda: publish(recordlib.note("actor-2", key_name="program-1"), "program-1"),
     args=("--keys", "@keyset"),
-    notes="program actors have no extra actor members (§5.1).",
+    notes="program actors have no extra actor members (§4.2).",
 )
 
 declare(
@@ -1744,7 +2325,7 @@ declare(
     "valid",
     build=lambda: publish(recordlib.note("actor-3", key_name="device-1"), "device-1"),
     args=("--keys", "@keyset"),
-    notes="device actors have no extra actor members (§5.1).",
+    notes="device actors have no extra actor members (§4.2).",
 )
 
 declare(
@@ -1755,7 +2336,7 @@ declare(
     "valid",
     build=lambda: publish(recordlib.note("actor-4", key_name="org-1"), "org-1"),
     args=("--keys", "@keyset"),
-    notes="organization is a closed-vocabulary actor type (§5.1).",
+    notes="organization is a closed-vocabulary actor type (§4.2).",
 )
 
 declare(
@@ -1767,7 +2348,7 @@ declare(
     build=lambda: publish(recordlib.note("actor-5"), ["human-1", "human-2"]),
     args=("--keys", "@keyset"),
     notes="An additional signature by a declared human key on a human record is "
-    "allowed (§8.1).",
+    "allowed (§5.1).",
 )
 
 declare(
@@ -1780,7 +2361,7 @@ declare(
     build=lambda: rec(
         with_field(recordlib.note("actor-6"), "actor", {"type": "robot", "key": _kid("human-1")})
     ),
-    notes="actor.type uses the closed vocabulary (§5.1).",
+    notes="actor.type uses the closed vocabulary (§4.2).",
 )
 
 declare(
@@ -1795,7 +2376,7 @@ declare(
             recordlib.note("actor-7"), "actor", {"type": "human", "key": "human-1"}
         )
     ),
-    notes="actor.key must be a key id (§5.1, §3.4).",
+    notes="actor.key must be a key id (§4.2, §2.5).",
 )
 
 declare(
@@ -1817,7 +2398,7 @@ declare(
             ),
         )
     ),
-    notes="model is required iff actor.type=agent (§5.1).",
+    notes="model is required iff actor.type=agent (§4.2).",
 )
 
 declare(
@@ -1840,7 +2421,7 @@ declare(
             ),
         )
     ),
-    notes="model must be provider/model@version ASCII (§5.1).",
+    notes="model must be provider/model@version ASCII (§4.2).",
 )
 
 declare(
@@ -1862,7 +2443,7 @@ declare(
             ),
         )
     ),
-    notes="on_behalf_of is required iff actor.type=agent (§5.1).",
+    notes="on_behalf_of is required iff actor.type=agent (§4.2).",
 )
 
 declare(
@@ -1885,7 +2466,7 @@ declare(
             ),
         )
     ),
-    notes="on_behalf_of must be a key id (§5.1).",
+    notes="on_behalf_of must be a key id (§4.2).",
 )
 
 declare(
@@ -1902,7 +2483,7 @@ declare(
             without(recordlib.agent_actor(), "grant"),
         )
     ),
-    notes="The grant reference member is required iff actor.type=agent (§5.1): an "
+    notes="The grant reference member is required iff actor.type=agent (§4.2): an "
     "agent has no authorization to point at.",
 )
 
@@ -1924,7 +2505,7 @@ declare(
     ),
     args=("--keys", "@keyset"),
     notes="An agent record whose grant reference does not resolve is unverifiable "
-    "(§8.3: E_GRANT_UNRESOLVED), never valid.",
+    "(§5.4: E_GRANT_UNRESOLVED), never valid.",
 )
 
 declare(
@@ -1946,7 +2527,7 @@ declare(
             ),
         )
     ),
-    notes="idempotency_key is required iff actor.type=agent (§5.1).",
+    notes="idempotency_key is required iff actor.type=agent (§4.2).",
 )
 
 declare(
@@ -1969,7 +2550,7 @@ declare(
             ),
         )
     ),
-    notes="idempotency_key may not contain control characters (§5.1).",
+    notes="idempotency_key may not contain control characters (§4.2).",
 )
 
 declare(
@@ -1986,7 +2567,7 @@ declare(
             with_field(recordlib.actor("human-1"), "model", "example/model@1.2.3"),
         )
     ),
-    notes="Agent-only members are forbidden on non-agent actors (§5.1).",
+    notes="Agent-only members are forbidden on non-agent actors (§4.2).",
 )
 
 declare(
@@ -2012,7 +2593,7 @@ declare(
     ),
     args=("--keys", "@keyset"),
     notes="A key declared human may only sign records with actor.type=human: an "
-    "agent using a human key is E_ACTOR_KEY_TYPE_MISMATCH (§8.1).",
+    "agent using a human key is E_ACTOR_KEY_TYPE_MISMATCH (§5.1).",
 )
 
 declare(
@@ -2033,7 +2614,7 @@ declare(
     ),
     args=("--keys", "@keyset"),
     notes="A signature by a human/org key on a non-human record is "
-    "E_ACTOR_HUMAN_KEY (§8.2), even as an extra signature next to actor.key.",
+    "E_ACTOR_HUMAN_KEY (§5.2), even as an extra signature next to actor.key.",
 )
 
 declare(
@@ -2047,7 +2628,7 @@ declare(
         recordlib.note("actor-19", key_name="program-1"), ["program-1", "human-1"]
     ),
     args=("--keys", "@keyset"),
-    notes="program/device records may not be signed by a human-class key (§8.2).",
+    notes="program/device records may not be signed by a human-class key (§5.2).",
 )
 
 # Containers that need a resolvable grant in the verification context.
@@ -2086,8 +2667,10 @@ declare(
         {"id": "actor-21", "verdict": "valid"},
         {"id": "grant-1", "verdict": "valid"},
     ),
+    notices=("N_NO_HUMAN_SIGNATURE",),
     notes="Positive: accepted agent record where the grant lists the accept action "
-    "and the record kind (§8.3).",
+    "and the record kind. Its signatures are all agent keys, so the verifier "
+    "must report N_NO_HUMAN_SIGNATURE (spec §4.4).",
 )
 
 declare(
@@ -2104,7 +2687,7 @@ declare(
     )(root_grant(actions=("accept",), kinds=("other.kind",))),
     args=("--keys", "@keyset"),
     notes="The grant does not list the record's kind: the agent was not authorized "
-    "for this kind (E_GRANT_NOT_APPLICABLE, invalid per §8.3).",
+    "for this kind (E_GRANT_NOT_APPLICABLE, invalid per §5.4).",
 )
 
 declare(
@@ -2175,7 +2758,7 @@ declare(
     notices=("N_IDEMPOTENCY_DUPLICATE",),
     notes="Two records of the same origin claiming the same agent idempotency key "
     "are reported with N_IDEMPOTENCY_DUPLICATE; duplicates are a notice, not an "
-    "invalid container (§15, Q17).",
+    "invalid container (§14.6, Q17).",
 )
 
 declare(
@@ -2192,12 +2775,12 @@ declare(
     )(root_grant(grantee="agent-2", actions=("accept",), kinds=("example.note",))),
     args=("--keys", "@keyset"),
     notes="The grant names a different grantee: the agent cannot use it "
-    "(E_GRANT_GRANTEE_MISMATCH, invalid per §8.3).",
+    "(E_GRANT_GRANTEE_MISMATCH, invalid per §5.4).",
 )
 
 
 # ---------------------------------------------------------------------------
-# labels cases: sensitivity, licence, salt, consent and propagation (§9)
+# labels cases: sensitivity, licence, salt, consent and propagation (§8)
 # ---------------------------------------------------------------------------
 
 declare(
@@ -2213,7 +2796,7 @@ declare(
             salt=TEST_SALT,
         )
     ),
-    notes="personal records MUST carry a 16-byte base64url salt (§5, §9).",
+    notes="personal records MUST carry a 16-byte base64url salt (§4, §8).",
 )
 
 declare(
@@ -2230,7 +2813,7 @@ declare(
         )
     ),
     notes="local-only records need a salt; the export refusal only applies inside "
-    "containers (§9.3).",
+    "containers (§8.5).",
 )
 
 declare(
@@ -2252,7 +2835,7 @@ declare(
     build=lambda: rec(
         recordlib.note("labels-3b", labels={"sensitivity": "public"}, salt=TEST_SALT)
     ),
-    notes="salt is optional for non-personal sensitivities (§5).",
+    notes="salt is optional for non-personal sensitivities (§4).",
 )
 
 declare(
@@ -2263,7 +2846,7 @@ declare(
     "invalid",
     errors=("E_ENV_SALT_MISSING",),
     build=lambda: rec(recordlib.note("labels-4", labels={"sensitivity": "personal"})),
-    notes="personal sensitivity requires the salt member (§5, §9.1).",
+    notes="personal sensitivity requires the salt member (§4, §8.3).",
 )
 
 declare(
@@ -2312,7 +2895,7 @@ declare(
     notices=("N_LABEL_PROPAGATION_UNCHECKED",),
     expected_resolution=("missing",),
     notes="An unresolvable derived_from reference only makes label propagation "
-    "unchecked (notice); the record stays valid (§9.2).",
+    "unchecked (notice); the record stays valid (§8.4).",
 )
 
 declare(
@@ -2327,7 +2910,7 @@ declare(
             "labels-6", labels={"sensitivity": "public", "custom": "value"}
         )
     ),
-    notes="labels is a closed object (§9).",
+    notes="labels is a closed object (§8).",
 )
 
 declare(
@@ -2339,7 +2922,7 @@ declare(
     build=lambda: rec(
         recordlib.note("labels-7", labels={"licence": "(MIT OR Apache-2.0) AND CC0-1.0"})
     ),
-    notes="SPDX licence expressions are syntax-checked offline only (§9, Q14).",
+    notes="SPDX licence expressions are syntax-checked offline only (§8, Q14).",
 )
 
 declare(
@@ -2376,7 +2959,7 @@ declare(
             "labels-10", labels={"sensitivity": "personal"}, salt=TEST_SALT + "=="
         )
     ),
-    notes="base64url salts are unpadded (§3.5).",
+    notes="base64url salts are unpadded (§2.6).",
 )
 
 declare(
@@ -2393,7 +2976,7 @@ declare(
             salt=keyutil.b64url_encode(bytes(range(15))),
         )
     ),
-    notes="salt is exactly 16 bytes (§5, §9.1).",
+    notes="salt is exactly 16 bytes (§4, §8.3).",
 )
 
 declare(
@@ -2411,7 +2994,7 @@ declare(
         )
     ),
     notes="A salt whose base64url encoding has non-zero unused trailing bits is not "
-    "canonical (§3.5).",
+    "canonical (§2.6).",
 )
 
 declare(
@@ -2432,7 +3015,7 @@ declare(
         )
     ),
     notices=("N_CONSENT_UNRESOLVED",),
-    notes="An unresolvable consent reference is a notice, not an invalid record (§9).",
+    notes="An unresolvable consent reference is a notice, not an invalid record (§8).",
 )
 
 
@@ -2441,8 +3024,9 @@ def _label_pair(
     *,
     derived_id: str,
     derived_labels: dict[str, Any] | None,
+    rel: str = "derived_from",
 ) -> dict[str, bytes]:
-    """Build a container with a derived_from target and a derived record."""
+    """Build a container with a *rel* target and a derived record."""
     target_digest = recordlib.record_digest(target)
     needs_salt = (derived_labels or {}).get("sensitivity") in {"personal", "local-only"}
     derived = recordlib.build_record(
@@ -2452,7 +3036,7 @@ def _label_pair(
         body={"text": "derived record"},
         refs=[
             {
-                "rel": "derived_from",
+                "rel": rel,
                 "ref": recordlib.make_ref(
                     target["origin"]["instance"], target["id"], target_digest
                 ),
@@ -2482,7 +3066,7 @@ declare(
     ),
     args=("--keys", "@keyset"),
     notes="A derived record ranked below a resolved input is a label downgrade "
-    "(§9.2, H2: propagation takes the strictest label).",
+    "(§8.4, H2: propagation takes the strictest label).",
 )
 
 declare(
@@ -2503,7 +3087,7 @@ declare(
     ),
     args=("--keys", "@keyset"),
     notes="Absence of a sensitivity label on a derived record whose input is "
-    "non-public cannot prove non-downgrade (conservative reading, §9.2/Q16).",
+    "non-public cannot prove non-downgrade (conservative reading, §8.4/Q16).",
 )
 
 declare(
@@ -2555,7 +3139,7 @@ declare(
         ]
     ),
     args=("--keys", "@keyset"),
-    notes="A local-only record may never appear in an export container (H2, §9.3); "
+    notes="A local-only record may never appear in an export container (H2, §8.5); "
     "the container is invalid.",
 )
 
@@ -2587,7 +3171,7 @@ declare(
     )(recordlib.note("labels-19-target")),
     args=("--keys", "@keyset"),
     notes="labels.consent must resolve to a weave.consent.* record; resolving to "
-    "another kind is E_REF_KIND_MISMATCH (§9).",
+    "another kind is E_REF_KIND_MISMATCH (§8).",
 )
 
 declare(
@@ -2602,7 +3186,7 @@ declare(
     ),
     args=("--keys", "@keyset"),
     notes="A weave.consent.granted record with valid_from > valid_until is invalid "
-    "with E_CONSENT_VALIDITY (§7.5, H3).",
+    "with E_CONSENT_VALIDITY (§8.6, H3).",
 )
 
 declare(
@@ -2629,7 +3213,7 @@ declare(
     )(recordlib.note("labels-21-target")),
     args=("--keys", "@keyset"),
     notes="A weave.consent.revoked record must cite a weave.consent.granted record; "
-    "a reference resolving to another kind is E_CONSENT_REVOKE_REF (§7.6, H3).",
+    "a reference resolving to another kind is E_CONSENT_REVOKE_REF (§8.6, H3).",
 )
 
 declare(
@@ -2658,10 +3242,198 @@ declare(
         )
     )(consent_grant()),
     args=("--keys", "@keyset"),
-    notes="Positive: a resolved consent reference makes the labels consistent (§9, H3).",    expected_container={"level_claimed": "L0", "level_verified": "L0", "record_count": 2},
-
+    expected_container={"level_claimed": "L0", "level_verified": "L0", "record_count": 2},
+    notes="Positive: a resolved consent reference makes the labels consistent "
+    "(spec §8.6, H3).",
 )
 
+
+declare(
+    "labels",
+    "propagation-reshaped_from-downgrade",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_LABEL_DOWNGRADE",),
+    build=lambda: _label_pair(
+        recordlib.note(
+            "labels-30-target",
+            labels={"sensitivity": "personal"},
+            salt=TEST_SALT,
+        ),
+        derived_id="labels-30-derived",
+        derived_labels={"sensitivity": "internal"},
+        rel="reshaped_from",
+    ),
+    args=("--keys", "@keyset"),
+    notes="Strictest-label propagation follows reshaped_from as well as "
+    "derived_from; lowering the rank is E_LABEL_DOWNGRADE (spec §8.4).",
+)
+
+declare(
+    "labels",
+    "propagation-migrated_from-downgrade",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_LABEL_DOWNGRADE",),
+    build=lambda: _label_pair(
+        recordlib.note(
+            "labels-31-target",
+            labels={"sensitivity": "personal"},
+            salt=TEST_SALT,
+        ),
+        derived_id="labels-31-derived",
+        derived_labels={"sensitivity": "internal"},
+        rel="migrated_from",
+    ),
+    args=("--keys", "@keyset"),
+    notes="Strictest-label propagation follows migrated_from; lowering the rank "
+    "is E_LABEL_DOWNGRADE.",
+)
+
+declare(
+    "labels",
+    "propagation-correction_of-downgrade",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_LABEL_DOWNGRADE",),
+    build=lambda: _label_pair(
+        recordlib.note(
+            "labels-32-target",
+            labels={"sensitivity": "personal"},
+            salt=TEST_SALT,
+        ),
+        derived_id="labels-32-derived",
+        derived_labels={"sensitivity": "internal"},
+        rel="correction_of",
+    ),
+    args=("--keys", "@keyset"),
+    notes="Strictest-label propagation follows correction_of; lowering the rank "
+    "is E_LABEL_DOWNGRADE.",
+)
+
+declare(
+    "labels",
+    "propagation-reshaped_from-strengthen",
+    "container",
+    "container",
+    "valid",
+    build=lambda: _label_pair(
+        recordlib.note("labels-33-target", labels={"sensitivity": "internal"}),
+        derived_id="labels-33-derived",
+        derived_labels={"sensitivity": "personal"},
+        rel="reshaped_from",
+    ),
+    args=("--keys", "@keyset"),
+    notes="Positive: strengthening the label along reshaped_from is allowed.",
+)
+
+declare(
+    "labels",
+    "propagation-migrated_from-equal",
+    "container",
+    "container",
+    "valid",
+    build=lambda: _label_pair(
+        recordlib.note(
+            "labels-34-target",
+            labels={"sensitivity": "personal"},
+            salt=TEST_SALT,
+        ),
+        derived_id="labels-34-derived",
+        derived_labels={"sensitivity": "personal"},
+        rel="migrated_from",
+    ),
+    args=("--keys", "@keyset"),
+    notes="Positive: keeping the same rank along migrated_from is allowed.",
+)
+
+declare(
+    "labels",
+    "propagation-correction_of-equal",
+    "container",
+    "container",
+    "valid",
+    build=lambda: _label_pair(
+        recordlib.note("labels-35-target", labels={"sensitivity": "internal"}),
+        derived_id="labels-35-derived",
+        derived_labels={"sensitivity": "internal"},
+        rel="correction_of",
+    ),
+    args=("--keys", "@keyset"),
+    notes="Positive: keeping the same rank along correction_of is allowed.",
+)
+
+
+def _consent_revocation_container(*, source_recorded_at: str, effective_at: str) -> dict[str, bytes]:
+    """Consent grant + revocation + a record that still cites the consent."""
+    consent = consent_grant("consent-revoked-1")
+    revocation = consent_revoked(
+        "consent-revoked-1-withdrawal",
+        revokes=consent_ref(consent),
+        effective_at=effective_at,
+        recorded_at=effective_at,
+    )
+    source = recordlib.build_record(
+        kind="example.note",
+        id="labels-36-source",
+        actor=recordlib.actor("human-1"),
+        body={"text": "record citing a revoked consent"},
+        labels={"sensitivity": "internal", "consent": consent_ref(consent)},
+        recorded_at=source_recorded_at,
+    )
+    return build_container([consent, revocation, source])
+
+
+declare(
+    "labels",
+    "consent-revoked-referenced",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_CONSENT_REVOKED",),
+    build=lambda: _consent_revocation_container(
+        source_recorded_at=recordlib.T2,
+        effective_at=recordlib.T1,
+    ),
+    args=("--keys", "@keyset"),
+    notes="A record whose claimed recorded_at is at or after a consent "
+    "revocation's effective_at and which still cites that consent is invalid "
+    "with E_CONSENT_REVOKED (spec §8.6).",
+)
+
+declare(
+    "labels",
+    "consent-revoked-boundary-equal",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_CONSENT_REVOKED",),
+    build=lambda: _consent_revocation_container(
+        source_recorded_at=recordlib.T1,
+        effective_at=recordlib.T1,
+    ),
+    args=("--keys", "@keyset"),
+    notes="Boundary: recorded_at == effective_at counts as revoked (the "
+    "revocation test is >=, spec: consent revocation).",
+)
+
+declare(
+    "labels",
+    "consent-revoked-before-effective",
+    "container",
+    "container",
+    "valid",
+    build=lambda: _consent_revocation_container(
+        source_recorded_at=recordlib.T0,
+        effective_at=recordlib.T1,
+    ),
+    args=("--keys", "@keyset"),
+    notes="Boundary: a record recorded strictly before the revocation's "
+    "effective_at is unaffected (recorded_at < effective_at).",
+)
 
 # === END CASE SECTIONS ===
 
@@ -2695,6 +3467,9 @@ def _selfcheck_signatures(record: dict[str, Any], *, context: str) -> None:
     if keys != sorted(keys) or len(set(keys)) != len(keys):
         raise SystemExit("%s: sigs are not sorted/unique in a positive case" % context)
     for entry in entries:
+        if entry.get("alg") != "ed25519":
+            # Q13: unknown-algorithm signature entries are ignored, not checked.
+            continue
         material = _keys_by_id().get(entry["key"])
         if material is None:
             raise SystemExit(
@@ -2779,6 +3554,10 @@ UNSIGNED_POSITIVE_EXCEPTIONS = frozenset(
     {
         "digest/record-unsigned",
         "stage/valid-proposed-unsigned",
+        # A proposed record whose only signature entry uses an unknown algorithm:
+        # the record is not required to be signed and the entry is ignored, so it
+        # is effectively unsigned (see GATE-3-EXCEPTIONS.md).
+        "sig/unknown-alg-optional",
     }
 )
 

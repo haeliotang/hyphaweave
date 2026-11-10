@@ -535,12 +535,17 @@ def key_declaration(
     declared_key_id: str | None = None,
     signed_by: str | None = None,
     note_text: str | None = None,
+    owner: str | None = None,
+    cosigners: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Build a self-signed ``weave.key.declared`` record for a test key.
+    """Build a ``weave.key.declared`` record for a test key.
 
-    ``public_key_b64``/``declared_key_id``/``key_type``/``signed_by`` may be
-    overridden to build negative cases (a declaration whose key id does not
-    match its public key, a non-self-signed declaration, ...).
+    The declaration is always self-signed by the key it declares
+    (``signed_by`` overrides which *test key name* produces that self
+    signature for negative cases).  ``owner`` is the optional ``body.owner``
+    key id (required for agent/program/device keys); ``cosigners`` are test key
+    names whose signatures are appended (the owner or previous-key
+    counter-signatures).  Signatures are emitted sorted by key id.
     """
     material = key(name)
     public_b64 = public_key_b64 if public_key_b64 is not None else material.public_b64url()
@@ -552,6 +557,8 @@ def key_declaration(
         "key_type": declared_type,
         "public_key": public_b64,
     }
+    if owner is not None:
+        body["owner"] = kid(owner)
     if valid_from is not None:
         body["valid_from"] = valid_from
     if valid_until is not None:
@@ -567,10 +574,9 @@ def key_declaration(
         recorded_at=recorded_at,
         origin_instance=declared_id,
     )
-    # A declaration is signed by the key it declares (self-signature) and may
-    # carry additional owner signatures.
-    record = signed(record, signed_by if signed_by is not None else name)
-    return record
+    signer_names = [signed_by if signed_by is not None else name]
+    signer_names.extend(cosigners)
+    return signed(record, signer_names)
 
 
 def key_revocation(

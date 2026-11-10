@@ -15,11 +15,11 @@ stricter-profile mapping:
   floating-point numbers must be **rejected** (``E_JSON_NUMBER_NOT_INTEGER``)
   because ``weave-record/1`` only represents integers.
 * RFC 8032 §7.1: all five Ed25519 test vectors must verify.
-* Project Wycheproof Ed25519: ``valid`` -> accept, ``invalid`` -> reject, and
-  ``acceptable`` is split by class (documented decision Q1): small-order public
-  keys are rejected by the strict profile's small-order pre-checks, while
-  mixed-order public keys whose signatures satisfy the cofactorless equation
-  exactly are accepted (no subgroup-membership rule is part of the profile).
+* Project Wycheproof Ed25519: ``valid`` -> accept, ``invalid`` -> reject and
+  ``acceptable`` -> **reject** (decided profile Q1, Inceptless decision
+  2026-11-10 #34): the strict Ed25519 profile rejects mixed-order public keys
+  (``E_SIG_MIXED_ORDER_A``) as well as small-order ones, so all 29
+  ``acceptable`` vectors are rejected too (117 accept / 93 reject, 210/210).
 
 It also re-hashes every retrieved external file against the ``SOURCE.json`` /
 ``SHA256SUMS`` provenance committed with the data, so the cross-check cannot
@@ -77,17 +77,7 @@ RFC8785_REJECT_CODES: dict[str, str] = {
 
 # The pinned Wycheproof file has exactly these outcome counts (recorded in
 # PROVENANCE.md); a different count means the committed data changed.
-WYCHEPROOF_EXPECTED_COUNTS = {
-    "valid": 117,
-    "invalid": 64,
-    "acceptable/mixed-order": 21,
-    "acceptable/small-order": 8,
-}
-# Documented stricter-profile decision (Q1, 2026-11-10): mixed-order public keys
-# are NOT rejected; their signatures satisfy the cofactorless equation exactly,
-# and the H0 profile does not add a prime-order-subgroup membership rule.  The
-# small-order public keys are rejected by the mandatory eight-point pre-check.
-WYCHEPROOF_ACCEPTABLE_ACCEPT_FLAGS = {"MixedOrderPublicKey"}
+WYCHEPROOF_EXPECTED_COUNTS = {"valid": 117, "invalid": 64, "acceptable": 29}
 
 RFC8032_EXPECTED_TESTS = {"1", "2", "3", "1024", "SHA(abc)"}
 
@@ -510,27 +500,17 @@ def check_rfc8032(verify) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _wycheproof_bucket(result: str, flags: set[str]) -> str:
+def _wycheproof_bucket(result: str) -> str:
     """Classify one Wycheproof test into the documented outcome class."""
-    if result in ("valid", "invalid"):
-        return result
-    if result == "acceptable":
-        if "MixedOrderPublicKey" in flags:
-            return "acceptable/mixed-order"
-        if "SmallOrderPublicKey" in flags:
-            return "acceptable/small-order"
-        return "acceptable/other"
-    return "unknown"
+    return result if result in ("valid", "invalid", "acceptable") else "unknown"
 
 
-def _wycheproof_expected_accept(result: str, flags: set[str]) -> bool | None:
+def _wycheproof_expected_accept(result: str) -> bool | None:
     """Expected accept/reject for one test under the documented mapping."""
     if result == "valid":
         return True
-    if result == "invalid":
+    if result in ("invalid", "acceptable"):
         return False
-    if result == "acceptable":
-        return bool(flags & WYCHEPROOF_ACCEPTABLE_ACCEPT_FLAGS)
     return None
 
 
@@ -569,10 +549,10 @@ def check_wycheproof(verify) -> None:
                     % (test.get("tcId") if isinstance(test, dict) else None, exc)
                 ) from exc
             flags = set(test.get("flags") or ())
-            bucket = _wycheproof_bucket(result, flags)
+            bucket = _wycheproof_bucket(result)
             counts[bucket] = counts.get(bucket, 0) + 1
             accepted = verify_signature(verify, public_key, message, signature)
-            expected_accept = _wycheproof_expected_accept(result, flags)
+            expected_accept = _wycheproof_expected_accept(result)
             if expected_accept is not None:
                 computed_outcomes[test_id] = "accept" if expected_accept else "reject"
             if expected_accept is None:
@@ -643,17 +623,17 @@ def check_wycheproof(verify) -> None:
                 )
                 failures += 1
     if not failures:
+        rejected = counts.get("invalid", 0) + counts.get("acceptable", 0)
         passed(
             "Wycheproof Ed25519: %d/%d outcomes match (%d valid accepted, %d "
-            "acceptable/mixed-order accepted, %d invalid rejected, %d "
-            "acceptable/small-order rejected)"
+            "rejected: %d invalid + %d acceptable, all acceptable rejected per Q1)"
             % (
                 total,
                 total,
                 counts.get("valid", 0),
-                counts.get("acceptable/mixed-order", 0),
+                rejected,
                 counts.get("invalid", 0),
-                counts.get("acceptable/small-order", 0),
+                counts.get("acceptable", 0),
             )
         )
 
