@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"stage","errors":[],"id":"stage/unknown-kind-opaque","input":"record.json","notes":"An unregistered but well-formed kind is opaque: verified at the envelope level and reported as not understood, never invalidated for being unknown (§7, K3).","notices":["N_KIND_UNKNOWN_OPAQUE"],"target":"record","verdict":"valid"}

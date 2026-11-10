@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/propagation-migrated_from-equal","input":"container","notes":"Positive: keeping the same rank along migrated_from is allowed.","target":"container","verdict":"valid"}

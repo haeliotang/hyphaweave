@@ -1,1 +1,0 @@
-{"category":"actor","errors":["E_ENV_ACTOR_MODEL_MISSING"],"id":"actor/agent-missing-model","input":"record.json","notes":"model is required iff actor.type=agent (§5.1).","target":"record","verdict":"invalid"}

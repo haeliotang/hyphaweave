@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"ref","errors":[],"expected_resolution":["missing"],"id":"ref/hints-valid","input":"record.json","notes":"Hints are URI-shaped only, are never fetched and do not carry identity.","notices":["N_REF_MISSING"],"target":"record","verdict":"valid"}

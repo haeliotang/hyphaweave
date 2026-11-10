@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"container","errors":["E_MANIFEST_RECORD_MISSING"],"id":"container/record-missing","input":"container","notes":"A digest listed in manifest.records has no files/records/<hex>.json file (§11.5).","target":"container","verdict":"invalid"}
+{"args":["--keys","@keyset"],"category":"container","errors":["E_MANIFEST_RECORD_MISSING"],"id":"container/record-missing","input":"container","notes":"A digest listed in manifest.records has no files/records/<hex>.json file (§11.6).","target":"container","verdict":"invalid"}

@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"actor","errors":["E_GRANT_GRANTEE_MISMATCH"],"id":"actor/agent-accepted-grantee-mismatch","input":"container","notes":"The grant names a different grantee: the agent cannot use it (E_GRANT_GRANTEE_MISMATCH, invalid per §8.3).","target":"container","verdict":"invalid"}

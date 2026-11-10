@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_DUPLICATE_KEY"],"id":"jcs/multiple-violations-dup-then-float","input":"record.json","notes":"The first violation in byte order wins: the repeated member name is read before its value, so this file reports the duplicate key, not the float (spec §1.9, error precedence).","target":"record","verdict":"invalid"}

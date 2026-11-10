@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":[],"id":"sig/valid-single","input":"record.json","notes":"Baseline: one Ed25519 signature over the record digest.","target":"record","verdict":"valid"}

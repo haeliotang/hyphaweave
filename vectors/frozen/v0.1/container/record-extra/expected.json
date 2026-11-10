@@ -1,1 +1,0 @@
-{"category":"container","errors":["E_MANIFEST_RECORD_EXTRA"],"id":"container/record-extra","input":"container","notes":"records/ contains a well-formed file that the manifest does not list (§11.5): every record file must be listed exactly once.","target":"container","verdict":"invalid"}

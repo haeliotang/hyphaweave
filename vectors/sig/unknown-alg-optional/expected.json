@@ -1,0 +1,1 @@
+{"category":"sig","errors":[],"id":"sig/unknown-alg-optional","input":"record.json","notes":"Q13: a proposed record does not need a per-record signature; its ignored unknown-algorithm entry leaves the record valid (spec §3.6).","target":"record","verdict":"valid"}

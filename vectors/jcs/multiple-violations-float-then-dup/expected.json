@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NUMBER_NOT_INTEGER"],"id":"jcs/multiple-violations-float-then-dup","input":"record.json","notes":"The float value is read before the duplicate member name, so the float is the first violation in byte order.","target":"record","verdict":"invalid"}

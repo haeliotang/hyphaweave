@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_GRANTER"],"id":"grant/revoke-record-as-authority","input":"container","notes":"An agent record cites a grant-revocation record as its authorisation: the cited record's action is not 'grant', so it does not authorise anything (E_GRANT_GRANTER).","target":"container","verdict":"invalid"}

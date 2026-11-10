@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/public-with-salt","input":"record.json","notes":"salt is optional for non-personal sensitivities (§5).","target":"record","verdict":"valid"}

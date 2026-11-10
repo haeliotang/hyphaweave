@@ -1,1 +1,0 @@
-{"category":"container","errors":["E_MANIFEST_CHAIN"],"id":"container/chain-digest-mismatch","input":"container","notes":"previous_manifest.digest does not equal the digest of the embedded previous/manifest.json bytes (§11.4).","target":"container","verdict":"invalid"}

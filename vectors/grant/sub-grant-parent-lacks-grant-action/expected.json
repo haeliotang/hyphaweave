@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_GRANTER"],"id":"grant/sub-grant-parent-lacks-grant-action","input":"container","notes":"The parent grant lists weave.grant in kinds but does not list the grant action in actions: it cannot authorise issuing further grants (E_GRANT_GRANTER).","target":"container","verdict":"invalid"}

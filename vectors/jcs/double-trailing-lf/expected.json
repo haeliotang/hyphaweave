@@ -1,1 +1,1 @@
-{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/double-trailing-lf","input":"record.json","notes":"At most one trailing LF is tolerated (§2.8).","target":"record","verdict":"invalid"}
+{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/double-trailing-lf","input":"record.json","notes":"At most one trailing LF is tolerated (§1.8).","target":"record","verdict":"invalid"}

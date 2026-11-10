@@ -1,1 +1,0 @@
-{"category":"container","errors":["E_CONTAINER_ENTRY"],"id":"container/unknown-top-level-entry","input":"container","notes":"A file outside the closed container layout is E_CONTAINER_ENTRY (§11.1); the check runs during entry enumeration, before manifest checks.","target":"container","verdict":"invalid"}

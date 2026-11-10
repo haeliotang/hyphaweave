@@ -1,1 +1,1 @@
-{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/minus-zero","input":"record.json","notes":"'-0' parses as zero but is not the canonical spelling '0' (§2.6).","target":"record","verdict":"invalid"}
+{"category":"jcs","errors":["E_JSON_NOT_CANONICAL"],"id":"jcs/minus-zero","input":"record.json","notes":"'-0' parses as zero but is not the canonical spelling '0' (§1.6).","target":"record","verdict":"invalid"}

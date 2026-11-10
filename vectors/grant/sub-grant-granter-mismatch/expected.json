@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_GRANTER"],"id":"grant/sub-grant-granter-mismatch","input":"container","notes":"The parent grant names agent-2 as grantee but the sub-grant is signed by agent-1: the parent does not authorise this sub-granter (E_GRANT_GRANTER).","target":"container","verdict":"invalid"}

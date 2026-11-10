@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_ENV_SIGS"],"id":"sig/unsorted-sigs","input":"record.json","notes":"sigs must be sorted by key ascending (§5.2).","target":"record","verdict":"invalid"}
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_ENV_SIGS"],"id":"sig/unsorted-sigs","input":"record.json","notes":"sigs must be sorted by key ascending (§4.3).","target":"record","verdict":"invalid"}

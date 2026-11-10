@@ -1,1 +1,0 @@
-{"category":"stage","errors":["E_ENV_MISSING_FIELD"],"id":"stage/missing-stage","input":"record.json","notes":"stage is a required envelope member.","target":"record","verdict":"invalid"}

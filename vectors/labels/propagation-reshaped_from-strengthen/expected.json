@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/propagation-reshaped_from-strengthen","input":"container","notes":"Positive: strengthening the label along reshaped_from is allowed.","target":"container","verdict":"valid"}

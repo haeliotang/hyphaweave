@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_ENV_SIG_KEY"],"id":"sig/bad-key-format","input":"record.json","notes":"Key ids are exactly 'ed25519:' plus 32 lowercase hex chars (§3.4).","target":"record","verdict":"invalid"}

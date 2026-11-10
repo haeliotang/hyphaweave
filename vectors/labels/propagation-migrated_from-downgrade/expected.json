@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":["E_LABEL_DOWNGRADE"],"id":"labels/propagation-migrated_from-downgrade","input":"container","notes":"Strictest-label propagation follows migrated_from; lowering the rank is E_LABEL_DOWNGRADE.","target":"container","verdict":"invalid"}

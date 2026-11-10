@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"actor","errors":[],"id":"actor/extra-human-signature-allowed","input":"record.json","notes":"An additional signature by a declared human key on a human record is allowed (§8.1).","target":"record","verdict":"valid"}

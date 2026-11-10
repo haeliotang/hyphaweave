@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"integrity-levels","errors":["E_MANIFEST_L2_NO_TIMESTAMP"],"id":"integrity-levels/l2-no-timestamp","input":"container","notes":"A manifest claiming L2 must list at least one RFC 3161 timestamp (§11.2, E_MANIFEST_L2_NO_TIMESTAMP); existing .tsr-like files are not allowed to be claimed implicitly.","target":"container","verdict":"invalid"}

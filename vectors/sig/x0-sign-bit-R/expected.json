@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_NONCANONICAL_R"],"id":"sig/x0-sign-bit-R","input":"record.json","notes":"Signature R is 01..80: y = 1 with x = 0 and the sign bit set, so R decoding fails. A decoder that omits the rule reads R as the identity and the crafted equation holds (spec §3.2).","target":"record","verdict":"invalid"}

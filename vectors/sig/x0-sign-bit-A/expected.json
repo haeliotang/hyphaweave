@@ -1,0 +1,1 @@
+{"category":"sig","errors":["E_SIG_NONCANONICAL_A"],"id":"sig/x0-sign-bit-A","input":"record.json","notes":"Public-key encoding 01..80: y = 1 but x = 0 and the RFC 8032 sign bit is 1, so decoding fails. Decoders that omit this rule read the identity and accept the crafted identity forgery, hence the full profile rejects it here (spec §3.2).","target":"record","verdict":"invalid"}

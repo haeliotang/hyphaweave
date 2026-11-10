@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_ROTATION_KEYS"],"id":"key-lifecycle/rotation-same-key","input":"record.json","notes":"A rotation must actually change the key; old_key == new_key is E_KEY_ROTATION_KEYS invalid (§7.2).","target":"record","verdict":"invalid"}

@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"labels","errors":[],"expected_container":{"level_claimed":"L0","level_verified":"L0","record_count":2},"id":"labels/propagation-equal","input":"container","notes":"Positive: a derived record at the same rank as its input is fine.","target":"container","verdict":"valid"}

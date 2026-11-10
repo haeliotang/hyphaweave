@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"erasure","errors":["E_ERASE_ATTESTATION"],"id":"erasure/attestation-missing","input":"container","notes":"A placeholder whose attestation reference resolves to nothing is E_ERASE_ATTESTATION (§7.8): an erasure claim without its attestation is not acceptable evidence.","target":"container","verdict":"invalid"}

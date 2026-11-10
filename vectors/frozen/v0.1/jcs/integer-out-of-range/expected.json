@@ -1,1 +1,0 @@
-{"category":"jcs","errors":["E_JSON_NUMBER_RANGE"],"id":"jcs/integer-out-of-range","input":"record.json","notes":"Integers above 2^53-1 are rejected by the range check (§2.6).","target":"record","verdict":"invalid"}

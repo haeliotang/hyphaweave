@@ -1,0 +1,83 @@
+{
+  "format": "weave-record-edge-points/1",
+  "note": "SYNTHETIC TEST MATERIAL - these public points are deliberately hostile/small-order/mixed-order and must never be used as real keys. Private crafting material exists only for mixed-order-a.",
+  "points": [
+    {
+      "class": "small-order",
+      "encoding": "0000000000000000000000000000000000000000000000000000000000000000",
+      "key_id": "ed25519:66687aadf862bd776c8fc18b8e9f8e20",
+      "name": "small-order-00",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "small-order",
+      "encoding": "0000000000000000000000000000000000000000000000000000000000000080",
+      "key_id": "ed25519:63794a3bf8875ac2c32ba6238d27e7e1",
+      "name": "small-order-01",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "small-order",
+      "encoding": "0100000000000000000000000000000000000000000000000000000000000000",
+      "key_id": "ed25519:01d0fabd251fcbbe2b93b4b927b26ad2",
+      "name": "small-order-02",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "small-order",
+      "encoding": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "key_id": "ed25519:0d34fd0d99957c53e4dc954ddaae5934",
+      "name": "small-order-03",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "small-order",
+      "encoding": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "key_id": "ed25519:5204010488ca3338ed6c56bb34a9e26c",
+      "name": "small-order-04",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "small-order",
+      "encoding": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "key_id": "ed25519:1381231a2021f331f1b9b69d2f5ff04a",
+      "name": "small-order-05",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "small-order",
+      "encoding": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "key_id": "ed25519:ea4d97c02b411d7bc6e52582295463fe",
+      "name": "small-order-06",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "small-order",
+      "encoding": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "key_id": "ed25519:ffe1ea08f3af443b5a2d6497c9b7c5a7",
+      "name": "small-order-07",
+      "note": "canonical encoding of a point whose order divides 8; 8*P == identity"
+    },
+    {
+      "class": "x0-sign-bit",
+      "encoding": "0100000000000000000000000000000000000000000000000000000000000080",
+      "key_id": "ed25519:05e33a7a25dc39ab258dacfea5a955d0",
+      "name": "x0-sign-bit",
+      "note": "y = 1 (identity) encoding with the RFC 8032 sign bit set: decoding must fail (x = 0 with sign bit 1)"
+    },
+    {
+      "class": "noncanonical",
+      "encoding": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "key_id": "ed25519:bd6174a7c16e1af07272966a9c071c8a",
+      "name": "noncanonical-y-p",
+      "note": "y = p encoding: y is not reduced modulo p, decoding must fail"
+    },
+    {
+      "class": "mixed-order",
+      "encoding": "95bdb6042e891155f3f55a3336f7d8b08fd2b5d61bfb79bf59f662bb36c3a288",
+      "key_id": "ed25519:54a1a2759b77ab093fcf0dad8f740c36",
+      "name": "mixed-order-a",
+      "note": "public key A = [a]B + T with T of order 8 and a = edcraft.private_scalar(sha256('weave-record/1/test-key/mixed-order-a')); cofactorless-valid signatures exist via edcraft.mixed_order_key_and_signature(seed, message)"
+    }
+  ]
+}

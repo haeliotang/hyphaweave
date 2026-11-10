@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_S_OUT_OF_RANGE"],"id":"sig/S-equals-L","input":"record.json","notes":"S = L is not a canonical scalar; the S range check runs before any point decoding (spec §3.4).","target":"record","verdict":"invalid"}

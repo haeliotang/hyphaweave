@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"stage","errors":[],"id":"stage/superseded-signed","input":"record.json","notes":"superseded is a closed-vocabulary stage; signatures are optional but allowed.","target":"record","verdict":"valid"}

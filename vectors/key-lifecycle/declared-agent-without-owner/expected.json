@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_OWNER_MISSING"],"id":"key-lifecycle/declared-agent-without-owner","input":"record.json","notes":"An agent key declaration without body.owner is E_KEY_OWNER_MISSING (Q33/S4): automated keys must be bound to an owning human/organization.","target":"record","verdict":"invalid"}

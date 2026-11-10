@@ -1,1 +1,0 @@
-{"category":"stage","errors":["E_ENV_FORMAT"],"id":"stage/bad-format","input":"record.json","notes":"format must be exactly weave-record/1.","target":"record","verdict":"invalid"}

@@ -34,4 +34,6 @@ Notes on the stricter-profile mapping (details in each `PROVENANCE.md`):
   (`E_JSON_NUMBER_NOT_INTEGER`), because the format only represents integers.
 - RFC 8032 §7.1: all five Ed25519 vectors must verify.
 - Wycheproof Ed25519: `valid` → accept, `invalid` → reject, `acceptable` → **reject**
-  (stricter, documented Q1 choice).
+  (decided profile Q1, Inceptless decision 2026-11-10 #34: both the small-order and
+  the mixed-order public keys are rejected, so all 29 `acceptable` vectors are
+  rejected; 117 accept / 93 reject / 210 total).

@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"ref","errors":[],"expected_resolution":["missing"],"id":"ref/missing","input":"record.json","notes":"An unresolved reference is reported per ref and does not by itself invalidate the record (§6).","notices":["N_REF_MISSING"],"target":"record","verdict":"valid"}

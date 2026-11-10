@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_REVOKED"],"id":"grant/revoked-boundary-equal","input":"container","notes":"Equality belongs to revocation (Q11/M-2): a record whose recorded_at equals the revocation's effective_at is already revoked, so it is unverifiable E_GRANT_REVOKED.","target":"container","verdict":"unverifiable"}

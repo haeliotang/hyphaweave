@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_EXPIRED"],"id":"grant/parent-expired","input":"container","notes":"The parent grant expired at T3 and the sub-grant is recorded at T4: the delegating authority is outside its validity window (unverifiable E_GRANT_EXPIRED).","target":"container","verdict":"unverifiable"}

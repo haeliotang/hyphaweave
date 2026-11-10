@@ -1,1 +1,0 @@
-{"category":"container","errors":["E_MANIFEST_BLOB"],"id":"container/blobs-mismatch","input":"container","notes":"blobs/sha256/<hex> content must hash to the manifest.blobs entry and match its size (§11.5); the bytes are altered after the manifest is sealed.","target":"container","verdict":"invalid"}

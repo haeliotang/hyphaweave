@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"erasure","errors":["E_ERASE_ACTOR"],"id":"erasure/actor-program-basis-lacks-erase","input":"container","notes":"A program/device erasure is only authorised when body.basis resolves to a grant that allows the erase action; a basis grant without 'erase' is E_ERASE_ACTOR invalid.","target":"container","verdict":"invalid"}

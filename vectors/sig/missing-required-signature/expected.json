@@ -1,1 +1,1 @@
-{"category":"sig","errors":["E_SIG_REQUIRED"],"id":"sig/missing-required-signature","input":"record.json","notes":"An accepted record must carry a valid per-record signature (§5.3).","target":"record","verdict":"invalid"}
+{"category":"sig","errors":["E_SIG_REQUIRED"],"id":"sig/missing-required-signature","input":"record.json","notes":"An accepted record must carry a valid per-record signature (§4.4).","target":"record","verdict":"invalid"}

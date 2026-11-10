@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":["E_LABEL_DOWNGRADE"],"id":"labels/propagation-reshaped_from-downgrade","input":"container","notes":"Strictest-label propagation follows reshaped_from as well as derived_from; lowering the rank is E_LABEL_DOWNGRADE (spec §8.4).","target":"container","verdict":"invalid"}

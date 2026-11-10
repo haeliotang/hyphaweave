@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_DELEGATION_EXCEEDS"],"id":"grant/sub-grant-window-starts-before-parent","input":"container","notes":"The sub-grant starts before the parent grant: its validity window must be inside the parent's (E_GRANT_DELEGATION_EXCEEDS, S3).","target":"container","verdict":"invalid"}

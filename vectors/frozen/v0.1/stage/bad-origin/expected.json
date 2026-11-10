@@ -1,1 +1,0 @@
-{"category":"stage","errors":["E_ENV_ORIGIN"],"id":"stage/bad-origin","input":"record.json","notes":"The origin project is a lowercase slug (§5).","target":"record","verdict":"invalid"}

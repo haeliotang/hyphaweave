@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"digest","errors":[],"expected_digest":"sha256:cba2e2a5c6dce8bf64f030a6f1c6819ce223d0236a3c11871bae6eb65ef3d0b5","id":"digest/record-unicode","input":"record.json","notes":"Digest over non-ASCII literal UTF-8 and nested values.","target":"record","verdict":"valid"}

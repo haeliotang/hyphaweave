@@ -1,1 +1,1 @@
-{"category":"stage","errors":["E_ENV_STAGE"],"id":"stage/invalid-stage-value","input":"record.json","notes":"stage uses the closed vocabulary of §5.","target":"record","verdict":"invalid"}
+{"category":"stage","errors":["E_ENV_STAGE"],"id":"stage/invalid-stage-value","input":"record.json","notes":"stage uses the closed vocabulary of §4.","target":"record","verdict":"invalid"}

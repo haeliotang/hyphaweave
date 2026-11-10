@@ -1,1 +1,0 @@
-{"category":"sig","errors":["E_SIG_NONCANONICAL_A"],"id":"sig/noncanonical-public-key","input":"record.json","notes":"A declared public key whose encoding is y >= p is rejected with E_SIG_NONCANONICAL_A (§4.2). The declaration record is the target so that its own body supplies the key being validated.","target":"record","verdict":"invalid"}

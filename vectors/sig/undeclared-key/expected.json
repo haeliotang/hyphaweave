@@ -1,1 +1,1 @@
-{"category":"sig","errors":["E_KEY_UNKNOWN"],"id":"sig/undeclared-key","input":"record.json","notes":"A key with no weave.key.declared anywhere in context is unverifiable (§10.2), not invalid.","target":"record","verdict":"unverifiable"}
+{"category":"sig","errors":["E_KEY_UNKNOWN"],"id":"sig/undeclared-key","input":"record.json","notes":"A key with no weave.key.declared anywhere in context is unverifiable (§5.3), not invalid.","target":"record","verdict":"unverifiable"}

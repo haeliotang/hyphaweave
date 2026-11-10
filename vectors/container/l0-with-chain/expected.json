@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_LEVEL"],"id":"container/l0-with-chain","input":"container","notes":"A manifest claiming L0 with a non-null chain head: L0 is the level without an internal chain claim, so this level/contents contradiction is E_MANIFEST_LEVEL.","target":"container","verdict":"invalid"}

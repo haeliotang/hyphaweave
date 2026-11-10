@@ -1,1 +1,1 @@
-{"category":"jcs","errors":["E_JSON_INVALID"],"id":"jcs/byte-order-mark","input":"record.json","notes":"A UTF-8 BOM is rejected as invalid JSON input (§2.2).","target":"record","verdict":"invalid"}
+{"category":"jcs","errors":["E_JSON_INVALID"],"id":"jcs/byte-order-mark","input":"record.json","notes":"A UTF-8 BOM is rejected as invalid JSON input (§1.2).","target":"record","verdict":"invalid"}

@@ -1,132 +1,107 @@
 <!-- SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com> -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# L2 integrity-level vectors: local RFC 3161 test TSA
+# L2 integrity-level vectors: local, deterministic RFC 3161 test TSA
 
-This directory contains the `integrity-levels` conformance cases (L0/L1/L2). The L2
-cases use a **local, test-only RFC 3161 timestamp authority**: the RSA-2048 key and
-self-signed certificate under `vectors/keys/tsa/`. Nothing here is a real TSA and
-nothing here is trusted by anything outside these vectors.
+This directory contains the `integrity-levels` conformance cases (L0/L1/L2) and the L2
+timestamp-profile negative vectors. Every timestamp reply is crafted by
+`tools/gen_vectors_extra.py` from the **local, test-only** RSA-2048 TSA key under
+`vectors/keys/tsa/`. Nothing here is a real timestamp authority and nothing here is trusted
+by anything outside these vectors.
 
-## Test TSA material (owned by the test-key inventory, frozen)
+## Test TSA material (deliberately published test material)
 
 | File | Purpose |
 |---|---|
-| `vectors/keys/tsa/tsa.key.pem` | RSA-2048 private key, deliberately published test material |
-| `vectors/keys/tsa/tsa.crt.pem` | self-signed certificate, CN `Hyphaweave H0 test TSA (test only)`, validity 2026-01-01 → 2126-01-01, critical `timeStamping` EKU and `digitalSignature` key usage |
-| `vectors/keys/tsa/tsa.cnf` | `openssl ts` configuration used to sign replies |
-| `vectors/keys/tsa/serial.txt` | starting serial number for that configuration |
+| `vectors/keys/tsa/tsa.key.pem` | RSA-2048 private key, publicly published test material |
+| `vectors/keys/tsa/tsa.crt.pem` | self-signed certificate (the normal signer/anchor), CN `Hyphaweave H0 test TSA (test only)`, validity 2026-01-01 → 2126-01-01, critical `timeStamping` EKU and `digitalSignature` key usage |
+| `vectors/keys/tsa/tsa.cnf`, `vectors/keys/tsa/serial.txt` | kept from v0.1 for reference; the revision-1 generator does not use OpenSSL |
 
-Certificate fingerprint (SHA-256 of the DER certificate, the value a verifier uses
-for the `--tsa-trust` anchor comparison):
+Certificate fingerprint (SHA-256 of the DER certificate; this is what a verifier compares
+against for a `--tsa-trust` anchor):
 
 ```
 2cd592e2ecd4c9f3ba4271eeeb446e7d1248704d3cd65cd8d033b2cf2c64300c
 ```
 
-## What the `.tsr` files are
+## How the `.tsr` files are generated (deterministic, no OpenSSL)
 
-Each committed `container/signatures/timestamp-1.tsr` is a DER-encoded
-`TimeStampResp` with a `granted` token whose `TSTInfo.messageImprint` is
-`{hashAlgorithm: sha256, hashedMessage: <raw 32-byte manifest digest>}`, signed by
-the test TSA certificate. The manifest digest is the §3.3 construction:
+Each `container/signatures/timestamp-N.tsr` is a DER `TimeStampResp` built with
+`asn1crypto` and signed by the test TSA key with RSA PKCS#1 v1.5 / SHA-256. The construction
+is fully deterministic:
 
+- fixed `genTime` **2026-11-01T00:00:00.000Z** for every crafted token (a claimed external
+  time, recorded in the token; it does not come from the wall clock);
+- fixed CMS `signingTime` **2026-11-10T09:52:40Z**, fixed serial numbers, fixed nonce-free
+  minimal `TSTInfo`, fixed certificate hashes;
+- `signerInfo.digestAlgorithm = sha256`, `signatureAlgorithm = rsaEncryption` (RSA PKCS#1
+  v1.5), ESS `signingCertificateV2` over the signer certificate, `messageDigest` over the
+  TSTInfo DER;
+- exactly one signer certificate is carried inside the token's `certificates` set.
+
+Because PKCS#1 v1.5 signatures and certificates are deterministic, re-running
+`tools/gen_vectors_extra.py` reproduces the committed `.tsr` bytes exactly:
+`--check` verifies this byte-for-byte. **No wall clock, no OpenSSL, no network and no
+absolute path influence the timestamp bytes**, and verification of these committed vectors
+needs nothing but the repository.
+
+Regenerate and verify:
+
+```bash
+./.venv/bin/python tools/gen_vectors_extra.py --only integrity-levels
+./.venv/bin/python tools/gen_vectors_extra.py --check
 ```
-sha256( "weave-record/1/manifest-digest\n" || <canonical manifest bytes without the
-        optional trailing LF> )
-```
 
-The `.tsr` files are committed fixtures. They are **not** byte-reproducible (the
-token embeds generation time, serial number and nonce), so a normal regeneration
-reuses them and `tools/gen_vectors_extra.py --check` stays byte-stable. Only
-`--bootstrap` creates missing fixtures.
+## Timestamp verification profile exercised by these vectors
 
-## Fixtures and why each exists
+The spec's RFC 3161 archive profile is exercised one defect at a time, with the exact
+expected code handwritten in `expected.json`:
 
-| Case | Imprint | Why |
+| Case | Crafted variation | Expected |
 |---|---|---|
-| `integrity-levels/l2-valid` | the manifest digest | positive L2: verified with `--tsa-trust tsa.crt.pem` |
-| `integrity-levels/l2-without-trust` | the manifest digest | same shape, no trust anchor: must be `unverifiable` `E_TS_UNTRUSTED`, never `valid` |
-| `integrity-levels/l2-imprint-mismatch` | `sha256("wrong imprint")` | token is genuine but signs another document: `E_TS_IMPRINT` |
-| `integrity-levels/l2-ts-file-digest` | the manifest digest | the sig file lists a wrong digest for the file: `E_TS_FILE` |
-| `integrity-levels/l0-with-timestamp` | `sha256("l0-with-timestamp fixture")` | an L0 claim that carries a timestamp: `E_MANIFEST_LEVEL` |
-| `key-lifecycle/compromise-rescued-by-timestamp` | the manifest digest | the L2 timestamp must prove the record existed before a `key-compromise` `effective_at`; `effective_at` is set to 2026-12-01, after the fixture's `genTime` (2026-11-10) and before the record's claimed `recorded_at` (2027-01-01). Regenerating that fixture **after** the `effective_at` would make the rescue case fail; keep the committed bytes. |
+| `l2-valid` | valid token over the raw 32-byte manifest digest, anchor supplied | valid, `anchor_verified: true` |
+| `l2-without-trust` | same token, no `--tsa-trust` | unverifiable `E_TS_UNTRUSTED` |
+| `l2-imprint-mismatch` | imprint over another document | invalid `E_TS_IMPRINT` |
+| `l2-ts-file-digest` | sig file lists a digest the `.tsr` does not have | invalid `E_TS_FILE` |
+| `l2-cms-tampered` | one bit flipped in the CMS signature | invalid `E_TS_CMS` |
+| `l2-ess-v1-only` | legacy ESS `signingCertificate` (SHA-1) instead of v2 | invalid `E_TS_CMS` |
+| `l2-ess-missing` | no ESS signing-certificate attribute | invalid `E_TS_CMS` |
+| `l2-message-digest-wrong` | signed `messageDigest` does not match the TSTInfo | invalid `E_TS_CMS` |
+| `l2-cert-not-in-token` | signer certificate omitted from the token | invalid `E_TS_CMS` |
+| `l2-eku-missing` | crafted signer certificate without `timeStamping` EKU | invalid `E_TS_CERT` |
+| `l2-cert-expired` | crafted signer certificate valid 2020–2021 only | invalid `E_TS_CERT` |
+| `l2-digest-alg-unsupported` | `messageImprint.hashAlgorithm` is sha1 | invalid `E_TS_SCHEMA` |
+| `l2-status-not-granted` | `PKIStatusInfo.status = grantedWithMods` | invalid `E_TS_SCHEMA` |
+| `l2-anchor-mismatch` | `--tsa-trust` points at a different certificate | unverifiable `E_TS_UNTRUSTED` |
+| `l2-renewal-chain-valid` | reply 2 imprints `SHA-256(reply-1 bytes \|\| manifest digest)` and `renews` reply 1 | valid, `anchor_verified: true` |
+| `l2-renewal-broken` | `renews` points at an unlisted reply | invalid `E_TS_RENEWAL` |
+| `l2-renewal-imprint-mismatch` | reply 2 imprints only the previous `.tsr` bytes | invalid `E_TS_IMPRINT` |
+| `l0-with-timestamp` | L0 manifest carrying a timestamp | invalid `E_MANIFEST_LEVEL` |
 
-## Requirements for regeneration
+The `eku-missing`/`expired` cases write the crafted certificate into the case directory as
+`tsa-crafted.pem` and pass it via `--tsa-trust`, so the failing check is the certificate
+profile, not the anchor-fingerprint comparison.
 
-**Normal use needs no OpenSSL at all.** The committed `.tsr` fixtures are reused,
-so `tools/gen_vectors_extra.py` (write) and `--check` are pure Python and do not
-invoke OpenSSL. Only creating a *new* fixture (`--bootstrap`, or deliberately
-re-creating one) needs an **OpenSSL 3.x binary that includes the `ts` command**
-(`openssl ts`; LibreSSL, the macOS system `openssl`, does not have it).
+Case files for the crafted certificates are deterministic too: serial numbers, subject
+names, validity windows, extensions and the self-signature are fixed constants.
 
-Resolution order in `tools/gen_vectors_extra.py`: the `OPENSSL` environment
-variable, else `/opt/homebrew/opt/openssl@3/bin/openssl` when it exists (macOS
-development default), else `openssl` from `PATH` (Linux/CI, e.g. Ubuntu's
-OpenSSL 3). Check the tool first:
+## Renewal chain representation
 
-```bash
-OPENSSL="${OPENSSL:-$(command -v openssl)}"
-"$OPENSSL" version          # must print OpenSSL 3.x, not LibreSSL
-"$OPENSSL" ts -help >/dev/null 2>&1 && echo "ts available"
+`signatures/manifest.sig.json`'s `timestamps[]` entries are `{path, digest, renews}` sorted
+by path and form a single chain: exactly one `renews: null` head, every other entry points
+at the previous reply of the chain. The imprint of a renewal reply is
+
+```
+SHA-256(previous reply .tsr file bytes || raw 32-byte manifest digest)
 ```
 
-On macOS with Homebrew: `export OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl`.
-On a Debian/Ubuntu CI image, plain `openssl` (3.x) is normally sufficient.
+while the chain head imprints the raw manifest digest itself (spec §12.4). The renewal
+battery above covers the valid chain as well as a broken link and a wrong renewal imprint.
 
-## Regeneration (only when fixtures are intentionally re-created)
+## Report expectations
 
-The commands below are portable: they run from a clean checkout with any
-OpenSSL 3.x that has `ts` (`OPENSSL=/path/to/openssl` may be set first; the
-examples use `$OPENSSL`). From the repository root:
-
-```bash
-: "${OPENSSL:=/opt/homebrew/opt/openssl@3/bin/openssl}"   # or e.g. "$(command -v openssl)"
-work=.tmp-work/tsa-regen
-rm -rf "$work" && mkdir -p "$work"
-cp vectors/keys/tsa/tsa.cnf vectors/keys/tsa/tsa.crt.pem vectors/keys/tsa/tsa.key.pem "$work"/
-printf '01\n' > "$work/serial.txt"
-cd "$work"
-
-# 1. The raw 32-byte manifest digest, hex without the "sha256:" prefix.
-#    Example for integrity-levels/l2-valid (replace <IMPRINT-HEX> with the actual
-#    value computed from that case's container/manifest.json):
-IMPRINT_HEX=<IMPRINT-HEX>
-
-# 2. RFC 3161 query for that message imprint and a signed reply (DER TimeStampResp).
-"$OPENSSL" ts -query -digest "$IMPRINT_HEX" -sha256 -cert -out query.tsq
-"$OPENSSL" ts -reply -config tsa.cnf -section tsa_config1 \
-    -queryfile query.tsq -out response.tsr
-
-# 3. Copy the reply over the committed fixture, then verify the case again.
-cp response.tsr ../../vectors/integrity-levels/l2-valid/container/signatures/timestamp-1.tsr
-```
-
-The routine path is instead:
-
-```bash
-./.venv/bin/python tools/gen_vectors_extra.py --bootstrap   # only if a .tsr is missing
-./.venv/bin/python tools/gen_vectors_extra.py --check       # byte-stable verification
-```
-
-## How the verifier is expected to use these cases
-
-- Record-level cases use `--keys @keyset`.
-- L2 positive/mismatch cases expect the argument token resolution rule of
-  CONTRACT §16.2: `tsa.crt.pem` is a path relative to the **case directory**, and
-  each L2 case directory contains a copy of the test TSA certificate
-  (`DER SHA-256 = 2cd5…300c`).
-- The trust anchor is supplied only through `--tsa-trust`; without it the timestamp
-  is `present-unverified` and the container verdict MUST be `unverifiable`
-  (`E_TS_UNTRUSTED`). A verifier must not claim L2 merely because `.tsr` files exist.
-- L1 cases must report `chain.status = "unverified"`, `level_verified = "L0"` and the
-  notice `N_CHAIN_CLAIM_UNVERIFIED`: an offline verifier cannot recompute an
-  exported internal hash chain.
-
-## Digest/byte note for manual verification
-
-Every digested/signed JSON file in these cases is WR-CJ canonical bytes **plus
-exactly one trailing LF**, and every digest/signature is computed over the
-canonical bytes **without** that trailing LF (CONTRACT §2.8). When verifying by
-hand, strip at most one final `0x0a` before hashing or signing — do not strip all
-trailing whitespace and do not re-serialize the JSON.
+For a claimed L2 container the report carries `level_claimed: "L2"`,
+`level_verified: "L0"` (an offline verifier never claims the internal hash chain) and
+`anchor_verified: true` only when the whole timestamp chain verifies with at least one
+matching anchor; otherwise `anchor_verified` is `false` and the container is at best
+`unverifiable`. The `expected_container` blocks of these cases assert exactly that.

@@ -1,1 +1,1 @@
-{"category":"stage","errors":["E_ENV_ID"],"id":"stage/bad-id","input":"record.json","notes":"ids may not have leading/trailing spaces or control characters (§5).","target":"record","verdict":"invalid"}
+{"category":"stage","errors":["E_ENV_ID"],"id":"stage/bad-id","input":"record.json","notes":"ids may not have leading/trailing spaces or control characters (§4).","target":"record","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_INVALID"],"id":"sig/manifest-prefix-in-record","input":"record.json","notes":"Cross-purpose domain separation, record direction: a signature made with the manifest domain prefix must not verify as a record signature (spec §2.1, §2.3).","target":"record","verdict":"invalid"}

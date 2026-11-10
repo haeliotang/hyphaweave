@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_REVOKE_SIGNER"],"id":"key-lifecycle/revoke-signer-unqualified","input":"record.json","notes":"A key-compromise revocation requires a human or organization signature; a program-key signature is E_KEY_REVOKE_SIGNER invalid.","target":"record","verdict":"invalid"}

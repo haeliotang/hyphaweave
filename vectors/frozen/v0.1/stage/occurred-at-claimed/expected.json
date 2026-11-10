@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"stage","errors":[],"id":"stage/occurred-at-claimed","input":"record.json","notes":"occurred_at is a claim with no ordering rule against recorded_at (§5).","target":"record","verdict":"valid"}

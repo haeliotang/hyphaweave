@@ -1,1 +1,1 @@
-{"category":"labels","errors":["E_ENV_SALT"],"id":"labels/salt-nonzero-trailing-bits","input":"record.json","notes":"A salt whose base64url encoding has non-zero unused trailing bits is not canonical (§3.5).","target":"record","verdict":"invalid"}
+{"category":"labels","errors":["E_ENV_SALT"],"id":"labels/salt-nonzero-trailing-bits","input":"record.json","notes":"A salt whose base64url encoding has non-zero unused trailing bits is not canonical (§2.6).","target":"record","verdict":"invalid"}

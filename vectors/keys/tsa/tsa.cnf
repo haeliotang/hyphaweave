@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Local RFC 3161 test TSA configuration (OpenSSL `openssl ts`).
-# Used only to generate the committed test timestamp replies under
-# vectors/keys/tsa/fixtures/; never a real timestamp authority.
+# Never a real timestamp authority.
 [ tsa ]
 default_tsa = tsa_config1
 

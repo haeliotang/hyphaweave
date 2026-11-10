@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"stage","errors":[],"id":"stage/accepted-signed","input":"record.json","notes":"Accepted records are signed per-record; this one verifies.","target":"record","verdict":"valid"}

@@ -1,1 +1,1 @@
-{"category":"labels","errors":["E_ENV_LABELS"],"id":"labels/unknown-label-member","input":"record.json","notes":"labels is a closed object (§9).","target":"record","verdict":"invalid"}
+{"category":"labels","errors":["E_ENV_LABELS"],"id":"labels/unknown-label-member","input":"record.json","notes":"labels is a closed object (§8).","target":"record","verdict":"invalid"}

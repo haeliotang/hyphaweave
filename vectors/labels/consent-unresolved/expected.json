@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/consent-unresolved","input":"record.json","notes":"An unresolvable consent reference is a notice, not an invalid record (§9).","notices":["N_CONSENT_UNRESOLVED"],"target":"record","verdict":"valid"}
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/consent-unresolved","input":"record.json","notes":"An unresolvable consent reference is a notice, not an invalid record (§8).","notices":["N_CONSENT_UNRESOLVED"],"target":"record","verdict":"valid"}

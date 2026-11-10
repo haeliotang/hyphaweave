@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_S_OUT_OF_RANGE"],"id":"sig/S-L-plus-1","input":"record.json","notes":"S = L + 1 is out of range; the boundary is S < L (spec §3.4).","target":"record","verdict":"invalid"}

@@ -1,1 +1,0 @@
-{"category":"actor","errors":["E_ENV_ACTOR_TYPE"],"id":"actor/invalid-actor-type","input":"record.json","notes":"actor.type uses the closed vocabulary (§5.1).","target":"record","verdict":"invalid"}

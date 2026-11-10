@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_INVALID"],"id":"jcs/plus-one-sign","input":"record.json","notes":"'(+1)' was intended as a number but is not JSON number syntax: a syntax error, not a numeric-range error (spec §1.9).","target":"record","verdict":"invalid"}

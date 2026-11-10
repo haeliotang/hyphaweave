@@ -1,1 +1,1 @@
-{"category":"actor","errors":["E_ENV_ACTOR_ON_BEHALF"],"id":"actor/agent-bad-on-behalf","input":"record.json","notes":"on_behalf_of must be a key id (§5.1).","target":"record","verdict":"invalid"}
+{"category":"actor","errors":["E_ENV_ACTOR_ON_BEHALF"],"id":"actor/agent-bad-on-behalf","input":"record.json","notes":"on_behalf_of must be a key id (§4.2).","target":"record","verdict":"invalid"}

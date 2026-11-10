@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"actor","errors":[],"id":"actor/device-valid","input":"record.json","notes":"device actors have no extra actor members (§5.1).","target":"record","verdict":"valid"}
+{"args":["--keys","@keyset"],"category":"actor","errors":[],"id":"actor/device-valid","input":"record.json","notes":"device actors have no extra actor members (§4.2).","target":"record","verdict":"valid"}

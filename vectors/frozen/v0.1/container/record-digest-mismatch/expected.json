@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"container","errors":["E_MANIFEST_RECORD_DIGEST"],"id":"container/record-digest-mismatch","input":"container","notes":"The records/ file content no longer hashes to its filename/manifest digest (§11.5).","target":"container","verdict":"invalid"}

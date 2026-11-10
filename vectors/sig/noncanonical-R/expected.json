@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_NONCANONICAL_R"],"id":"sig/noncanonical-R","input":"record.json","notes":"R encodes y = p (>= p): a non-canonical encoding is rejected (§4.2).","target":"record","verdict":"invalid"}
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_NONCANONICAL_R"],"id":"sig/noncanonical-R","input":"record.json","notes":"Signature R has y = p (>= p), which is not a valid point encoding (spec §3.2).","target":"record","verdict":"invalid"}

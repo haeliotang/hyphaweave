@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"ref","errors":[],"expected_container":{"level_claimed":"L0","level_verified":"L0","record_count":2},"id":"ref/found","input":"container","notes":"A reference whose origin+id+digest resolve to a valid record is 'found'.","target":"container","verdict":"valid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_DECLARED_NOT_COSIGNED"],"id":"key-lifecycle/declared-agent-not-cosigned","input":"record.json","notes":"An agent key declaration names an owner but carries only the self signature: the owner's cosignature is mandatory (E_KEY_DECLARED_NOT_COSIGNED, Q33/S4).","target":"record","verdict":"invalid"}

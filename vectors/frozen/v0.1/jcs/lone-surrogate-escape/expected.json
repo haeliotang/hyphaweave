@@ -1,1 +1,0 @@
-{"category":"jcs","errors":["E_JSON_LONE_SURROGATE"],"id":"jcs/lone-surrogate-escape","input":"record.json","notes":"A lone surrogate escape is not a Unicode scalar value (§2.2).","target":"record","verdict":"invalid"}

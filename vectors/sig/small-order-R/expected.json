@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_SMALL_ORDER_R"],"id":"sig/small-order-R","input":"record.json","notes":"R is the identity-point encoding: small-order R must be rejected (§4.3).","target":"record","verdict":"invalid"}

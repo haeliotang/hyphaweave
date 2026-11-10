@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":["E_CONSENT_REVOKED"],"id":"labels/consent-revoked-referenced","input":"container","notes":"A record whose claimed recorded_at is at or after a consent revocation's effective_at and which still cites that consent is invalid with E_CONSENT_REVOKED (spec §8.6).","target":"container","verdict":"invalid"}

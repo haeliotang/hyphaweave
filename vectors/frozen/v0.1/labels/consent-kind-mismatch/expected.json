@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"labels","errors":["E_REF_KIND_MISMATCH"],"id":"labels/consent-kind-mismatch","input":"container","notes":"labels.consent must resolve to a weave.consent.* record; resolving to another kind is E_REF_KIND_MISMATCH (§9).","target":"container","verdict":"invalid"}

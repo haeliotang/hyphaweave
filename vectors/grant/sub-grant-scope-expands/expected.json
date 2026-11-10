@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_DELEGATION_EXCEEDS"],"id":"grant/sub-grant-scope-expands","input":"container","notes":"The sub-grant names a scope outside the parent's scope list; scope is compared as a string set for delegation purposes (E_GRANT_DELEGATION_EXCEEDS).","target":"container","verdict":"invalid"}

@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"key-lifecycle","errors":["E_KEY_EXPIRED"],"id":"key-lifecycle/sign-before-valid-from","input":"container","notes":"M-4/Q20: a signature made before the declared valid_from is E_KEY_EXPIRED invalid, symmetric with valid_until.","target":"container","verdict":"invalid"}

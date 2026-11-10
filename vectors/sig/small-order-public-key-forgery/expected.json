@@ -1,1 +1,0 @@
-{"category":"sig","errors":["E_SIG_SMALL_ORDER_A"],"id":"sig/small-order-public-key-forgery","input":"record.json","notes":"Identity-key forgery (small-order A) must be rejected (§4.3).","target":"record","verdict":"invalid"}

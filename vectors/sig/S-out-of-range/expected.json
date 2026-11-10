@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_S_OUT_OF_RANGE"],"id":"sig/S-out-of-range","input":"record.json","notes":"S >= L is rejected before the equation check (§4.3).","target":"record","verdict":"invalid"}

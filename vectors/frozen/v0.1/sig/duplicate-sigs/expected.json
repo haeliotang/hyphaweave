@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_ENV_SIGS"],"id":"sig/duplicate-sigs","input":"record.json","notes":"The same signing key may appear only once in sigs (§5.2).","target":"record","verdict":"invalid"}

@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_ENV_SIG_VALUE"],"id":"sig/standard-base64-alphabet","input":"record.json","notes":"'+' and '/' are not in the base64url alphabet (§3.5).","target":"record","verdict":"invalid"}
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_ENV_SIG_VALUE"],"id":"sig/standard-base64-alphabet","input":"record.json","notes":"'+' and '/' are not in the base64url alphabet (§2.6).","target":"record","verdict":"invalid"}

@@ -1,1 +1,0 @@
-{"category":"container","errors":["E_MANIFEST_SIG_INVALID"],"id":"container/manifest-sig-invalid","input":"container","notes":"A genuine manifest signature with one raw byte flipped must fail E_MANIFEST_SIG_INVALID (§3.3/§11.3).","target":"container","verdict":"invalid"}

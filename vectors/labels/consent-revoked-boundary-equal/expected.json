@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":["E_CONSENT_REVOKED"],"id":"labels/consent-revoked-boundary-equal","input":"container","notes":"Boundary: recorded_at == effective_at counts as revoked (the revocation test is >=, spec: consent revocation).","target":"container","verdict":"invalid"}

@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"erasure","errors":["E_SIG_REQUIRED"],"id":"erasure/unsigned","input":"record.json","notes":"A weave.erasure record MUST be per-record signed (§5.3); without sigs it is E_SIG_REQUIRED before any body/ref check.","target":"record","verdict":"invalid"}
+{"args":["--keys","@keyset"],"category":"erasure","errors":["E_SIG_REQUIRED"],"id":"erasure/unsigned","input":"record.json","notes":"A weave.erasure record MUST be per-record signed (§4.4); without sigs it is E_SIG_REQUIRED before any body/ref check.","target":"record","verdict":"invalid"}

@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_INVALID"],"id":"sig/signed-field-order","input":"record.json","notes":"Signing the record serialization instead of the digest is invalid (§3.2).","target":"record","verdict":"invalid"}
+{"args":["--keys","@keyset"],"category":"sig","errors":["E_SIG_INVALID"],"id":"sig/signed-field-order","input":"record.json","notes":"Signing the record serialization instead of the digest is invalid (§2.3).","target":"record","verdict":"invalid"}

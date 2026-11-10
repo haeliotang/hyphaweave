@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_REVOKE_SIGNER"],"id":"grant/revocation-unlisted-human","input":"container","notes":"No longer may any human key revoke any grant (M-5): the revocation is signed by an unlisted key that is neither the granter nor its rotation successor, so it is E_GRANT_REVOKE_SIGNER.","target":"container","verdict":"invalid"}

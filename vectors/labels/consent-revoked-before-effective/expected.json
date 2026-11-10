@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/consent-revoked-before-effective","input":"container","notes":"Boundary: a record recorded strictly before the revocation's effective_at is unaffected (recorded_at < effective_at).","target":"container","verdict":"valid"}

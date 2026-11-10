@@ -1,1 +1,1 @@
-{"category":"actor","errors":["E_ENV_ACTOR_IDEMPOTENCY"],"id":"actor/agent-bad-idempotency","input":"record.json","notes":"idempotency_key may not contain control characters (§5.1).","target":"record","verdict":"invalid"}
+{"category":"actor","errors":["E_ENV_ACTOR_IDEMPOTENCY"],"id":"actor/agent-bad-idempotency","input":"record.json","notes":"idempotency_key may not contain control characters (§4.2).","target":"record","verdict":"invalid"}

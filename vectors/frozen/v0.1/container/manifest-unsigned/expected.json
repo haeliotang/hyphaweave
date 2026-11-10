@@ -1,1 +1,0 @@
-{"category":"container","errors":["E_MANIFEST_UNSIGNED"],"id":"container/manifest-unsigned","input":"container","notes":"manifest attestation lists no signatures: a manifest MUST be signed (§11.3, I2); digest is correct and the container is otherwise sound.","target":"container","verdict":"invalid"}

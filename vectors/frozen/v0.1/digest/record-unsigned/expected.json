@@ -1,1 +1,0 @@
-{"category":"digest","errors":[],"expected_digest":"sha256:468a0e13fb616cb137001d8ddf24203812193402c101bf1ac8e214415be9dd62","id":"digest/record-unsigned","input":"record.json","notes":"Record digest is sha256 over the canonical record; checked against report.records[0].digest.","target":"record","verdict":"valid"}

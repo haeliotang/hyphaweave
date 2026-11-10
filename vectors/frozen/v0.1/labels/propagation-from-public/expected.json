@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"labels","errors":[],"expected_container":{"level_claimed":"L0","level_verified":"L0","record_count":2},"id":"labels/propagation-from-public","input":"container","notes":"Positive: a public input does not force labels on the derived record.","target":"container","verdict":"valid"}

@@ -1,1 +1,1 @@
-{"args":["--keys","@keyset"],"category":"actor","errors":["E_ACTOR_HUMAN_KEY"],"id":"actor/program-human-signature","input":"record.json","notes":"program/device records may not be signed by a human-class key (§8.2).","target":"record","verdict":"invalid"}
+{"args":["--keys","@keyset"],"category":"actor","errors":["E_ACTOR_HUMAN_KEY"],"id":"actor/program-human-signature","input":"record.json","notes":"program/device records may not be signed by a human-class key (§5.2).","target":"record","verdict":"invalid"}

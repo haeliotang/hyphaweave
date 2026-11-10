@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_INVALID"],"id":"jcs/dot-five","input":"record.json","notes":"'.5' is not JSON number syntax: a syntax error, not a number-not-integer error.","target":"record","verdict":"invalid"}

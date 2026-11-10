@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"jcs","errors":[],"id":"jcs/surrogate-pair-literal","input":"record.json","notes":"A valid surrogate pair escapes a non-BMP scalar; canonical output is literal UTF-8.","target":"record","verdict":"valid"}

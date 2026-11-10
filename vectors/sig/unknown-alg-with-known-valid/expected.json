@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"sig","errors":[],"id":"sig/unknown-alg-with-known-valid","input":"record.json","notes":"Q13: the unknown-algorithm entry is ignored while a known Ed25519 signature by actor.key verifies, so the record is valid (spec §3.6).","target":"record","verdict":"valid"}

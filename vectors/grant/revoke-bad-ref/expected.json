@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"grant","errors":["E_GRANT_REVOKE_REF"],"id":"grant/revoke-bad-ref","input":"container","notes":"A grant-revocation's revokes reference must resolve to the grant it names; a wrong digest makes the revocation invalid (E_GRANT_REVOKE_REF, §7.4).","target":"container","verdict":"invalid"}

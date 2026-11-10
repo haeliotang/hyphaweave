@@ -1,1 +1,0 @@
-{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/licence-valid","input":"record.json","notes":"SPDX licence expressions are syntax-checked offline only (§9, Q14).","target":"record","verdict":"valid"}
