@@ -403,8 +403,13 @@ def _tst_info(
     *,
     hash_algorithm: str = "sha256",
     gen_time: datetime.datetime = FIXED_GEN_TIME,
+    accuracy: tuple[int, int, int] | None = None,
 ) -> Any:
-    """The TSTInfo payload of one crafted timestamp token."""
+    """The TSTInfo payload of one crafted timestamp token.
+
+    *accuracy* is ``(seconds, millis, micros)``; ``None`` omits the Accuracy
+    member entirely, which the profile treats as zero (revision-2 R3).
+    """
     tst = asn1_tsp.TSTInfo()
     tst["version"] = "v1"
     tst["policy"] = TSA_POLICY
@@ -416,6 +421,13 @@ def _tst_info(
     )
     tst["serial_number"] = 2
     tst["gen_time"] = gen_time
+    if accuracy is not None:
+        seconds, millis, micros = accuracy
+        tst["accuracy"] = {
+            "seconds": seconds,
+            "millis": millis if millis else None,
+            "micros": micros if micros else None,
+        }
     tst["ordering"] = False
     return tst
 
@@ -518,6 +530,7 @@ def _crafted_tsr(
     attribute_content_type: str = "tst_info",
     signer_digest_algorithm: str = "sha256",
     certificates_override: Sequence[bytes] | None = None,
+    accuracy: tuple[int, int, int] | None = None,
 ) -> bytes:
     """Build one DER TimeStampResp deterministically (see module section note)."""
     signer_der = certificate_der if certificate_der is not None else _tsa_certificate_der()
@@ -525,6 +538,7 @@ def _crafted_tsr(
     tst = _tst_info(
         imprint_bytes if imprint_bytes is not None else imprint,
         hash_algorithm=imprint_algorithm,
+        accuracy=accuracy,
     )
     attributes = _signed_attributes(
         tst.dump(),
@@ -796,6 +810,7 @@ declare(
     "container",
     "valid",
     build=lambda case_dir: container(SIMPLE_RECORDS()),
+    args=("--keys", "@keyset"),
     expected_container={
         "level_claimed": "L0",
         "level_verified": "L0",
@@ -805,9 +820,11 @@ declare(
     },
     records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
     notes="SPECIAL CASE: the worked example of spec/offline-verification.md. One "
-    "self-signed weave.key.declared record, an L0 manifest signed by that key, "
-    "every byte canonical, nothing else; the manual sha256sum/openssl procedure "
-    "must walk it end to end (valid, self-contained, no --keys needed).",
+    "weave.key.declared record signed by its own key, an L0 manifest signed by "
+    "that key, every byte canonical, nothing else. The byte-level manual "
+    "sha256sum/openssl procedure still walks it end to end; record trust comes "
+    "from the local trust input (--keys @keyset, revision-2 R2): without it the "
+    "same bytes are unverifiable (see container/self-attested-root-untrusted).",
 )
 
 declare(
@@ -997,6 +1014,7 @@ declare(
     "container.zip",
     "valid",
     build=lambda case_dir: zip_wrap(recordlib.build_container(SIMPLE_RECORDS())),
+    args=("--keys", "@keyset"),
     expected_container={"level_claimed": "L0", "level_verified": "L0"},
     notes="Positive zip form (§11.9): the same layout, STORED entries, POSIX "
     "relative paths; must verify like the directory form.",
@@ -1026,6 +1044,7 @@ declare(
     "invalid",
     errors=("E_MANIFEST_BLOB",),
     build=lambda case_dir: _blobs_mismatch_files(),
+    args=("--keys", "@keyset"),
     notes="blobs/sha256/<hex> content must hash to the manifest.blobs entry and "
     "match its size (§11.6); the bytes are altered after the manifest is sealed.",
 )
@@ -1041,6 +1060,7 @@ declare(
         "readable/notes.txt",
         b"human readable view, never hashed and never trusted\n",
     ),
+    args=("--keys", "@keyset"),
     expected_container={"level_claimed": "L0", "level_verified": "L0"},
     notes="readable/ is an optional human view outside the digest (§11.8, I1): "
     "arbitrary bytes there must not change validity (N_READABLE_PRESENT is an "
@@ -1054,6 +1074,7 @@ declare(
     "container",
     "valid",
     build=lambda case_dir: _chain_container(case_dir, mismatch=False),
+    args=("--keys", "@keyset"),
     expected_container={
         "level_claimed": "L0",
         "level_verified": "L0",
@@ -1073,6 +1094,7 @@ declare(
     "invalid",
     errors=("E_MANIFEST_CHAIN",),
     build=lambda case_dir: _chain_container(case_dir, mismatch=True),
+    args=("--keys", "@keyset"),
     notes="previous_manifest.digest does not equal the digest of the embedded "
     "previous/manifest.json bytes (§11.5).",
 )
@@ -1088,6 +1110,7 @@ declare(
         _chain_container(case_dir, mismatch=False),
         "container/previous/manifest.json",
     ),
+    args=("--keys", "@keyset"),
     notes="previous_manifest is non-null but previous/manifest.json is absent "
     "(§11.5, E_MANIFEST_CHAIN_MISSING).",
 )
@@ -1104,6 +1127,7 @@ declare(
         "previous/manifest.json",
         _previous_manifest_bytes(),
     ),
+    args=("--keys", "@keyset"),
     notes="previous_manifest is null but previous/ contains a manifest: an "
     "unexpected previous container is rejected (§11.5).",
 )
@@ -1116,6 +1140,7 @@ declare(
     "invalid",
     errors=("E_MANIFEST_CHAIN",),
     build=lambda case_dir: _chain_container(case_dir, mismatch=False, origin_mismatch=True),
+    args=("--keys", "@keyset"),
     notes="previous_manifest.digest matches the embedded previous/manifest.json bytes, "
     "but that previous manifest belongs to a different origin. The manifest chain "
     "must stay within the same publisher origin (E_MANIFEST_CHAIN, D1).",
@@ -1142,7 +1167,7 @@ declare(
     "invalid",
     errors=("E_MANIFEST_CHAIN",),
     build=lambda case_dir: _previous_external_mismatch_files_checked(),
-    args=("--previous", "previous-container"),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
     notes="The embedded previous/manifest.json matches previous_manifest.digest, "
     "but the explicitly supplied --previous container has a different manifest "
     "digest: the external chain comparison fails (E_MANIFEST_CHAIN, D1/D2).",
@@ -2438,6 +2463,7 @@ def derived_declaration(
     key_name: str,
     key_type: str = "human",
     owner: str | None = None,
+    owner_key_id: str | None = None,
     cosigners: Sequence[str] = ("human-1",),
     valid_from: str | None = None,
     valid_until: str | None = None,
@@ -2451,7 +2477,9 @@ def derived_declaration(
         "key_type": key_type,
         "public_key": keyutil.b64url_encode(public),
     }
-    if owner is not None:
+    if owner_key_id is not None:
+        body["owner"] = owner_key_id
+    elif owner is not None:
         body["owner"] = kid(owner)
     if valid_from is not None:
         body["valid_from"] = valid_from
@@ -3075,16 +3103,27 @@ declare(
     "declared-human-self-attested-valid",
     "record",
     "record.json",
-    "valid",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
     build=lambda case_dir: {
-        "record.json": canonical(recordlib.key_declaration("human-1"))
+        "record.json": canonical(
+            derived_declaration(
+                record_id="key-declared-self-attested-human",
+                key_name="self-attested-human",
+                key_type="human",
+                cosigners=(),
+            )
+        )
     },
     args=LIFECYCLE_ARGS,
     expected_digest=True,
     notices=("N_SELF_ATTESTED_ROOT_KEY",),
-    notes="Positive Q33 root bootstrap: the first human key may be self-attested "
-    "only, and the verifier MUST report N_SELF_ATTESTED_ROOT_KEY (it is the root "
-    "of the established human/organization set, earliest recorded_at).",
+    notes="Revision-2 R2: a root key can only come from the verifier's local trust "
+    "input (--keys). A self-signed human declaration that is not in the keyset and "
+    "has no cosignature tracing to a trusted human/organization key is "
+    "UNVERIFIABLE E_KEY_UNTRUSTED, with N_SELF_ATTESTED_ROOT_KEY because its only "
+    "signature is its own; it can never become a root by claiming an early "
+    "recorded_at.",
 )
 
 declare(
@@ -4035,6 +4074,7 @@ declare(
     "invalid",
     errors=("E_MANIFEST_BLOB",),
     build=lambda case_dir: _blobs_extra_unlisted_files(),
+    args=("--keys", "@keyset"),
     notes="blobs/ contains a content-addressed file that manifest.blobs does not "
     "list: the blobs directory and the manifest must agree exactly, so this is "
     "E_MANIFEST_BLOB (the blob tree is closed).",
@@ -4060,8 +4100,8 @@ declare(
     "declared-nonroot-human-not-cosigned",
     "record",
     "record.json",
-    "invalid",
-    errors=("E_KEY_DECLARED_NOT_COSIGNED",),
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
     build=lambda case_dir: {
         "record.json": canonical(
             derived_declaration(
@@ -4074,9 +4114,13 @@ declare(
         )
     },
     args=LIFECYCLE_ARGS,
-    notes="Q33 root procedure: the verification context already has an established "
-    "human key (the keyset's self-attested human-1 root), so a later human "
-    "declaration signed only by itself is E_KEY_DECLARED_NOT_COSIGNED invalid.",
+    notices=("N_SELF_ATTESTED_ROOT_KEY",),
+    notes="Revision-2 R2: a non-root human declaration with only its own signature "
+    "and no cosignature tracing to a trusted keyset root is UNVERIFIABLE "
+    "E_KEY_UNTRUSTED (it is not a root, and roots come only from --keys), with "
+    "N_SELF_ATTESTED_ROOT_KEY. The old revision-1 expectation (invalid "
+    "E_KEY_DECLARED_NOT_COSIGNED) came from the record-time root-selection rule "
+    "that R2 removes.",
 )
 
 declare(
@@ -4258,6 +4302,7 @@ declare(
     "invalid",
     errors=("E_MANIFEST_CHAIN_UNEXPECTED",),
     build=lambda case_dir: _chain_unexpected_zip_files(),
+    args=("--keys", "@keyset"),
     notes="Zip form of the unexpected-previous manifest: previous_manifest is null "
     "but the archive carries previous/manifest.json. With no explicit previous/ "
     "directory entry, only the embedded-file branch can reject this, which pins "
@@ -4303,6 +4348,458 @@ declare(
     notes="The signer certificate has an extendedKeyUsage extension, but it does "
     "not include id-kp-timeStamping: E_TS_CERT. This pins the timestamping-profile "
     "branch separately from the missing-EKU branch.",
+)
+
+
+# ---------------------------------------------------------------------------
+# Revision-2 vectors (决定 #42 R1-R5): ancestor revocation, local trust roots,
+# timestamp accuracy and untrusted receipts
+# ---------------------------------------------------------------------------
+
+
+def _self_attested_human_declaration(
+    *, record_id: str, key_name: str, recorded_at: str = recordlib.T0
+) -> dict[str, Any]:
+    """A human declaration carrying only its own signature (no cosignature)."""
+    return derived_declaration(
+        record_id=record_id,
+        key_name=key_name,
+        key_type="human",
+        cosigners=(),
+        recorded_at=recorded_at,
+    )
+
+
+def _agent_declaration_with_derived_owner(
+    *,
+    record_id: str,
+    agent_key_name: str,
+    owner_key_name: str,
+    cosign: bool = True,
+    recorded_at: str = recordlib.T0,
+) -> dict[str, Any]:
+    """An agent declaration whose owner is fresh (container-only) human material."""
+    owner_private, _owner_public, owner_id = derived_key(owner_key_name)
+    agent_private, agent_public, agent_id = derived_key(agent_key_name)
+    body = {
+        "algorithm": "ed25519",
+        "key": agent_id,
+        "key_type": "agent",
+        "public_key": keyutil.b64url_encode(agent_public),
+        "owner": owner_id,
+    }
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id=record_id,
+        actor={"type": "agent", "key": agent_id},
+        body=body,
+        stage="accepted",
+        recorded_at=recorded_at,
+        origin_instance=agent_id,
+    )
+    signatures = [_derived_signature(agent_private, agent_id, record)]
+    if cosign:
+        signatures.append(_derived_signature(owner_private, owner_id, record))
+    signatures.sort(key=lambda entry: entry["key"])
+    record["sigs"] = signatures
+    return record
+
+
+def _ancestor_revoked_files(*, note_recorded_at: str) -> dict[str, bytes]:
+    """Root grant + delegated sub-grant + root revocation + a record citing the sub-grant.
+
+    Revision-2 R1: the whole grant chain is evaluated at the record's own claimed
+    recorded_at -- including ancestors. With the root revoked at T4, a note written
+    at T5 is unverifiable E_GRANT_REVOKED; a note written at T3 (control) is valid.
+    """
+    root = root_grant(
+        record_id="grant-ancestor-root",
+        kinds=("weave.grant", "example.note"),
+        actions=("propose", "accept", "grant"),
+        transferable=True,
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T9,
+    )
+    sub = delegated_grant(
+        root,
+        record_id="grant-ancestor-sub",
+        sub_granter="agent-1",
+        grantee="agent-2",
+        kinds=("example.note",),
+        actions=("propose", "accept"),
+        valid_from=recordlib.T1,
+        valid_until=recordlib.T8,
+        transferable=False,
+        recorded_at=recordlib.T1,
+    )
+    revocation = grant_revocation(
+        root,
+        record_id="grant-ancestor-revoke",
+        effective_at=recordlib.T4,
+    )
+    note_by_agent = agent_action(
+        sub,
+        record_id="agent-ancestor-note",
+        key_name="agent-2",
+        stage="proposed",
+        recorded_at=note_recorded_at,
+    )
+    return container([root, sub, revocation, note_by_agent])
+
+
+def _compromise_accuracy_files(
+    case_dir: Path,
+    *,
+    accuracy: tuple[int, int, int],
+    effective_at: str,
+) -> dict[str, bytes]:
+    """L2 container whose only receipt has the given accuracy (R3 boundary)."""
+    records = [
+        recordlib.key_revocation(
+            "key-compromised",
+            reason="key-compromise",
+            effective_at=effective_at,
+            recorded_at=effective_at,
+            signer_name="human-1",
+            record_id="key-revoked-compromise-accuracy",
+        ),
+        record_signed_by(
+            "key-compromised",
+            "record-compromise-accuracy",
+            recorded_at="2027-01-01T00:00:00.000Z",
+        ),
+    ]
+
+    def builder(imprint: bytes) -> list[tuple[str, bytes, str | None]]:
+        return [
+            (
+                "signatures/timestamp-1.tsr",
+                _crafted_tsr(imprint, accuracy=accuracy),
+                None,
+            )
+        ]
+
+    files = _build_timestamped_container(records, builder, level="L2")
+    return {**wrap(files), TSA_CERT_NAME: TSA_CERT()}
+
+
+def _compromise_untrusted_timestamp_files(case_dir: Path) -> dict[str, bytes]:
+    """L2 container with a receipt but no trust anchor (R4 untrusted receipt)."""
+    effective_at = "2026-12-01T00:00:00.000Z"
+    records = [
+        recordlib.key_revocation(
+            "key-compromised",
+            reason="key-compromise",
+            effective_at=effective_at,
+            recorded_at=effective_at,
+            signer_name="human-1",
+            record_id="key-revoked-compromise-untrusted",
+        ),
+        record_signed_by(
+            "key-compromised",
+            "record-before-compromise-untrusted",
+            recorded_at="2027-01-01T00:00:00.000Z",
+        ),
+    ]
+
+    def builder(imprint: bytes) -> list[tuple[str, bytes, str | None]]:
+        return [("signatures/timestamp-1.tsr", _crafted_tsr(imprint), None)]
+
+    files = _build_timestamped_container(records, builder, level="L2")
+    return wrap(files)
+
+
+declare(
+    "container",
+    "self-attested-root-untrusted",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    build=lambda case_dir: container(SIMPLE_RECORDS()),
+    notices=("N_SELF_ATTESTED_ROOT_KEY",),
+    records=(
+        {
+            "id": "key-declared-human-1",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+        },
+    ),
+    notes="Revision-2 R2, same bytes as container/l0-minimal but WITHOUT the local "
+    "trust input: a root may only come from the verifier's keyset, never from a "
+    "container record that merely self-signs, so the declaration is unverifiable "
+    "E_KEY_UNTRUSTED with N_SELF_ATTESTED_ROOT_KEY. Byte-level checks still pass.",
+)
+
+declare(
+    "grant",
+    "ancestor-revoked-before-record",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_GRANT_REVOKED",),
+    build=lambda case_dir: _ancestor_revoked_files(note_recorded_at=recordlib.T5),
+    args=GRANT_ARGS,
+    records=(
+        {
+            "id": "agent-ancestor-note",
+            "verdict": "unverifiable",
+            "errors": ["E_GRANT_REVOKED"],
+        },
+    ),
+    notes="Revision-2 R1: the whole authorisation chain is checked at the record's "
+    "own claimed recorded_at, ancestors included. The root grant was revoked at "
+    "T4 (11-05); the sub-grant was issued at T1 while the root was live, but the "
+    "agent note is written at T5, so the chain is revoked as of T5 and the note is "
+    "unverifiable E_GRANT_REVOKED (a second implementation evaluating ancestors at "
+    "the sub-grant's time would wrongly accept it).",
+)
+
+declare(
+    "grant",
+    "ancestor-revoked-control-before-effective",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _ancestor_revoked_files(note_recorded_at=recordlib.T3),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "grant-ancestor-root", "verdict": "valid", "errors": []},
+        {"id": "grant-ancestor-sub", "verdict": "valid", "errors": []},
+        {"id": "grant-ancestor-revoke", "verdict": "valid", "errors": []},
+        {"id": "agent-ancestor-note", "verdict": "valid", "errors": []},
+    ),
+    notes="Revision-2 R1 control: the same chain and revocation, but the note is "
+    "written at T3, before the root's revocation took effect at T4; every record "
+    "is valid and the container is valid.",
+)
+
+declare(
+    "key-lifecycle",
+    "backdated-container-root",
+    "record",
+    "record.json",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    build=lambda case_dir: {
+        "record.json": canonical(
+            _self_attested_human_declaration(
+                record_id="key-declared-backdated-container-root",
+                key_name="backdated-container-human",
+                recorded_at="2020-01-01T00:00:00.000Z",
+            )
+        )
+    },
+    args=LIFECYCLE_ARGS,
+    notes="Revision-2 R2 (anti-verification b pin): backdating the claimed "
+    "recorded_at to 2020 does not turn a container/target self-signed human "
+    "declaration into a root. Roots come only from the local keyset, so this "
+    "declaration is unverifiable E_KEY_UNTRUSTED with N_SELF_ATTESTED_ROOT_KEY "
+    "rather than accepted by an earliest-recorded_at root election.",
+)
+
+declare(
+    "key-lifecycle",
+    "keyset-root-not-invalidated",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: container(
+        [
+            _self_attested_human_declaration(
+                record_id="key-declared-attacker-backdated",
+                key_name="backdated-attacker",
+                recorded_at="2020-01-01T00:00:00.000Z",
+            ),
+            recordlib.signed(note("keyset-root-note"), "human-1"),
+            derived_record(
+                record_id="attacker-signed-note",
+                key_name="backdated-attacker",
+                recorded_at=recordlib.T2,
+            ),
+        ]
+    ),
+    args=LIFECYCLE_ARGS,
+    records=(
+        {"id": "keyset-root-note", "verdict": "valid", "errors": []},
+        {
+            "id": "key-declared-attacker-backdated",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+        },
+        {
+            "id": "attacker-signed-note",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+        },
+    ),
+    notes="Revision-2 R2: an attacker's backdated self-signed human declaration in "
+    "the container is unverifiable and must not invalidate the local keyset root -- "
+    "the human-1 notes stay valid, only the attacker's own records are unverifiable "
+    "(its signing key never enters the key state, so its note is E_KEY_UNKNOWN). "
+    "The container verdict is unverifiable, never invalid.",
+)
+
+declare(
+    "key-lifecycle",
+    "declared-owner-wrong-class",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_KEY_OWNER_MISSING",),
+    build=lambda case_dir: {
+        "record.json": canonical(
+            derived_declaration(
+                record_id="key-declared-owner-wrong-class",
+                key_name="owner-wrong-class-agent",
+                key_type="agent",
+                owner="agent-1",
+                cosigners=("agent-1",),
+            )
+        )
+    },
+    args=LIFECYCLE_ARGS,
+    notes="Revision-2 R5: body.owner must resolve to a human or organization "
+    "declaration; an owner whose declared class is agent is invalid "
+    "E_KEY_OWNER_MISSING (the owner is resolvable and has cosigned, but its class "
+    "is wrong).",
+)
+
+declare(
+    "key-lifecycle",
+    "untrusted-owner-cosign",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    build=lambda case_dir: container(
+        [
+            _self_attested_human_declaration(
+                record_id="key-declared-container-owner",
+                key_name="container-only-owner",
+                recorded_at=recordlib.T0,
+            ),
+            _agent_declaration_with_derived_owner(
+                record_id="key-declared-untrusted-owner-agent",
+                agent_key_name="untrusted-owner-agent",
+                owner_key_name="container-only-owner",
+                cosign=True,
+                recorded_at=recordlib.T1,
+            ),
+        ]
+    ),
+    args=LIFECYCLE_ARGS,
+    expected_container={"level_claimed": "L0", "level_verified": "L0"},
+    records=(
+        {
+            "id": "key-declared-container-owner",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+        },
+        {
+            "id": "key-declared-untrusted-owner-agent",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+        },
+    ),
+    notices=("N_SELF_ATTESTED_ROOT_KEY",),
+    notes="Revision-2 R2: an agent declaration is cosigned by its owner, but that "
+    "owner is only a container self-signed human declaration that cannot trace to "
+    "the local keyset root. The owner is untrusted, so the agent declaration is "
+    "unverifiable E_KEY_UNTRUSTED (not invalid): the cosignature is there but the "
+    "owner is not trusted.",
+)
+
+declare(
+    "key-lifecycle",
+    "compromise-accuracy-equality",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED",),
+    build=lambda case_dir: _compromise_accuracy_files(
+        case_dir,
+        accuracy=(1, 0, 0),
+        effective_at="2026-11-01T00:00:01.000Z",
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": True,
+    },
+    records=(
+        {
+            "id": "record-compromise-accuracy",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+        },
+    ),
+    notes="Revision-2 R3 equality boundary: the receipt's genTime is "
+    "2026-11-01T00:00:00.000Z with accuracy 1 second, so genTime+accuracy equals "
+    "the compromise effective_at T exactly; the rescue requires genTime+accuracy "
+    "STRICTLY before T, so the compromised-key signature is invalid "
+    "E_KEY_COMPROMISED.",
+)
+
+declare(
+    "key-lifecycle",
+    "compromise-accuracy-crossing",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED",),
+    build=lambda case_dir: _compromise_accuracy_files(
+        case_dir,
+        accuracy=(1, 0, 0),
+        effective_at="2026-11-01T00:00:00.500Z",
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": True,
+    },
+    records=(
+        {
+            "id": "record-compromise-accuracy",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+        },
+    ),
+    notes="Revision-2 R3 accuracy crossing: genTime (00:00:00.000) is earlier than "
+    "T (00:00:00.500), but adding the receipt's 1-second accuracy crosses T, so the "
+    "true timestamp is not provably before the compromise and the signature is "
+    "invalid E_KEY_COMPROMISED. Accuracy must be taken into account.",
+)
+
+declare(
+    "key-lifecycle",
+    "compromise-untrusted-timestamp",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_TS_UNTRUSTED",),
+    build=lambda case_dir: _compromise_untrusted_timestamp_files(case_dir),
+    args=("--keys", "@keyset"),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    records=(
+        {
+            "id": "record-before-compromise-untrusted",
+            "verdict": "unverifiable",
+            "errors": ["E_TS_UNTRUSTED"],
+        },
+    ),
+    notes="Revision-2 R4: the container carries a timestamp receipt but the "
+    "verifier was given no --tsa-trust, so the rescue evidence exists yet cannot "
+    "be trusted. Missing information yields unverifiable E_TS_UNTRUSTED for the "
+    "compromised-key record and the container, never invalid. Without any receipt "
+    "at all the record is invalid E_KEY_COMPROMISED (L0 cases).",
 )
 
 # === END CASE SECTIONS ===

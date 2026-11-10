@@ -338,11 +338,13 @@ def _build_catalogue() -> None:
            r'if envelope\.stage == "accepted" and not _has_human_signature\(view, context\):\n\s*view\.notices\.append\("N_NO_HUMAN_SIGNATURE"\)',
            'if False:  # ablation: human-signature notice disabled\n            pass',
            ("actor/agent-accepted-valid",)),
-        _m("record-self-attested-root-notice", "verifier.py", "verifier.notice.self-attested-root",
-           "stop emitting N_SELF_ATTESTED_ROOT_KEY for bootstrap root keys",
-           r'view\.notices\.append\("N_SELF_ATTESTED_ROOT_KEY"\)',
-           'pass  # ablation: self-attested root notice disabled',
-           ("key-lifecycle/declared-human-self-attested-valid",)),
+        _m("record-self-attested-root-notice", "keys.py", "verifier.notice.self-attested-root",
+           "stop emitting N_SELF_ATTESTED_ROOT_KEY for untrusted self-attested container roots",
+           r'notice="N_SELF_ATTESTED_ROOT_KEY" if self_signed_only else None,',
+           'notice=None,  # ablation: self-attested-root notice suppressed',
+           ("key-lifecycle/backdated-container-root",
+            "container/self-attested-root-untrusted",
+            "key-lifecycle/declared-human-self-attested-valid")),
         # ------------------------------------------------------------------------ grants
         _m("grant-revoke-as-authority", "grants.py", "grants.parent.action",
            "accept a weave.grant revoke record as an authorising grant",
@@ -415,6 +417,17 @@ def _build_catalogue() -> None:
            "both not-yet-valid and expired parents), and the delegating record is necessarily an agent "
            "record whose actor.grant goes through the same agent-authorisation path; the vectors "
            "grant/parent-expired and grant/sub-grant-parent-expired pin the E_GRANT_EXPIRED outcome"),
+        # FIX2 recheck counterexample (R1): literal old §5.5.2 step 6 - ancestors judged at
+        # the descendant grant's claimed recorded_at instead of the verified record's.
+        # FIX2 recheck counterexample (R1): literal old §5.5.2 step 6 - every ancestor is
+        # evaluated at the direct descendant grant's recorded_at instead of the verified
+        # record's recorded_at.  grants.py funnels both consumers through ``ancestor_time``
+        # so this is a genuine single-line mutation.
+        _m("grant-ancestor-evaluated-at-descendant-time", "grants.py", "grants.chain.ancestor-time",
+           "evaluate ancestor grants at the descendant grant's recorded_at (literal old step 6)",
+           r'ancestor_time = at_time',
+           'ancestor_time = grant.recorded_at  # ablation: literal old step-6 semantics',
+           ("grant/ancestor-revoked-before-record",)),
         _m("grant-chain-depth", "grants.py", "grants.chain.depth",
            "remove the grant chain depth guard",
            r'if depth > MAX_CHAIN_DEPTH or grant\.digest in seen:',
@@ -492,7 +505,7 @@ def _build_catalogue() -> None:
            ("key-lifecycle/retired-then-signed-after",)),
         _m("key-compromise-never-rescued", "keys.py", "keys.revocation.compromise-rescue",
            "never rescue compromise signatures with an earlier verified timestamp",
-           r'rescued = any\(\n\s*timestamp\.gen_time_ms <= revocation\.effective_at_ms\n\s*for timestamp in verified_timestamps\n\s*\)',
+           r'rescued = any\(\n\s*timestamp\.covered_until_us < effective_at_us\n\s*for timestamp in verified_timestamps\n\s*\)',
            'rescued = False  # ablation: compromise rescue disabled',
            ("key-lifecycle/compromise-rescued-by-timestamp",)),
         _m("key-compromise-always-rescued", "keys.py", "keys.revocation.compromise",
@@ -501,6 +514,16 @@ def _build_catalogue() -> None:
            'if True:  # ablation: every compromise signature rescued\n                continue',
            ("key-lifecycle/compromise-backdated-forgery", "key-lifecycle/compromise-retroactive"),
            review_a_survivor=True),
+        # FIX2 recheck counterexample (R2): roots may only come from the verifier's local
+        # keyset; disabling that gate lets container self-signed human/org declarations act
+        # as trust roots (backdating then creates roots).
+        _m("keyset-root-gate-always-true", "keys.py", "keys.declaration.root-source",
+           "treat every human/organization declaration source as a trusted local root",
+           r'if source == "keyset":',
+           'if True:  # ablation: any declaration source treated as a local trust root',
+           ("key-lifecycle/backdated-container-root",
+            "key-lifecycle/keyset-root-not-invalidated",
+            "container/self-attested-root-untrusted")),
         _m("key-owner-missing", "keys.py", "keys.declaration.owner",
            "allow agents/programs/devices without a declared owner "
            "(primary check; the second guard is unreachable dead code)",
@@ -552,11 +575,13 @@ def _build_catalogue() -> None:
            r'raise WeaveError\(\n\s*"E_KEY_DECLARED_NOT_COSIGNED",\n\s*"agent/program/device key declaration lacks the owner\'s cosignature",?\n\s*\)',
            'pass  # ablation: owner cosignature requirement disabled',
            ("key-lifecycle/declared-agent-not-cosigned",)),
-        _m("key-human-not-cosigned", "keys.py", "keys.declaration.cosignature",
-           "accept a human/organization declaration without a cosignature",
-           r'raise WeaveError\(\n\s*"E_KEY_DECLARED_NOT_COSIGNED",\n\s*"human/organization key declaration lacks a cosignature",?\n\s*\)',
-           'pass  # ablation: human cosignature requirement disabled',
-           ("key-lifecycle/declared-human-not-cosigned",)),
+        _m("key-container-declaration-untrusted", "keys.py", "keys.declaration.root-chain",
+           "accept a container human/organization declaration with no keyset-root chain",
+           r'raise WeaveError\(\n\s*"E_KEY_UNTRUSTED",\n\s*"container declaration cannot be chained to a keyset trust root",',
+           'pass  # ablation: untrusted container declaration accepted',
+           ("key-lifecycle/backdated-container-root",
+            "key-lifecycle/declared-human-self-attested-valid",
+            "container/self-attested-root-untrusted")),
         # ---------------------------------------------------------------------- container
         _m("container-manifest-digest", "container.py", "container.manifest.digest",
            "accept a manifest attestation whose digest does not match the manifest",
