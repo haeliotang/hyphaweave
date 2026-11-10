@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Container reading and verification (spec §11; CONTRACT §14.6 steps 1-12).
+"""Container reading and verification (spec §11; deterministic order §14.5 steps 1-12).
 
 A container is a directory or its zip with the layout of spec §11.1. This module
 enumerates entries safely (path traversal, duplicates, symlinks, encryption and
@@ -303,7 +303,7 @@ def _is_safe_relative_path(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Layout validation (CONTRACT §14.6 step 1)
+# Layout validation (spec §14.5 step 1)
 # ---------------------------------------------------------------------------
 
 
@@ -456,7 +456,7 @@ def verify_container(
 
     # Step 2-3: manifest canonical bytes and structure.
     manifest_bytes = container_input.files["manifest.json"]
-    # The report's input identity follows CONTRACT §14.2/spec §14.6: a directory
+    # The report's input identity follows spec §14.6 (report format): a directory
     # container is identified by its manifest digest (manifest byte count),
     # a zip container by the archive itself. Until the digest is known, fall
     # back to the raw manifest bytes' hash.
@@ -1125,7 +1125,7 @@ def _read_previous_manifest_digest(previous_container: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cross-record state rules (CONTRACT §14.6 step 8)
+# Cross-record state rules (spec §14.5 step 8)
 # ---------------------------------------------------------------------------
 
 

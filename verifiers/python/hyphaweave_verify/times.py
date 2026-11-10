@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Timestamp literal (TS) grammar and helpers (CONTRACT §0 / spec §2.8).
+"""Timestamp literal (TS) grammar and helpers (spec §0 and §2.8).
 
 A TS is ``YYYY-MM-DDTHH:MM:SS.sssZ``: RFC 3339 UTC, exactly three fractional
 digits, literal ``Z``, years 0000-9999, seconds 00-59 (no leap second 60; a

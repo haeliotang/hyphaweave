@@ -96,7 +96,7 @@ runs each case in-process and compares:
 * `expected_container` as a recursive subset of `report.container`;
 * `records` as per-record subsets matched by `id`.
 
-Argument tokens follow the contract: `@keyset` → the suite's `keys/keyset`,
+Argument tokens follow the vector-case format: `@keyset` → the suite's `keys/keyset`,
 `@case` → the case directory, anything else → a path relative to the case
 directory. The runner is deterministic and reports the first mismatch reasons per
 case.

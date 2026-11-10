@@ -472,7 +472,7 @@ def parse_file_bytes(
 ) -> Any:
     """Parse a canonical JSON *file* and return its value.
 
-    Enforces the canonical-form rule of CONTRACT §2.8: the file must be exactly
+    Enforces the canonical-form rule of spec §1.8: the file must be exactly
     the WR-CJ bytes of its value, optionally followed by one LF. Size limits are
     enforced first (``E_JSON_SIZE`` by default).
     """

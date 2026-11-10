@@ -3,7 +3,7 @@
 
 """Byte constructions and strict encodings for ``weave-record/1``.
 
-Implements CONTRACT §3: domain-separated hashing, unpadded base64url with
+Implements spec §2: domain-separated hashing, unpadded base64url with
 strict decoding (no padding, no whitespace, canonical trailing bits), key ids
 (``ed25519:`` + first 32 lowercase hex of SHA-256 over the **raw 32-byte public
 key**, correction v0.1.1) and digest strings (``<alg>:<lowercase hex>``).
@@ -19,7 +19,7 @@ from typing import Any
 from . import canonical
 from .errors import WeaveError
 
-#: Domain-separation prefixes (ASCII, each ends with one LF, CONTRACT §3).
+#: Domain-separation prefixes (ASCII, each ends with one LF, spec §2.1).
 DIGEST_DOMAIN = b"weave-record/1/digest\n"
 SIG_DOMAIN = b"weave-record/1/sig\n"
 MANIFEST_DIGEST_DOMAIN = b"weave-record/1/manifest-digest\n"
@@ -28,7 +28,7 @@ MANIFEST_SIG_DOMAIN = b"weave-record/1/manifest\n"
 #: SHA-256 digest string length after the ``sha256:`` prefix.
 SHA256_HEX_LENGTH = 64
 
-#: Expected canonical base64url character lengths (CONTRACT §3.5).
+#: Expected canonical base64url character lengths (spec §2.6).
 B64URL_LENGTHS = {16: 22, 32: 43, 64: 86}
 
 _B64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -183,7 +183,7 @@ def digest_bytes(value: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Key ids (CONTRACT §3.4 + correction v0.1.1)
+# Key ids (spec §2.5 + correction v0.1.1)
 # ---------------------------------------------------------------------------
 
 KEY_ID_PREFIX = "ed25519:"
@@ -225,7 +225,7 @@ def require_key_id(value: Any, code: str) -> str:
 
 
 def record_digest(record: dict[str, Any]) -> str:
-    """Compute the record digest per CONTRACT §3.1.
+    """Compute the record digest per spec §2.2.
 
     The digest covers the canonical serialization of the record with the
     top-level ``sigs`` member removed (if present).
@@ -237,14 +237,14 @@ def record_digest(record: dict[str, Any]) -> str:
 
 
 def manifest_digest(canonical_manifest_bytes: bytes) -> str:
-    """Compute the manifest digest per CONTRACT §3.3 over canonical bytes."""
+    """Compute the manifest digest per spec §2.4 over canonical bytes."""
     if not isinstance(canonical_manifest_bytes, (bytes, bytearray)):
         raise TypeError("manifest bytes must be bytes")
     return "sha256:" + sha256_hex(MANIFEST_DIGEST_DOMAIN + bytes(canonical_manifest_bytes))
 
 
 def record_sig_message(record_digest_string: str) -> bytes:
-    """Return ``weave-record/1/sig\\n`` + digest string (ASCII) per CONTRACT §3.2."""
+    """Return ``weave-record/1/sig\\n`` + digest string (ASCII) per spec §2.3."""
     try:
         digest_ascii = record_digest_string.encode("ascii")
     except UnicodeEncodeError as exc:  # pragma: no cover - defensive
@@ -253,7 +253,7 @@ def record_sig_message(record_digest_string: str) -> bytes:
 
 
 def manifest_sig_message(manifest_digest_string: str) -> bytes:
-    """Return ``weave-record/1/manifest\\n`` + digest string (ASCII) per CONTRACT §3.3."""
+    """Return ``weave-record/1/manifest\\n`` + digest string (ASCII) per spec §2.4."""
     try:
         digest_ascii = manifest_digest_string.encode("ascii")
     except UnicodeEncodeError as exc:  # pragma: no cover - defensive

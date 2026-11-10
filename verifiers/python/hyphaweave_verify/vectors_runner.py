@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conformance-vector runner (spec §16.2, CONTRACT §16).
+"""Conformance-vector runner (spec §14.10 and §16).
 
 Every case directory contains an ``expected.json`` describing the target, the
 input, optional CLI-style arguments and the expected result. This runner

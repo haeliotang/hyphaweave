@@ -193,7 +193,7 @@ def is_registered(code: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Test hook: WEAVE_VERIFY_SKIP_CHECKS (CONTRACT §14.5 / Q18)
+# Test hook: WEAVE_VERIFY_SKIP_CHECKS (spec §14.7 / Q18)
 # ---------------------------------------------------------------------------
 
 ENV_SKIP_CHECKS = "WEAVE_VERIFY_SKIP_CHECKS"

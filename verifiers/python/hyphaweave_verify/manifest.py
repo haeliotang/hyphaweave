@@ -3,7 +3,7 @@
 
 """Container manifest and manifest-attestation validation (spec §11.2/§11.3).
 
-Structure is validated in the deterministic order of CONTRACT §14.6: the manifest
+Structure is validated in the deterministic order of spec §14.5: the manifest
 object is closed and typed (``E_MANIFEST_SCHEMA`` etc.), level completeness is
 checked separately so the first failing check yields one primary code, and the
 attestation file is validated as a closed object with ordered signatures and
@@ -117,7 +117,7 @@ class ManifestAttestation:
 
 
 # ---------------------------------------------------------------------------
-# Manifest structure (CONTRACT §14.6 step 3)
+# Manifest structure (spec §14.5 step 3)
 # ---------------------------------------------------------------------------
 
 
@@ -273,7 +273,7 @@ def validate_manifest(value: Any) -> Manifest:
 
 
 # ---------------------------------------------------------------------------
-# Level completeness (CONTRACT §14.6 step 6)
+# Level completeness (spec §14.5 step 6)
 # ---------------------------------------------------------------------------
 
 

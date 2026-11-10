@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record envelope validation (spec §4, CONTRACT §5).
+"""Record envelope validation (spec §4).
 
 The whole envelope is validated structurally here, in the deterministic order of
-CONTRACT §14.6: required members, closed-member check, then field grammars in
+spec §14.5: required members, closed-member check, then field grammars in
 table order. A failure raises :class:`WeaveError` with the registry code from
 ``spec/error-codes.md``; the per-record pipeline stops at the first failure.
 
