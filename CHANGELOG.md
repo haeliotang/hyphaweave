@@ -164,11 +164,13 @@ environment and reported:
 - **Gate 1 — pytest:** 237 passed, 0 skipped.
 - **Gate 2 — conformance vectors:** all 284 vector cases matched their expected
   verdicts and error codes.
-- **Gate 3 — true source ablation:** 107 mutations, 95 killed, 0 unpinned
-  survivors (11 documented equivalent mutations plus 1 redundant check);
-  exhaustive byte-flip: 96,809 bytes mutated, 93,260 rejected as invalid, 2,835
-  reported `unverifiable` (fail-closed), 714 exempt bytes with documented
-  reasons, 0 survivors, 0 crashes.
+- **Gate 3 — true source ablation:** 107 mutations, 95 killed (90 by a changed
+  conclusion, 5 by an internal precondition rather than acceptance), 0 unpinned
+  survivors (11 documented equivalent mutations plus 1 documented redundant
+  check). Exhaustive byte-flip over the 144 positive cases (including the
+  candidate set): 338 files, 193,618 bytes, 193,618 mutants; 186,518 rejected as
+  invalid, 5,674 reported `unverifiable` (fail-closed), 1,426 exempt bytes with
+  documented reasons; 0 survivors, 0 crashes.
 - **Gate 4 — external cross-check:** RFC 8785 6/6 document pairs, RFC 8032 5/5
   signatures, Wycheproof 210/210 outcomes (117 accepted, 93 rejected; all
   `acceptable` cases rejected per Q1).
