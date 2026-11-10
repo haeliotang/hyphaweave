@@ -168,8 +168,8 @@ environment and reported:
   conclusion, 5 by an internal precondition rather than acceptance), 0 unpinned
   survivors (11 documented equivalent mutations plus 1 documented redundant
   check). Exhaustive byte-flip over the 144 positive cases (including the
-  candidate set): 338 files, 193,618 bytes, 193,618 mutants; 186,518 rejected as
-  invalid, 5,674 reported `unverifiable` (fail-closed), 1,426 exempt bytes with
+  candidate set): 338 files, 193,618 bytes, 193,618 mutants; 186,524 rejected as
+  invalid, 5,674 reported `unverifiable` (fail-closed), 1,420 exempt bytes with
   documented reasons; 0 survivors, 0 crashes.
 - **Gate 4 — external cross-check:** RFC 8785 6/6 document pairs, RFC 8032 5/5
   signatures, Wycheproof 210/210 outcomes (117 accepted, 93 rejected; all

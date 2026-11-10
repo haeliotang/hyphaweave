@@ -386,7 +386,8 @@ class VerifierRunner:
         self.verifier = verifier_module
         self.parser = cli_module.build_parser()
         self._cache_lock = threading.RLock()
-        self._verify_set_cache: dict[Any, Any] = {}
+        self._verify_set_cache: dict[int, tuple[Any, Any]] = {}
+        self._keyset_ids: set[int] = set()
         self.cache = cache
         if cache:
             self._install_cache()
@@ -402,7 +403,13 @@ class VerifierRunner:
             with runner._cache_lock:
                 if key not in memo:
                     memo[key] = original_load(keys_path)
-                return memo[key]
+                loaded = memo[key]
+                # Remember the exact keyset list object so only *its* fixed-point result is
+                # cached.  Freshly built record lists (a container's records) must never hit
+                # the cache: keying on id() without a strong reference can reuse an address
+                # after GC and silently return another record set's verdicts.
+                runner._keyset_ids.add(id(loaded[0]))
+                return loaded
 
         self.cli._load_keyset = load_keyset
 
@@ -430,9 +437,14 @@ class VerifierRunner:
                 )
             cache_key = id(records)
             with runner._cache_lock:
-                if cache_key not in runner._verify_set_cache:
-                    runner._verify_set_cache[cache_key] = original_verify_set(records)
-                return runner._verify_set_cache[cache_key]
+                if cache_key not in runner._keyset_ids:
+                    # Not the memoised keyset list: compute fresh (containers pass new lists).
+                    return original_verify_set(records)
+                cached = runner._verify_set_cache.get(cache_key)
+                if cached is None:
+                    cached = (records, original_verify_set(records))
+                    runner._verify_set_cache[cache_key] = cached
+                return cached[1]
 
         self.verifier.verify_record_set = cached_verify_set
 
@@ -630,6 +642,8 @@ def process_case(
         temp_path = work / "mutant.json"
         limit = len(original) if max_bytes is None else min(len(original), max_bytes)
         for offset in range(limit):
+            if not temp_path.parent.is_dir():
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path.write_bytes(mutate_bytes_at(original, offset))
             report = runner.run(["record", str(temp_path)] + args)
             verdict = report.get("verdict")
@@ -657,7 +671,14 @@ def process_case(
     if kind == "container-dir":
         container_src = paths[0]
         container = work / "container"
-        shutil.copytree(container_src, container)
+
+        def _ensure_container() -> None:
+            if not container.is_dir():
+                if container.exists():
+                    shutil.rmtree(container, ignore_errors=True)
+                shutil.copytree(container_src, container)
+
+        _ensure_container()
         files = sorted(path for path in container.rglob("*") if path.is_file())
         for path in files:
             rel = path.relative_to(container).as_posix()
@@ -668,11 +689,17 @@ def process_case(
             limit = len(original) if max_bytes is None else min(len(original), max_bytes)
             result["files"].append({"file": rel, "bytes": len(original)})
             for offset in range(limit):
+                if not path.parent.is_dir():
+                    _ensure_container()
                 path.write_bytes(mutate_bytes_at(original, offset))
                 try:
                     report = runner.run(["container", str(container)] + _container_args(args))
                 finally:
-                    path.write_bytes(original)
+                    try:
+                        path.write_bytes(original)
+                    except FileNotFoundError:
+                        _ensure_container()
+                        path.write_bytes(original)
                 verdict = report.get("verdict")
                 if verdict != accepted:
                     note_outcome(verdict, report, None, {})
