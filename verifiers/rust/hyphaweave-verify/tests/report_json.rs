@@ -256,7 +256,7 @@ fn forward_slashes_are_not_escaped() {
 fn output_is_ascii_with_one_trailing_lf() {
     let bytes = to_bytes(&container_report());
     assert!(bytes.is_ascii());
-    assert!(bytes.iter().any(|&byte| byte == b'\n'));
+    assert!(bytes.contains(&b'\n'));
     assert_eq!(bytes.last(), Some(&b'\n'));
     assert_ne!(bytes[bytes.len() - 2], b'\n');
 }
@@ -432,4 +432,19 @@ fn record_report() -> Report {
     });
     report.limitations = vec!["L1 chain claim not verified".to_owned()];
     report
+}
+
+/// `ensure_ascii` escapes DEL (U+007F) as `\u007f`; Python's json does this even
+/// though DEL is ASCII. The report writer must match it byte for byte.
+#[test]
+fn del_and_bmp_characters_are_escaped() {
+    let mut report = record_report();
+    report.records[0].id = Some("a\u{007f}b\u{2028}c\u{00e9}d".to_owned());
+    let bytes = to_bytes(&report);
+    let text = String::from_utf8(bytes.clone()).expect("utf-8");
+    assert!(text.contains("\\u007f"), "DEL must be escaped: {text}");
+    assert!(text.contains("\\u2028"));
+    assert!(text.contains("\\u00e9"));
+    assert!(!bytes.contains(&0x7F));
+    assert!(bytes.iter().all(|byte| *byte < 0x80));
 }

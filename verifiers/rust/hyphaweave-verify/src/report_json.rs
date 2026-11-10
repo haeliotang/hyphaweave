@@ -19,8 +19,9 @@
 //!   `": "` after a member name and `","` before the next member;
 //! - an empty array is `[]` and an empty object is `{}` on one line;
 //! - `"` and `\` are escaped, the five short control escapes `\b \t \n \f \r`
-//!   are used, any other control character below U+0020 is `\u00XX`, every
-//!   scalar at or above U+0080 is `\uXXXX` (lowercase hex; surrogate pairs for
+//!   are used, any other control character below U+0020 is `\u00XX`, DEL
+//!   (U+007F) is `\u007F`, every scalar at or above U+0080 is `\uXXXX`
+//!   (lowercase hex; surrogate pairs for
 //!   supplementary code points) and `/` is never escaped.
 //!
 //! The report's field set follows §14.6: `container` is present only for a
@@ -129,13 +130,7 @@ pub(crate) fn container_value(container: &ContainerReport) -> Value {
     object.insert("notices", code_array(&container.notices));
     object.insert(
         "timestamps",
-        Value::Array(
-            container
-                .timestamps
-                .iter()
-                .map(timestamp_value)
-                .collect(),
-        ),
+        Value::Array(container.timestamps.iter().map(timestamp_value).collect()),
     );
     Value::Object(object)
 }
@@ -149,10 +144,7 @@ pub(crate) fn record_value(record: &RecordReport) -> Value {
     object.insert("stage", optional_string(&record.stage));
     object.insert("origin", origin_value(record.origin.as_ref()));
     object.insert("kind_known", optional_bool(record.kind_known));
-    object.insert(
-        "verdict",
-        Value::Str(record.verdict.as_str().to_owned()),
-    );
+    object.insert("verdict", Value::Str(record.verdict.as_str().to_owned()));
     object.insert("errors", code_array(&record.errors));
     object.insert("notices", code_array(&record.notices));
     object.insert(
@@ -194,10 +186,7 @@ fn summary_value(summary: &Summary) -> Value {
         Summary::Verdicts(counts) => {
             object.insert("valid", Value::Int(count_i64(counts.valid)));
             object.insert("invalid", Value::Int(count_i64(counts.invalid)));
-            object.insert(
-                "unverifiable",
-                Value::Int(count_i64(counts.unverifiable)),
-            );
+            object.insert("unverifiable", Value::Int(count_i64(counts.unverifiable)));
             object.insert("erased", Value::Int(count_i64(counts.erased)));
         }
         Summary::Vectors(counts) => {
@@ -348,6 +337,8 @@ fn write_string(out: &mut Vec<u8>, text: &str) {
             '\u{000C}' => out.extend_from_slice(b"\\f"),
             '\u{000D}' => out.extend_from_slice(b"\\r"),
             control if (control as u32) < 0x20 => write_u_escape(out, control as u32),
+            // Python's `ensure_ascii` also escapes DEL (U+007F).
+            '\u{007F}' => write_u_escape(out, 0x7F),
             ascii if (ascii as u32) < 0x80 => out.push(ascii as u8),
             bmp if (bmp as u32) <= 0xFFFF => write_u_escape(out, bmp as u32),
             supplementary => {

@@ -34,7 +34,9 @@ Usage:
 
 Options:
   --keys <dir>        local trust input: top-level *.json key-declaration records
-  --tsa-trust <pem>   L2 RFC 3161 trust anchors (PEM certificates)
+  --tsa-trust <pem>   L2 RFC 3161 trust anchors (PEM certificates); for the
+                      vectors command these are defaults for every case and a
+                      case's own --tsa-trust argument overrides them
   --previous <dir>    additionally require the previous container's manifest digest
   --json              accepted for compatibility; JSON is the default and only output
 
@@ -95,9 +97,9 @@ fn run() -> Result<ExitCode, UsageError> {
         match token {
             "--json" => index += 1,
             "--keys" | "--tsa-trust" | "--previous" => {
-                let value = tokens.get(index + 1).ok_or_else(|| {
-                    UsageError(format!("{token} requires a value"))
-                })?;
+                let value = tokens
+                    .get(index + 1)
+                    .ok_or_else(|| UsageError(format!("{token} requires a value")))?;
                 let value = PathBuf::from(value);
                 match token {
                     "--keys" => keys = Some(value),
@@ -117,7 +119,10 @@ fn run() -> Result<ExitCode, UsageError> {
     }
     let command = match command_name {
         "record" => {
-            reject_options("record", &[("--tsa-trust", &tsa_trust), ("--previous", &previous)])?;
+            reject_options(
+                "record",
+                &[("--tsa-trust", &tsa_trust), ("--previous", &previous)],
+            )?;
             Command::Record(single_target("record", &positionals)?)
         }
         "container" => Command::Container(single_target("container", &positionals)?),
@@ -180,10 +185,7 @@ fn single_target(command: &str, positionals: &[PathBuf]) -> Result<PathBuf, Usag
     }
 }
 
-fn reject_options(
-    command: &str,
-    options: &[(&str, &Option<PathBuf>)],
-) -> Result<(), UsageError> {
+fn reject_options(command: &str, options: &[(&str, &Option<PathBuf>)]) -> Result<(), UsageError> {
     for (name, value) in options {
         if value.is_some() {
             return Err(UsageError(format!("{command} does not accept {name}")));
@@ -209,11 +211,12 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, UsageError> {
 /// Loads the top-level `*.json` files of `directory` in sorted file-name order
 /// (§14.1 local trust input).
 fn load_keyset(directory: &Path) -> Result<Vec<Vec<u8>>, UsageError> {
-    let entries =
-        fs::read_dir(directory).map_err(|error| UsageError(format!("{}: {error}", directory.display())))?;
+    let entries = fs::read_dir(directory)
+        .map_err(|error| UsageError(format!("{}: {error}", directory.display())))?;
     let mut files: Vec<PathBuf> = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|error| UsageError(format!("{}: {error}", directory.display())))?;
+        let entry =
+            entry.map_err(|error| UsageError(format!("{}: {error}", directory.display())))?;
         let path = entry.path();
         if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("json")) {
             files.push(path);

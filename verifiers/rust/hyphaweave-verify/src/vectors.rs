@@ -22,6 +22,14 @@
 //! no network access and the runner reads only the vector directory tree plus
 //! the resolved keyset directory.
 //!
+//! The caller's [`VerifyOptions`] are the base for every case, so a caller that
+//! supplies `--tsa-trust` on the `vectors` command provides default anchors for
+//! the whole run (the other local inputs are normally supplied per case). A
+//! case whose `args` name `--keys`, `--tsa-trust` or `--previous` replaces that
+//! input for itself only; a case without `args` keeps the caller's inputs, so a
+//! case that documents its conclusion *without* `--keys` really is verified with
+//! no local trust input.
+//!
 //! Discovery is `<category>/<case>/expected.json`, two directory levels below
 //! the given directory, in sorted relative-path order. That shape is the same
 //! for the main corpus and for `vectors/frozen/v0.1-candidate`, so the frozen
@@ -56,10 +64,7 @@ use crate::{REPORT_VERSION, SPEC, VERIFIER_NAME, VERIFIER_VERSION};
 /// # Errors
 /// Returns a [`UsageError`] when the directory or a case file cannot be read, or
 /// when a case's `expected.json` is malformed.
-pub fn verify_vectors(
-    directory: &Path,
-    options: &VerifyOptions,
-) -> Result<Report, UsageError> {
+pub fn verify_vectors(directory: &Path, options: &VerifyOptions) -> Result<Report, UsageError> {
     let cases = discover_cases(directory)?;
     let mut keyset_cache: Option<PathBuf> = None;
     let mut case_reports: Vec<VectorCaseReport> = Vec::with_capacity(cases.len());
@@ -154,10 +159,8 @@ impl CaseExpectation {
             .into_iter()
             .collect();
         let notices = optional_string_list(directory, expected, "notices")?.unwrap_or_default();
-        let expected_digest =
-            optional_string(directory, expected, "expected_digest")?;
-        let expected_resolution =
-            optional_string_list(directory, expected, "expected_resolution")?;
+        let expected_digest = optional_string(directory, expected, "expected_digest")?;
+        let expected_resolution = optional_string_list(directory, expected, "expected_resolution")?;
         let expected_container = expected.get("expected_container").cloned();
         let records = match expected.get("records") {
             None => Vec::new(),
@@ -172,10 +175,7 @@ impl CaseExpectation {
                 records
             }
             Some(_) => {
-                return Err(expectation_error(
-                    directory,
-                    "\"records\" must be an array",
-                ));
+                return Err(expectation_error(directory, "\"records\" must be an array"));
             }
         };
         Ok(Self {
@@ -244,8 +244,7 @@ fn verify_case(
             let input = if input_path.is_dir() {
                 ContainerInput::Directory(input_path)
             } else {
-                let bytes =
-                    fs::read(&input_path).map_err(|error| io_error(&input_path, &error))?;
+                let bytes = fs::read(&input_path).map_err(|error| io_error(&input_path, &error))?;
                 ContainerInput::Zip(bytes)
             };
             crate::verify_container(input, options)
@@ -274,9 +273,9 @@ fn case_options(
     };
     let mut index = 0;
     while index < args.len() {
-        let arg = args[index].as_str().ok_or_else(|| {
-            expectation_error(directory, "\"args\" entries must be strings")
-        })?;
+        let arg = args[index]
+            .as_str()
+            .ok_or_else(|| expectation_error(directory, "\"args\" entries must be strings"))?;
         match arg {
             "--json" => index += 1,
             "--keys" | "--tsa-trust" | "--previous" => {
@@ -464,15 +463,15 @@ fn optional_string_list(
 
 fn case_matches(expectation: &CaseExpectation, report: &Report) -> bool {
     // §14.3: the verdict is exact.
-    if report.target.as_str() != expectation.target || report.verdict.as_str() != expectation.verdict
+    if report.target.as_str() != expectation.target
+        || report.verdict.as_str() != expectation.verdict
     {
         return false;
     }
     // The expected error set is a set over `container.errors` and every
     // `records[].errors` (§14.6).
     let reported_errors = reported_error_set(report);
-    let expected_errors: BTreeSet<&str> =
-        expectation.errors.iter().map(String::as_str).collect();
+    let expected_errors: BTreeSet<&str> = expectation.errors.iter().map(String::as_str).collect();
     if reported_errors != expected_errors {
         return false;
     }
@@ -545,13 +544,13 @@ fn reported_notice_set(report: &Report) -> BTreeSet<&str> {
 /// and scalar values are compared exactly (§14.10, `vectors/README.md`).
 fn subset_match(expected: &Value, actual: &Value) -> bool {
     match (expected, actual) {
-        (Value::Object(expected_object), Value::Object(actual_object)) => expected_object
-            .iter()
-            .all(|(name, value)| {
+        (Value::Object(expected_object), Value::Object(actual_object)) => {
+            expected_object.iter().all(|(name, value)| {
                 actual_object
                     .get(name)
                     .is_some_and(|actual_value| subset_match(value, actual_value))
-            }),
+            })
+        }
         (Value::Array(expected_items), Value::Array(actual_items)) => {
             expected_items.len() == actual_items.len()
                 && expected_items
@@ -568,10 +567,9 @@ fn records_expectations_match(expected_records: &[Object], report: &Report) -> b
         let Some(id) = expected.get_str("id") else {
             return false;
         };
-        report
-            .records
-            .iter()
-            .any(|actual| actual.id.as_deref() == Some(id) && record_expectation_matches(expected, actual))
+        report.records.iter().any(|actual| {
+            actual.id.as_deref() == Some(id) && record_expectation_matches(expected, actual)
+        })
     })
 }
 
@@ -616,9 +614,7 @@ fn record_report_value(record: &RecordReport) -> Value {
 mod tests {
     use super::*;
     use crate::error_codes::{e, n};
-    use crate::report::{
-        ChainReport, ContainerReport, RefReport, VerdictCounts,
-    };
+    use crate::report::{ChainReport, ContainerReport, RefReport, VerdictCounts};
 
     fn expectation(target: &str, verdict: &str) -> CaseExpectation {
         CaseExpectation {
