@@ -48,26 +48,26 @@ frozen candidate set is validated separately and is not part of the index).
 ## Current inventory
 
 Authoritative source is `vectors/index.json`; regenerate with
-`tools/gen_index.py` after adding cases. At the time of writing (revision 3,
-`weave-record/1` v0.1 draft, not yet accepted by J1/J2):
+`tools/gen_index.py` after adding cases. At the time of writing (revision 3
+plus S1-FIX1, `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
 
 | category | cases |
 |---|---|
-| `jcs` | 28 |
+| `jcs` | 30 |
 | `digest` | 5 |
 | `sig` | 47 |
 | `ref` | 13 |
 | `stage` | 18 |
 | `actor` | 28 |
-| `labels` | 37 |
+| `labels` | 38 |
 | `erasure` | 12 |
-| `grant` | 35 |
-| `key-lifecycle` | 49 |
-| `container` | 38 |
-| `integrity-levels` | 33 |
-| **total** | **343** |
+| `grant` | 36 |
+| `key-lifecycle` | 61 |
+| `container` | 59 |
+| `integrity-levels` | 37 |
+| **total** | **384** |
 
-Verdict distribution: `valid` 80, `erased` 1, `invalid` 236, `unverifiable` 26.
+Verdict distribution: `valid` 87, `erased` 1, `invalid` 267, `unverifiable` 29.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
@@ -78,6 +78,11 @@ prefix/trailing rejection, `--previous` chain continuity, container
 size-limit and listing multi-error semantics, pre-issued grants, grant-chain
 and revocation depth bounds, RFC 3161 accuracy bounds, limitation identifiers,
 container input identity, and the report-level rules of §14.6/§14.10).
+S1-FIX1 (decision 2026-11-11 #5) added the mixed-revocation, TSA-accuracy,
+ZIP-structure, frozen-candidate-restoration, depth-counting, revocation-validity,
+TOFU-criterion, limitation/notice-coverage, rotated-key-material,
+supplementary-plane ordering and oversize-record report-shape rulings; the
+affected existing cases were updated and the index regenerated.
 
 ## Running the vectors
 
@@ -199,13 +204,29 @@ tests. Until then the candidate may be regenerated after a ruling. The CI gate
 validates the file set and checksums and runs the verifier over the candidate
 set; removing a case turns that gate red.
 
+## Keyset usage errors and the vector format
+
+A keyset directory (`--keys <dir>`) is a *usage input*, not a record target:
+when two keyset files declare the same key id with a different class or a
+different validity window, or a keyset file is structurally invalid, the
+verifier exits with status 2 and emits no JSON report (specification §14.1).
+The `expected.json` format can express verdicts/errors of a record or container
+but not a CLI usage error, so these boundaries are pinned by the reference
+implementation's unit tests (and by `tools/anti_verification.py`) rather than
+by a committed vector; the vector cases that exercise keyset *governance*
+(e.g. `key-lifecycle/redeclare-class-conflict`) use valid keysets.
+
 ## Known coverage gaps
 
-Size-limit rejections (`E_JSON_SIZE` for oversized records/manifests/attestation
+Most size-limit rejections (`E_JSON_SIZE` for oversized manifests/attestation
 files/timestamp receipts, `E_CONTAINER_SIZE`, and the largest manifest/blob
 limits) are not exercised by committed vectors because that would require
 multi-megabyte fixtures; they are covered by the verifier's unit tests and the
 resource-limit gate. The JSON nesting limit (`MAX_JSON_DEPTH`, depth 32/33) and
 the licence nesting limit (`MAX_LICENCE_NESTING`, 16/17) *are* exercised by
-small committed vectors. `expected.json` notes on individual cases document the
-exact specification rule each case is derived from.
+small committed vectors, and `container/oversize-record-file` commits a
+1,048,577-byte record fixture so the per-record `MAX_RECORD_BYTES` rejection and
+its report shape are pinned by a vector. The directory-container total-byte cap
+(T15) is pinned by unit tests and the resource-limit gate only, for the same
+multi-gigabyte-fixture reason. `expected.json` notes on individual cases
+document the exact specification rule each case is derived from.

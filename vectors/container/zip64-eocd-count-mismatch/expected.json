@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip64-eocd-count-mismatch","input":"container.zip","notes":"T6/§11.9 rule 3: for a ZIP64 archive the ZIP64 EOCD entry count must equal the actual parsed count; +1 is E_CONTAINER_ZIP.","records":[],"target":"container","verdict":"invalid"}

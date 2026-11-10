@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-local-central-method-mismatch","input":"container.zip","notes":"T6/§11.9 rule 1: the local header compression method (deflate) contradicts the central directory (stored); the archive is E_CONTAINER_ZIP before any decompression.","records":[],"target":"container","verdict":"invalid"}

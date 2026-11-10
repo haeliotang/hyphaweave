@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-eocd-count-plus-three","input":"container.zip","notes":"T6/§11.9 rule 3: the end-of-central-directory entry count must equal the actual parsed entry count; +3 is E_CONTAINER_ZIP.","records":[],"target":"container","verdict":"invalid"}

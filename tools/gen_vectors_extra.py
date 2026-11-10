@@ -46,6 +46,7 @@ import shutil
 import struct
 import sys
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -411,8 +412,12 @@ def _tst_info(
 ) -> Any:
     """The TSTInfo payload of one crafted timestamp token.
 
-    *accuracy* is ``(seconds, millis, micros)``; ``None`` omits the Accuracy
-    member entirely, which the profile treats as zero (revision-2 R3).
+    *accuracy* is ``(seconds, millis, micros)``; a component that is ``None`` is
+    omitted, while an explicit integer (including 0) is written into the token.
+    ``accuracy=None`` omits the Accuracy member entirely, which the profile
+    treats as zero (revision-2 R3). T3 needs to express an explicit
+    ``milliseconds = 0`` / ``microseconds = 0`` to exercise the "present
+    component outside 1-999 is a format error" rule.
     """
     tst = asn1_tsp.TSTInfo()
     tst["version"] = "v1"
@@ -427,11 +432,14 @@ def _tst_info(
     tst["gen_time"] = gen_time
     if accuracy is not None:
         seconds, millis, micros = accuracy
-        tst["accuracy"] = {
-            "seconds": seconds,
-            "millis": millis if millis else None,
-            "micros": micros if micros else None,
-        }
+        components: dict[str, int] = {}
+        if seconds is not None:
+            components["seconds"] = seconds
+        if millis is not None:
+            components["millis"] = millis
+        if micros is not None:
+            components["micros"] = micros
+        tst["accuracy"] = components
     tst["ordering"] = False
     return tst
 
@@ -534,7 +542,8 @@ def _crafted_tsr(
     attribute_content_type: str = "tst_info",
     signer_digest_algorithm: str = "sha256",
     certificates_override: Sequence[bytes] | None = None,
-    accuracy: tuple[int, int, int] | None = None,
+    accuracy: tuple[int | None, int | None, int | None] | None = None,
+    gen_time: datetime.datetime | None = None,
 ) -> bytes:
     """Build one DER TimeStampResp deterministically (see module section note)."""
     signer_der = certificate_der if certificate_der is not None else _tsa_certificate_der()
@@ -543,6 +552,7 @@ def _crafted_tsr(
         imprint_bytes if imprint_bytes is not None else imprint,
         hash_algorithm=imprint_algorithm,
         accuracy=accuracy,
+        gen_time=gen_time if gen_time is not None else FIXED_GEN_TIME,
     )
     attributes = _signed_attributes(
         tst.dump(),
@@ -1067,9 +1077,11 @@ declare(
     ),
     args=("--keys", "@keyset"),
     expected_container={"level_claimed": "L0", "level_verified": "L0"},
-    notes="readable/ is an optional human view outside the digest (§11.8, I1): "
-    "arbitrary bytes there must not change validity (N_READABLE_PRESENT is an "
-    "optional notice, so it is not required here).",
+    notices=("N_READABLE_PRESENT",),
+    notes="readable/ is a human view outside the digest (§11.8, I1): arbitrary "
+    "bytes there must not change validity, and the entries are never "
+    "decompressed or CRC-checked. The container contains a readable/ entry, so "
+    "the report MUST carry N_READABLE_PRESENT (it is no longer optional).",
 )
 
 declare(
@@ -1085,10 +1097,13 @@ declare(
         "level_verified": "L0",
         "previous_manifest_digest": _chain_previous_digest(),
     },
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=("L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED"),
     notes="Container c2 embeds c1's manifest under previous/manifest.json and "
     "commits previous_manifest.digest == manifest-digest(c1 bytes) (§11.5, D1). "
-    "The previous manifest's own signature is not re-verified (N_PREVIOUS_SIG_"
-    "UNVERIFIED is optional, not required).",
+    "The previous manifest's own signature is not re-verified, so the report "
+    "MUST carry N_PREVIOUS_SIG_UNVERIFIED and the L_PREVIOUS_SIG_UNVERIFIED "
+    "limitation identifier.",
 )
 
 declare(
@@ -1306,6 +1321,7 @@ declare(
             "errors": [],
         },
     ),
+    limitations=("L_ERASED_PLACEHOLDER", "L_OFFLINE_CONTEXT"),
     notes="Positive: the live record is replaced by a weaver.erased placeholder whose "
     "digest is the original record digest and whose attestation resolves to the "
     "signed weave.erasure record; the placeholder's own verdict is 'erased', the "
@@ -4054,7 +4070,7 @@ def _chain_depth_grant_files() -> dict[str, bytes]:
     )
     records.append(parent)
     grantee = "agent-2"
-    for index in range(9):
+    for index in range(10):
         sub_granter = "agent-1" if index % 2 == 0 else "agent-2"
         child = delegated_grant(
             parent,
@@ -4096,10 +4112,20 @@ declare(
     errors=("E_GRANT_UNRESOLVED",),
     build=lambda case_dir: _chain_depth_grant_files(),
     args=GRANT_ARGS,
-    notes="A delegated-authorisation chain longer than the maximum depth (8) cannot "
-    "be checked to a fixed point, so the deepest sub-grant is unverifiable "
-    "E_GRANT_UNRESOLVED. The chain is built from distinct records (no digest "
-    "cycles, which are impossible by construction).",
+    records=(
+        {"id": "grant-depth-9", "verdict": "valid", "errors": []},
+        {
+            "id": "grant-depth-10",
+            "verdict": "unverifiable",
+            "errors": ["E_GRANT_UNRESOLVED"],
+        },
+    ),
+    notes="A delegated-authorisation chain longer than the maximum depth is "
+    "unverifiable. T8 counts parent links from the cited grant to the root, so "
+    "grant-depth-10 (citing depth-9) has a nine-link chain and is unverifiable "
+    "E_GRANT_UNRESOLVED, while grant-depth-9 (citing depth-8, eight links) is "
+    "still valid. The chain is built from distinct records (no digest cycles, "
+    "which are impossible by construction).",
 )
 
 declare(
@@ -4727,7 +4753,7 @@ declare(
     errors=("E_KEY_COMPROMISED",),
     build=lambda case_dir: _compromise_accuracy_files(
         case_dir,
-        accuracy=(1, 0, 0),
+        accuracy=(1, None, None),
         effective_at="2026-11-01T00:00:01.000Z",
     ),
     args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
@@ -4759,7 +4785,7 @@ declare(
     errors=("E_KEY_COMPROMISED",),
     build=lambda case_dir: _compromise_accuracy_files(
         case_dir,
-        accuracy=(1, 0, 0),
+        accuracy=(1, None, None),
         effective_at="2026-11-01T00:00:00.500Z",
     ),
     args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
@@ -5864,66 +5890,29 @@ declare(
     args=GRANT_ARGS,
     records=(
         {
+            "id": "grant-depth-9",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
             "id": "grant-depth-9-note",
             "verdict": "unverifiable",
             "errors": ["E_GRANT_UNRESOLVED"],
         },
     ),
-    notes="S10/§5.5.2 step 7: one more link than the inclusive bound of eight is "
-    "unverifiable E_GRANT_UNRESOLVED at the ninth link (the closed-form root "
-    "cannot be reached within the supported depth).",
+    notes="S10/T8/§5.5.2 step 7: the bound counts parent links from the cited "
+    "grant to the root. The depth-9 grant record itself cites the depth-8 grant "
+    "(eight links) and is valid; the note citing the depth-9 grant has nine "
+    "links, so it is unverifiable E_GRANT_UNRESOLVED and the container is "
+    "unverifiable.",
 )
 
 # -- S11/S12: TSA accuracy bound and limitation identifiers ---------------------
 
 
-declare(
-    "integrity-levels",
-    "l2-accuracy-over-limit",
-    "container",
-    "container",
-    "invalid",
-    errors=("E_TS_SCHEMA",),
-    build=lambda case_dir: _crafted_l2_files(
-        case_dir,
-        tsr_factory=lambda imprint: _crafted_tsr(
-            imprint, accuracy=(86_401, 0, 0)
-        ),
-    ),
-    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
-    expected_container={
-        "level_claimed": "L2",
-        "level_verified": "L0",
-        "anchor_verified": False,
-    },
-    notes="S11/§13: MAX_TS_ACCURACY is 86,400 seconds. A test-TSA-signed receipt "
-    "with accuracy.seconds = 86,401 is E_TS_SCHEMA (invalid), so the container is "
-    "invalid and the receipt can never be rescue evidence.",
-)
 
-declare(
-    "integrity-levels",
-    "l2-accuracy-overflow",
-    "container",
-    "container",
-    "invalid",
-    errors=("E_TS_SCHEMA",),
-    build=lambda case_dir: _crafted_l2_files(
-        case_dir,
-        tsr_factory=lambda imprint: _crafted_tsr(
-            imprint, accuracy=(10**13, 0, 0)
-        ),
-    ),
-    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
-    expected_container={
-        "level_claimed": "L2",
-        "level_verified": "L0",
-        "anchor_verified": False,
-    },
-    notes="S11/§12.2 row 13: converting accuracy.seconds = 10^13 to integer "
-    "microseconds overflows a signed 64-bit value; that is E_TS_SCHEMA, reported "
-    "as a container error without crashing.",
-)
+
+
 
 declare(
     "integrity-levels",
@@ -6102,6 +6091,1504 @@ declare(
     "(E_TS_RENEWAL): the listed checks run in order and report the first "
     "failing check. The receipt file itself is intact; only its listed digest "
     "is wrong.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T6: zip structure rules (decision 2026-11-11 #5 T6; spec §11.9)
+# ---------------------------------------------------------------------------
+
+_ZIP_LOCAL_SIG = 0x04034B50
+_ZIP_CENTRAL_SIG = 0x02014B50
+_ZIP_EOCD_SIG = 0x06054B50
+_ZIP_DESCRIPTOR_SIG = 0x08074B50
+_ZIP_UTF8_FLAG = 0x0800
+
+
+def _zip_raw(
+    entries: Sequence[tuple[str, bytes, int, int]],
+    *,
+    data_descriptor: bool = False,
+    gaps: dict[int, int] | None = None,
+    gap_before_central: int = 0,
+    local_names: dict[int, bytes] | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+    """Deterministic STORED zip writer over raw entries.
+
+    ``entries`` is a sequence of ``(name, data, create_system, external_attr)``.
+    Returns ``(archive_bytes, meta)``; *meta* carries the local-header and EOCD
+    offsets so individual structural fields can be patched deterministically.
+    ``gaps`` maps an entry index to zero bytes inserted before its local header;
+    ``local_names`` overrides the local-header filename bytes only (the central
+    directory keeps the real name).
+    """
+    gaps = gaps or {}
+    local_names = local_names or {}
+    output = bytearray()
+    central = bytearray()
+    local_meta: list[dict[str, Any]] = []
+    for index, (name, data, create_system, external_attr) in enumerate(entries):
+        output += b"\x00" * gaps.get(index, 0)
+        name_bytes = name.encode("utf-8")
+        header_name = local_names.get(index, name_bytes)
+        local_offset = len(output)
+        crc = zlib.crc32(data) & 0xFFFFFFFF
+        if data_descriptor:
+            flags = _ZIP_UTF8_FLAG | 0x0008
+            local_crc = local_comp = local_uncomp = 0
+        else:
+            flags = _ZIP_UTF8_FLAG
+            local_crc, local_comp, local_uncomp = crc, len(data), len(data)
+        output += struct.pack(
+            "<IHHHHHIIIHH",
+            _ZIP_LOCAL_SIG,
+            20,
+            flags,
+            0,  # compression method: stored
+            0,
+            0,
+            local_crc,
+            local_comp,
+            local_uncomp,
+            len(header_name),
+            0,
+        )
+        output += header_name
+        output += data
+        if data_descriptor:
+            output += struct.pack(
+                "<IIII", _ZIP_DESCRIPTOR_SIG, crc, len(data), len(data)
+            )
+        central += struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            _ZIP_CENTRAL_SIG,
+            (create_system << 8) | 20,
+            20,
+            flags,
+            0,
+            0,
+            0,
+            crc,
+            len(data),
+            len(data),
+            len(name_bytes),
+            0,
+            0,
+            0,
+            0,
+            external_attr,
+            local_offset,
+        )
+        central += name_bytes
+        local_meta.append(
+            {
+                "name": name,
+                "offset": local_offset,
+                "name_offset": local_offset + 30,
+                "data_offset": local_offset + 30 + len(header_name),
+            }
+        )
+    central_offset = len(output) + gap_before_central
+    output += b"\x00" * gap_before_central
+    output += central
+    eocd_offset = len(output)
+    output += struct.pack(
+        "<IHHHHIIH",
+        _ZIP_EOCD_SIG,
+        0,
+        0,
+        len(entries),
+        len(entries),
+        len(central),
+        central_offset,
+        0,
+    )
+    meta = {
+        "locals": local_meta,
+        "central_offset": central_offset,
+        "eocd_offset": eocd_offset,
+        "entry_count": len(entries),
+    }
+    return bytes(output), meta
+
+
+def _zip_patch(data: bytes, offset: int, fmt: str, *values: Any) -> bytes:
+    result = bytearray(data)
+    struct.pack_into(fmt, result, offset, *values)
+    return bytes(result)
+
+
+_STANDARD_ATTR = 0o100644 << 16
+_SYMLINK_ATTR = 0o120777 << 16
+
+
+def _zip_standard_entries(
+    extra: Sequence[tuple[str, bytes, int, int]] = (),
+) -> list[tuple[str, bytes, int, int]]:
+    """Sorted standard container entries (raw zip entries) plus *extra*."""
+    internal = recordlib.build_container(SIMPLE_RECORDS())
+    entries = [(name, internal[name], 3, _STANDARD_ATTR) for name in sorted(internal)]
+    return entries + list(extra)
+
+
+def _zip_standard(
+    **kwargs: Any,
+) -> tuple[bytes, dict[str, Any]]:
+    extra = kwargs.pop("extra", ())
+    return _zip_raw(_zip_standard_entries(extra), **kwargs)
+
+
+def _zip_local_field(
+    archive: bytes, meta: dict[str, Any], field_name: str
+) -> tuple[int, str]:
+    positions = {
+        "method": (8, "<H"),
+        "crc": (14, "<I"),
+        "compressed": (18, "<I"),
+        "uncompressed": (22, "<I"),
+    }
+    relative, fmt = positions[field_name]
+    return meta["locals"][0]["offset"] + relative, fmt
+
+
+def _zip_local_mismatch(field_name: str, *, value: Any) -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    offset, fmt = _zip_local_field(archive, meta, field_name)
+    if value is None:
+        value = struct.unpack_from(fmt, archive, offset)[0] + 1
+    return {"container.zip": _zip_patch(archive, offset, fmt, value)}
+
+
+def _zip_local_name_mismatch() -> dict[str, bytes]:
+    archive, _meta = _zip_standard(local_names={0: b"manifest.jsoN"})
+    return {"container.zip": archive}
+
+
+def _zip_gap_between_entries() -> dict[str, bytes]:
+    archive, _meta = _zip_standard(gaps={1: 8})
+    return {"container.zip": archive}
+
+
+def _zip_gap_before_central() -> dict[str, bytes]:
+    archive, _meta = _zip_standard(gap_before_central=8)
+    return {"container.zip": archive}
+
+
+def _zip_eocd_count(delta: int) -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    count = meta["entry_count"] + delta
+    patched = _zip_patch(archive, meta["eocd_offset"] + 8, "<H", count)
+    return {"container.zip": _zip_patch(patched, meta["eocd_offset"] + 10, "<H", count)}
+
+
+def _zip64_eocd(archive: bytes, meta: dict[str, Any]) -> tuple[bytes, int]:
+    """Patch the standard archive into ZIP64 form; return (zip64_bytes, eocd_offset)."""
+    eocd_offset = meta["eocd_offset"]
+    return _patch_zip64(archive), eocd_offset
+
+
+def _zip64_eocd_count_mismatch() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    patched, eocd_offset = _zip64_eocd(archive, meta)
+    count = meta["entry_count"] + 1
+    # ZIP64 EOCD record: sig(4) size(8) version(2+2) disk(4+4) counts(8+8)...
+    patched = _zip_patch(patched, eocd_offset + 24, "<Q", count)
+    return {"container.zip": _zip_patch(patched, eocd_offset + 32, "<Q", count)}
+
+
+def _zip64_locator_offset_corrupt() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    patched, eocd_offset = _zip64_eocd(archive, meta)
+    # locator follows the 56-byte ZIP64 EOCD record: sig(4) disk(4) offset(8)...
+    locator = eocd_offset + 56
+    return {
+        "container.zip": _zip_patch(patched, locator + 8, "<Q", eocd_offset + 1)
+    }
+
+
+def _zip_entry_data_overlap() -> dict[str, bytes]:
+    """Entry 0's declared data range overlaps the next entry's local header."""
+    archive, meta = _zip_standard()
+    first = meta["locals"][0]
+    actual_compressed = struct.unpack_from("<I", archive, first["offset"] + 18)[0]
+    local_offset = first["offset"] + 18
+    central_offset = meta["central_offset"] + 20
+    patched = _zip_patch(archive, local_offset, "<I", actual_compressed + 8)
+    return {
+        "container.zip": _zip_patch(
+            patched, central_offset, "<I", actual_compressed + 8
+        )
+    }
+
+
+def _zip_readable_extra(name: str, data: bytes = b"x", attr: int = _STANDARD_ATTR):
+    return _zip_standard(extra=((name, data, 3, attr),))[0]
+
+
+def _zip_readable_dotdot() -> dict[str, bytes]:
+    return {"container.zip": _zip_readable_extra("readable/../escape")}
+
+
+def _zip_readable_absolute() -> dict[str, bytes]:
+    return {"container.zip": _zip_readable_extra("/readable/x")}
+
+
+def _zip_readable_symlink() -> dict[str, bytes]:
+    return {"container.zip": _zip_readable_extra("readable/link", attr=_SYMLINK_ATTR)}
+
+
+def _zip_readable_duplicate() -> dict[str, bytes]:
+    archive, _meta = _zip_standard(
+        extra=(
+            ("readable/x", b"a", 3, _STANDARD_ATTR),
+            ("readable/x", b"b", 3, _STANDARD_ATTR),
+        )
+    )
+    return {"container.zip": archive}
+
+
+def _zip_data_descriptor_valid() -> dict[str, bytes]:
+    archive, _meta = _zip_standard(data_descriptor=True)
+    return {"container.zip": archive}
+
+
+declare(
+    "container",
+    "zip-local-central-uncompressed-size-mismatch",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_local_mismatch("uncompressed", value=None),
+    records=[],
+    notes="T6/§11.9 rule 1: the local file header and the central directory "
+    "must agree on the uncompressed size. The local header claims one byte "
+    "more than the central directory, so the archive is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-local-central-crc-mismatch",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_local_mismatch("crc", value=None),
+    records=[],
+    notes="T6/§11.9 rule 1: the local header CRC-32 must equal the central "
+    "directory CRC-32; a mismatch is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-local-central-method-mismatch",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_local_mismatch("method", value=8),
+    records=[],
+    notes="T6/§11.9 rule 1: the local header compression method (deflate) "
+    "contradicts the central directory (stored); the archive is "
+    "E_CONTAINER_ZIP before any decompression.",
+)
+
+declare(
+    "container",
+    "zip-local-central-name-mismatch",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_local_name_mismatch(),
+    records=[],
+    notes="T6/§11.9 rule 1: the raw filename bytes must agree between the "
+    "local header and the central directory; a one-byte name difference is "
+    "E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-entry-data-overlap",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_entry_data_overlap(),
+    records=[],
+    notes="T6/§11.9 rule 2: every byte must have exactly one home. The first "
+    "entry's declared compressed size is extended by 8 bytes in both the local "
+    "header and the central directory, so its data range overlaps the next "
+    "entry's local header. The field pair agrees (rule 1) but the layout "
+    "overlaps, so the archive is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-gap-between-entries",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_gap_between_entries(),
+    records=[],
+    notes="T6/§11.9 rule 2: every byte must have a home. Eight zero bytes "
+    "between the first entry's data and the next local header are a gap, so "
+    "the archive is E_CONTAINER_ZIP (all central-directory offsets are "
+    "correct; only the byte layout is wrong).",
+)
+
+declare(
+    "container",
+    "zip-gap-before-central-directory",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_gap_before_central(),
+    records=[],
+    notes="T6/§11.9 rule 2: the central directory must begin immediately "
+    "after the last entry. Eight zero bytes before it are a gap, so the "
+    "archive is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-eocd-count-plus-three",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_eocd_count(3),
+    records=[],
+    notes="T6/§11.9 rule 3: the end-of-central-directory entry count must "
+    "equal the actual parsed entry count; +3 is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-eocd-count-minus-one",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_eocd_count(-1),
+    records=[],
+    notes="T6/§11.9 rule 3: an EOCD count one lower than the actual entry "
+    "count would make a counting parser miss an entry; it is "
+    "E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip64-eocd-count-mismatch",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip64_eocd_count_mismatch(),
+    records=[],
+    notes="T6/§11.9 rule 3: for a ZIP64 archive the ZIP64 EOCD entry count "
+    "must equal the actual parsed count; +1 is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip64-locator-corrupt-offset",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip64_locator_offset_corrupt(),
+    records=[],
+    notes="T6/§11.9 rule 3: the ZIP64 EOCD locator's offset must point at "
+    "the ZIP64 EOCD record; a corrupted offset is E_CONTAINER_ZIP. This pins "
+    "the version-independent (3.12/3.14) parsing required by T6.",
+)
+
+declare(
+    "container",
+    "readable-dotdot-entry",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY",),
+    build=lambda case_dir: _zip_readable_dotdot(),
+    records=[],
+    notes="T6/§11.9 rule 4: a readable/ entry still goes through the path "
+    "safety checks; a `..` segment is E_CONTAINER_ENTRY even though "
+    "readable/ is never decompressed.",
+)
+
+declare(
+    "container",
+    "readable-absolute-path-entry",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY",),
+    build=lambda case_dir: _zip_readable_absolute(),
+    records=[],
+    notes="T6/§11.9 rule 4: an absolute path under readable/ is "
+    "E_CONTAINER_ENTRY (path safety applies to every entry).",
+)
+
+declare(
+    "container",
+    "readable-symlink-entry",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY",),
+    build=lambda case_dir: _zip_readable_symlink(),
+    records=[],
+    notes="T6/§11.9 rule 4: a readable/ entry with the Unix symlink file type "
+    "is E_CONTAINER_ENTRY; skipping decompression and CRC checking does not "
+    "skip the entry-type check.",
+)
+
+declare(
+    "container",
+    "readable-duplicate-name",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY",),
+    build=lambda case_dir: _zip_readable_duplicate(),
+    records=[],
+    notes="T6/§11.9 rule 4: duplicate entry names are E_CONTAINER_ENTRY even "
+    "under readable/.",
+)
+
+declare(
+    "container",
+    "zip-data-descriptor-valid",
+    "container",
+    "container.zip",
+    "valid",
+    build=lambda case_dir: _zip_data_descriptor_valid(),
+    args=("--keys", "@keyset"),
+    expected_container={
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "record_count": 1,
+    },
+    limitations=("L_OFFLINE_CONTEXT",),
+    notes="T6/§11.9 rule 1 positive: a streaming archive whose entries set "
+    "general-purpose flag bit 3 (data descriptor) and carry zero local "
+    "sizes. The descriptor values equal the central directory, so the archive "
+    "is accepted.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T13: rotated key material is checked before the signature equation
+# ---------------------------------------------------------------------------
+
+
+def _rotation_malformed_old_public_key() -> dict[str, bytes]:
+    record = key_rotation(record_id="key-rotated-old-public-key-malformed")
+    body = dict(record["body"])
+    body["old_public_key"] = keyutil.b64url_encode(b"short")
+    mutated = {name: value for name, value in record.items() if name != "sigs"}
+    mutated["body"] = body
+    return {"record.json": canonical(recordlib.signed(mutated, ["key-old", "key-new"]))}
+
+
+declare(
+    "key-lifecycle",
+    "rotation-old-public-key-malformed",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_KEY_ROTATION_KEYS",),
+    build=lambda case_dir: _rotation_malformed_old_public_key(),
+    args=("--keys", "@keyset"),
+    notes="T13/§9.2: the declared old_public_key is not a strict unpadded "
+    "base64url of exactly 32 bytes. Structural key-material validation runs "
+    "before the signature equation, so the record is invalid "
+    "E_KEY_ROTATION_KEYS (not E_SIG_NONCANONICAL_A).",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T2: retired and compromise revocations are independent
+# (decision 2026-11-11 #5 T2; spec §9.4)
+# ---------------------------------------------------------------------------
+
+# The crafted receipt genTime is 2026-11-01T00:00:00.000Z (fixed test TSA).
+# A compromise effective time strictly after it is rescuable by a trusted
+# receipt; a retired effective time at or before the note's recorded_at bites.
+_MIXED_COMPROMISE_EARLY = "2026-11-01T00:00:01.000Z"
+_MIXED_COMPROMISE_LATE = recordlib.T8
+_MIXED_RETIRED_EARLY = recordlib.T2
+_MIXED_RETIRED_LATE = recordlib.T9
+
+
+def _mixed_revocation_files(scenario: str, *, trusted: bool) -> dict[str, bytes]:
+    """L2 container with a retired and a compromise revocation of one key.
+
+    *scenario* selects the effective-time relation; the record is always signed
+    by the compromised key at T4 and the receipt is the fixed test-TSA token.
+    """
+    retired_effective: str
+    compromise_effective: str
+    if scenario == "retired-then-compromise":
+        retired_effective = _MIXED_RETIRED_EARLY
+        compromise_effective = _MIXED_COMPROMISE_LATE
+    elif scenario == "compromise-then-retired":
+        retired_effective = _MIXED_RETIRED_LATE
+        compromise_effective = _MIXED_COMPROMISE_EARLY
+    elif scenario == "rescue-but-retired":
+        retired_effective = _MIXED_RETIRED_EARLY
+        compromise_effective = _MIXED_COMPROMISE_EARLY
+    else:  # pragma: no cover - defensive
+        raise SystemExit("unknown mixed-revocation scenario %r" % (scenario,))
+    records = [
+        recordlib.key_revocation(
+            "key-compromised",
+            reason="retired",
+            effective_at=retired_effective,
+            recorded_at=retired_effective,
+            record_id="mixed-revocation-retired",
+        ),
+        recordlib.key_revocation(
+            "key-compromised",
+            reason="key-compromise",
+            effective_at=compromise_effective,
+            recorded_at=compromise_effective,
+            record_id="mixed-revocation-compromise",
+        ),
+        record_signed_by(
+            "key-compromised",
+            "mixed-revocation-note",
+            recorded_at=recordlib.T4,
+            stage="accepted",
+        ),
+    ]
+
+    def builder(imprint: bytes) -> list[tuple[str, bytes, str | None]]:
+        return [("signatures/timestamp-1.tsr", _crafted_tsr(imprint), None)]
+
+    files = _build_timestamped_container(records, builder, level="L2")
+    result = wrap(files)
+    if trusted:
+        result[TSA_CERT_NAME] = TSA_CERT()
+    return result
+
+
+_MIXED_CASES: tuple[tuple[str, bool, str, tuple[str, ...], bool], ...] = (
+    # (scenario, trusted, container verdict, aggregated errors, anchor_verified)
+    ("retired-then-compromise", True, "invalid", ("E_KEY_REVOKED",), True),
+    (
+        "retired-then-compromise",
+        False,
+        "invalid",
+        ("E_KEY_REVOKED", "E_TS_UNTRUSTED"),
+        False,
+    ),
+    ("compromise-then-retired", True, "valid", (), True),
+    ("compromise-then-retired", False, "unverifiable", ("E_TS_UNTRUSTED",), False),
+    ("rescue-but-retired", True, "invalid", ("E_KEY_REVOKED",), True),
+    (
+        "rescue-but-retired",
+        False,
+        "invalid",
+        ("E_KEY_REVOKED", "E_TS_UNTRUSTED"),
+        False,
+    ),
+)
+
+for _scenario, _trusted, _verdict, _errors, _anchor in _MIXED_CASES:
+    _name = "mixed-revocation-%s%s" % (
+        _scenario,
+        "" if _trusted else "-no-anchor",
+    )
+    if _verdict == "invalid":
+        _note_verdict = "invalid"
+        _note_errors = ("E_KEY_REVOKED",) if _scenario != "compromise-then-retired" else ()
+    elif _verdict == "unverifiable":
+        _note_verdict = "unverifiable"
+        _note_errors = ("E_TS_UNTRUSTED",)
+    else:
+        _note_verdict = "valid"
+        _note_errors = ()
+    if _scenario == "retired-then-compromise":
+        _notes = (
+            "T2/§9.4: two revocations of the same key are evaluated independently. "
+            "The retired revocation (effective T2) bites the T4 signature and can "
+            "never be timestamp-rescued; the compromise revocation does not "
+            "override it. The retired family produces invalid E_KEY_REVOKED; "
+            "without an anchor the container also reports the untrusted-receipt "
+            "condition E_TS_UNTRUSTED."
+        )
+    elif _scenario == "compromise-then-retired":
+        _notes = (
+            "T2/§9.4: the retired revocation (effective T9) does not bite the T4 "
+            "signature, so only the compromise family applies; the trusted receipt "
+            "predates the compromise effective time and rescues the signature. "
+            "Without an anchor the outcome is unverifiable E_TS_UNTRUSTED."
+        )
+    else:
+        _notes = (
+            "T2/§9.4: the compromise family alone would rescue the signature with "
+            "the trusted receipt, but the retired family also bites the T4 "
+            "signature; the stricter invalid E_KEY_REVOKED wins in both variants."
+        )
+    declare(
+        "key-lifecycle",
+        _name,
+        "container",
+        "container",
+        _verdict,
+        errors=_errors,
+        build=lambda case_dir, s=_scenario, t=_trusted: _mixed_revocation_files(
+            s, trusted=t
+        ),
+        args=(
+            ("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME)
+            if _trusted
+            else ("--keys", "@keyset")
+        ),
+        expected_container={
+            "level_claimed": "L2",
+            "level_verified": "L0",
+            "anchor_verified": _anchor,
+            "record_count": 3,
+        },
+        records=(
+            {"id": "mixed-revocation-retired", "verdict": "valid", "errors": []},
+            {"id": "mixed-revocation-compromise", "verdict": "valid", "errors": []},
+            {
+                "id": "mixed-revocation-note",
+                "verdict": _note_verdict,
+                "errors": list(_note_errors),
+            },
+        ),
+        notes=_notes,
+    )
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T3: TSA accuracy range vs unusable accuracy (decision 2026-11-11 #5)
+# ---------------------------------------------------------------------------
+
+
+def _accuracy_l2_files(
+    case_dir: Path,
+    accuracy: tuple[int | None, int | None, int | None] | None,
+    *,
+    tamper_signature: bool = False,
+) -> dict[str, bytes]:
+    """L2 container whose single crafted receipt carries *accuracy*."""
+    return _crafted_l2_files(
+        case_dir,
+        tsr_factory=lambda imprint: _crafted_tsr(
+            imprint,
+            accuracy=accuracy,
+            tamper_signature=tamper_signature,
+        ),
+    )
+
+
+_ACCURACY_RECORD = {"id": "key-declared-human-1", "verdict": "valid", "errors": []}
+
+
+declare(
+    "integrity-levels",
+    "l2-accuracy-millis-out-of-range",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_SCHEMA",),
+    build=lambda case_dir: _accuracy_l2_files(case_dir, (None, 1000, None)),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    records=(_ACCURACY_RECORD,),
+    notes="T3(1)/§12.2 check 13: a present accuracy.milliseconds outside 1-999 "
+    "is a malformed token component, not an unusable-but-valid receipt: "
+    "E_TS_SCHEMA, container invalid.",
+)
+
+declare(
+    "integrity-levels",
+    "l2-accuracy-micros-zero-explicit",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_SCHEMA",),
+    build=lambda case_dir: _accuracy_l2_files(case_dir, (None, None, 0)),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    records=(_ACCURACY_RECORD,),
+    notes="T3(1)/§12.2 check 13: an explicitly written accuracy.microseconds = 0 "
+    "is a present component outside 1-999 (an absent component would count as "
+    "0, but a written 0 is malformed): E_TS_SCHEMA, container invalid.",
+)
+
+declare(
+    "integrity-levels",
+    "l2-accuracy-over-limit",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_TS_UNTRUSTED",),
+    build=lambda case_dir: _accuracy_l2_files(case_dir, (86_401, None, None)),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+        "timestamps": [{"state": "present-unverified"}],
+    },
+    records=(_ACCURACY_RECORD,),
+    limitations=(
+        "L_CHAIN_CLAIM_UNVERIFIED",
+        "L_OFFLINE_CONTEXT",
+        "L_TSA_TRUST_UNVERIFIED",
+    ),
+    notes="T3(2)/§12.2 check 13: an accuracy above MAX_TS_ACCURACY is not a "
+    "format error. The receipt cannot support the L2 claim, so the container is "
+    "unverifiable E_TS_UNTRUSTED (never invalid); the record itself is still "
+    "processed and valid. (Revision 3 reported this input as invalid "
+    "E_TS_SCHEMA; S1-FIX1 changes the conclusion.)",
+)
+
+declare(
+    "integrity-levels",
+    "l2-accuracy-overflow",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_TS_UNTRUSTED",),
+    build=lambda case_dir: _accuracy_l2_files(case_dir, (10**13, None, None)),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+        "timestamps": [{"state": "present-unverified"}],
+    },
+    records=(_ACCURACY_RECORD,),
+    limitations=(
+        "L_CHAIN_CLAIM_UNVERIFIED",
+        "L_OFFLINE_CONTEXT",
+        "L_TSA_TRUST_UNVERIFIED",
+    ),
+    notes="T3(2)/§12.2 check 13: converting accuracy.seconds = 10^13 to "
+    "microseconds overflows; the token is well formed but the accuracy is "
+    "unusable, so the container is unverifiable E_TS_UNTRUSTED without "
+    "crashing or claiming L2. (Revision 3 reported invalid E_TS_SCHEMA.)",
+)
+
+declare(
+    "integrity-levels",
+    "l2-accuracy-over-limit-tampered-cms",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_CMS",),
+    build=lambda case_dir: _accuracy_l2_files(
+        case_dir, (86_401, None, None), tamper_signature=True
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    records=(_ACCURACY_RECORD,),
+    notes="T3(3)/§12.2: the checks run in numbered order and the first failing "
+    "check decides. The CMS signature is tampered AND the accuracy is over the "
+    "limit; CMS checks (rows 5-12) come before accuracy (row 13), so the "
+    "container is invalid E_TS_CMS, not E_TS_SCHEMA/E_TS_UNTRUSTED.",
+)
+
+declare(
+    "integrity-levels",
+    "l2-submillisecond-rescue",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _submillisecond_rescue_files(),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": True,
+        "record_count": 2,
+    },
+    records=(
+        {"id": "submillisecond-compromise-revocation", "verdict": "valid", "errors": []},
+        {"id": "submillisecond-rescued-note", "verdict": "valid", "errors": []},
+    ),
+    notes="T3(4)/§9.4: the rescue comparison truncates genTime to integer "
+    "milliseconds first: genTime = T-0.5 ms becomes T-1 ms in the comparison, "
+    "and 500 us of accuracy keeps genTime_ms*1000 + accuracy_us < T_ms*1000. "
+    "The compromised-key signature is rescued, so the record and container are "
+    "valid even though the raw genTime is only half a millisecond before T.",
+)
+
+
+def _submillisecond_rescue_files() -> dict[str, bytes]:
+    """L2 container rescued by a sub-millisecond-precision receipt."""
+    effective_at = "2026-11-01T00:00:00.001Z"
+    records = [
+        recordlib.key_revocation(
+            "key-compromised",
+            reason="key-compromise",
+            effective_at=effective_at,
+            recorded_at="2026-11-01T00:00:01.000Z",
+            record_id="submillisecond-compromise-revocation",
+        ),
+        record_signed_by(
+            "key-compromised",
+            "submillisecond-rescued-note",
+            recorded_at=recordlib.T4,
+            stage="accepted",
+        ),
+    ]
+
+    def builder(imprint: bytes) -> list[tuple[str, bytes, str | None]]:
+        return [
+            (
+                "signatures/timestamp-1.tsr",
+                _crafted_tsr(
+                    imprint,
+                    gen_time=datetime.datetime(
+                        2026, 11, 1, 0, 0, 0, 500,
+                        tzinfo=datetime.timezone.utc,
+                    ),
+                    accuracy=(None, None, 500),
+                ),
+                None,
+            )
+        ]
+
+    files = _build_timestamped_container(records, builder, level="L2")
+    return {**wrap(files), TSA_CERT_NAME: TSA_CERT()}
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T4: equal recorded_at declarations are ordered by record digest
+# (decision 2026-11-11 #5 T4; spec §5.3/§9.1)
+# ---------------------------------------------------------------------------
+
+_TIE_KEY_NAME = "equal-time-declaration-key"
+
+
+def _equal_time_declaration(
+    private: Any,
+    public: bytes,
+    key_id: str,
+    key_type: str,
+    record_id: str,
+) -> dict[str, Any]:
+    body = {
+        "algorithm": "ed25519",
+        "key": key_id,
+        "key_type": key_type,
+        "public_key": keyutil.b64url_encode(public),
+    }
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id=record_id,
+        actor={"type": key_type, "key": key_id},
+        body=body,
+        stage="accepted",
+        recorded_at=recordlib.T1,
+        origin_instance=key_id,
+    )
+    signatures = [
+        _derived_signature(private, key_id, record),
+        recordlib.sig_entry(record, "human-1"),
+    ]
+    signatures.sort(key=lambda entry: entry["key"])
+    record["sigs"] = signatures
+    return record
+
+
+_TIE_CACHE: dict[bool, tuple[dict[str, Any], dict[str, Any], Any, str]] = {}
+
+
+def _equal_time_pair(
+    *, human_first: bool
+) -> tuple[dict[str, Any], dict[str, Any], Any, str]:
+    """Human and organization declarations for one fresh key at the same time.
+
+    The human declaration's record id is fixed; organization ids are searched so
+    that the numeric record-digest order matches *human_first*. Both twins are
+    fully deterministic.
+    """
+    cached = _TIE_CACHE.get(human_first)
+    if cached is not None:
+        return cached
+    private, public, key_id = derived_key(_TIE_KEY_NAME)
+    human = _equal_time_declaration(
+        private, public, key_id, "human", "key-declared-equal-time-human"
+    )
+    human_digest = recordlib.record_digest(human)
+    for index in range(512):
+        organization = _equal_time_declaration(
+            private,
+            public,
+            key_id,
+            "organization",
+            "key-declared-equal-time-organization-%d" % index,
+        )
+        organization_digest = recordlib.record_digest(organization)
+        matches = (
+            human_digest < organization_digest
+            if human_first
+            else organization_digest < human_digest
+        )
+        if matches:
+            _TIE_CACHE[human_first] = (human, organization, private, key_id)
+            return _TIE_CACHE[human_first]
+    raise SystemExit("no deterministic organization id gives the requested order")
+
+
+def _equal_time_note(private: Any, key_id: str) -> dict[str, Any]:
+    record = recordlib.build_record(
+        kind="example.note",
+        id="key-declared-equal-time-note",
+        actor={"type": "human", "key": key_id},
+        body={"text": "human act by the tied key"},
+        stage="accepted",
+        recorded_at=recordlib.T4,
+        origin_instance=key_id,
+    )
+    record["sigs"] = [_derived_signature(private, key_id, record)]
+    return record
+
+
+def _equal_time_files(*, human_first: bool) -> dict[str, bytes]:
+    human, organization, private, key_id = _equal_time_pair(human_first=human_first)
+    return _wrap_internal(
+        recordlib.build_container(
+            [human, organization, _equal_time_note(private, key_id)]
+        )
+    )
+
+
+_HUMAN_FIRST_IDS = _equal_time_pair(human_first=True)[:2]
+_ORGANIZATION_FIRST_IDS = _equal_time_pair(human_first=False)[:2]
+
+declare(
+    "key-lifecycle",
+    "equal-time-declaration-digest-order-human-first",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_CLASS_CONFLICT",),
+    build=lambda case_dir: _equal_time_files(human_first=True),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": _HUMAN_FIRST_IDS[0]["id"],
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": _HUMAN_FIRST_IDS[1]["id"],
+            "verdict": "invalid",
+            "errors": ["E_KEY_CLASS_CONFLICT"],
+        },
+        {"id": "key-declared-equal-time-note", "verdict": "valid", "errors": []},
+    ),
+    notes="T4(3)/§5.3: two context declarations for the same key id share a "
+    "recorded_at, so the deterministic order is the record digest (smallest "
+    "first). This twin has the human declaration's digest first: it governs the "
+    "key's class and is valid, the organization declaration is invalid "
+    "E_KEY_CLASS_CONFLICT, and the human-act note is valid.",
+)
+
+declare(
+    "key-lifecycle",
+    "equal-time-declaration-digest-order-organization-first",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ACTOR_KEY_TYPE_MISMATCH", "E_KEY_CLASS_CONFLICT"),
+    build=lambda case_dir: _equal_time_files(human_first=False),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": _ORGANIZATION_FIRST_IDS[0]["id"],
+            "verdict": "invalid",
+            "errors": ["E_KEY_CLASS_CONFLICT"],
+        },
+        {
+            "id": _ORGANIZATION_FIRST_IDS[1]["id"],
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": "key-declared-equal-time-note",
+            "verdict": "invalid",
+            "errors": ["E_ACTOR_KEY_TYPE_MISMATCH"],
+        },
+    ),
+    notes="T4(3)/§5.3: the mirrored twin of the human-first case, where the "
+    "organization declaration's digest is the smaller one. The organization "
+    "class governs, the human declaration is invalid E_KEY_CLASS_CONFLICT, and "
+    "the human-act note is invalid E_ACTOR_KEY_TYPE_MISMATCH. Together the two "
+    "twins pin the digest tie-break independently of input order.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T9: a revocation signed by an already-revoked key is ineffective
+# (decision 2026-11-11 #5 T9; spec §9.5)
+# ---------------------------------------------------------------------------
+
+
+def _revocation_by_retired_signer_files() -> dict[str, bytes]:
+    retired_human_1 = recordlib.key_revocation(
+        "human-1",
+        reason="retired",
+        effective_at=recordlib.T1,
+        recorded_at=recordlib.T1,
+        signer_name="human-2",
+        record_id="key-revoked-human-1-retired",
+    )
+    ineffective = recordlib.key_revocation(
+        "human-2",
+        reason="retired",
+        effective_at=recordlib.T3,
+        recorded_at=recordlib.T3,
+        signer_name="human-1",
+        record_id="key-revoked-human-2-by-retired-signer",
+    )
+    note = recordlib.build_record(
+        kind="example.note",
+        id="revocation-target-note",
+        actor=recordlib.actor("human-2"),
+        body={"text": "the target key is not revoked"},
+        stage="accepted",
+        recorded_at=recordlib.T4,
+    )
+    note = recordlib.signed(note, "human-2")
+    return _wrap_internal(
+        recordlib.build_container([retired_human_1, ineffective, note])
+    )
+
+
+declare(
+    "key-lifecycle",
+    "revocation-signed-by-retired-key",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _revocation_by_retired_signer_files(),
+    args=("--keys", "@keyset"),
+    records=(
+        {"id": "key-revoked-human-1-retired", "verdict": "valid", "errors": []},
+        {
+            "id": "key-revoked-human-2-by-retired-signer",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+        {"id": "revocation-target-note", "verdict": "valid", "errors": []},
+    ),
+    notes="T9/§9.5: the revocation of human-2 is signed by human-1, but human-1 "
+    "was already retired at T1. A revocation record must itself be valid to take "
+    "effect, so this one is invalid E_KEY_REVOKED and revokes nothing; human-2's "
+    "note stays valid and the container is invalid because of the bad "
+    "revocation record.",
+)
+
+
+_MUTUAL_REVOCATION_CACHE: dict[bool, dict[str, Any]] = {}
+
+
+def _mutual_revocation_records(*, human1_earlier: bool) -> dict[str, Any]:
+    """The two mutual revocation records in the requested digest order."""
+    cached = _MUTUAL_REVOCATION_CACHE.get(human1_earlier)
+    if cached is not None:
+        return cached
+    by_human_1 = recordlib.key_revocation(
+        "human-2",
+        reason="retired",
+        effective_at=recordlib.T2,
+        recorded_at=recordlib.T2,
+        signer_name="human-1",
+        record_id="mutual-revocation-by-human-1",
+    )
+    by_human_1_digest = recordlib.record_digest(by_human_1)
+    other = None
+    for index in range(256):
+        candidate = recordlib.key_revocation(
+            "human-1",
+            reason="retired",
+            effective_at=recordlib.T2,
+            recorded_at=recordlib.T2,
+            signer_name="human-2",
+            record_id="mutual-revocation-by-human-2-%d" % index,
+        )
+        candidate_first = recordlib.record_digest(candidate) < by_human_1_digest
+        if candidate_first == (not human1_earlier):
+            other = candidate
+            break
+    if other is None:
+        raise SystemExit("no deterministic id gives the requested mutual order")
+    cached = {"by_human_1": by_human_1, "by_human_2": other}
+    _MUTUAL_REVOCATION_CACHE[human1_earlier] = cached
+    return cached
+
+
+def _mutual_revocation_files(*, human1_earlier: bool) -> dict[str, bytes]:
+    records = _mutual_revocation_records(human1_earlier=human1_earlier)
+    by_human_1 = records["by_human_1"]
+    other = records["by_human_2"]
+    note_human_1 = recordlib.build_record(
+        kind="example.note",
+        id="mutual-revocation-note-human-1",
+        actor=recordlib.actor("human-1"),
+        body={"text": "signed by human-1"},
+        stage="accepted",
+        recorded_at=recordlib.T4,
+    )
+    note_human_1 = recordlib.signed(note_human_1, "human-1")
+    note_human_2 = recordlib.build_record(
+        kind="example.note",
+        id="mutual-revocation-note-human-2",
+        actor=recordlib.actor("human-2"),
+        body={"text": "signed by human-2"},
+        stage="accepted",
+        recorded_at=recordlib.T4,
+    )
+    note_human_2 = recordlib.signed(note_human_2, "human-2")
+    return _wrap_internal(
+        recordlib.build_container(
+            [by_human_1, other, note_human_1, note_human_2]
+        )
+    )
+
+
+declare(
+    "key-lifecycle",
+    "mutual-revocation-order-a",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _mutual_revocation_files(human1_earlier=True),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "mutual-revocation-by-human-1",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": _mutual_revocation_records(human1_earlier=True)["by_human_2"]["id"],
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+        {"id": "mutual-revocation-note-human-1", "verdict": "valid", "errors": []},
+        {
+            "id": "mutual-revocation-note-human-2",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+    ),
+    notes="T9/§9.5: two revocations with the same recorded_at are ordered by "
+    "record digest. The human-1-signed revocation (smaller digest) is valid and "
+    "revokes human-2; the later human-2-signed revocation is then signed by an "
+    "already-revoked key, is invalid E_KEY_REVOKED and revokes nothing.",
+)
+
+declare(
+    "key-lifecycle",
+    "mutual-revocation-order-b",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _mutual_revocation_files(human1_earlier=False),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "mutual-revocation-by-human-1",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+        {
+            "id": _mutual_revocation_records(human1_earlier=False)["by_human_2"]["id"],
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": "mutual-revocation-note-human-1",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+        {"id": "mutual-revocation-note-human-2", "verdict": "valid", "errors": []},
+    ),
+    notes="T9/§9.5: the mirrored mutual-revocation twin. The human-2-signed "
+    "revocation has the smaller digest, is valid and revokes human-1; the later "
+    "human-1-signed revocation is invalid E_KEY_REVOKED. Together the twins pin "
+    "the deterministic (recorded_at, digest) evaluation order.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T10: one TOFU criterion, including the manifest signature
+# (decision 2026-11-11 #5 T10; spec §14.6/§14.9)
+# ---------------------------------------------------------------------------
+
+
+def _manifest_context_trusted_tofu_files() -> dict[str, bytes]:
+    """J1-like container: the manifest is signed by a context-declared key."""
+    private, public, key_id = derived_key("j1-manifest-device-key")
+    body = {
+        "algorithm": "ed25519",
+        "key": key_id,
+        "key_type": "device",
+        "owner": recordlib.kid("human-1"),
+        "public_key": keyutil.b64url_encode(public),
+    }
+    declaration = recordlib.build_record(
+        kind="weave.key.declared",
+        id="key-declared-j1-manifest-device",
+        actor={"type": "device", "key": key_id},
+        body=body,
+        stage="accepted",
+        recorded_at=recordlib.T0,
+        origin_instance=key_id,
+    )
+    signatures = [
+        _derived_signature(private, key_id, declaration),
+        recordlib.sig_entry(declaration, "human-1"),
+    ]
+    signatures.sort(key=lambda entry: entry["key"])
+    declaration["sigs"] = signatures
+    files = recordlib.build_container([declaration], manifest_signers=("human-1",))
+    manifest_digest_value = recordlib.manifest_digest(files["manifest.json"])
+    signature = private.sign(
+        recordlib.sig_message_for_manifest(manifest_digest_value)
+    )
+    files["signatures/manifest.sig.json"] = canonical(
+        {
+            "digest": manifest_digest_value,
+            "format": FORMAT,
+            "signatures": [
+                {
+                    "alg": "ed25519",
+                    "key": key_id,
+                    "value": keyutil.b64url_encode(signature),
+                }
+            ],
+            "timestamps": [],
+        }
+    )
+    return _wrap_internal(files)
+
+
+declare(
+    "container",
+    "manifest-context-trusted-tofu",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _manifest_context_trusted_tofu_files(),
+    args=("--keys", "@keyset"),
+    notices_absent=("N_KEY_TOFU",),
+    limitations=("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT"),
+    records=(
+        {"id": "key-declared-j1-manifest-device", "verdict": "valid", "errors": []},
+    ),
+    notes="T10/§14.9: the manifest is signed by a device key declared in the "
+    "container and trusted through the keyset root's cosignature (the J1 shape). "
+    "The manifest signature check used context-trusted material, so the report "
+    "carries L_KEY_TRUST_TOFU; no record signature used context material, so no "
+    "record carries N_KEY_TOFU.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T12: readable/ and previous-manifest notices after early failures
+# (decision 2026-11-11 #5 T12)
+# ---------------------------------------------------------------------------
+
+
+def _readable_after_manifest_failure_files() -> dict[str, bytes]:
+    files = recordlib.build_container(SIMPLE_RECORDS())
+    files["readable/notes.txt"] = b"human readable view\n"
+    manifest = parse(files["manifest.json"])
+    manifest["extra"] = 1
+    files["manifest.json"] = canonical(manifest)
+    return _wrap_internal(files)
+
+
+declare(
+    "container",
+    "readable-present-after-manifest-failure",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _readable_after_manifest_failure_files(),
+    args=("--keys", "@keyset"),
+    notices=("N_READABLE_PRESENT",),
+    records=[],
+    notes="T12/§11.8: entry enumeration saw readable/ before the manifest "
+    "structure check failed, so N_READABLE_PRESENT MUST still be reported even "
+    "though the container is invalid E_MANIFEST_SCHEMA.",
+)
+
+
+def _previous_unverified_after_early_failure_files() -> dict[str, bytes]:
+    files = _chain_container(Path("."), mismatch=False)
+    manifest_path = "container/manifest.json"
+    manifest = parse(files[manifest_path])
+    manifest["extra"] = 1
+    files[manifest_path] = canonical(manifest)
+    return files
+
+
+declare(
+    "container",
+    "previous-unverified-after-early-failure",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _previous_unverified_after_early_failure_files(),
+    args=("--keys", "@keyset"),
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=("L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED"),
+    records=[],
+    notes="T12/§14.6: previous_manifest is non-null and the previous manifest's "
+    "signature is not re-verified, so N_PREVIOUS_SIG_UNVERIFIED and "
+    "L_PREVIOUS_SIG_UNVERIFIED are reported even though the manifest structure "
+    "check later fails (E_MANIFEST_SCHEMA).",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T16: oversize record file report shape (decision 2026-11-11 #5 T16)
+# ---------------------------------------------------------------------------
+
+_T16_RECORD_LIMIT = 1_048_576
+_T16_OVERSIZE = _T16_RECORD_LIMIT + 1
+
+
+def _t16_manifest_identity() -> dict[str, Any]:
+    internal = recordlib.build_container([recordlib.key_declaration("human-1")])
+    manifest_bytes = internal["manifest.json"]
+    return {
+        "sha256": recordlib.manifest_digest(manifest_bytes),
+        "size": len(manifest_bytes),
+    }
+
+
+def _oversize_record_file_files() -> dict[str, bytes]:
+    internal = recordlib.build_container([recordlib.key_declaration("human-1")])
+    path = record_path(internal)
+    original = internal[path]
+    internal[path] = original + b" " * (_T16_OVERSIZE - len(original))
+    return _wrap_internal(internal)
+
+
+declare(
+    "container",
+    "oversize-record-file",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_JSON_SIZE",),
+    build=lambda case_dir: _oversize_record_file_files(),
+    args=("--keys", "@keyset"),
+    expected_input=_t16_manifest_identity(),
+    expected_container={
+        "created_at": recordlib.T0,
+        "manifest_digest": _t16_manifest_identity()["sha256"],
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "anchor_verified": False,
+        "chain": {"status": "absent"},
+        "previous_manifest_digest": None,
+        "record_count": 1,
+        "timestamps": [],
+    },
+    records=[],
+    notes="T16/§14.6: a records/ file exceeds MAX_RECORD_BYTES (1,048,576) but "
+    "the manifest itself is readable and structurally valid, so the failure is "
+    "found at the records-listing stage: container invalid E_JSON_SIZE, "
+    "records [], manifest-derived fields filled (record_count 1, "
+    "manifest_digest set) and input identifies the raw manifest bytes (the "
+    "two-tier rule). The oversize file is 1,048,577 bytes.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T17: previous non-zip path and backdated grants
+# (decision 2026-11-11 #5 T17; review A L9/L4)
+# ---------------------------------------------------------------------------
+
+
+def _previous_non_zip_file_files() -> dict[str, bytes]:
+    files = _wrap_internal(recordlib.build_container(SIMPLE_RECORDS()))
+    files["previous.txt"] = b"this path exists and is readable but is not a zip\n"
+    return files
+
+
+declare(
+    "container",
+    "previous-non-zip-file",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _previous_non_zip_file_files(),
+    args=("--keys", "@keyset", "--previous", "previous.txt"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="T17/review A L9/§11.5: a --previous path that exists and is readable "
+    "but is not a usable container (here: a plain text file) is "
+    "E_MANIFEST_CHAIN invalid. The previous-manifest check is container step "
+    "(10), after the record phase, so the container's record is processed and "
+    "valid.",
+)
+
+
+def _backdated_grant_files() -> dict[str, bytes]:
+    grant = root_grant(
+        record_id="grant-backdated-root",
+        kinds=("example.note",),
+        actions=("propose", "accept"),
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T1,
+        recorded_at=recordlib.T3,
+        transferable=True,
+    )
+    note = agent_action(
+        grant,
+        record_id="grant-backdated-covered-note",
+        recorded_at=recordlib.T1,
+        stage="accepted",
+    )
+    return _wrap_internal(recordlib.build_container([grant, note]))
+
+
+declare(
+    "grant",
+    "backdated-grant-covers-record",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _backdated_grant_files(),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "grant-backdated-root", "verdict": "valid", "errors": []},
+        {"id": "grant-backdated-covered-note", "verdict": "valid", "errors": []},
+    ),
+    notes="T17/review A L4/S9: a grant recorded after its own validity window is "
+    "accepted (only covered records' recorded_at decides their authorisation). "
+    "The grant is recorded at T3 with window T0..T1 and covers the agent note "
+    "recorded at T1, so both are valid.",
 )
 
 
@@ -6314,6 +7801,26 @@ def write_all(*, check: bool, only: str | None = None) -> list[str]:
 
 FREEZE_VERSION = "v0.1-candidate"
 
+# S1-FIX1 T7: the revision-3 regeneration dropped these twelve representative
+# cases although their conclusions were unchanged (the selection rule had picked
+# lexicographically earlier cases instead). Candidate sets only grow until the
+# formal freeze, so they are restored here and the freeze step keeps every case
+# that is already in the candidate.
+RESTORED_REPRESENTATIVES: tuple[str, ...] = (
+    "container/record-digest-mismatch",
+    "container/record-extra",
+    "container/record-missing",
+    "erasure/reason-invalid",
+    "grant/revocation-unlisted-human",
+    "integrity-levels/l2-content-type-wrong",
+    "integrity-levels/l2-ts-file-digest",
+    "key-lifecycle/keyset-root-not-invalidated",
+    "key-lifecycle/public-key-invalid",
+    "key-lifecycle/retired-boundary-equal",
+    "ref/bad-hint-scheme",
+    "sig/invalid-value",
+)
+
 
 def _all_case_expected() -> list[dict[str, Any]]:
     """Every generated case under vectors/<category>/<case-id>/ (frozen excluded)."""
@@ -6349,7 +7856,12 @@ def select_frozen_cases(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def freeze_cases(
-    *, source_commit: str, freeze_date: str, delta_markdown: str | None = None
+    *,
+    source_commit: str,
+    freeze_date: str,
+    delta_markdown: str | None = None,
+    preserve_existing: bool = False,
+    selection_rule: str | None = None,
 ) -> int:
     """Copy the representative set verbatim into vectors/frozen/<version>/.
 
@@ -6359,10 +7871,31 @@ def freeze_cases(
     conclusion and the ruling it belongs to). The delta text is review
     documentation for one regeneration and is not committed separately, so a
     later ``--freeze`` run must supply the text for that regeneration itself.
+
+    ``preserve_existing`` applies the "the candidate set only grows" policy: the
+    cases already present in the destination are kept (copied from the current
+    main corpus) and the ``RESTORED_REPRESENTATIVES`` are added on top, instead
+    of recomputing the selection rule over the whole corpus. ``selection_rule``
+    overrides the selection-rule sentence written into ``FROZEN.md``.
     """
     rows = _all_case_expected()
-    selected = select_frozen_cases(rows)
     destination = VECTORS_DIR / "frozen" / FREEZE_VERSION
+    if preserve_existing:
+        existing_ids: set[str] = set()
+        if destination.is_dir():
+            for expected_path in destination.glob("*/*/expected.json"):
+                existing_ids.add(wcj.parse_strict(expected_path.read_bytes())["id"])
+        by_id = {row["id"]: row for row in rows}
+        selected_ids = existing_ids | set(RESTORED_REPRESENTATIVES)
+        missing = sorted(selected_ids - set(by_id))
+        if missing:
+            raise SystemExit(
+                "preserved/restored frozen cases missing from the main corpus: %s"
+                % ", ".join(missing)
+            )
+        selected = [by_id[case_id] for case_id in sorted(selected_ids)]
+    else:
+        selected = select_frozen_cases(rows)
     if destination.exists():
         for path in sorted(destination.rglob("*"), reverse=True):
             if path.is_file() or path.is_symlink():
@@ -6408,10 +7941,14 @@ def freeze_cases(
         "- Source repository state: commit `%s`" % source_commit,
         "- Generated by: `tools/gen_vectors_extra.py --freeze` (only the copy step;",
         "  the cases themselves were generated by the independent generators).",
-        "- Selection rule: **every positive case** (`valid`/`erased`) plus, for each",
-        "  error code that appears in any case, the lexicographically first case that",
-        "  expects it. This keeps at least one negative per registered error code",
-        "  while remaining deterministic.",
+        "- Selection rule: "
+        + (
+            selection_rule
+            or "**every positive case** (`valid`/`erased`) plus, for each error "
+            "code that appears in any case, the lexicographically first case that "
+            "expects it. This keeps at least one negative per registered error "
+            "code while remaining deterministic."
+        ),
         "",
         "- Case count: %d" % len(selected),
         "",
@@ -6513,6 +8050,17 @@ def main(argv: list[str] | None = None) -> int:
         help="reviewed delta section appended to FROZEN.md (S17 regeneration "
         "documentation; read before the checksums are computed)",
     )
+    parser.add_argument(
+        "--preserve-existing",
+        action="store_true",
+        help="keep every case already in the frozen candidate and add the "
+        "RESTORED_REPRESENTATIVES on top (candidate set only grows)",
+    )
+    parser.add_argument(
+        "--selection-rule",
+        metavar="TEXT",
+        help="override the selection-rule sentence written into FROZEN.md",
+    )
     arguments = parser.parse_args(argv)
     if arguments.freeze:
         if not arguments.frozen_source_commit:
@@ -6530,6 +8078,8 @@ def main(argv: list[str] | None = None) -> int:
             source_commit=arguments.frozen_source_commit,
             freeze_date=freeze_date,
             delta_markdown=delta_markdown,
+            preserve_existing=arguments.preserve_existing,
+            selection_rule=arguments.selection_rule,
         )
     problems = write_all(check=arguments.check, only=arguments.only)
     if "hyphaweave_verify" in sys.modules:

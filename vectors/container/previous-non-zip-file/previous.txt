@@ -1,0 +1,1 @@
+this path exists and is readable but is not a zip

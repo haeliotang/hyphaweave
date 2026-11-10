@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ENTRY"],"id":"container/readable-symlink-entry","input":"container.zip","notes":"T6/§11.9 rule 4: a readable/ entry with the Unix symlink file type is E_CONTAINER_ENTRY; skipping decompression and CRC checking does not skip the entry-type check.","records":[],"target":"container","verdict":"invalid"}

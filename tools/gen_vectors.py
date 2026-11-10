@@ -947,10 +947,16 @@ declare(
         }
     ),
     expected_digest="auto",
+    limitations=(
+        "L_ERASED_PLACEHOLDER",
+        "L_ERASED_STANDALONE",
+        "L_OFFLINE_CONTEXT",
+    ),
     notes="A weave.erased placeholder has no sigs; records[0].digest is the §2.2 "
     "digest over the placeholder, records[0].verdict is 'erased', its attestation "
     "reference resolves to 'missing' (reported in the separate attestation object, "
-    "refs stays empty) and the top-level verdict is 'erased'.",
+    "refs stays empty) and the top-level verdict is 'erased'. The standalone "
+    "placeholder pins L_ERASED_PLACEHOLDER and L_ERASED_STANDALONE (T12).",
 )
 
 declare(
@@ -2183,9 +2189,12 @@ declare(
     ),
     notices=("N_KIND_UNKNOWN_OPAQUE",),
     records=({"id": UNKNOWN_KIND_RECORD_ID, "kind_known": False},),
+    limitations=("L_OFFLINE_CONTEXT", "L_UNKNOWN_KIND_OPAQUE"),
     notes="An unregistered but well-formed kind is opaque: verified at the "
     "envelope level, reported as not understood (kind_known false plus "
-    "N_KIND_UNKNOWN_OPAQUE) and never invalidated for being unknown (spec §7.3).",
+    "N_KIND_UNKNOWN_OPAQUE) and never invalidated for being unknown (spec "
+    "§7.3). The valid opaque record also pins the L_UNKNOWN_KIND_OPAQUE "
+    "limitation identifier (T12).",
 )
 
 declare(
@@ -2900,8 +2909,15 @@ declare(
     ),
     notices=("N_LABEL_PROPAGATION_UNCHECKED",),
     expected_resolution=("missing",),
+    limitations=(
+        "L_LABEL_PROPAGATION_UNCHECKED",
+        "L_OFFLINE_CONTEXT",
+        "L_UNKNOWN_KIND_OPAQUE",
+    ),
     notes="An unresolvable derived_from reference only makes label propagation "
-    "unchecked (notice); the record stays valid (§8.4).",
+    "unchecked (notice); the record stays valid (§8.4). The report pins "
+    "L_LABEL_PROPAGATION_UNCHECKED (T12); the record kind is also unregistered, "
+    "so L_UNKNOWN_KIND_OPAQUE appears too.",
 )
 
 declare(
@@ -3795,6 +3811,103 @@ declare(
     "individually invalid resolves to `unverifiable` (N_REF_UNVERIFIABLE), not "
     "`missing`, and does not by itself invalidate the referring record. The "
     "container is invalid because of the target record's own E_SIG_INVALID.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T14: canonical member order is UTF-16 code units (decision 2026-11-11
+# #5 T14; spec §14.6)
+# ---------------------------------------------------------------------------
+
+
+declare(
+    "jcs",
+    "supplementary-plane-member-order",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(
+        recordlib.note(
+            "jcs-40",
+            body={
+                "\U0001f600": 1,
+                "\ue000": 2,
+            },
+        )
+    ),
+    expected_digest="auto",
+    notes="T14/§1.3-§14.6: member names sort by UTF-16 code units, full stop. "
+    "The body has the supplementary-plane key U+1F600 (surrogate pair D83D "
+    "DE00) and the BMP key U+E000; UTF-16 order puts U+1F600 first, while a "
+    "code-point sort would put U+E000 first. The canonical bytes are produced "
+    "by the independent tools/wcj.py, and the record is signed over them.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T12: L_LABELS_ARE_CLAIMS limitation identifier
+# ---------------------------------------------------------------------------
+
+
+def _labels_claims_limitation_record() -> dict[str, Any]:
+    body = {
+        "purpose": "vector test consent",
+        "scope": ["test-scope"],
+        "valid_from": recordlib.T0,
+        "valid_until": None,
+        "data_subject": None,
+        "terms": None,
+    }
+    record = recordlib.build_record(
+        kind="weave.consent.granted",
+        id="labels-claims-limitation",
+        actor=recordlib.actor("human-1"),
+        body=body,
+        labels={"sensitivity": "public"},
+        stage="accepted",
+        recorded_at=recordlib.T0,
+    )
+    return recordlib.signed(record, "human-1")
+
+
+declare(
+    "labels",
+    "labels-claims-limitation",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(_labels_claims_limitation_record()),
+    args=("--keys", "@keyset"),
+    limitations=("L_LABELS_ARE_CLAIMS", "L_OFFLINE_CONTEXT"),
+    notes="T12/§14.9: the record carries a labels member, so the report lists "
+    "L_LABELS_ARE_CLAIMS even though the labels were checked for consistency. "
+    "The kind is registered, so no opaque-kind limitation appears.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T17 (review A L6): UTF-8 validity is a whole-input precondition
+# ---------------------------------------------------------------------------
+
+
+def _invalid_utf8_after_depth_violation() -> bytes:
+    """JSON with a depth violation early and an invalid UTF-8 byte later."""
+    nested = b"[" * 33 + b"0" + b"]" * 33
+    return b'{"a":' + nested + b',"b":"' + b"\xff" + b'"}'
+
+
+declare(
+    "jcs",
+    "invalid-utf8-after-depth-violation",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_INVALID",),
+    build=lambda: raw(_invalid_utf8_after_depth_violation()),
+    notes="T17/review A L6/§1.9: UTF-8 validity is a whole-input precondition. "
+    "The input has a depth violation in an earlier byte range and an invalid "
+    "UTF-8 byte later; decoding the whole input fails first, so the code is "
+    "E_JSON_INVALID (deterministic), not E_JSON_SIZE.",
 )
 
 

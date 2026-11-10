@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ENTRY"],"id":"container/readable-absolute-path-entry","input":"container.zip","notes":"T6/§11.9 rule 4: an absolute path under readable/ is E_CONTAINER_ENTRY (path safety applies to every entry).","records":[],"target":"container","verdict":"invalid"}
