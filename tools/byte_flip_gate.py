@@ -571,6 +571,7 @@ def process_case(
     runner: VerifierRunner,
     max_bytes: int | None,
     verbose: bool,
+    work_id: str | None = None,
 ) -> dict:
     args = expand_args(list(expected.get("args") or []), case_dir)
     kind, paths = input_files(case_dir, expected)
@@ -607,7 +608,7 @@ def process_case(
         else:
             result["exempt"][exempt_class] = result["exempt"].get(exempt_class, 0) + 1
 
-    work = work_root / case_id.replace("/", "__")
+    work = work_root / (work_id or case_id.replace("/", "__"))
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -738,7 +739,7 @@ def _init_worker(cache: bool) -> None:
 
 
 def _process_case_worker(task: tuple) -> dict:
-    case_id, expected, case_dir, work_root, max_bytes = task
+    case_id, expected, case_dir, work_root, max_bytes, work_id = task
     assert _WORKER_RUNNER is not None
     return process_case(
         case_id=case_id,
@@ -748,6 +749,7 @@ def _process_case_worker(task: tuple) -> dict:
         runner=_WORKER_RUNNER,
         max_bytes=max_bytes,
         verbose=False,
+        work_id=work_id,
     )
 
 
@@ -819,9 +821,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.executor == "process" and args.jobs > 1:
             futures = {}
             for origin, (case_id, expected, case_dir) in all_cases:
+                work_id = origin + "__" + case_id.replace("/", "__")
                 future = executor.submit(
                     _process_case_worker,
-                    (case_id, expected, str(case_dir), str(tmpdir), args.max_bytes),
+                    (case_id, expected, str(case_dir), str(tmpdir), args.max_bytes, work_id),
                 )
                 futures[future] = (origin, case_id)
         else:
@@ -836,6 +839,7 @@ def main(argv: list[str] | None = None) -> int:
                     runner=runner,
                     max_bytes=args.max_bytes,
                     verbose=args.verbose,
+                    work_id=origin + "__" + case_id.replace("/", "__"),
                 )
                 futures[future] = (origin, case_id)
         for future in futures:
