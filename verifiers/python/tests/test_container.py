@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
+
 import pytest
 
 from hyphaweave_verify import container as container_module
@@ -137,7 +140,7 @@ def test_l2_imprint_mismatch_is_invalid(keyset) -> None:
         ("container", "zip-traversal", "E_CONTAINER_ENTRY"),
         ("container", "blobs-mismatch", "E_MANIFEST_BLOB"),
         ("container", "chain-missing", "E_MANIFEST_CHAIN_MISSING"),
-        ("container", "chain-unexpected", "E_MANIFEST_CHAIN_UNEXPECTED"),
+        ("container", "chain-unexpected-file", "E_MANIFEST_CHAIN_UNEXPECTED"),
         ("container", "chain-digest-mismatch", "E_MANIFEST_CHAIN"),
         ("integrity-levels", "l0-with-timestamp", "E_MANIFEST_LEVEL"),
         ("integrity-levels", "l1-no-head", "E_MANIFEST_L1_NO_HEAD"),
@@ -193,3 +196,91 @@ def test_erasure_container_is_valid(keyset) -> None:
     assert report["verdict"] == "valid"
     verdicts = {entry["id"]: entry["verdict"] for entry in report["records"]}
     assert "erased" in verdicts.values()
+
+
+# ---------------------------------------------------------------------------
+# Corrupted zip robustness: malformed archives must never raise a traceback.
+# ---------------------------------------------------------------------------
+
+
+def _zip_from_directory(source, destination, *, compression=zipfile.ZIP_DEFLATED):
+    import zipfile
+
+    with zipfile.ZipFile(destination, "w", compression=compression) as archive:
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(source).as_posix())
+    return destination
+
+
+@pytest.fixture()
+def valid_zip(tmp_path):
+    return _zip_from_directory(
+        VECTORS / "container" / "l0-minimal" / "container", tmp_path / "container.zip"
+    )
+
+
+def _expect_container_zip(path, keyset_pair=None):
+    result = verify(path, keyset_pair)
+    assert result.report["verdict"] == "invalid"
+    assert "E_CONTAINER_ZIP" in result.report["container"]["errors"]
+    assert result.report["records"] == []
+
+
+def test_truncated_zip_is_container_zip(valid_zip) -> None:
+    data = valid_zip.read_bytes()
+    truncated = valid_zip.parent / "truncated.zip"
+    truncated.write_bytes(data[: len(data) // 2])
+    _expect_container_zip(truncated)
+
+
+def test_corrupt_zip_header_is_container_zip(valid_zip) -> None:
+    data = bytearray(valid_zip.read_bytes())
+    data[0:4] = b"\x00\x00\x00\x00"
+    corrupted = valid_zip.parent / "corrupt-header.zip"
+    corrupted.write_bytes(bytes(data))
+    _expect_container_zip(corrupted)
+
+
+def test_corrupt_deflate_stream_is_container_zip(valid_zip) -> None:
+    import struct
+    import zipfile
+
+    data = bytearray(valid_zip.read_bytes())
+    with zipfile.ZipFile(io.BytesIO(bytes(data))) as archive:
+        info = archive.infolist()[0]
+        name_length = struct.unpack("<H", bytes(data[info.header_offset + 26 : info.header_offset + 28]))[0]
+        extra_length = struct.unpack("<H", bytes(data[info.header_offset + 28 : info.header_offset + 30]))[0]
+        data_offset = info.header_offset + 30 + name_length + extra_length
+    # Corrupt a byte inside the deflate payload.
+    data[data_offset + 2] ^= 0xFF
+    corrupted = valid_zip.parent / "corrupt-deflate.zip"
+    corrupted.write_bytes(bytes(data))
+    _expect_container_zip(corrupted)
+
+
+def test_random_zip_bytes_is_container_zip(tmp_path) -> None:
+    bogus = tmp_path / "bogus.zip"
+    bogus.write_bytes(b"PK\x03\x04not actually a zip archive")
+    _expect_container_zip(bogus)
+
+
+def test_zip_decoder_exception_maps_to_container_zip(valid_zip, monkeypatch) -> None:
+    """NotImplementedError/zlib.error from the decoder must become E_CONTAINER_ZIP."""
+    import zipfile
+
+    def raising_read(self, name, pwd=None):
+        raise NotImplementedError("zip file version 14.8")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", raising_read)
+    _expect_container_zip(valid_zip)
+
+
+def test_zip_value_error_maps_to_container_zip(valid_zip, monkeypatch) -> None:
+    import zipfile
+
+    def raising_read(self, name, pwd=None):
+        raise ValueError("negative seek value")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", raising_read)
+    _expect_container_zip(valid_zip)

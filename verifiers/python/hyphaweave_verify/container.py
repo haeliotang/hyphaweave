@@ -23,6 +23,7 @@ import os
 import re
 import stat
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -93,11 +94,16 @@ def read_container(path: Path) -> ContainerInput:
     first structural error encountered, if any. Never raises for malformed
     input.
     """
-    if not path.exists():
-        return ContainerInput(files={}, error="E_MANIFEST_MISSING")
-    if path.is_dir():
-        return _read_directory_container(path)
-    if path.is_file() and zipfile.is_zipfile(path):
+    try:
+        if not path.exists():
+            return ContainerInput(files={}, error="E_MANIFEST_MISSING")
+        if path.is_dir():
+            return _read_directory_container(path)
+        is_zip = path.is_file() and zipfile.is_zipfile(path)
+    except Exception:
+        # A path that cannot be classified/read is treated as a broken container.
+        return ContainerInput(files={}, error="E_CONTAINER_ZIP")
+    if is_zip:
         return _read_zip_container(path)
     return ContainerInput(files={}, error="E_CONTAINER_ZIP")
 
@@ -175,22 +181,53 @@ def _read_directory_container(path: Path) -> ContainerInput:
 
 
 def _read_zip_container(path: Path) -> ContainerInput:
+    """Read a zip container; every structural/decoder failure maps to E_CONTAINER_ZIP.
+
+    A corrupted archive can fail in many ways below ``zipfile``: truncation
+    (``BadZipFile``), unsupported compression/zip versions (``NotImplementedError``),
+    corrupt deflate streams (``zlib.error``), impossible offsets (``ValueError``),
+    or I/O errors. None of these may escape as a Python traceback: they are all
+    malformed-input conditions reported as ``E_CONTAINER_ZIP`` (invalid).
+    """
     try:
         raw = path.read_bytes()
     except OSError:
         return ContainerInput(files={}, error="E_CONTAINER_ZIP")
     input_sha = "sha256:" + hashlib.sha256(raw).hexdigest()
+    try:
+        return _process_zip_bytes(raw, input_sha)
+    except (zipfile.BadZipFile, NotImplementedError, zlib.error, ValueError, EOFError, OSError, RuntimeError):
+        return ContainerInput(
+            files={},
+            error="E_CONTAINER_ZIP",
+            input_sha256=input_sha,
+            input_size=len(raw),
+            is_zip=True,
+        )
+    except Exception:  # pragma: no cover - defensive: malformed input must not crash
+        return ContainerInput(
+            files={},
+            error="E_CONTAINER_ZIP",
+            input_sha256=input_sha,
+            input_size=len(raw),
+            is_zip=True,
+        )
+
+
+def _process_zip_bytes(raw: bytes, input_sha: str) -> ContainerInput:
+    """Parse an archive whose bytes were already read (exceptions are mapped above)."""
     files: dict[str, bytes] = {}
     directory_entries: set[str] = set()
     error: str | None = None
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(raw))
-    except (zipfile.BadZipFile, ValueError):
-        return ContainerInput(
-            files={}, error="E_CONTAINER_ZIP", input_sha256=input_sha, input_size=len(raw), is_zip=True
-        )
+    archive = zipfile.ZipFile(io.BytesIO(raw))
     with archive:
-        infos = archive.infolist()
+        try:
+            infos = archive.infolist()
+        except (zipfile.BadZipFile, ValueError, NotImplementedError, zlib.error):
+            return ContainerInput(
+                files={}, error="E_CONTAINER_ZIP", input_sha256=input_sha,
+                input_size=len(raw), is_zip=True,
+            )
         if len(infos) > MAX_CONTAINER_ENTRIES:
             error = "E_CONTAINER_SIZE"
             infos = infos[:0]
@@ -224,16 +261,24 @@ def _read_zip_container(path: Path) -> ContainerInput:
                 continue
             try:
                 data = archive.read(info)
-            except (zipfile.BadZipFile, OSError, RuntimeError):
+            except (
+                zipfile.BadZipFile,
+                NotImplementedError,
+                zlib.error,
+                ValueError,
+                EOFError,
+                OSError,
+                RuntimeError,
+            ):
                 error = error or "E_CONTAINER_ZIP"
                 continue
             if len(data) > MAX_CONTAINER_UNCOMPRESSED_BYTES:
                 error = error or "E_CONTAINER_SIZE"
                 continue
             files[name] = data
-    readable_present = any(name == "readable" or name.startswith("readable/") for name in directory_entries) or any(
-        name.startswith("readable/") for name in files
-    )
+    readable_present = any(
+        name == "readable" or name.startswith("readable/") for name in directory_entries
+    ) or any(name.startswith("readable/") for name in files)
     return ContainerInput(
         files=files,
         error=error,
@@ -1026,7 +1071,14 @@ def _check_previous_manifest(
             "E_MANIFEST_CHAIN", "embedded previous manifest digest does not match"
         )
     if previous_container is not None:
-        supplied = _read_previous_manifest_digest(previous_container)
+        try:
+            supplied = _read_previous_manifest_digest(previous_container)
+        except WeaveError:
+            raise
+        except Exception as error:  # pragma: no cover - defensive
+            raise WeaveError(
+                "E_MANIFEST_CHAIN", "--previous container is unreadable"
+            ) from error
         if supplied != manifest.previous_manifest_digest:
             raise WeaveError(
                 "E_MANIFEST_CHAIN", "--previous manifest digest does not match"
@@ -1042,7 +1094,16 @@ def _read_previous_manifest_digest(previous_container: Path) -> str:
         try:
             with zipfile.ZipFile(previous_container) as archive:
                 data = archive.read("manifest.json")
-        except (KeyError, zipfile.BadZipFile, OSError) as error:
+        except (
+            KeyError,
+            zipfile.BadZipFile,
+            NotImplementedError,
+            zlib.error,
+            ValueError,
+            EOFError,
+            OSError,
+            RuntimeError,
+        ) as error:
             raise WeaveError("E_MANIFEST_CHAIN", "--previous container is unreadable") from error
         manifest_path = None
     else:
