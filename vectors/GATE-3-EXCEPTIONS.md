@@ -112,11 +112,23 @@ the original receipt's DER structure. For the committed positive cases they are
 | `key-lifecycle/compromise-rescued-by-timestamp` (and its frozen copy) | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
 | `key-lifecycle/mixed-revocation-compromise-then-retired` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
 | `integrity-levels/l2-ts-der-setof-sorted-control` | `signatures/timestamp-1.tsr` (2,373 bytes) | 37–67 `tsr-digest-algorithms`; 964–1758 `tsr-non-signer-certificate`; 1760–1782 `tsr-revocation-info`; 2309–2373 `tsr-unsigned-attributes` |
+| `container/previous-signing-key-compromised-after-previous` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-der-ess-hash-algorithm-sha256-null` | `signatures/timestamp-1.tsr` (1,489 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-der-gentime-seven-fraction-digits` | `signatures/timestamp-1.tsr` (1,482 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-signer-digest-params-absent` | `signatures/timestamp-1.tsr` (1,472 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-signer-digest-params-null` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-signer-sha256-rsa-params-null` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-signer-ecdsa-params-absent` | `signatures/timestamp-1.tsr` (1,050 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-der-unsigned-attr-context-tag-value` | `signatures/timestamp-1.tsr` (1,490 bytes) | 37–52 `tsr-digest-algorithms`; 1476–1490 `tsr-unsigned-attributes` |
+| `integrity-levels/l2-ts-der-unsigned-attr-application-200-value` | `signatures/timestamp-1.tsr` (1,492 bytes) | 37–52 `tsr-digest-algorithms`; 1476–1492 `tsr-unsigned-attributes` |
+| `integrity-levels/l2-ts-der-high-tag-number-inner-zero-group` | `signatures/timestamp-1.tsr` (1,493 bytes) | 37–52 `tsr-digest-algorithms`; 1476–1493 `tsr-unsigned-attributes` |
 
 In the single-receipt cases the only bytes that survive a flip are the nine
 content octets of the sha256 OBJECT IDENTIFIER inside `digestAlgorithms`
 (offsets 41–49): a flip there yields another well-formed OID, which no check
-reads. In the renewal chain only `timestamp-2.tsr` has survivors, because a flip
+reads. The signer's own `digestAlgorithm` and `signatureAlgorithm` are not exempt:
+their `parameters` have a form fixed per algorithm (§12.2 1c, S1-FIX5 X6), so a
+flip of the `NULL` there is rejected as `E_TS_SCHEMA`. In the renewal chain only `timestamp-2.tsr` has survivors, because a flip
 in `timestamp-1.tsr` changes the imprint the second receipt must carry.
 Disabling the CMS signature check (§12.2 check 10) makes flips in the signed
 attributes and the signature value acceptable, and those lie outside every class
