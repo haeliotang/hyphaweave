@@ -43,6 +43,7 @@ from __future__ import annotations
 import calendar
 import datetime as _datetime
 import hashlib
+import re
 from dataclasses import dataclass, field
 
 from asn1crypto import tsp
@@ -64,6 +65,17 @@ _DER_ACCESS_ERRORS = (
     IndexError,
     OverflowError,
     UnicodeError,
+)
+
+#: V2/X2: the per-receipt boundary also catches the parsing-class exceptions the
+#: DER/X.509 libraries raise for structures that parse far enough to be handed to
+#: them (cryptography's InvalidVersion for a malformed certificate version), plus
+#: AttributeError from asn1crypto's lazy objects for an unexpected tag type. The
+#: specification says any DER decoding or receipt-structure failure, wherever
+#: discovered, is check 1's E_TS_SCHEMA.
+_RECEIPT_PARSE_ERRORS = _DER_ACCESS_ERRORS + (
+    cryptography_x509.InvalidVersion,
+    AttributeError,
 )
 
 #: S11/§13: total accuracy of one receipt, in seconds. A receipt whose
@@ -352,7 +364,38 @@ def verify_timestamp_token(
     path: str,
     trust_anchor_fingerprints: frozenset[bytes] | None,
 ) -> TimestampResult:
-    """Verify one TSR token; the first failing check decides the error code."""
+    """Verify one TSR token; the first failing check decides the error code.
+
+    V2/X2: one receipt's whole processing is wrapped in a boundary that catches
+    only parsing-class exceptions (asn1crypto lazy DER decode/access errors:
+    ``ValueError``/``TypeError``/``KeyError``/``IndexError``/``UnicodeError``
+    and friends). The specification says any DER decoding or receipt-structure
+    failure, wherever discovered, is check 1's ``E_TS_SCHEMA``; a malformed
+    receipt must never escape as a crash.
+    """
+    try:
+        return _verify_timestamp_token_checks(
+            tsr_bytes=tsr_bytes,
+            expected_imprint=expected_imprint,
+            listed_digest=listed_digest,
+            path=path,
+            trust_anchor_fingerprints=trust_anchor_fingerprints,
+        )
+    except _RECEIPT_PARSE_ERRORS:
+        return TimestampResult(
+            path, listed_digest, STATE_INVALID, None, None, "E_TS_SCHEMA"
+        )
+
+
+def _verify_timestamp_token_checks(
+    *,
+    tsr_bytes: bytes,
+    expected_imprint: bytes,
+    listed_digest: str,
+    path: str,
+    trust_anchor_fingerprints: frozenset[bytes] | None,
+) -> TimestampResult:
+
     state = STATE_INVALID
     gen_time: str | None = None
     gen_time_ms: int | None = None
@@ -418,9 +461,17 @@ def verify_timestamp_token(
 
 
 def _parse_tst_info(tsr_bytes: bytes):
-    """Checks 1-2: DER TimeStampResp, granted status, TSTInfo version 1."""
+    """Checks 1-2: strict-DER TimeStampResp, granted status, version profile.
+
+    V2/M3: §12.2 check 1 requires a *DER-encoded* TimeStampResp. Strict mode
+    rejects trailing data; re-encoding to DER and byte-comparing the result
+    rejects non-minimal length forms, BER indefinite lengths and non-DER string
+    encodings. The version profile (TSTInfo 1, SignedData 3, SignerInfo 1 or 3)
+    is also part of check 1.
+    """
+    _validate_strict_der(tsr_bytes)
     try:
-        response = tsp.TimeStampResp.load(tsr_bytes)
+        response = tsp.TimeStampResp.load(tsr_bytes, strict=True)
     except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "not a DER TimeStampResp") from error
     try:
@@ -433,13 +484,22 @@ def _parse_tst_info(tsr_bytes: bytes):
     if token["content_type"].native != "signed_data":
         raise WeaveError("E_TS_SCHEMA", "timestamp token is not CMS signed data")
     signed_data = token["content"]
+    try:
+        signed_data_version = signed_data["version"].native
+    except _DER_ACCESS_ERRORS as error:
+        raise WeaveError("E_TS_SCHEMA", "SignedData has no readable version") from error
+    if signed_data_version != "v3":
+        raise WeaveError("E_TS_SCHEMA", "SignedData version is not 3")
     encap = signed_data["encap_content_info"]
     if encap["content_type"].native != "tst_info":
         raise WeaveError("E_TS_SCHEMA", "timestamp token does not encapsulate TSTInfo")
     content = encap["content"]
     try:
         raw_content = content.contents
-        tst_info = tsp.TSTInfo.load(raw_content)
+        _validate_strict_der(raw_content)
+        tst_info = tsp.TSTInfo.load(raw_content, strict=True)
+    except WeaveError:
+        raise
     except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "malformed TSTInfo") from error
     try:
@@ -451,12 +511,171 @@ def _parse_tst_info(tsr_bytes: bytes):
     return signed_data, tst_info, raw_content
 
 
+# ---------------------------------------------------------------------------
+# Strict DER enforcement (V2/M3, §12.2 check 1)
+# ---------------------------------------------------------------------------
+
+#: Universal tag numbers whose DER encoding is always primitive (SEQUENCE/SET and
+#: the rarely-used EXTERNAL/EMBEDDED PDV/CHARACTER STRING are constructed).
+_DER_PRIMITIVE_UNIVERSAL = frozenset(
+    {1, 2, 3, 4, 5, 6, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30}
+)
+_DER_GENERALIZED_TIME = re.compile(r"^(?:[0-9]{14}|[0-9]{14}\.[0-9]*[1-9])Z$")
+_DER_UTC_TIME = re.compile(r"^[0-9]{12}Z$")
+
+
+def _validate_strict_der(data: bytes) -> None:
+    """Enforce DER: no trailing data, minimal lengths, canonical primitives (V2).
+
+    This is the linear-scan equivalent of "re-encode the parsed object to DER and
+    byte-compare": non-minimal length forms, BER indefinite lengths, non-minimal
+    integer/boolean/OID/time encodings and constructed encodings of primitive
+    types are all rejected with check 1's ``E_TS_SCHEMA``. It is used instead of
+    an asn1crypto force re-encode because re-encoding an untrusted 1.5 kB token
+    costs hundreds of milliseconds and this gate runs a bit flip for every byte.
+    """
+    try:
+        _scan_der(data, 0, len(data), 0)
+    except _DerViolation as error:
+        raise WeaveError("E_TS_SCHEMA", "receipt is not strict DER: %s" % error) from error
+
+
+class _DerViolation(ValueError):
+    """Internal strict-DER violation marker."""
+
+
+def _scan_der(data: bytes, start: int, end: int, depth: int) -> None:
+    if depth > 64:
+        raise _DerViolation("nesting is too deep")
+    position = start
+    while position < end:
+        position = _scan_tlv(data, position, end, depth)
+
+
+def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
+    first = data[position]
+    position += 1
+    tag_class = first >> 6
+    constructed = bool(first & 0x20)
+    tag_number = first & 0x1F
+    if tag_number == 0x1F:
+        tag_number = 0
+        count = 0
+        while True:
+            if position >= end:
+                raise _DerViolation("truncated high-tag-number form")
+            byte = data[position]
+            position += 1
+            count += 1
+            if count > 5:
+                raise _DerViolation("high-tag-number form is too long")
+            if count > 1 and position - 2 >= 0 and data[position - 2] == 0x80:
+                raise _DerViolation("non-minimal high-tag-number form")
+            tag_number = (tag_number << 7) | (byte & 0x7F)
+            if not byte & 0x80:
+                break
+        if tag_number < 0x1F:
+            raise _DerViolation("high-tag-number form for a low tag")
+    if position >= end:
+        raise _DerViolation("missing length")
+    first_length = data[position]
+    position += 1
+    if first_length & 0x80:
+        length_octets = first_length & 0x7F
+        if length_octets == 0:
+            raise _DerViolation("indefinite length is not DER")
+        if length_octets > 4:
+            raise _DerViolation("length uses too many octets")
+        if position + length_octets > end:
+            raise _DerViolation("truncated length")
+        if data[position] == 0:
+            raise _DerViolation("length has a leading zero")
+        length = int.from_bytes(data[position : position + length_octets], "big")
+        if length < 0x80:
+            raise _DerViolation("non-minimal long-form length")
+        position += length_octets
+    else:
+        length = first_length
+    content_end = position + length
+    if content_end > end:
+        raise _DerViolation("content runs past its container")
+    if tag_class == 0:
+        if tag_number in (16, 17):
+            if not constructed:
+                raise _DerViolation("SEQUENCE/SET must be constructed")
+        elif constructed and tag_number in _DER_PRIMITIVE_UNIVERSAL:
+            raise _DerViolation("primitive universal type is constructed")
+        if tag_number == 1:
+            if length != 1 or data[position] not in (0x00, 0xFF):
+                raise _DerViolation("BOOLEAN is not canonical DER")
+        elif tag_number == 2:
+            _check_der_integer(data, position, content_end)
+        elif tag_number == 3:
+            if length < 1:
+                raise _DerViolation("BIT STRING has no unused-bits octet")
+            unused = data[position]
+            if unused > 7:
+                raise _DerViolation("BIT STRING unused-bit count is invalid")
+            if length == 1 and unused != 0:
+                raise _DerViolation("empty BIT STRING has unused bits")
+            if unused and (data[content_end - 1] & ((1 << unused) - 1)):
+                raise _DerViolation("BIT STRING has non-zero unused bits")
+        elif tag_number == 5 and length != 0:
+            raise _DerViolation("NULL is not empty")
+        elif tag_number == 6:
+            _check_der_oid(data, position, content_end)
+        elif tag_number in (23, 24):
+            text = data[position:content_end].decode("ascii", "replace")
+            pattern = _DER_UTC_TIME if tag_number == 23 else _DER_GENERALIZED_TIME
+            if not pattern.match(text):
+                raise _DerViolation("time value is not canonical DER")
+        elif tag_number == 12:
+            try:
+                data[position:content_end].decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise _DerViolation("UTF8String is not valid UTF-8") from error
+    if constructed:
+        _scan_der(data, position, content_end, depth + 1)
+    return content_end
+
+
+def _check_der_integer(data: bytes, start: int, end: int) -> None:
+    if end <= start:
+        raise _DerViolation("INTEGER is empty")
+    if end - start > 1:
+        if data[start] == 0x00 and data[start + 1] < 0x80:
+            raise _DerViolation("INTEGER has a redundant leading zero")
+        if data[start] == 0xFF and data[start + 1] >= 0x80:
+            raise _DerViolation("INTEGER has a redundant leading 0xFF")
+
+
+def _check_der_oid(data: bytes, start: int, end: int) -> None:
+    if end <= start:
+        raise _DerViolation("OBJECT IDENTIFIER is empty")
+    component_start = True
+    position = start
+    while position < end:
+        byte = data[position]
+        if component_start and byte == 0x80:
+            raise _DerViolation("OBJECT IDENTIFIER is not minimally encoded")
+        component_start = not byte & 0x80
+        if not component_start and position == end - 1:
+            raise _DerViolation("OBJECT IDENTIFIER is truncated")
+        position += 1
+
+
 def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     """Checks 5-10: CMS signature, ESS v2, messageDigest."""
     signer_infos = signed_data["signer_infos"]
     if len(signer_infos) < 1:
         raise WeaveError("E_TS_CMS", "timestamp token has no signerInfo")
     signer_info = signer_infos[0]
+    try:
+        signer_info_version = signer_info["version"].native
+    except _DER_ACCESS_ERRORS as error:
+        raise WeaveError("E_TS_SCHEMA", "signerInfo has no readable version") from error
+    if signer_info_version not in ("v1", "v3"):
+        raise WeaveError("E_TS_SCHEMA", "signerInfo version is not 1 or 3")
     # Check 5: signer digest algorithm.
     if _oid(signer_info["digest_algorithm"]["algorithm"]) != _SHA256_OID:
         raise WeaveError("E_TS_SCHEMA", "signerInfo digest algorithm is not sha256")
@@ -470,7 +689,9 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     try:
         signed_attrs_der = signed_attrs.untag().dump()
     except _DER_ACCESS_ERRORS as error:
-        raise WeaveError("E_TS_CMS", "signed attributes cannot be encoded") from error
+        raise WeaveError(
+            "E_TS_SCHEMA", "signed attributes cannot be encoded as DER"
+        ) from error
     # Check 7: the signer certificate must be carried inside the token.
     signer_certificate_der = _find_signer_certificate(signed_data, signer_info)
     certificate = cryptography_x509.load_der_x509_certificate(signer_certificate_der)

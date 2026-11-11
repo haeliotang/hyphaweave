@@ -571,16 +571,14 @@ def test_previous_zip_valid_and_invalid() -> None:
 
 def test_previous_zip_structural_failure_never_maps_to_container_zip() -> None:
     from hyphaweave_verify import container as container_module
+    from hyphaweave_verify.errors import WeaveError
 
     case_dir = VECTORS / "container" / "previous-zip-invalid"
-    try:
-        container_module._read_previous_manifest_digest(
-            case_dir / "previous-container.zip"
+    with pytest.raises(WeaveError) as raised:
+        container_module._read_previous_identity(
+            case_dir / "previous-container.zip", []
         )
-    except container_module.WeaveError as error:  # type: ignore[attr-defined]
-        assert error.code == "E_MANIFEST_CHAIN"
-    else:  # pragma: no cover - the fixture is structurally invalid
-        raise AssertionError("structurally invalid previous zip accepted")
+    assert raised.value.code == "E_MANIFEST_CHAIN"
 
 
 def test_zip_entry_count_limit_in_memory(tmp_path) -> None:

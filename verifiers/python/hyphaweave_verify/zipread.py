@@ -65,6 +65,16 @@ class ZipStructureError(WeaveError):
         super().__init__("E_CONTAINER_ZIP", detail)
 
 
+class ZipLimitError(ZipStructureError):
+    """The archive exceeds a §13 entry-count or declared-total limit (V7/L7).
+
+    It is a structural failure of the zip framing *class*, but the container
+    layer reports it as the size error ``E_CONTAINER_SIZE`` (the caller maps it);
+    a previous container maps it to ``E_MANIFEST_CHAIN`` like every other
+    structural failure of the supplied previous.
+    """
+
+
 @dataclass(frozen=True)
 class ZipEntry:
     """One central-directory entry plus its validated location in the archive."""
@@ -313,6 +323,7 @@ def _parse_central_directory(
         if header[:4] != CENTRAL_HEADER:
             raise ZipStructureError("bad central-directory entry signature")
         version_needed, flags, method = struct.unpack_from("<HHH", header, 6)
+        disk_number_start = struct.unpack_from("<H", header, 34)[0]
         crc, compressed_size, uncompressed_size = struct.unpack_from("<III", header, 16)
         name_length, extra_length, comment_length = struct.unpack_from("<HHH", header, 28)
         external_attr = struct.unpack_from("<I", header, 38)[0]
@@ -326,6 +337,9 @@ def _parse_central_directory(
         _read_exact(handle, comment_length)
         if version_needed > 63:
             raise ZipStructureError("unsupported zip version needed to extract")
+        if disk_number_start != 0:
+            # V6/§11.9: single-volume archives only; no entry starts on another disk.
+            raise ZipStructureError("central directory entry names a non-zero disk")
         if method not in (METHOD_STORED, METHOD_DEFLATED) and not (flags & FLAG_ENCRYPTED):
             raise ZipStructureError("unsupported compression method")
         uncompressed_size, compressed_size, local_offset = _resolve_zip64_central(
@@ -508,11 +522,38 @@ def _validate_byte_coverage(entries: list[ZipEntry], end_record: _EndRecord) -> 
 # ---------------------------------------------------------------------------
 
 
-def parse_zip(handle: BinaryIO) -> ZipArchive:
+def declared_uncompressed_total(entries: "list[ZipEntry] | tuple[ZipEntry, ...]") -> int:
+    """Declared uncompressed bytes under §13 (V7/spec §13).
+
+    Directory entries never carry data, and ``readable/**`` entries are never
+    read, hashed or counted (§11.8/§11.9/§13), so both are excluded from the
+    declared byte total. The entry **count** still includes every zip entry.
+    """
+    return sum(
+        entry.uncompressed_size
+        for entry in entries
+        if not entry.is_directory and not _is_readable_entry(entry.name)
+    )
+
+
+def _is_readable_entry(name: str) -> bool:
+    return name == "readable" or name.startswith("readable/")
+
+
+def parse_zip(
+    handle: BinaryIO,
+    *,
+    max_entries: int | None = None,
+    max_declared_total: int | None = None,
+) -> ZipArchive:
     """Parse and structure-validate an archive read from ``handle``.
 
     ``handle`` must be seekable. Structural violations raise
-    :class:`ZipStructureError` (``E_CONTAINER_ZIP``).
+    :class:`ZipStructureError` (``E_CONTAINER_ZIP``). The §13 limits, when
+    supplied, are checked right after the central directory is parsed and
+    **before** the remaining structural rules (V7/L7: a zip that is both
+    over-limit and structurally invalid reports the size limit); they raise
+    :class:`ZipLimitError`.
     """
     handle.seek(0, 2)
     size = handle.tell()
@@ -528,6 +569,17 @@ def parse_zip(handle: BinaryIO) -> ZipArchive:
         raise ZipStructureError("central directory extends past the end of the file")
     _check_prefix(handle, size, eocd_offset, end_record)
     entries = _parse_central_directory(handle, end_record)
+    # V7/L7: the §13 limits run before the remaining structural rules so a zip
+    # that is both over-limit and structurally invalid reports the size limit.
+    if max_entries is not None and len(entries) > max_entries:
+        raise ZipLimitError("zip entry count exceeds MAX_CONTAINER_ENTRIES")
+    if (
+        max_declared_total is not None
+        and declared_uncompressed_total(entries) > max_declared_total
+    ):
+        raise ZipLimitError(
+            "declared uncompressed total exceeds MAX_CONTAINER_UNCOMPRESSED_BYTES"
+        )
     entries = _validate_local_headers(handle, entries, end_record.cd_offset)
     _validate_byte_coverage(entries, end_record)
     return ZipArchive(entries=tuple(entries), has_zip64=end_record.has_zip64)
@@ -589,8 +641,18 @@ def _iter_entry_chunks(handle: BinaryIO, entry: ZipEntry):
                 raise ZipStructureError("stored entry exceeds its declared size")
             crc = binascii.crc32(chunk, crc)
             yield chunk
-    else:
-        decompressor = zlib.decompressobj(-15)
+        if produced != entry.uncompressed_size:
+            raise ZipStructureError("decompressed size contradicts the central directory")
+        if crc & 0xFFFFFFFF != entry.crc:
+            raise ZipStructureError("entry CRC-32 does not verify")
+        return
+    # V1/X1: an untrusted deflate stream must never escape as a crash. This is the
+    # one sanctioned broad catch in the verifier: every exception raised while
+    # inflating a member becomes a zip-structure failure. It covers the target
+    # container and the previous container alike because both read members only
+    # through this single helper.
+    decompressor = zlib.decompressobj(-15)
+    try:
         while remaining_compressed:
             chunk = handle.read(min(_READ_CHUNK, remaining_compressed))
             if not chunk:
@@ -627,6 +689,10 @@ def _iter_entry_chunks(handle: BinaryIO, entry: ZipEntry):
             raise ZipStructureError("truncated deflate stream")
         if decompressor.unused_data or decompressor.unconsumed_tail:
             raise ZipStructureError("compressed stream does not match its declared size")
+    except ZipStructureError:
+        raise
+    except Exception as error:  # noqa: BLE001 - untrusted stream boundary (V1)
+        raise ZipStructureError("deflate stream cannot be decoded") from error
     if produced != entry.uncompressed_size:
         raise ZipStructureError("decompressed size contradicts the central directory")
     if crc & 0xFFFFFFFF != entry.crc:

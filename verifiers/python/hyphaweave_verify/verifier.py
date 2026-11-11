@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import ed25519, encoding, envelope as envelope_module, erase, kinds, labels, refs
+from . import keys as keys_module
 from .errors import UsageError, WeaveError
 from .grants import (
     GrantRecord,
@@ -361,6 +362,17 @@ def _structural_declaration_class(
                 if structurally_ok:
                     try:
                         kinds.validate_body_schema(envelope.kind, envelope.body)
+                    except WeaveError:
+                        structurally_ok = False
+                if structurally_ok:
+                    # V5/M2: public_key encoding is a *structural* property
+                    # (§14.1 structural group): a missing/invalid base64url or
+                    # non-32-byte public key keeps the declaration out of class
+                    # governance. Key-id correspondence and point validity stay
+                    # semantic checks with their own codes (E_SIG_INVALID etc.).
+                    body = envelope.body
+                    try:
+                        keys_module.decode_public_key_material(body.get("public_key"))
                     except WeaveError:
                         structurally_ok = False
                 if structurally_ok:
@@ -994,11 +1006,31 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
             # authorisation or cryptographic failure is not a usage error and
             # simply establishes no trust.
             kinds.validate_body_schema(envelope.kind, envelope.body)
+            # V5/M2: the declared/rotated key material encoding is part of the
+            # structural group. A keyset that carries a structurally invalid
+            # declaration is an operator error (exit 2), not a silently ignored
+            # file.
+            _check_keyset_material_structure(envelope.kind, envelope.body)
         except WeaveError as error:
             raise UsageError("keyset file is not a valid record: %s" % error.code) from error
         loaded.append(record)
     _check_keyset_declaration_conflicts(loaded)
     return loaded
+
+
+def _check_keyset_material_structure(kind: str, body: dict[str, Any]) -> None:
+    """V5/§14.1: structurally validate the key material of a keyset record.
+
+    ``public_key``/``new_public_key``/``old_public_key`` must be strictly-encoded
+    base64url decoding to exactly 32 bytes; otherwise the declaration is not in
+    the structural group and the keyset is a usage error.
+    """
+    if kind == kinds.KIND_DECLARED:
+        keys_module.decode_public_key_material(body.get("public_key"))
+    elif kind == kinds.KIND_ROTATED:
+        keys_module.decode_public_key_material(body.get("new_public_key"))
+        if body.get("old_public_key") is not None:
+            keys_module.decode_public_key_material(body["old_public_key"])
 
 
 def _check_keyset_declaration_conflicts(records: list[LoadedRecord]) -> None:

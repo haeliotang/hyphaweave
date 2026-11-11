@@ -42,6 +42,7 @@ from .report import (
     LIMITATION_LABELS_ARE_CLAIMS,
     LIMITATION_OFFLINE_CONTEXT,
     LIMITATION_PREVIOUS_SIG,
+    LIMITATION_PREVIOUS_CONTENT,
     LIMITATION_TOFU,
     LIMITATION_TSA_TRUST,
     LIMITATION_CHAIN_CLAIM,
@@ -250,6 +251,12 @@ def _read_directory_container(path: Path) -> ContainerInput:
         for filename in sorted(filenames):
             relative_path = f"{relative_root}/{filename}" if relative_root else filename
             if relative_path == "manifest.json" and manifest_preloaded:
+                # L6/§13: the entry count covers all files, including the
+                # already-read manifest.json.
+                count += 1
+                if count > MAX_CONTAINER_ENTRIES:
+                    error = error or "E_CONTAINER_SIZE"
+                    break
                 continue
             count += 1
             if count > MAX_CONTAINER_ENTRIES:
@@ -349,19 +356,14 @@ def _read_zip_container(path: Path) -> ContainerInput:
     actual_total = 0
     try:
         with path.open("rb") as handle:
-            archive = zipread.parse_zip(handle)
-            # U2/§13: the two zip-form limits are checked before any
-            # decompression; both are size errors, not structural zip errors.
-            if len(archive.entries) > MAX_CONTAINER_ENTRIES or (
-                _zip_declared_total(archive) > MAX_CONTAINER_UNCOMPRESSED_BYTES
-            ):
-                return ContainerInput(
-                    files={},
-                    error="E_CONTAINER_SIZE",
-                    input_sha256=input_sha,
-                    input_size=archive_size,
-                    is_zip=True,
-                )
+            # V7/L7: the §13 entry-count/declared-total limits are checked by the
+            # parser before the remaining structural rules, so a zip that is both
+            # over-limit and structurally invalid reports the size limit.
+            archive = zipread.parse_zip(
+                handle,
+                max_entries=MAX_CONTAINER_ENTRIES,
+                max_declared_total=MAX_CONTAINER_UNCOMPRESSED_BYTES,
+            )
             for entry in archive.entries:
                 name = entry.name
                 if entry.is_directory:
@@ -423,6 +425,15 @@ def _read_zip_container(path: Path) -> ContainerInput:
                         files={}, error="E_CONTAINER_SIZE",
                         input_sha256=input_sha, input_size=archive_size, is_zip=True,
                     )
+    except zipread.ZipLimitError:
+        # V7/L7: the §13 limits are size errors, not structural zip errors.
+        return ContainerInput(
+            files={},
+            error="E_CONTAINER_SIZE",
+            input_sha256=input_sha,
+            input_size=archive_size,
+            is_zip=True,
+        )
     except zipread.ZipStructureError as structure_error:
         return ContainerInput(
             files={},
@@ -450,25 +461,6 @@ def _read_zip_container(path: Path) -> ContainerInput:
         readable_present=readable_present,
         directory_entries=directory_entries,
         oversized_timestamps=oversized_timestamps,
-    )
-
-
-def _is_readable_entry(name: str) -> bool:
-    """Whether a zip/directory entry lives under the ignored ``readable/`` tree."""
-    return name.startswith("readable/")
-
-
-def _zip_declared_total(archive: "zipread.ZipArchive") -> int:
-    """Declared uncompressed bytes obeying §13 (U2).
-
-    Directory entries never carry data, and ``readable/**`` entries are never
-    read, hashed or counted (§11.8/§11.9/§13), so they are excluded from the
-    declared byte total. The entry **count** still includes every zip entry.
-    """
-    return sum(
-        entry.uncompressed_size
-        for entry in archive.entries
-        if not entry.is_directory and not _is_readable_entry(entry.name)
     )
 
 
@@ -783,9 +775,9 @@ def verify_container(
         )
     if listing_errors:
         errors.extend(listing_errors)
-        if not oversized_records:
-            # The S8.1 shape for a pure listing failure has no usable record set.
-            container["record_count"] = 0
+        # L5/§14.6: once the manifest structure has passed, record_count is the
+        # number of records listed in the manifest for every later failure; it is
+        # only 0 when the failure is before the manifest structure stage.
         return _finish_container(
             container_input, container, errors, notices, [], limitations_iter, active_skipper,
             manifest_context_trusted=manifest_context_trusted,
@@ -882,7 +874,11 @@ def verify_container(
     # Step 10: previous manifest chain.
     try:
         _check_previous_manifest(
-            manifest, container_input, previous_container
+            manifest,
+            container_input,
+            previous_container,
+            keyset_verified,
+            finish_flags,
         )
     except WeaveError as error:
         errors.append(error.code)
@@ -937,6 +933,8 @@ def _finish_container(
     *,
     manifest_context_trusted: bool = False,
     previous_manifest_declared: bool = False,
+    previous_signature_verified: bool = False,
+    previous_content_unverified: bool = False,
     placeholder_seen: bool = False,
     labels_seen: bool = False,
 ) -> ContainerVerification:
@@ -950,9 +948,20 @@ def _finish_container(
     """
     if container_input.readable_present:
         notices.append("N_READABLE_PRESENT")
-    if previous_manifest_declared or container.get("previous_manifest_digest") is not None:
+    if not previous_signature_verified and (
+        previous_manifest_declared or container.get("previous_manifest_digest") is not None
+    ):
+        # V3/§14.9: a supplied previous whose manifest signature was re-verified
+        # makes the previous signature verified, so the unverified-signature
+        # notice and limitation are suppressed; an embedded-only previous (or an
+        # unverified supplied one) still reports them.
         notices.append("N_PREVIOUS_SIG_UNVERIFIED")
         limitations.append(LIMITATION_PREVIOUS_SIG)
+    if previous_content_unverified:
+        # V3/§14.9: the supplied previous container's other content was not
+        # verified; emitted whenever the previous identity was read and its
+        # signature verified (regardless of later comparison/target failures).
+        limitations.append(LIMITATION_PREVIOUS_CONTENT)
     if container.get("level_claimed") in ("L1", "L2"):
         # T12: the chain claim cannot be recomputed offline, regardless of any
         # later container failure.
@@ -1346,6 +1355,8 @@ def _check_previous_manifest(
     manifest: manifest_module.Manifest,
     container_input: ContainerInput,
     previous_container: Path | None,
+    keyset_views: list[verifier.RecordView],
+    finish_flags: dict[str, bool],
 ) -> None:
     if "previous/manifest.json" in container_input.oversized:
         # A-L7/T16: the embedded previous manifest exceeded MAX_MANIFEST_BYTES;
@@ -1373,13 +1384,13 @@ def _check_previous_manifest(
                 "previous_manifest is null but previous/ contains a manifest",
             )
         if previous_container is not None:
-            # U1/§11.5: first read the supplied previous container "exactly like
-            # `container`". If it is unreadable or structurally invalid, that is
-            # the reported chain reason (a readable non-container file must not be
-            # masked by the null-chain rule). A usable container then conflicts
-            # with the null previous_manifest, which is itself a chain error: the
-            # recipient detects an exporter that silently restarted the chain.
-            _read_previous_manifest_digest(previous_container)
+            # V3/§11.5: read and verify the supplied previous identity first: a
+            # readable non-container or unreadable previous is the reported chain
+            # reason. A verified but unusable link (the current manifest claims a
+            # null chain) is itself a chain error, and the V3 limitation is still
+            # reported because the previous identity was read and verified.
+            _read_previous_identity(previous_container, keyset_views)
+            _mark_previous_verified(finish_flags)
             raise WeaveError(
                 "E_MANIFEST_CHAIN",
                 "a previous container was supplied but previous_manifest is null",
@@ -1417,109 +1428,204 @@ def _check_previous_manifest(
             "E_MANIFEST_CHAIN", "embedded previous manifest digest does not match"
         )
     if previous_container is not None:
-        supplied = _read_previous_manifest_digest(previous_container)
+        supplied = _read_previous_identity(previous_container, keyset_views)
+        _mark_previous_verified(finish_flags)
         if supplied != manifest.previous_manifest_digest:
             raise WeaveError(
                 "E_MANIFEST_CHAIN", "--previous manifest digest does not match"
             )
 
 
-def _read_previous_manifest_digest(previous_container: Path) -> str:
-    """Return the manifest digest of the explicitly supplied previous container.
+def _mark_previous_verified(finish_flags: dict[str, bool]) -> None:
+    """V3/§14.9: the supplied previous identity was read and its signature verified."""
+    finish_flags["previous_signature_verified"] = True
+    finish_flags["previous_content_unverified"] = True
 
-    U1/§11.5: a supplied previous container is read "exactly like ``container``"
-    (directory or its zip form). Every read or structural failure is a chain
-    error ``E_MANIFEST_CHAIN`` (invalid), never ``E_CONTAINER_ZIP`` or a usage
-    error; only a missing path is a usage error (exit 2). The zip form is parsed
-    by :mod:`zipread`, never by the standard library.
+
+# ---------------------------------------------------------------------------
+# Supplied previous container: the narrowed chain link read (§11.5, V3)
+# ---------------------------------------------------------------------------
+
+#: The only two members read from a supplied previous container. Everything else
+#: in it (records, blobs, readable/, extra files, attestation timestamps) is not
+#: verified; the report says so with ``L_PREVIOUS_CONTENT_UNVERIFIED``.
+_PREVIOUS_MANIFEST = "manifest.json"
+_PREVIOUS_ATTESTATION = "signatures/manifest.sig.json"
+
+
+def _read_previous_identity(
+    previous_container: Path, keyset_views: list[verifier.RecordView]
+) -> str:
+    """Read, validate and verify a supplied previous container's chain identity.
+
+    V3/§11.5: exactly two members are read from the supplied previous container
+    (directory or zip): ``manifest.json`` and its attestation
+    ``signatures/manifest.sig.json``, each bounded by ``MAX_MANIFEST_BYTES``. The
+    zip is parsed for structure/framing/§13 limits only; every other member is
+    ignored. The §2.2 manifest digest is computed and the attestation's manifest
+    signature is verified with keys from the supplied keyset only (no previous
+    record context). Every read/parse/digest/signature failure is
+    ``E_MANIFEST_CHAIN``; a missing path stays a usage error.
     """
     if not previous_container.exists():
-        # S6/§11.5: a missing --previous path is a usage/IO error (exit 2), not a
-        # report-level chain verdict.
         raise UsageError("--previous container does not exist")
-    if previous_container.is_dir():
-        data = _read_bounded_manifest_file(previous_container / "manifest.json")
-    elif previous_container.is_file():
-        if not _looks_like_zip(previous_container):
-            # Readable but not a usable container (§11.5 "unreadable or invalid").
+    try:
+        manifest_bytes, attestation_bytes = _read_previous_members(previous_container)
+        try:
+            value = canonical.parse_file_bytes(
+                manifest_bytes,
+                max_bytes=manifest_module.MAX_MANIFEST_BYTES,
+                require_object=True,
+            )
+        except WeaveError as error:
+            raise WeaveError("E_MANIFEST_CHAIN", "--previous manifest is malformed") from error
+        if not isinstance(value, dict):
+            raise WeaveError("E_MANIFEST_CHAIN", "--previous manifest is malformed")
+        try:
+            manifest_module.validate_manifest(value)
+        except WeaveError as error:
             raise WeaveError(
-                "E_MANIFEST_CHAIN", "--previous is not a usable container"
+                "E_MANIFEST_CHAIN", "--previous manifest is not a valid manifest"
+            ) from error
+        digest = encoding.manifest_digest(canonical.canonicalize(value))
+        try:
+            attestation_value = canonical.parse_file_bytes(
+                attestation_bytes,
+                max_bytes=manifest_module.MAX_SIGFILE_BYTES,
+                require_object=True,
             )
-        data = _read_manifest_from_previous_zip(previous_container)
-    else:
-        raise WeaveError("E_MANIFEST_CHAIN", "--previous is not a usable container")
-    try:
-        value = canonical.parse_file_bytes(
-            data, max_bytes=manifest_module.MAX_MANIFEST_BYTES, require_object=True
-        )
-    except WeaveError as error:
-        raise WeaveError("E_MANIFEST_CHAIN", "--previous manifest is malformed") from error
-    if not isinstance(value, dict):
-        raise WeaveError("E_MANIFEST_CHAIN", "--previous manifest is malformed")
-    return encoding.manifest_digest(canonical.canonicalize(value))
-
-
-def _read_bounded_manifest_file(path: Path) -> bytes:
-    """Read a manifest file inside its §13 class limit (U1, chain-error mapping)."""
-    try:
-        with path.open("rb") as handle:
-            data, size, truncated = _read_capped(handle, manifest_module.MAX_MANIFEST_BYTES)
-    except OSError as error:
-        raise WeaveError("E_MANIFEST_CHAIN", "--previous container is unreadable") from error
-    if truncated or size > manifest_module.MAX_MANIFEST_BYTES:
-        raise WeaveError(
-            "E_MANIFEST_CHAIN", "--previous manifest exceeds the size limit"
-        )
-    return data
-
-
-def _read_manifest_from_previous_zip(path: Path) -> bytes:
-    """Extract ``manifest.json`` from a supplied previous zip with :mod:`zipread` (U1)."""
-    try:
-        with path.open("rb") as handle:
-            archive = zipread.parse_zip(handle)
-            if len(archive.entries) > MAX_CONTAINER_ENTRIES:
-                raise WeaveError(
-                    "E_MANIFEST_CHAIN",
-                    "--previous container exceeds the entry limit",
-                )
-            if _zip_declared_total(archive) > MAX_CONTAINER_UNCOMPRESSED_BYTES:
-                raise WeaveError(
-                    "E_MANIFEST_CHAIN",
-                    "--previous container exceeds the size limit",
-                )
-            entry = next(
-                (
-                    candidate
-                    for candidate in archive.entries
-                    if candidate.name == "manifest.json" and not candidate.is_directory
-                ),
-                None,
+        except WeaveError as error:
+            raise WeaveError(
+                "E_MANIFEST_CHAIN", "--previous manifest attestation is malformed"
+            ) from error
+        try:
+            attestation = manifest_module.validate_attestation(attestation_value)
+        except WeaveError as error:
+            raise WeaveError(
+                "E_MANIFEST_CHAIN", "--previous manifest attestation is malformed"
+            ) from error
+        if attestation.digest != digest:
+            raise WeaveError(
+                "E_MANIFEST_CHAIN",
+                "--previous manifest attestation digest does not match",
             )
-            if entry is None:
-                raise WeaveError(
-                    "E_MANIFEST_CHAIN",
-                    "--previous container has no manifest.json",
-                )
-            if entry.uncompressed_size > manifest_module.MAX_MANIFEST_BYTES:
-                raise WeaveError(
-                    "E_MANIFEST_CHAIN",
-                    "--previous manifest exceeds the size limit",
-                )
-            return zipread.read_entry_data(handle, entry)
-    except zipread.ZipStructureError as error:
-        # U1/§11.5: a structural failure of the supplied previous zip is a chain
-        # error, never the container-level E_CONTAINER_ZIP (ZipStructureError is
-        # itself a WeaveError, so this must come first).
-        raise WeaveError(
-            "E_MANIFEST_CHAIN", "--previous container is unreadable"
-        ) from error
-    except (WeaveError, UsageError):
+        candidates, _sources = _candidate_manifest_keys([], keyset_views)
+        try:
+            _verify_manifest_signatures(attestation.signatures, digest, candidates)
+        except WeaveError as error:
+            raise WeaveError(
+                "E_MANIFEST_CHAIN", "--previous manifest signature does not verify"
+            ) from error
+    except UsageError:
         raise
+    except WeaveError as error:
+        if error.code == "E_MANIFEST_CHAIN":
+            raise
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous container is not a usable chain link"
+        ) from error
     except (OSError, ValueError, EOFError) as error:
         raise WeaveError(
             "E_MANIFEST_CHAIN", "--previous container is unreadable"
         ) from error
+    return digest
+
+
+def _read_previous_members(previous_container: Path) -> tuple[bytes, bytes]:
+    """Read the two chain-identity members from a previous directory or zip."""
+    if previous_container.is_dir():
+        return (
+            _read_previous_regular_file(previous_container / _PREVIOUS_MANIFEST),
+            _read_previous_regular_file(
+                previous_container / _PREVIOUS_ATTESTATION
+            ),
+        )
+    if not previous_container.is_file():
+        # A symlink/special file is not a usable previous container.
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous is not a usable container"
+        )
+    if not _looks_like_zip(previous_container):
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous is not a usable container"
+        )
+    with previous_container.open("rb") as handle:
+        try:
+            archive = zipread.parse_zip(
+                handle,
+                max_entries=MAX_CONTAINER_ENTRIES,
+                max_declared_total=MAX_CONTAINER_UNCOMPRESSED_BYTES,
+            )
+        except zipread.ZipLimitError as error:
+            # V7/L7: the §13 limits are checked before locating the members; a
+            # supplied previous maps every structural/framing failure to chain.
+            raise WeaveError(
+                "E_MANIFEST_CHAIN", "--previous container exceeds a size limit"
+            ) from error
+        manifest_entry = _exactly_one_previous_member(
+            archive, _PREVIOUS_MANIFEST, "manifest.json"
+        )
+        attestation_entry = _exactly_one_previous_member(
+            archive, _PREVIOUS_ATTESTATION, "signatures/manifest.sig.json"
+        )
+        for label, entry in (
+            ("--previous manifest", manifest_entry),
+            ("--previous manifest attestation", attestation_entry),
+        ):
+            if entry.uncompressed_size > manifest_module.MAX_MANIFEST_BYTES:
+                raise WeaveError(
+                    "E_MANIFEST_CHAIN", "%s exceeds the size limit" % label
+                )
+        return (
+            zipread.read_entry_data(handle, manifest_entry),
+            zipread.read_entry_data(handle, attestation_entry),
+        )
+
+
+def _exactly_one_previous_member(
+    archive: zipread.ZipArchive, name: str, label: str
+) -> zipread.ZipEntry:
+    """V3: exactly one non-directory zip member with the required name."""
+    matches = [
+        entry
+        for entry in archive.entries
+        if entry.name == name and not entry.is_directory
+    ]
+    if len(matches) != 1:
+        raise WeaveError(
+            "E_MANIFEST_CHAIN",
+            "--previous container must carry exactly one %s member" % label,
+        )
+    return matches[0]
+
+
+def _read_previous_regular_file(path: Path) -> bytes:
+    """Read one required previous member; it must be a regular file (V3)."""
+    try:
+        member_stat = path.lstat()
+    except OSError as error:
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous container is missing a required member"
+        ) from error
+    if stat.S_ISLNK(member_stat.st_mode) or not stat.S_ISREG(member_stat.st_mode):
+        raise WeaveError(
+            "E_MANIFEST_CHAIN",
+            "--previous container member is not a regular file",
+        )
+    try:
+        with path.open("rb") as handle:
+            data, size, truncated = _read_capped(
+                handle, manifest_module.MAX_MANIFEST_BYTES
+            )
+    except OSError as error:
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous container is unreadable"
+        ) from error
+    if truncated or size > manifest_module.MAX_MANIFEST_BYTES:
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous container member exceeds the size limit"
+        )
+    return data
 
 
 # ---------------------------------------------------------------------------
