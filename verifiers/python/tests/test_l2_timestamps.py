@@ -12,7 +12,7 @@ import re
 import pytest
 
 from hyphaweave_verify import canonical, encoding, timestamps
-from hyphaweave_verify.errors import UsageError, WeaveError
+from hyphaweave_verify.errors import UsageError
 
 from conftest import VECTORS
 
