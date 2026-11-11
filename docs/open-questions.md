@@ -986,8 +986,15 @@ round (T11); they carry the status
     list fixed by the specification is the only one two independent implementations can
     agree on; "whatever my library knows" is exactly the dependency X1 removed, and every
     extra decoded type is a further source of false rejections (for example the
-    RSASSA-PSS-params DEFAULTs). Marked `decided by principle (Inceptless decision
-    2026-11-12 #1; X1)`.
+    RSASSA-PSS-params DEFAULTs). One consequence is visible: the `parameters` of the
+    signer's `digestAlgorithm` and `signatureAlgorithm` are judged only by their framing
+    (checks 5, 6 and 10 compare the algorithm OBJECT IDENTIFIER only), so a receipt whose
+    `rsaEncryption` parameters are not `NULL` is no longer rejected — before X1 the
+    parsing library's typed decode rejected it, which no rule of this specification
+    required. The byte-flip gate exempts these bytes by range
+    (`tsr-signer-algorithm-parameters`, `vectors/GATE-3-EXCEPTIONS.md`). Whether the
+    profile should constrain those parameters (absent or `NULL`) is left open. Marked
+    `decided by principle (Inceptless decision 2026-11-12 #1; X1)`.
 31. **Symbolic links among operator paths (X3).** The ruling says the kind of each
     operator path is established with `lstat` before opening. Readings: reject every
     symbolic link (`lstat` alone), or resolve a link and judge its target the same way.
