@@ -10566,8 +10566,11 @@ _X1_MESSAGE_DIGEST_OID = _w3_oid("1.2.840.113549.1.9.4").content
 _X1_SIGNING_CERTIFICATE_V2_OID = _w3_oid("1.2.840.113549.1.9.16.2.47").content
 
 
-def _x1_resign(tree: _DerNode) -> None:
-    """Recompute messageDigest and re-sign the signed attributes in place."""
+def _x1_resign(tree: _DerNode, sign: Callable[[bytes], bytes] | None = None) -> None:
+    """Recompute messageDigest and re-sign the signed attributes in place.
+
+    ``sign`` defaults to the test TSA's RSA PKCS#1 v1.5 SHA-256 signature.
+    """
     signed_data = _w3_signed_data(tree)
     econtent = signed_data.children[2].children[1].children[0]
     signer_info = _w3_signer_info(tree)
@@ -10583,8 +10586,12 @@ def _x1_resign(tree: _DerNode) -> None:
     signature = next(
         child for child in signer_info.children[position + 1 :] if child.tag == 0x04
     )
-    signature.content = _tsa_private_key().sign(
-        to_be_signed, crypto_padding.PKCS1v15(), crypto_hashes.SHA256()
+    signature.content = (
+        sign(to_be_signed)
+        if sign is not None
+        else _tsa_private_key().sign(
+            to_be_signed, crypto_padding.PKCS1v15(), crypto_hashes.SHA256()
+        )
     )
 
 
@@ -10816,6 +10823,165 @@ declare(
     "key, so the CMS signature does not verify: check 10, E_TS_CMS (not E_TS_CERT). "
     "Checks 1-4 passed, so gen_time is reported.",
 )
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX5 X6 (decision 2026-11-12 #2): the parameters of the signer's
+# digestAlgorithm and signatureAlgorithm have a fixed form per algorithm
+# (RFC 5754 §2, RFC 3370 §3.2, RFC 4055/8017, RFC 5758 §3.2). Every receipt is
+# fully re-signed (RSA with the test TSA key; ECDSA deterministically, RFC 6979,
+# with the test EC key of _w6_ec_certificate).
+# ---------------------------------------------------------------------------
+
+
+def _x6_ec_private_key() -> Any:
+    """The private key of _w6_ec_certificate (same derivation, test material only)."""
+    from cryptography.hazmat.primitives.asymmetric import ec as crypto_ec
+
+    return crypto_ec.derive_private_key(
+        int.from_bytes(hashlib.sha256(b"weave-record/1/test-tsa-ec").digest(), "big")
+        % (2**255),
+        crypto_ec.SECP256R1(),
+    )
+
+
+def _x6_ec_sign(data: bytes) -> bytes:
+    from cryptography.hazmat.primitives.asymmetric import ec as crypto_ec
+
+    return _x6_ec_private_key().sign(
+        data, crypto_ec.ECDSA(crypto_hashes.SHA256(), deterministic_signing=True)
+    )
+
+
+_X6_NULL = b"null"
+_X6_ABSENT = b"absent"
+_X6_OTHER = b"other"  # an empty OCTET STRING: well framed, neither absent nor NULL
+
+
+def _x6_algorithm(which: str, oid: str, parameters: bytes) -> Callable[[_DerNode], None]:
+    """Rewrite the signer's digestAlgorithm or signatureAlgorithm."""
+
+    def edit(tree: _DerNode) -> None:
+        signer_info = _w3_signer_info(tree)
+        if which == "digest":
+            algorithm = signer_info.children[2]
+        else:
+            position = next(
+                index for index, child in enumerate(signer_info.children) if child.tag == 0xA0
+            )
+            algorithm = signer_info.children[position + 1]
+        if algorithm.tag != 0x30:
+            raise SystemExit("unexpected SignerInfo algorithm position")
+        children = [_w3_oid(oid)]
+        if parameters == _X6_NULL:
+            children.append(_w3_node(0x05, content=b""))
+        elif parameters == _X6_OTHER:
+            children.append(_w3_node(0x04, content=b""))
+        algorithm.children = children
+
+    return edit
+
+
+def _x6_ec_pem() -> bytes:
+    return crypto_x509.load_der_x509_certificate(_w6_ec_certificate()).public_bytes(
+        crypto_serialization.Encoding.PEM
+    )
+
+
+def _x6_files(case_dir: Path, edit: Callable[[_DerNode], None], *, ec: bool) -> dict[str, bytes]:
+    def factory(imprint: bytes) -> bytes:
+        if not ec:
+            return _x1_resigned(edit)(_crafted_tsr(imprint))
+        tree = _der_tree(_crafted_tsr(imprint, certificate_der=_w6_ec_certificate()))
+        edit(tree)
+        _x1_resign(tree, _x6_ec_sign)
+        return _der_encode(tree)
+
+    files = _crafted_l2_files(case_dir, tsr_factory=factory)
+    if ec:
+        files[TSA_CERT_NAME] = _x6_ec_pem()
+    return files
+
+
+_X6_SHA256 = "2.16.840.1.101.3.4.2.1"
+_X6_RSA = "1.2.840.113549.1.1.1"
+_X6_SHA256_RSA = "1.2.840.113549.1.1.11"
+_X6_ECDSA_SHA256 = "1.2.840.10045.4.3.2"
+
+for _name, _edit, _ec, _why in (
+    ("l2-ts-signer-digest-params-absent", _x6_algorithm("digest", _X6_SHA256, _X6_ABSENT), False,
+     "signerInfo.digestAlgorithm is {id-sha256} with the parameters absent; RFC 5754 §2 "
+     "requires accepting both the absent and the NULL form for SHA-2"),
+    ("l2-ts-signer-digest-params-null", _x6_algorithm("digest", _X6_SHA256, _X6_NULL), False,
+     "signerInfo.digestAlgorithm is {id-sha256, NULL} (the other RFC 5754 §2 form) and "
+     "signatureAlgorithm is {rsaEncryption, NULL} (RFC 3370 §3.2)"),
+    ("l2-ts-signer-sha256-rsa-params-null", _x6_algorithm("signature", _X6_SHA256_RSA, _X6_NULL), False,
+     "signerInfo.signatureAlgorithm is {sha256WithRSAEncryption, NULL}; RFC 4055 §5 / "
+     "RFC 8017 A.2.4 fix the parameters of the RSA PKCS#1 v1.5 identifiers to NULL"),
+    ("l2-ts-signer-ecdsa-params-absent", _x6_algorithm("signature", _X6_ECDSA_SHA256, _X6_ABSENT), True,
+     "the receipt is signed with ECDSA P-256 (deterministic, RFC 6979) and "
+     "signerInfo.signatureAlgorithm is {ecdsa-with-SHA256} with the parameters absent, as "
+     "RFC 5758 §3.2 requires; the trust anchor is the EC test certificate"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "valid",
+        build=lambda case_dir, _edit=_edit, _ec=_ec: _x6_files(case_dir, _edit, ec=_ec),
+        expected_container={
+            "level_claimed": "L2",
+            "level_verified": "L0",
+            "anchor_verified": True,
+            "timestamps": [
+                {
+                    "index": 0,
+                    "path": "signatures/timestamp-1.tsr",
+                    "state": "verified",
+                    "gen_time": "2026-11-01T00:00:00.000Z",
+                }
+            ],
+        },
+        notes="S1-FIX5 X6/§12.2 check 1c (decision 2026-11-12 #2): "
+        + _why
+        + ". The receipt is fully re-signed, so it is strict DER, its signer algorithm "
+        "parameters have the permitted form, the CMS signature verifies and the container "
+        "is valid.",
+        **_X1_VALID_EXPECTED,
+    )
+
+for _name, _edit, _ec, _why in (
+    ("l2-ts-signer-digest-params-other", _x6_algorithm("digest", _X6_SHA256, _X6_OTHER), False,
+     "signerInfo.digestAlgorithm is {id-sha256} with an empty OCTET STRING as parameters; "
+     "SHA-2 parameters must be absent or NULL (RFC 5754 §2)"),
+    ("l2-ts-signer-rsa-params-absent", _x6_algorithm("signature", _X6_RSA, _X6_ABSENT), False,
+     "signerInfo.signatureAlgorithm is {rsaEncryption} with the parameters absent; they "
+     "must be NULL (RFC 3370 §3.2)"),
+    ("l2-ts-signer-rsa-params-other", _x6_algorithm("signature", _X6_RSA, _X6_OTHER), False,
+     "signerInfo.signatureAlgorithm is {rsaEncryption} with an empty OCTET STRING as "
+     "parameters; they must be NULL (RFC 3370 §3.2)"),
+    ("l2-ts-signer-ecdsa-params-null", _x6_algorithm("signature", _X6_ECDSA_SHA256, _X6_NULL), True,
+     "the ECDSA-signed receipt writes signatureAlgorithm {ecdsa-with-SHA256, NULL}; the "
+     "parameters must be absent (RFC 5758 §3.2)"),
+    ("l2-ts-signer-ecdsa-params-other", _x6_algorithm("signature", _X6_ECDSA_SHA256, _X6_OTHER), True,
+     "the ECDSA-signed receipt writes an empty OCTET STRING as signatureAlgorithm "
+     "parameters; they must be absent (RFC 5758 §3.2)"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        build=lambda case_dir, _edit=_edit, _ec=_ec: _x6_files(case_dir, _edit, ec=_ec),
+        notes="S1-FIX5 X6/§12.2 check 1 (decision 2026-11-12 #2): "
+        + _why
+        + ". The receipt is otherwise fully re-signed, so the only defect is the "
+        "parameters form, a check-1 structure rule: invalid with E_TS_SCHEMA and "
+        "gen_time null.",
+        **_W3_SCHEMA_EXPECTED,
+    )
 
 
 def _w5_cross_record_stop_files() -> dict[str, bytes]:
