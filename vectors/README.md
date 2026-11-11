@@ -49,7 +49,8 @@ frozen candidate set is validated separately and is not part of the index).
 
 Authoritative source is `vectors/index.json`; regenerate with
 `tools/gen_index.py` after adding cases. At the time of writing (revision 3
-plus S1-FIX1/S1-FIX2, `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
+plus S1-FIX1 to S1-FIX4, `weave-record/1` v0.1 draft, not yet accepted by
+J1/J2):
 
 | category | cases |
 |---|---|
@@ -63,11 +64,11 @@ plus S1-FIX1/S1-FIX2, `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
 | `erasure` | 12 |
 | `grant` | 36 |
 | `key-lifecycle` | 67 |
-| `container` | 86 |
-| `integrity-levels` | 41 |
-| **total** | **421** |
+| `container` | 112 |
+| `integrity-levels` | 62 |
+| **total** | **468** |
 
-Verdict distribution: `valid` 98, `erased` 1, `invalid` 293, `unverifiable` 29.
+Verdict distribution: `valid` 102, `erased` 1, `invalid` 336, `unverifiable` 29.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
@@ -82,7 +83,18 @@ S1-FIX1 (decision 2026-11-11 #5) added the mixed-revocation, TSA-accuracy,
 ZIP-structure, frozen-candidate-restoration, depth-counting, revocation-validity,
 TOFU-criterion, limitation/notice-coverage, rotated-key-material,
 supplementary-plane ordering and oversize-record report-shape rulings; the
-affected existing cases were updated and the index regenerated.
+affected existing cases were updated and the index regenerated. S1-FIX2
+(decision 2026-11-11 #12) added the zip-form previous container, the zip §13
+limits, self-revocation, governing-class, rotated-material TOFU, TSA-limitation,
+oversize-listing and single-volume rulings. S1-FIX3 (decision 2026-11-11 #14)
+added the narrowed `--previous` link, strict receipt DER, the public-key
+structural rule, version-needed/disk-start and limits-before-structure. S1-FIX4
+(decision 2026-11-11 #16) added 47 cases: the previous signature verified in
+the target container's context (W1), §11.9 rule 4 on every entry of a previous
+zip (W2), real DER re-encoding with every SET OF class and DER rule (W3), the
+stop-at-failing-stage rule and the one criterion of
+`L_PREVIOUS_CONTENT_UNVERIFIED` (W5), the complete timestamp check order (W6),
+the zip check order (W7) and the previous-container core checks (W9).
 
 ## Running the vectors
 
@@ -228,23 +240,33 @@ A `--previous` argument may be a container directory **or its zip form**. Since
 S1-FIX3 (V3, §11.5) a supplied previous container is used **only to link the
 chain**: the verifier reads exactly `manifest.json` and
 `signatures/manifest.sig.json` (each bounded by the manifest size limit), checks
-the manifest digest/signature against the supplied keyset, and ignores all other
-previous content (records, blobs, `readable/`, extra files, symlinked members,
+the manifest digest and verifies the signature **in the target container's
+verification context** (the supplied keyset plus the target's own key records,
+never the previous container's; S1-FIX4 W1), and ignores all other previous
+content (records, blobs, `readable/`, extra files, symlinked members,
 attestation timestamp contents). Read/parse/digest/signature failures of those
 two members, a directory member that is not a regular file, or a zip that does
 not contain exactly one non-directory member for each path are
 `E_MANIFEST_CHAIN`; a zip structural/framing/limit failure of the supplied
-previous is also `E_MANIFEST_CHAIN` (not `E_CONTAINER_ZIP`) and must never crash
+previous — §11.9 rules 1–4 apply to every entry of the archive, read or not
+(S1-FIX4 W2) — is also `E_MANIFEST_CHAIN` (not `E_CONTAINER_ZIP`) and must never crash
 (a corrupted DEFLATE stream is mapped to `E_MANIFEST_CHAIN`). When the previous
 manifest identity is read and its signature verifies, the report carries
-`L_PREVIOUS_CONTENT_UNVERIFIED` (whether or not the digest comparison or the
-target container then succeeds); with `--previous` the previous signature *is*
+`L_PREVIOUS_CONTENT_UNVERIFIED` (one criterion, S1-FIX4 W5: the
+previous-manifest-chain stage ran and the supplied signature verified, whatever
+else that stage then finds; a container whose pipeline stops earlier never reads
+the supplied previous); with `--previous` the previous signature *is*
 re-verified, so `N_PREVIOUS_SIG_UNVERIFIED`/`L_PREVIOUS_SIG_UNVERIFIED` are not
 reported (they remain for the embedded `previous/manifest.json` when no
 `--previous` is supplied). `container/previous-zip-valid`,
 `container/previous-zip-deflate-valid`/`-corrupt`, the nine
-`container/previous-ignores-*` cases and `container/previous-non-zip-file` pin
-this surface; to verify a previous container as evidence, run it as a target.
+`container/previous-ignores-*` cases, `container/previous-non-zip-file` and the
+S1-FIX4 cases (`previous-device-key-target-context`, `previous-rotated-old-key-links`,
+`previous-key-*`, `previous-rotation-material-untrusted`, `previous-signing-key-*`,
+`previous-zip-rule4-*`, `previous-signature-invalid`,
+`previous-attestation-digest-mismatch`, `previous-attestation-symlink`,
+`previous-not-read-after-*`, `previous-bad-signature-after-blob-failure`,
+`previous-embedded-mismatch-supplied-verified`) pin this surface; to verify a previous container as evidence, run it as a target.
 
 ## Known coverage gaps
 

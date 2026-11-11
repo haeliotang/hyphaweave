@@ -9244,6 +9244,1321 @@ def _l1_without_position() -> dict[str, bytes]:
     return recordlib.mutate_manifest(built, mutator, resign_with=("human-1",))
 
 
+# ---------------------------------------------------------------------------
+# S1-FIX4 (Inceptless decision 2026-11-11 #16, W1-W11). Every expected
+# conclusion below is hand-written from the specification text it cites; the
+# generator never imports a verifier.
+# ---------------------------------------------------------------------------
+
+FIX4_PREVIOUS_ARGS = ("--keys", "@keyset", "--previous", "previous-container")
+FIX4_LINKED = ("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT", "L_PREVIOUS_CONTENT_UNVERIFIED")
+FIX4_UNLINKED = ("L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED")
+FIX4_UNLINKED_TOFU = ("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED")
+
+
+def _w1_sign_manifest_with_derived(files: dict[str, bytes], key_name: str) -> dict[str, bytes]:
+    """Replace the manifest attestation signatures by one derived-key signature."""
+    private, _public, key_id = derived_key(key_name)
+    digest = recordlib.manifest_digest(files["manifest.json"])
+    sigfile = parse(files["signatures/manifest.sig.json"])
+    sigfile["signatures"] = [
+        {
+            "alg": "ed25519",
+            "key": key_id,
+            "value": keyutil.b64url_encode(
+                private.sign(recordlib.sig_message_for_manifest(digest))
+            ),
+        }
+    ]
+    files["signatures/manifest.sig.json"] = canonical(sigfile)
+    return files
+
+
+def _w1_build(
+    records: Sequence[dict[str, Any]],
+    signer: tuple[str, str],
+    *,
+    created_at: str,
+    previous_internal: dict[str, bytes] | None = None,
+) -> dict[str, bytes]:
+    """Internal files of one container signed by a keyset or a derived key."""
+    kind_of_signer, name = signer
+    kwargs: dict[str, Any] = {}
+    if previous_internal is not None:
+        previous_bytes = previous_internal["manifest.json"]
+        kwargs["previous_manifest"] = {
+            "digest": recordlib.manifest_digest(previous_bytes)
+        }
+        kwargs["previous_manifest_bytes"] = previous_bytes
+    files = recordlib.build_container(
+        records,
+        created_at=created_at,
+        manifest_signers=(name,) if kind_of_signer == "keyset" else ("human-1",),
+        **kwargs,
+    )
+    if kind_of_signer == "derived":
+        _w1_sign_manifest_with_derived(files, name)
+    return files
+
+
+def _w1_device_declaration(
+    key_name: str, record_id: str, *, recorded_at: str = recordlib.T0
+) -> dict[str, Any]:
+    """A device declaration owned and cosigned by the keyset root human-1 (J1 shape)."""
+    return derived_declaration(
+        record_id=record_id,
+        key_name=key_name,
+        key_type="device",
+        owner="human-1",
+        cosigners=("human-1",),
+        recorded_at=recorded_at,
+    )
+
+
+def _w1_device_with_derived_owner(
+    key_name: str, owner_key_name: str, record_id: str
+) -> dict[str, Any]:
+    """A device declaration whose owner is container-only (untrusted) human material."""
+    owner_private, _owner_public, owner_id = derived_key(owner_key_name)
+    private, public, key_id = derived_key(key_name)
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id=record_id,
+        actor={"type": "device", "key": key_id},
+        body={
+            "algorithm": "ed25519",
+            "key": key_id,
+            "key_type": "device",
+            "owner": owner_id,
+            "public_key": keyutil.b64url_encode(public),
+        },
+        stage="accepted",
+        recorded_at=recordlib.T0,
+        origin_instance=key_id,
+    )
+    signatures = [
+        _derived_signature(private, key_id, record),
+        _derived_signature(owner_private, owner_id, record),
+    ]
+    signatures.sort(key=lambda entry: entry["key"])
+    record["sigs"] = signatures
+    return record
+
+
+def _w1_device_rotation(
+    old_name: str, new_name: str, record_id: str, *, recorded_at: str = recordlib.T2
+) -> dict[str, Any]:
+    """A rotation between two derived device keys, listing both public keys."""
+    old_private, old_public, old_id = derived_key(old_name)
+    new_private, new_public, new_id = derived_key(new_name)
+    record = recordlib.build_record(
+        kind="weave.key.rotated",
+        id=record_id,
+        actor={"type": "device", "key": old_id},
+        body={
+            "new_key": new_id,
+            "new_public_key": keyutil.b64url_encode(new_public),
+            "old_key": old_id,
+            "old_public_key": keyutil.b64url_encode(old_public),
+            "reason": "scheduled rotation",
+        },
+        stage="accepted",
+        recorded_at=recorded_at,
+        origin_instance=old_id,
+    )
+    signatures = [
+        _derived_signature(old_private, old_id, record),
+        _derived_signature(new_private, new_id, record),
+    ]
+    signatures.sort(key=lambda entry: entry["key"])
+    record["sigs"] = signatures
+    return record
+
+
+def _w1_revocation(
+    key_name: str, *, reason: str, effective_at: str, record_id: str
+) -> dict[str, Any]:
+    """A revocation of a derived key, signed by the keyset root human-1."""
+    _private, _public, key_id = derived_key(key_name)
+    record = recordlib.build_record(
+        kind="weave.key.revoked",
+        id=record_id,
+        actor=recordlib.actor("human-1"),
+        body={"effective_at": effective_at, "key": key_id, "reason": reason},
+        stage="accepted",
+        recorded_at=effective_at,
+        origin_instance=key_id,
+    )
+    return recordlib.signed(record, "human-1")
+
+
+def _w1_pair_files(
+    previous: dict[str, bytes], target: dict[str, bytes]
+) -> dict[str, bytes]:
+    return _prepend_previous_directory(wrap(target), previous)
+
+
+_W1_DEVICE = "w1-device-key"
+_W1_DEVICE_ID = "key-declared-w1-device"
+
+
+def _w1_j1_shape_files() -> dict[str, bytes]:
+    declaration = _w1_device_declaration(_W1_DEVICE, _W1_DEVICE_ID)
+    previous = _w1_build([declaration], ("derived", _W1_DEVICE), created_at=recordlib.T1)
+    target = _w1_build(
+        [declaration], ("derived", _W1_DEVICE), created_at=recordlib.T5,
+        previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-device-key-target-context",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _w1_j1_shape_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    limitations=FIX4_LINKED,
+    notices_absent=("N_PREVIOUS_SIG_UNVERIFIED", "N_KEY_TOFU"),
+    records=({"id": _W1_DEVICE_ID, "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W1/§11.5 (the Koinoweave J1 shape): both manifests are signed by "
+    "a device key that the keyset does not declare; the keyset holds only its owner "
+    "(human-1). The device declaration, owner-cosigned, is in the target container, "
+    "so the device key is a required key of the target verification context and is "
+    "trusted in the target's closure: the supplied previous's signature verifies, "
+    "the link holds and the container is valid with L_PREVIOUS_CONTENT_UNVERIFIED. "
+    "Both signature checks used context material (L_KEY_TRUST_TOFU); no record "
+    "signature did (no N_KEY_TOFU).",
+)
+
+
+def _w1_declared_only_in_previous_files() -> dict[str, bytes]:
+    declaration = _w1_device_declaration(_W1_DEVICE, _W1_DEVICE_ID)
+    previous = _w1_build([declaration], ("derived", _W1_DEVICE), created_at=recordlib.T1)
+    target = _w1_build(
+        [recordlib.key_declaration("human-1")], ("keyset", "human-1"),
+        created_at=recordlib.T5, previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-key-declared-only-in-previous",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _w1_declared_only_in_previous_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W1/§11.5 rule 1: the previous manifest is signed by a device key "
+    "whose declaration exists only inside the previous container. The previous "
+    "container's own records are never part of the verification context, so the "
+    "key is not a required key of the target context and the link fails: invalid "
+    "E_MANIFEST_CHAIN. The previous signature was not re-verified, so "
+    "N_PREVIOUS_SIG_UNVERIFIED/L_PREVIOUS_SIG_UNVERIFIED are reported and "
+    "L_PREVIOUS_CONTENT_UNVERIFIED is not.",
+)
+
+_W1_UNTRUSTED_OWNER = "w1-untrusted-owner"
+_W1_UNTRUSTED_DEVICE = "w1-untrusted-device"
+
+
+def _w1_untrusted_files() -> dict[str, bytes]:
+    owner = _self_attested_human_declaration(
+        record_id="key-declared-w1-untrusted-owner", key_name=_W1_UNTRUSTED_OWNER
+    )
+    device = _w1_device_with_derived_owner(
+        _W1_UNTRUSTED_DEVICE, _W1_UNTRUSTED_OWNER, "key-declared-w1-untrusted-device"
+    )
+    previous = _w1_build([device], ("derived", _W1_UNTRUSTED_DEVICE), created_at=recordlib.T1)
+    target = _w1_build(
+        [owner, device], ("keyset", "human-1"), created_at=recordlib.T5,
+        previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-key-not-trusted-in-target",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNTRUSTED", "E_MANIFEST_CHAIN"),
+    build=lambda case_dir: _w1_untrusted_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED", "N_SELF_ATTESTED_ROOT_KEY"),
+    limitations=FIX4_UNLINKED_TOFU,
+    records=(
+        {"id": "key-declared-w1-untrusted-device", "verdict": "unverifiable", "errors": ["E_KEY_UNTRUSTED"]},
+        {"id": "key-declared-w1-untrusted-owner", "verdict": "unverifiable", "errors": ["E_KEY_UNTRUSTED"]},
+    ),
+    notes="S1-FIX4 W1/§11.5 rule 2: the previous manifest's signing key is declared "
+    "in the target container, so its signature equation verifies with context "
+    "material (L_KEY_TRUST_TOFU), but the declaration's owner is a self-attested "
+    "human key outside the keyset: both declarations are unverifiable "
+    "E_KEY_UNTRUSTED and the signing key is not trusted in the target's final "
+    "trust closure, so the link fails with E_MANIFEST_CHAIN (invalid wins).",
+)
+
+_W1_OLD = "w1-rotated-old-device"
+_W1_NEW = "w1-rotated-new-device"
+
+
+def _w1_rotated_files() -> dict[str, bytes]:
+    old_declaration = _w1_device_declaration(_W1_OLD, "key-declared-w1-old-device")
+    previous = _w1_build([old_declaration], ("derived", _W1_OLD), created_at=recordlib.T1)
+    new_declaration = _w1_device_declaration(
+        _W1_NEW, "key-declared-w1-new-device", recorded_at=recordlib.T2
+    )
+    rotation = _w1_device_rotation(_W1_OLD, _W1_NEW, "key-rotated-w1-device", recorded_at=recordlib.T3)
+    target = _w1_build(
+        [new_declaration, rotation], ("derived", _W1_NEW), created_at=recordlib.T5,
+        previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-rotated-old-key-links",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _w1_rotated_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    limitations=FIX4_LINKED,
+    notices_absent=("N_PREVIOUS_SIG_UNVERIFIED",),
+    records=(
+        {"id": "key-declared-w1-new-device", "verdict": "valid", "errors": []},
+        {"id": "key-rotated-w1-device", "verdict": "valid", "errors": []},
+    ),
+    notes="S1-FIX4 W1/§11.5 rules 1-2: the previous manifest was signed by an old "
+    "device key that has since been rotated. The target no longer carries the old "
+    "key's declaration; its rotation record lists old_public_key, so the old key is "
+    "a §11.3 required key of the target context, and the rotation's new key has a "
+    "valid owner-cosigned declaration, so the old key is trusted in the target's "
+    "closure. The link holds: valid with L_PREVIOUS_CONTENT_UNVERIFIED and "
+    "L_KEY_TRUST_TOFU.",
+)
+
+_W1_ROT_X = "w1-rotation-only-x"
+_W1_ROT_Y = "w1-rotation-only-y"
+
+
+def _w1_rotation_material_untrusted_files() -> dict[str, bytes]:
+    previous = _w1_build(
+        [recordlib.key_declaration("human-2")], ("derived", _W1_ROT_X), created_at=recordlib.T1
+    )
+    rotation = _w1_device_rotation(_W1_ROT_X, _W1_ROT_Y, "key-rotated-w1-untrusted", recorded_at=recordlib.T3)
+    target = _w1_build(
+        [recordlib.key_declaration("human-1"), rotation], ("keyset", "human-1"),
+        created_at=recordlib.T5, previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-rotation-material-untrusted",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _w1_rotation_material_untrusted_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED_TOFU,
+    records=(
+        {"id": "key-declared-human-1", "verdict": "valid", "errors": []},
+        {"id": "key-rotated-w1-untrusted", "verdict": "valid", "errors": []},
+    ),
+    notes="S1-FIX4 W1/§11.5 rule 2 (docs/open-questions.md §6 entry 24): the "
+    "previous manifest is signed by key X, which the target supplies only as the "
+    "old_public_key of a valid rotation X->Y. Neither X nor Y has a declaration, so "
+    "the rotation's new key is not trusted and explicit rotation material alone "
+    "does not make X trusted: the equation verifies with context material "
+    "(L_KEY_TRUST_TOFU) but the link fails with E_MANIFEST_CHAIN.",
+)
+
+_W1_REVOKED = "w1-retired-device"
+
+
+def _w1_retired_files(*, effective_at: str) -> dict[str, bytes]:
+    declaration = _w1_device_declaration(_W1_REVOKED, "key-declared-w1-retired-device")
+    previous = _w1_build([declaration], ("derived", _W1_REVOKED), created_at=recordlib.T3)
+    revocation = _w1_revocation(
+        _W1_REVOKED, reason="retired", effective_at=effective_at,
+        record_id="key-revoked-w1-retired-device",
+    )
+    target = _w1_build(
+        [declaration, revocation], ("keyset", "human-1"), created_at=recordlib.T5,
+        previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-signing-key-retired-before-previous",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _w1_retired_files(effective_at=recordlib.T2),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED_TOFU,
+    records=(
+        {"id": "key-declared-w1-retired-device", "verdict": "valid", "errors": []},
+        {"id": "key-revoked-w1-retired-device", "verdict": "valid", "errors": []},
+    ),
+    notes="S1-FIX4 W1/§11.5 rule 3: the target carries a valid retired revocation of "
+    "the previous manifest's signing key effective at T2, and the previous manifest "
+    "claims created_at T3 (after the revocation took effect). Under §9.4, evaluated "
+    "at the previous created_at, the signature is revoked, so the link fails with "
+    "E_MANIFEST_CHAIN (the equation itself verified with context material: "
+    "L_KEY_TRUST_TOFU).",
+)
+
+declare(
+    "container",
+    "previous-signing-key-retired-after-previous",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _w1_retired_files(effective_at=recordlib.T4),
+    args=FIX4_PREVIOUS_ARGS,
+    limitations=FIX4_LINKED,
+    notices_absent=("N_PREVIOUS_SIG_UNVERIFIED",),
+    records=(
+        {"id": "key-declared-w1-retired-device", "verdict": "valid", "errors": []},
+        {"id": "key-revoked-w1-retired-device", "verdict": "valid", "errors": []},
+    ),
+    notes="S1-FIX4 W1/§11.5 rule 3 (control): the same retired revocation takes "
+    "effect at T4, after the previous manifest's created_at T3. A revocation that "
+    "takes effect later does not affect the historical link: valid with "
+    "L_PREVIOUS_CONTENT_UNVERIFIED.",
+)
+
+_W1_COMPROMISED = "w1-compromised-device"
+
+
+def _w1_compromised_files() -> dict[str, bytes]:
+    declaration = _w1_device_declaration(_W1_COMPROMISED, "key-declared-w1-compromised-device")
+    previous = _w1_build([declaration], ("derived", _W1_COMPROMISED), created_at=recordlib.EARLY)
+    revocation = _w1_revocation(
+        _W1_COMPROMISED, reason="key-compromise", effective_at=recordlib.T1,
+        record_id="key-revoked-w1-compromised-device",
+    )
+    previous_bytes = previous["manifest.json"]
+    files = recordlib.build_container(
+        [declaration, revocation],
+        level="L2",
+        created_at=recordlib.T5,
+        manifest_signers=("human-1",),
+        previous_manifest={"digest": recordlib.manifest_digest(previous_bytes)},
+        previous_manifest_bytes=previous_bytes,
+    )
+    manifest_value = parse(files["manifest.json"])
+    imprint = bytes.fromhex(
+        recordlib.manifest_digest(files["manifest.json"])[len("sha256:"):]
+    )
+    files, _digest = _seal_with_timestamps(
+        files, manifest_value, [("signatures/timestamp-1.tsr", _crafted_tsr(imprint), None)]
+    )
+    result = _w1_pair_files(previous, files)
+    result[TSA_CERT_NAME] = TSA_CERT()
+    return result
+
+
+declare(
+    "container",
+    "previous-signing-key-compromised-after-previous",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _w1_compromised_files(),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME, "--previous", "previous-container"),
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED"),
+    expected_container={"level_claimed": "L2", "anchor_verified": False, "timestamps": []},
+    records=(
+        {"id": "key-declared-w1-compromised-device", "verdict": "valid", "errors": []},
+        {"id": "key-revoked-w1-compromised-device", "verdict": "valid", "errors": []},
+    ),
+    notes="S1-FIX4 W1/§11.5 rule 3 (docs/open-questions.md §6 entry 24) and W5: the "
+    "target is an L2 container whose trusted receipt (genTime T0) rescues the device "
+    "declaration from a key-compromise revocation effective at T1, so both records "
+    "are valid. The previous manifest, signed by the compromised key, claims "
+    "created_at 2025-01-01, before T1; but no timestamp evidence is read from the "
+    "previous container, so §9.4 case 3 applies and the link fails with "
+    "E_MANIFEST_CHAIN. The pipeline stops at step (10): the timestamp phase does "
+    "not run, so container.timestamps is [] and anchor_verified is false.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX4 W2: §11.9 rule 4 applies to every entry of a supplied previous zip
+# ---------------------------------------------------------------------------
+
+
+def _w2_central_offsets(archive: bytes) -> list[int]:
+    """Offsets of the central-directory records of a plain (non-ZIP64) archive."""
+    eocd = len(archive) - 22
+    count = struct.unpack_from("<H", archive, eocd + 10)[0]
+    position = struct.unpack_from("<I", archive, eocd + 16)[0]
+    offsets = []
+    for _ in range(count):
+        offsets.append(position)
+        name_length, extra_length, comment_length = struct.unpack_from(
+            "<HHH", archive, position + 28
+        )
+        position += 46 + name_length + extra_length + comment_length
+    return offsets
+
+
+def _w2_previous_zip(variant: str) -> bytes:
+    internal = _previous_container_internal()
+    names = sorted(internal)
+    record_index = next(index for index, name in enumerate(names) if name.startswith("records/"))
+    entries = [_stored_entry(name, internal[name]) for name in names]
+    if variant == "directory-with-data":
+        data = b"xy"
+        entries.append(
+            ("previous/", data, 0, len(data), zlib.crc32(data) & 0xFFFFFFFF, _STANDARD_ATTR)
+        )
+        return _zip_declared_entries(entries)
+    archive = bytearray(_zip_declared_entries(entries))
+    central = _w2_central_offsets(bytes(archive))[record_index]
+    if variant == "dos-directory-attribute":
+        attr = struct.unpack_from("<I", archive, central + 38)[0]
+        struct.pack_into("<I", archive, central + 38, attr | 0x10)
+    elif variant == "encrypted":
+        local = struct.unpack_from("<I", archive, central + 42)[0]
+        flags = struct.unpack_from("<H", archive, central + 8)[0]
+        struct.pack_into("<H", archive, central + 8, flags | 0x0001)
+        struct.pack_into("<H", archive, local + 6, flags | 0x0001)
+    else:  # pragma: no cover - defensive
+        raise SystemExit("unknown W2 variant %r" % (variant,))
+    return bytes(archive)
+
+
+for _variant, _what in (
+    ("directory-with-data", "an extra entry named previous/ (a directory name) that carries two data bytes"),
+    ("dos-directory-attribute", "the records/ entry carries the DOS directory attribute in the central directory while holding data"),
+    ("encrypted", "the records/ entry has the encryption flag set in both its local header and the central directory"),
+):
+    declare(
+        "container",
+        "previous-zip-rule4-" + _variant,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_CHAIN",),
+        build=lambda case_dir, _variant=_variant: {
+            **_chain_files_for_previous(_previous_container_internal()),
+            "previous-container.zip": _w2_previous_zip(_variant),
+        },
+        args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+        notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+        limitations=FIX4_UNLINKED,
+        records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+        notes="S1-FIX4 W2/§11.5/§11.9 rule 4: in the supplied previous zip, "
+        + _what
+        + ". That entry is not one of the two read members, but rules 1-4 of §11.9 "
+        "apply to the framing of the whole archive, every entry included, so the "
+        "previous is not a usable link: invalid E_MANIFEST_CHAIN (the same archive "
+        "as a target container would be E_CONTAINER_ZIP).",
+    )
+
+# ---------------------------------------------------------------------------
+# S1-FIX4 W5: the container pipeline stops at the failing stage
+# ---------------------------------------------------------------------------
+
+
+def _w5_target_with_previous(mutator: Callable[[dict[str, bytes]], None] | None = None,
+                             previous: dict[str, bytes] | None = None) -> dict[str, bytes]:
+    previous_internal = previous if previous is not None else _previous_container_internal()
+    target = recordlib.build_container(
+        [recordlib.key_declaration("human-1")],
+        created_at=recordlib.T1,
+        manifest_signers=("human-1",),
+        previous_manifest={"digest": recordlib.manifest_digest(_previous_container_internal()["manifest.json"])},
+        previous_manifest_bytes=_previous_container_internal()["manifest.json"],
+    )
+    if mutator is not None:
+        mutator(target)
+    return _prepend_previous_directory(wrap(target), previous_internal)
+
+
+def _w5_drop_record(files: dict[str, bytes]) -> None:
+    for path in [path for path in files if path.startswith("records/")]:
+        del files[path]
+
+
+_W5_EXTRA_BLOB = b"an unlisted blob\n"
+
+
+def _w5_extra_blob(files: dict[str, bytes]) -> None:
+    files["blobs/sha256/" + hashlib.sha256(_W5_EXTRA_BLOB).hexdigest()] = _W5_EXTRA_BLOB
+
+
+def _w5_bad_signature_previous() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    sigfile = parse(previous["signatures/manifest.sig.json"])
+    entry = sigfile["signatures"][0]
+    entry["value"] = keyutil.b64url_encode(_tampered_signature_value(entry["value"]))
+    previous["signatures/manifest.sig.json"] = canonical(sigfile)
+    return previous
+
+
+def _w5_embedded_mismatch(files: dict[str, bytes]) -> None:
+    other = recordlib.build_container(
+        [recordlib.key_declaration("human-2")],
+        created_at=recordlib.T6,
+        manifest_signers=("human-2",),
+    )["manifest.json"]
+    files["previous/manifest.json"] = other
+
+
+declare(
+    "container",
+    "previous-not-read-after-listing-failure",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_RECORD_MISSING",),
+    build=lambda case_dir: _w5_target_with_previous(_w5_drop_record),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED,
+    records=[],
+    notes="S1-FIX4 W5/§14.5: the target's only record file is missing, an invalid "
+    "error at step (7). The pipeline stops there: step (10) never runs, the valid "
+    "supplied previous is never read, so L_PREVIOUS_CONTENT_UNVERIFIED is not "
+    "reported and the previous signature counts as not re-verified "
+    "(N_PREVIOUS_SIG_UNVERIFIED, L_PREVIOUS_SIG_UNVERIFIED).",
+)
+
+declare(
+    "container",
+    "previous-not-read-after-blob-failure",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: _w5_target_with_previous(_w5_extra_blob),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W5/§14.5: the target carries an unlisted blob file, an invalid "
+    "error at step (9). The record phase already ran (its verdict is reported), but "
+    "the pipeline stops at step (9): the valid supplied previous is never read, so "
+    "L_PREVIOUS_CONTENT_UNVERIFIED is not reported.",
+)
+
+declare(
+    "container",
+    "previous-bad-signature-after-blob-failure",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: _w5_target_with_previous(
+        _w5_extra_blob, previous=_w5_bad_signature_previous()
+    ),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W5/§14.5: as previous-not-read-after-blob-failure, but the "
+    "supplied previous's manifest signature is also broken. Step (10) does not run "
+    "after the step-(9) error, so only E_MANIFEST_BLOB is reported, never "
+    "E_MANIFEST_CHAIN.",
+)
+
+declare(
+    "container",
+    "previous-embedded-mismatch-supplied-verified",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _w5_target_with_previous(_w5_embedded_mismatch),
+    args=FIX4_PREVIOUS_ARGS,
+    limitations=("L_OFFLINE_CONTEXT", "L_PREVIOUS_CONTENT_UNVERIFIED"),
+    notices_absent=("N_PREVIOUS_SIG_UNVERIFIED",),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W5/§11.5 (order inside step (10)): the embedded "
+    "previous/manifest.json is another manifest whose digest does not match "
+    "previous_manifest.digest, while the supplied previous is the right one with a "
+    "valid signature. Step (10) reads and verifies the supplied previous first, so "
+    "L_PREVIOUS_CONTENT_UNVERIFIED is reported (one criterion) and the "
+    "*_PREVIOUS_SIG_UNVERIFIED pair is not; the stage then reports its first "
+    "failing check, the embedded digest mismatch: E_MANIFEST_CHAIN.",
+)
+
+
+def _w5_l2_blob_failure_files(case_dir: Path) -> dict[str, bytes]:
+    files = _crafted_l2_files(case_dir, trust_name=None)
+    files["container/blobs/sha256/" + hashlib.sha256(_W5_EXTRA_BLOB).hexdigest()] = _W5_EXTRA_BLOB
+    return files
+
+
+declare(
+    "container",
+    "timestamps-not-run-after-blob-failure",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=_w5_l2_blob_failure_files,
+    args=("--keys", "@keyset"),
+    expected_container={"level_claimed": "L2", "anchor_verified": False, "timestamps": []},
+    limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_OFFLINE_CONTEXT"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W5/§14.5/§14.6: an L2 container with one well-formed receipt and "
+    "no --tsa-trust (which alone would be E_TS_UNTRUSTED with "
+    "L_TSA_TRUST_UNVERIFIED) also carries an unlisted blob, an invalid error at "
+    "step (9). The timestamp phase (step 11) does not run: no E_TS_UNTRUSTED, no "
+    "L_TSA_TRUST_UNVERIFIED, container.timestamps is [] and anchor_verified false.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX4 W7: the zip check order (locate, parse, limits, remaining rules)
+# ---------------------------------------------------------------------------
+
+
+def _w7_over_limit_entries(*, directory_with_data: bool = False) -> list[tuple[str, bytes, int, int, int, int]]:
+    entries = _zip_declared_standard_entries()
+    payload = _deflated_tiny_payload()
+    for label, declared in zip(("a", "b"), _TWO_BLOB_SIZES):
+        entries.append(("blobs/sha256/" + label * 64, payload, 8, declared, 0, _STANDARD_ATTR))
+    if directory_with_data:
+        data = b"xy"
+        entries.append(("readable/", data, 0, len(data), zlib.crc32(data) & 0xFFFFFFFF, _STANDARD_ATTR))
+    return entries
+
+
+def _w7_archive(variant: str) -> bytes:
+    if variant == "directory-with-data":
+        return _zip_declared_entries(_w7_over_limit_entries(directory_with_data=True))
+    archive = bytearray(_zip_declared_entries(_w7_over_limit_entries()))
+    first_central = _w2_central_offsets(bytes(archive))[0]
+    if variant == "version-needed":
+        struct.pack_into("<H", archive, first_central + 6, 64)
+    elif variant == "disk-start":
+        struct.pack_into("<H", archive, first_central + 34, 1)
+    elif variant == "method":
+        struct.pack_into("<H", archive, first_central + 10, 99)
+    elif variant == "comment":
+        comment = b"an archive comment"
+        struct.pack_into("<H", archive, len(archive) - 2, len(comment))
+        archive += comment
+    elif variant == "prefix":
+        archive = bytearray(b"\x00") + archive
+    else:  # pragma: no cover - defensive
+        raise SystemExit("unknown W7 variant %r" % (variant,))
+    return bytes(archive)
+
+
+for _variant, _code, _what in (
+    ("version-needed", "E_CONTAINER_SIZE", "the first central-directory record's version needed to extract is 64 (a phase-4 rule)"),
+    ("disk-start", "E_CONTAINER_SIZE", "the first central-directory record's disk number start is 1 (a phase-4 rule)"),
+    ("method", "E_CONTAINER_SIZE", "the first central-directory record names compression method 99 (a phase-4 rule)"),
+    ("comment", "E_CONTAINER_SIZE", "the end-of-central-directory record carries a non-empty archive comment (a phase-4 rule)"),
+    ("directory-with-data", "E_CONTAINER_SIZE", "an entry named readable/ (a directory name) carries data (rule 4, a phase-4 rule)"),
+    ("prefix", "E_CONTAINER_ZIP", "one byte precedes the first local file header, so the archive fails phase 1 (locating the end of central directory) before the limits are reached"),
+):
+    declare(
+        "container",
+        "zip-over-limit-and-" + _variant,
+        "container",
+        "container.zip",
+        "invalid",
+        errors=(_code,),
+        build=lambda case_dir, _variant=_variant: {"container.zip": _w7_archive(_variant)},
+        records=[],
+        notes="S1-FIX4 W7/§11.9 (order of the zip checks): the archive declares two "
+        "600,000,000-byte blobs, above MAX_CONTAINER_UNCOMPRESSED_BYTES, and "
+        + _what
+        + ". Phases run locate -> parse central directory -> §13 limits -> remaining "
+        "rules, so the container is invalid "
+        + _code
+        + " only.",
+    )
+
+# ---------------------------------------------------------------------------
+# S1-FIX4 W9: the supplied-previous core checks pinned by vectors
+# ---------------------------------------------------------------------------
+
+
+def _w9_previous(variant: str) -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    if variant == "signature-invalid":
+        return _w5_bad_signature_previous()
+    if variant == "attestation-digest-mismatch":
+        sigfile = parse(previous["signatures/manifest.sig.json"])
+        sigfile["digest"] = "sha256:" + "5a" * 32
+        previous["signatures/manifest.sig.json"] = canonical(sigfile)
+        return previous
+    if variant == "attestation-symlink":
+        previous["signatures/attestation-copy.json"] = previous.pop(
+            "signatures/manifest.sig.json"
+        )
+        return previous
+    raise SystemExit("unknown W9 variant %r" % (variant,))  # pragma: no cover
+
+
+for _variant, _what, _links in (
+    ("signature-invalid", "the attestation's ed25519 signature value is altered (one bit), so it does not verify over the previous manifest digest", ()),
+    ("attestation-digest-mismatch", "the attestation's digest member names another manifest digest, while the signature still verifies over the real one", ()),
+    ("attestation-symlink", "signatures/manifest.sig.json is a symbolic link to a valid attestation file in the same directory, not a regular file", (("previous-container/signatures/manifest.sig.json", "attestation-copy.json"),)),
+):
+    declare(
+        "container",
+        "previous-" + _variant,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_CHAIN",),
+        build=lambda case_dir, _variant=_variant: _prepend_previous_directory(
+            _chain_files_for_previous(_previous_container_internal()), _w9_previous(_variant)
+        ),
+        args=FIX4_PREVIOUS_ARGS,
+        notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+        limitations=FIX4_UNLINKED,
+        records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+        symlinks=_links,
+        notes="S1-FIX4 W9/§11.5: in the supplied directory previous, "
+        + _what
+        + ". The link fails: invalid E_MANIFEST_CHAIN, the records are processed as "
+        "usual and the previous signature counts as not re-verified.",
+    )
+
+# ---------------------------------------------------------------------------
+# S1-FIX4 W3/W6: check 1 is a real DER check; the complete check order
+# ---------------------------------------------------------------------------
+
+
+def _w3_signed_data(tree: _DerNode) -> _DerNode:
+    return tree.children[1].children[1].children[0]
+
+
+def _w3_signer_info(tree: _DerNode) -> _DerNode:
+    signed_data = _w3_signed_data(tree)
+    return signed_data.children[-1].children[0]
+
+
+def _w3_certificates(tree: _DerNode) -> _DerNode:
+    for child in _w3_signed_data(tree).children:
+        if child.tag == 0xA0:
+            return child
+    raise SystemExit("token has no certificates")
+
+
+def _w3_node(tag: int, *, content: bytes | None = None, children: list[_DerNode] | None = None) -> _DerNode:
+    return _DerNode(tag, content, children)
+
+
+def _w3_oid(dotted: str) -> _DerNode:
+    parts = [int(part) for part in dotted.split(".")]
+    body = bytearray([40 * parts[0] + parts[1]])
+    for value in parts[2:]:
+        groups = []
+        while True:
+            groups.append(value & 0x7F)
+            value >>= 7
+            if not value:
+                break
+        for index, group in enumerate(reversed(groups)):
+            body.append(group | (0x80 if index < len(groups) - 1 else 0))
+    return _w3_node(0x06, content=bytes(body))
+
+
+def _w3_int(value: int) -> _DerNode:
+    return _w3_node(0x02, content=value.to_bytes(1, "big"))
+
+
+def _w3_attribute(oid: str, values: list[_DerNode]) -> _DerNode:
+    return _w3_node(0x30, children=[_w3_oid(oid), _w3_node(0x31, children=values)])
+
+
+def _w3_sorted(nodes: list[_DerNode], *, reverse: bool) -> list[_DerNode]:
+    ordered = sorted(nodes, key=_der_encode)
+    if _der_encode(ordered[0]) == _der_encode(ordered[-1]):
+        raise SystemExit("W3 SET OF fixture needs distinct components")
+    return list(reversed(ordered)) if reverse else ordered
+
+
+def _w3_digest_algorithms(tree: _DerNode, *, reverse: bool) -> None:
+    algorithms = _w3_signed_data(tree).children[1]
+    sha256 = algorithms.children[0]
+    sha512 = _der_tree(_der_encode(sha256))
+    oid = sha512.children[0]
+    oid.content = oid.content[:-1] + b"\x03"
+    algorithms.children = _w3_sorted([sha256, sha512], reverse=reverse)
+
+
+def _w3_certificate_set(tree: _DerNode, *, reverse: bool) -> None:
+    certificates = _w3_certificates(tree)
+    extra = _der_tree(_crafted_certificate("wrong-anchor")[0])
+    certificates.children = _w3_sorted(certificates.children + [extra], reverse=reverse)
+
+
+def _w3_crls(tree: _DerNode, *, reverse: bool) -> None:
+    signed_data = _w3_signed_data(tree)
+    others = [
+        _w3_node(0xA1, children=[_w3_oid("1.2.3.4.7.%d" % index), _w3_node(0x05, content=b"")])
+        for index in (1, 2)
+    ]
+    crls = _w3_node(0xA1, children=_w3_sorted(others, reverse=reverse))
+    position = next(index for index, child in enumerate(signed_data.children) if child.tag == 0xA0)
+    signed_data.children.insert(position + 1, crls)
+
+
+def _w3_unsigned_attrs(tree: _DerNode, attributes: list[_DerNode]) -> None:
+    _w3_signer_info(tree).children.append(_w3_node(0xA1, children=attributes))
+
+
+def _w3_two_unsigned(tree: _DerNode, *, reverse: bool) -> None:
+    attributes = [_w3_attribute("1.2.3.4.8.%d" % index, [_w3_int(index)]) for index in (1, 2)]
+    _w3_unsigned_attrs(tree, _w3_sorted(attributes, reverse=reverse))
+
+
+def _w3_attr_values(tree: _DerNode, *, reverse: bool) -> None:
+    values = _w3_sorted([_w3_int(1), _w3_int(2)], reverse=reverse)
+    _w3_unsigned_attrs(tree, [_w3_attribute("1.2.3.4.8.3", values)])
+
+
+def _w3_opaque_set(tree: _DerNode, *, reverse: bool) -> None:
+    inner = _w3_node(0x31, children=_w3_sorted([_w3_int(1), _w3_int(2)], reverse=reverse))
+    _w3_unsigned_attrs(tree, [_w3_attribute("1.2.3.4.8.4", [inner])])
+
+
+def _w3_signed_attrs_unsorted(tree: _DerNode) -> None:
+    signed_attrs = next(child for child in _w3_signer_info(tree).children if child.tag == 0xA0)
+    signed_attrs.children = _w3_sorted(signed_attrs.children, reverse=True)
+
+
+def _w3_rdn_certificate(*, reverse: bool) -> _DerNode:
+    """The wrong-anchor certificate with a two-attribute subject RDN (never verified)."""
+    certificate = _der_tree(_crafted_certificate("wrong-anchor")[0])
+    tbs = certificate.children[0]
+    subject = tbs.children[5]
+    rdn = subject.children[0]
+    organisation = _w3_node(
+        0x30,
+        children=[_w3_oid("2.5.4.10"), _w3_node(0x0C, content=b"Hyphaweave test")],
+    )
+    rdn.children = _w3_sorted(rdn.children + [organisation], reverse=reverse)
+    return certificate
+
+
+def _w3_rdn(tree: _DerNode, *, reverse: bool) -> None:
+    certificates = _w3_certificates(tree)
+    certificates.children = _w3_sorted(
+        certificates.children + [_w3_rdn_certificate(reverse=reverse)], reverse=False
+    )
+
+
+def _w3_tst_info_edit(tree: _DerNode, edit: Callable[[_DerNode], None]) -> None:
+    encapsulated = _w3_signed_data(tree).children[2]
+    octets = encapsulated.children[1].children[0]
+    tst_info = _der_tree(octets.content)
+    edit(tst_info)
+    octets.content = _der_encode(tst_info)
+
+
+def _w3_tst_insert_ordering(value: bytes) -> Callable[[_DerNode], None]:
+    def edit(tst_info: _DerNode) -> None:
+        # TSTInfo: version, policy, messageImprint, serialNumber, genTime, ...
+        tst_info.children.insert(5, _w3_node(0x01, content=value))
+
+    return edit
+
+
+def _w3_tst_serial_nonminimal(tst_info: _DerNode) -> None:
+    serial = tst_info.children[3]
+    if serial.tag != 0x02 or serial.content[0] >= 0x80:
+        raise SystemExit("unexpected TSTInfo serialNumber encoding")
+    serial.content = b"\x00" + serial.content
+
+
+def _w3_tst_accuracy_millis_nonminimal(tst_info: _DerNode) -> None:
+    accuracy = tst_info.children[5]
+    if accuracy.tag != 0x30:
+        raise SystemExit("unexpected TSTInfo accuracy position")
+    millis = next(child for child in accuracy.children if child.tag == 0x80)
+    millis.content = b"\x00" + millis.content
+
+
+def _w3_indefinite(data: bytes) -> bytes:
+    """Re-encode the outer TimeStampResp SEQUENCE with the BER indefinite form."""
+    tree = _der_tree(data)
+    body = b"".join(_der_encode(child) for child in tree.children)
+    return b"\x30\x80" + body + b"\x00\x00"
+
+
+def _w3_tree_mutation(mutate_tree: Callable[[_DerNode], None]) -> Callable[[bytes], bytes]:
+    def mutation(data: bytes) -> bytes:
+        tree = _der_tree(data)
+        mutate_tree(tree)
+        return _der_encode(tree)
+
+    return mutation
+
+
+def _w3_signer_info_version_2(tree: _DerNode) -> None:
+    version = _w3_signer_info(tree).children[0]
+    if version.content != b"\x01":
+        raise SystemExit("unexpected SignerInfo version encoding")
+    version.content = b"\x02"
+
+
+def _w3_bad_certificate(tree: _DerNode) -> None:
+    """Add a non-signer certificate whose TBSCertificate version is 74."""
+    certificate = _der_tree(_crafted_certificate("wrong-anchor")[0])
+    version = certificate.children[0].children[0].children[0]
+    if version.tag != 0x02 or version.content != b"\x02":
+        raise SystemExit("unexpected certificate version encoding")
+    version.content = b"\x4a"
+    certificates = _w3_certificates(tree)
+    certificates.children = _w3_sorted(certificates.children + [certificate], reverse=False)
+
+
+_W3_SCHEMA_EXPECTED = dict(
+    errors=("E_TS_SCHEMA",),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+        "timestamps": [
+            {"index": 0, "path": "signatures/timestamp-1.tsr", "state": "invalid", "gen_time": None}
+        ],
+    },
+    limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_OFFLINE_CONTEXT"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+)
+
+_W3_WRONG_IMPRINT = b"\x5a" * 32
+
+for _name, _mutation, _factory_kwargs, _why in (
+    ("l2-ts-der-setof-digest-algorithms-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_digest_algorithms(tree, reverse=True)), {},
+     "SignedData.digestAlgorithms (a universal SET OF) lists sha512 before sha256, which is not DER order (1a and 1c)"),
+    ("l2-ts-der-setof-certificates-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_certificate_set(tree, reverse=True)), {},
+     "SignedData.certificates ([0] IMPLICIT SET OF) carries the signer certificate and a second certificate out of DER order; only the schema re-encoding (1c) can see this implicitly tagged SET OF"),
+    ("l2-ts-der-setof-crls-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_crls(tree, reverse=True)), {},
+     "SignedData.crls ([1] IMPLICIT SET OF) carries two otherRevocationInfo entries out of DER order (1c)"),
+    ("l2-ts-der-setof-signed-attrs-unsorted",
+     _w3_tree_mutation(_w3_signed_attrs_unsorted), {},
+     "SignerInfo.signedAttrs ([0] IMPLICIT SET OF) lists its attributes in descending instead of ascending DER order (1c)"),
+    ("l2-ts-der-setof-unsigned-attrs-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_two_unsigned(tree, reverse=True)), {},
+     "SignerInfo.unsignedAttrs ([1] IMPLICIT SET OF, outside the CMS signature) lists two attributes out of DER order (1c)"),
+    ("l2-ts-der-setof-attr-values-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_attr_values(tree, reverse=True)), {},
+     "an unsigned attribute's attrValues SET OF lists INTEGER 2 before INTEGER 1 (1a and 1c)"),
+    ("l2-ts-der-setof-rdn-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_rdn(tree, reverse=True)), {},
+     "a second, non-signer certificate's subject RelativeDistinguishedName (a SET OF AttributeTypeAndValue) is out of DER order"),
+    ("l2-ts-der-setof-opaque-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_opaque_set(tree, reverse=True)), {},
+     "the value of an unregistered unsigned attribute (type unknown to the verifier) is a universal SET whose INTEGER components are out of DER order; only the universal-rule scan (1a) can see inside a value of unknown type"),
+    ("l2-ts-der-indefinite-length",
+     _w3_indefinite, {},
+     "the outer TimeStampResp SEQUENCE uses the BER indefinite length form (30 80 ... 00 00)"),
+    ("l2-ts-der-trailing-byte",
+     lambda data: data + b"\x00", {},
+     "one byte follows the complete TimeStampResp, so the file is not exactly one DER object"),
+    ("l2-ts-der-boolean-not-ff",
+     _w3_tree_mutation(lambda tree: _w3_tst_info_edit(tree, _w3_tst_insert_ordering(b"\x01"))), {},
+     "the TSTInfo carries ordering TRUE encoded as 0x01 instead of 0xFF (check 2 applies 1a-1c to the TSTInfo)"),
+    ("l2-ts-der-integer-nonminimal",
+     _w3_tree_mutation(lambda tree: _w3_tst_info_edit(tree, _w3_tst_serial_nonminimal)), {},
+     "the TSTInfo serialNumber INTEGER carries a redundant leading 0x00 octet"),
+    ("l2-ts-der-default-encoded",
+     _w3_tree_mutation(lambda tree: _w3_tst_info_edit(tree, _w3_tst_insert_ordering(b"\x00"))), {},
+     "the TSTInfo explicitly encodes ordering FALSE, its DEFAULT value, which DER omits; only the schema re-encoding of the TSTInfo (check 2 / 1c) can see this"),
+    ("l2-ts-der-implicit-integer-nonminimal",
+     _w3_tree_mutation(lambda tree: _w3_tst_info_edit(tree, _w3_tst_accuracy_millis_nonminimal)), {"accuracy": (1, 5, None)},
+     "the TSTInfo accuracy.millis ([0] IMPLICIT INTEGER) is encoded with a redundant leading 0x00 octet; the context tag hides the INTEGER from the universal scan, the schema re-encoding (1c) rebuilds it"),
+    ("l2-ts-signer-info-version-and-imprint",
+     _w3_tree_mutation(_w3_signer_info_version_2), {"imprint_bytes": _W3_WRONG_IMPRINT},
+     "SignerInfo.version is 2 (check 1) and messageImprint.hashedMessage is also wrong (check 4); W6: only the first failing check is reported, E_TS_SCHEMA, never E_TS_IMPRINT"),
+    ("l2-ts-certificate-undecodable",
+     _w3_tree_mutation(_w3_bad_certificate), {"imprint_bytes": _W3_WRONG_IMPRINT},
+     "a second, non-signer certificate has TBSCertificate version 74, which does not decode as an X.509 certificate (1e), and the imprint is also wrong; W6: check 1 precedes check 4, so E_TS_SCHEMA"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        build=lambda case_dir, _mutation=_mutation, _factory_kwargs=_factory_kwargs: _crafted_l2_files(
+            case_dir,
+            tsr_factory=lambda imprint: _mutation(_crafted_tsr(imprint, **_factory_kwargs)),
+        ),
+        notes="S1-FIX4 W3/W6/§12.2 check 1: "
+        + _why
+        + ". The attestation digest is computed over the mutated bytes, so the "
+        "receipt reaches decoding; check 1 completes before any later check, so the "
+        "receipt is invalid with E_TS_SCHEMA and gen_time null, after the records "
+        "were processed.",
+        **_W3_SCHEMA_EXPECTED,
+    )
+
+
+def _w3_sorted_control(tree: _DerNode) -> None:
+    _w3_digest_algorithms(tree, reverse=False)
+    _w3_certificate_set(tree, reverse=False)
+    _w3_crls(tree, reverse=False)
+    attributes = [_w3_attribute("1.2.3.4.8.%d" % index, [_w3_int(index)]) for index in (1, 2)]
+    attributes.append(_w3_attribute("1.2.3.4.8.3", _w3_sorted([_w3_int(1), _w3_int(2)], reverse=False)))
+    attributes.append(
+        _w3_attribute(
+            "1.2.3.4.8.4",
+            [_w3_node(0x31, children=_w3_sorted([_w3_int(1), _w3_int(2)], reverse=False))],
+        )
+    )
+    _w3_unsigned_attrs(tree, _w3_sorted(attributes, reverse=False))
+
+
+declare(
+    "integrity-levels",
+    "l2-ts-der-setof-sorted-control",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _crafted_l2_files(
+        case_dir,
+        tsr_factory=lambda imprint: _w3_tree_mutation(_w3_sorted_control)(_crafted_tsr(imprint)),
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container=dict(level_claimed="L2", **L2_ANCHOR),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W3/§12.2 check 1 (control): the receipt carries two digest "
+    "algorithms, two certificates, two otherRevocationInfo entries and four "
+    "unregistered unsigned attributes (one with two values, one whose value is a "
+    "universal SET of unknown type), every SET OF in ascending DER order. Strict "
+    "DER accepts it: the receipt verifies against the anchor, anchor_verified is "
+    "true and the container is valid.",
+)
+
+
+def _w6_renewal_broken_with_schema_files(case_dir: Path) -> dict[str, bytes]:
+    def builder(imprint: bytes) -> list[tuple[str, bytes, str | None]]:
+        first = _crafted_tsr(imprint)
+        second = _der_signed_data_version_18(_crafted_tsr(_sha256_bytes(first + imprint)))
+        return [
+            ("signatures/timestamp-1.tsr", first, None),
+            ("signatures/timestamp-2.tsr", second, "signatures/timestamp-9.tsr"),
+        ]
+
+    files = _build_timestamped_container(SIMPLE_RECORDS(), builder, level="L2")
+    return {**wrap(files), TSA_CERT_NAME: TSA_CERT()}
+
+
+declare(
+    "integrity-levels",
+    "l2-renewal-broken-with-schema-receipt",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_RENEWAL",),
+    build=_w6_renewal_broken_with_schema_files,
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "anchor_verified": False,
+        "timestamps": [
+            {"index": 0, "path": "signatures/timestamp-1.tsr", "state": "invalid", "gen_time": None},
+            {"index": 1, "path": "signatures/timestamp-2.tsr", "state": "invalid", "gen_time": None},
+        ],
+    },
+    limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_OFFLINE_CONTEXT"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W6/§12.2 (complete check order, docs/open-questions.md §6 entry "
+    "26): the second receipt's renews names an unlisted path (a broken chain, check "
+    "14) and that receipt also has SignedData.version 18 (a check-1 failure). The "
+    "chain shape is decided before any receipt is decoded, so only E_TS_RENEWAL is "
+    "reported and every receipt is invalid with gen_time null.",
+)
+
+
+# S1-FIX4 W3/W5/W6: further pins (eContent scan, extension values, key type,
+# cross-record stop).
+
+
+def _w3_tst_opaque(tst_info: _DerNode) -> None:
+    """Append TSTInfo.tsa = otherName whose value (an open type) is an unsorted SET."""
+    value = _w3_node(0x31, children=_w3_sorted([_w3_int(1), _w3_int(2)], reverse=True))
+    other_name = _w3_node(
+        0xA0, children=[_w3_oid("1.2.3.4.9.1"), _w3_node(0xA0, children=[value])]
+    )
+    tst_info.children.append(_w3_node(0xA0, children=[other_name]))
+
+
+def _w3_extension_value_nonminimal(tree: _DerNode) -> None:
+    """Add a non-signer certificate whose basicConstraints value uses a long-form length."""
+    certificate = _der_tree(_crafted_certificate("wrong-anchor")[0])
+    tbs = certificate.children[0]
+    extensions = next(child for child in tbs.children if child.tag == 0xA3).children[0]
+    basic = extensions.children[0]
+    value = basic.children[-1]
+    if value.tag != 0x04:
+        raise SystemExit("unexpected extension value encoding")
+    inner = _der_tree(value.content)
+    inner.force_long = True
+    value.content = _der_encode(inner)
+    certificates = _w3_certificates(tree)
+    certificates.children = _w3_sorted(certificates.children + [certificate], reverse=False)
+
+
+for _name, _mutation, _why in (
+    ("l2-ts-der-tstinfo-opaque-unsorted",
+     _w3_tree_mutation(lambda tree: _w3_tst_info_edit(tree, _w3_tst_opaque)),
+     "the TSTInfo carries a tsa name of the otherName form whose value (an open type unknown to the verifier) is a universal SET with its INTEGER components out of DER order; only the universal-rule scan of the TSTInfo (check 2, 1a) can see it"),
+    ("l2-ts-der-extension-value-nonminimal",
+     _w3_tree_mutation(_w3_extension_value_nonminimal),
+     "a second, non-signer certificate's basicConstraints extnValue holds its SEQUENCE with a long-form length for a short body (30 81 ..); an extension value is itself DER (1e), although its OCTET STRING hides it from the receipt-level scan"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        build=lambda case_dir, _mutation=_mutation: _crafted_l2_files(
+            case_dir, tsr_factory=lambda imprint: _mutation(_crafted_tsr(imprint))
+        ),
+        notes="S1-FIX4 W3/§12.2 check 1: "
+        + _why
+        + ". The receipt is invalid with E_TS_SCHEMA and gen_time null.",
+        **_W3_SCHEMA_EXPECTED,
+    )
+
+_W6_EC_CERT: dict[str, bytes] = {}
+
+
+def _w6_ec_certificate() -> bytes:
+    """A timeStamping certificate carrying an EC P-256 key (test material only)."""
+    cached = _W6_EC_CERT.get("der")
+    if cached is not None:
+        return cached
+    from cryptography.hazmat.primitives.asymmetric import ec as crypto_ec
+
+    private = crypto_ec.derive_private_key(
+        int.from_bytes(hashlib.sha256(b"weave-record/1/test-tsa-ec").digest(), "big")
+        % (2**255),
+        crypto_ec.SECP256R1(),
+    )
+    spki = asn1_x509.PublicKeyInfo.load(
+        private.public_key().public_bytes(
+            crypto_serialization.Encoding.DER,
+            crypto_serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    name = asn1_x509.Name.build({"common_name": "Hyphaweave H0 test TSA (EC key)"})
+    tbs = asn1_x509.TbsCertificate()
+    tbs["version"] = "v3"
+    tbs["serial_number"] = 7006
+    tbs["signature"] = {"algorithm": "sha256_rsa"}
+    tbs["issuer"] = name
+    validity = asn1_x509.Validity()
+    validity["not_before"] = asn1_x509.Time({"utc_time": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)})
+    validity["not_after"] = asn1_x509.Time({"general_time": datetime.datetime(2126, 1, 1, tzinfo=datetime.timezone.utc)})
+    tbs["validity"] = validity
+    tbs["subject"] = name
+    tbs["subject_public_key_info"] = spki
+    tbs["extensions"] = [
+        asn1_x509.Extension({"extn_id": "key_usage", "critical": True, "extn_value": asn1_x509.KeyUsage({"digital_signature"})}),
+        asn1_x509.Extension({"extn_id": "extended_key_usage", "critical": True, "extn_value": asn1_x509.ExtKeyUsageSyntax(["time_stamping"])}),
+    ]
+    signature = _tsa_private_key().sign(tbs.dump(), crypto_padding.PKCS1v15(), crypto_hashes.SHA256())
+    certificate = asn1_x509.Certificate()
+    certificate["tbs_certificate"] = tbs
+    certificate["signature_algorithm"] = {"algorithm": "sha256_rsa"}
+    certificate["signature_value"] = signature
+    _W6_EC_CERT["der"] = certificate.dump()
+    return _W6_EC_CERT["der"]
+
+
+declare(
+    "integrity-levels",
+    "l2-ts-signature-key-type-mismatch",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_CMS",),
+    build=lambda case_dir: _crafted_l2_files(
+        case_dir,
+        tsr_factory=lambda imprint: _crafted_tsr(imprint, certificate_der=_w6_ec_certificate()),
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+        "timestamps": [
+            {"index": 0, "path": "signatures/timestamp-1.tsr", "state": "invalid", "gen_time": "2026-11-01T00:00:00.000Z"}
+        ],
+    },
+    limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_OFFLINE_CONTEXT"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W6/§12.2 (complete check order): the signer certificate carries an "
+    "EC P-256 key while signerInfo.signatureAlgorithm is the allowlisted RSA PKCS#1 "
+    "v1.5 identifier. Check 6 (allowlist) passes; the RSA algorithm cannot use the EC "
+    "key, so the CMS signature does not verify: check 10, E_TS_CMS (not E_TS_CERT). "
+    "Checks 1-4 passed, so gen_time is reported.",
+)
+
+
+def _w5_cross_record_stop_files() -> dict[str, bytes]:
+    files = recordlib.build_container(
+        [
+            recordlib.note(
+                "w5-local-only-note",
+                labels={"sensitivity": "local-only"},
+                salt=keyutil.b64url_encode(bytes(range(16))),
+            )
+        ]
+    )
+    files["blobs/sha256/" + hashlib.sha256(_W5_EXTRA_BLOB).hexdigest()] = _W5_EXTRA_BLOB
+    return wrap(files)
+
+
+declare(
+    "container",
+    "cross-record-failure-stops-pipeline",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_LABEL_LOCAL_ONLY_EXPORTED",),
+    build=lambda case_dir: _w5_cross_record_stop_files(),
+    args=("--keys", "@keyset"),
+    limitations=("L_LABELS_ARE_CLAIMS", "L_OFFLINE_CONTEXT", "L_UNKNOWN_KIND_OPAQUE"),
+    records=({"id": "w5-local-only-note", "verdict": "valid", "errors": []},),
+    notes="S1-FIX4 W5/§14.5: the container exports a local-only record (an invalid "
+    "cross-record error at step (8)) and also carries an unlisted blob (step 9). The "
+    "pipeline stops at step (8): E_MANIFEST_BLOB is not reported; the record verdict "
+    "already produced is reported as usual.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
