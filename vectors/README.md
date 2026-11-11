@@ -49,7 +49,7 @@ frozen candidate set is validated separately and is not part of the index).
 
 Authoritative source is `vectors/index.json`; regenerate with
 `tools/gen_index.py` after adding cases. At the time of writing (revision 3
-plus S1-FIX1 to S1-FIX4, `weave-record/1` v0.1 draft, not yet accepted by
+plus S1-FIX1 to S1-FIX5, `weave-record/1` v0.1 draft, not yet accepted by
 J1/J2):
 
 | category | cases |
@@ -64,11 +64,11 @@ J1/J2):
 | `erasure` | 12 |
 | `grant` | 36 |
 | `key-lifecycle` | 67 |
-| `container` | 112 |
-| `integrity-levels` | 62 |
-| **total** | **468** |
+| `container` | 115 |
+| `integrity-levels` | 70 |
+| **total** | **479** |
 
-Verdict distribution: `valid` 102, `erased` 1, `invalid` 336, `unverifiable` 29.
+Verdict distribution: `valid` 108, `erased` 1, `invalid` 341, `unverifiable` 29.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
@@ -94,7 +94,15 @@ the target container's context (W1), §11.9 rule 4 on every entry of a previous
 zip (W2), real DER re-encoding with every SET OF class and DER rule (W3), the
 stop-at-failing-stage rule and the one criterion of
 `L_PREVIOUS_CONTENT_UNVERIFIED` (W5), the complete timestamp check order (W6),
-the zip check order (W7) and the previous-container core checks (W9).
+the zip check order (W7) and the previous-container core checks (W9). S1-FIX5
+(decision 2026-11-12 #1) added 11 cases and changed the expectation of one:
+check 1's DER rules taken from X.690 and the module definitions only (X1: the
+ESSCertIDv2 DEFAULT by value, open-type values of any tag class, seven fractional
+`genTime` digits and a trailing zero, the high-tag-number form — every positive
+receipt fully re-signed), a key-compromise revocation judged against the previous
+`created_at` (X2: `previous-signing-key-compromised-after-previous` is now
+valid, `-at-previous` and `-before-previous` are `E_MANIFEST_CHAIN`) and an
+invalid rotation record supplying no key material for the link (X5).
 
 ## Running the vectors
 
@@ -263,6 +271,7 @@ reported (they remain for the embedded `previous/manifest.json` when no
 `container/previous-ignores-*` cases, `container/previous-non-zip-file` and the
 S1-FIX4 cases (`previous-device-key-target-context`, `previous-rotated-old-key-links`,
 `previous-key-*`, `previous-rotation-material-untrusted`, `previous-signing-key-*`,
+`previous-invalid-rotation-supplies-no-material`,
 `previous-zip-rule4-*`, `previous-signature-invalid`,
 `previous-attestation-digest-mismatch`, `previous-attestation-symlink`,
 `previous-not-read-after-*`, `previous-bad-signature-after-blob-failure`,

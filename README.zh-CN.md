@@ -20,7 +20,7 @@ Hyphaweave 定义 `weave-record/1`：一种在相互独立的系统之间交换�
 - **本分支只有一个实现，第二个实现尚未跟上。** `main` 分支上只有**一个**实现：本仓库里的 Python 参考核验器。第二个独立实现（Rust 核验器，H1 里程碑）在另一条分支上；它依据较早的文本写成，**尚未**跟进当前修订（下文的 S1 各轮）。在它通过当前全部向量之前，本仓库**不**声称已有两个符合规范的实现。
 - **已公开，仍是草案。** 仓库现在是公开的，但这不代表 `weave-record/1` 已稳定：它仍是草案，v1.0 仍取决于 J1/J2 验收和一个符合当前修订的第二实现。核验器尚未发布到 PyPI，只能从本仓库安装。`.github/workflows/ci.yml` 运行的命令与本 README 下方的本地闸门相同；本 README 不声称某次 GitHub Actions 运行已经通过。
 - **范围仅限 H0。** 本仓库没有离线传输件，没有各项目的导出/导入适配器，也没有任何网络服务。
-- **经过独立复核后的修订。** 本快照包含 H0 修订 1（决定 2026-11-10 #34）、修订 2（决定 2026-11-10 #42）与修订 3（决定 2026-11-11 #2），以及修订 3 之后的四轮修订 S1-FIX1 至 S1-FIX4（决定 2026-11-11 #5、#12、#14、#16）：独立复核发现了线协议语义缺陷，修订改变了格式规则、错误码表、信任根模型、资源上限、核验器与测试向量。修订 3 回应第二个（Rust）实现的复核——该实现在自己的分支上依据较早的文本运行；随后的 S1 各轮修掉了后续复核在修订后文本与 Python 核验器里发现的缺陷。回归集目前是**候选集**（`vectors/frozen/v0.1-candidate/`）；正式冻结在 J1/J2 验收通过后才开始。详见 [`CHANGELOG.md`](CHANGELOG.md)。
+- **经过独立复核后的修订。** 本快照包含 H0 修订 1（决定 2026-11-10 #34）、修订 2（决定 2026-11-10 #42）与修订 3（决定 2026-11-11 #2），以及修订 3 之后的五轮修订 S1-FIX1 至 S1-FIX5（决定 2026-11-11 #5、#12、#14、#16 与 2026-11-12 #1）：独立复核发现了线协议语义缺陷，修订改变了格式规则、错误码表、信任根模型、资源上限、核验器与测试向量。修订 3 回应第二个（Rust）实现的复核——该实现在自己的分支上依据较早的文本运行；随后的 S1 各轮修掉了后续复核在修订后文本与 Python 核验器里发现的缺陷。回归集目前是**候选集**（`vectors/frozen/v0.1-candidate/`）；正式冻结在 J1/J2 验收通过后才开始。详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 Python 核验器是参考实现，不是产品：它的用途是让规范可被测试、给第二位实现者一个对照物，并不代表格式已经定型。
 
@@ -104,7 +104,7 @@ python tools/check_spec_examples.py
 reuse lint
 ```
 
-这些命令与 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 的 Python job 相同。`check_spec_examples.py` 之前的三道闸门会开并行 worker；机器上同时还有别的负载时，给它们各加 `--jobs 2`（见 [`tools/README.md`](tools/README.md)）。本 README 不声称某一次闸门运行已经通过；请在你的检出上运行这些命令自行核对。H0 交付快照的闸门结果汇总见 [`CHANGELOG.md`](CHANGELOG.md)。
+这些命令与 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 的 Python job 相同。`check_spec_examples.py` 之前的三道闸门会开并行 worker；机器上同时还有别的负载时，给它们各加 `--jobs 2`（见 [`tools/README.md`](tools/README.md)）。本 README 不声称某一次闸门运行已经通过；请在你的检出上运行这些命令自行核对。仓库里唯一记录过的闸门数字是修订 1 快照的那一份，在 [`CHANGELOG.md`](CHANGELOG.md) 的「Verifying this snapshot」一节。
 
 如果要在不信任任何实现的前提下手工核验一个容器，请按 [`spec/offline-verification.md`](spec/offline-verification.md) 操作：它只用 `sha256sum`、`openssl` 与一个 JSON 查看器，并用 `vectors/` 里的一个 L0 容器实例完整走一遍。
 

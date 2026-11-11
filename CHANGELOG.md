@@ -258,10 +258,10 @@ merged.
   redundant, 0 unpinned survivors)**; the byte-flip gate documents the
   deliberately unsigned `proposed` positive cases.
 
-### S1 rounds after revision 3 (decisions 2026-11-11 #5, #12, #14, #16)
+### S1 rounds after revision 3 (decisions 2026-11-11 #5, #12, #14, #16, 2026-11-12 #1)
 
-Four review rounds on the revised text and on the Python verifier (S1-FIX1 to
-S1-FIX4) followed revision 3 before it was merged. Each is wire-visible; the Rust
+Five review rounds on the revised text and on the Python verifier (S1-FIX1 to
+S1-FIX5) followed revision 3 before it was merged. Each is wire-visible; the Rust
 implementation on its own branch has not yet followed them (H1-FIX1).
 
 **S1-FIX1 (decision 2026-11-11 #5, T1–T17).**
@@ -317,7 +317,7 @@ implementation on its own branch has not yet followed them (H1-FIX1).
   key of the target (keyset plus the target's own declared/rotated records, never
   the previous container's), trusted in the target's final trust closure, and
   usable under §9.4 at the previous manifest's `created_at` (a compromise always
-  breaks the link). Device-signed exports whose keyset holds only the owner link
+  broke the link; S1-FIX5 X2 replaced this). Device-signed exports whose keyset holds only the owner link
   again; a key rotated away links through the target's rotation record.
 - **W2.** §11.9 rules 1–4 apply to every entry of a supplied previous zip; only
   name safety, duplicate names, CRC and `readable/` rules are skipped for the
@@ -343,18 +343,42 @@ implementation on its own branch has not yet followed them (H1-FIX1).
 - **W7.** The zip check order: locate the EOCD (prefix and trailing bytes) → parse
   the central directory → §13 limits (`E_CONTAINER_SIZE`, stop) → every remaining
   structural rule.
-- **W8–W11 (gates).** No blanket `.tsr` byte-flip exemption; the V3 core checks
-  are pinned by vectors; every `ed25519` attestation entry is judged; keyset
-  entries ending in `.json` that are not regular files are usage errors;
-  crash-fuzz skips no-op mutants, prints the seed on failure, and its corpus gains
-  the seed-777 PEM.
+- **W10.** Every `ed25519` entry of an attestation file is judged, the first
+  failing entry in array order deciding the code (a supplied previous follows the
+  same rule); every top-level keyset entry whose name ends in `.json`, hidden names
+  included, is a keyset file, and one that is not a regular file is a usage error
+  (exit 2).
+- **W8, W9, W11 (gates).** No blanket `.tsr` byte-flip exemption; the V3 core
+  checks are pinned by vectors; crash-fuzz skips no-op mutants, prints the seed on
+  failure, and its corpus gains the seed-777 PEM.
 
-**Current counts (S1-FIX4 hand-off).** Registry: 114 error codes, 14 notices, 11
-limitation identifiers (no code added in S1-FIX1–FIX4 except
-`L_PREVIOUS_CONTENT_UNVERIFIED` in S1-FIX3). Vectors: main corpus **468 cases**
-(revision 3 hand-off 343; +41 S1-FIX1, +19 S1-FIX2, +18 S1-FIX3, +47 S1-FIX4);
-candidate regression set **202 cases**. Gate figures for this hand-off are in the
-delivery report, not here.
+**S1-FIX5 (decision 2026-11-12 #1, X1–X5).**
+
+- **X1.** §12.2 check 1's DER rules come from X.690 and the ASN.1 module
+  definitions only. The DEFAULT components are listed with the encodings of their
+  defaults; the ESSCertIDv2 default is `{id-sha256}` without parameters, so an
+  explicit `{id-sha256, NULL}` is valid and an explicit `{id-sha256}` is
+  `E_TS_SCHEMA`. A value of an open type (an unregistered attribute's value, for
+  example) is judged by its TLV framing only, whatever its tag class. `genTime`
+  and the other time values are compared as their raw DER form, so seven or more
+  fractional digits are valid. The high-tag-number form follows X.690 §8.1.2.4
+  (only the first subsequent octet may not be `0x80`).
+- **X2.** On the previous link a `key-compromise` revocation is judged like a
+  retired one, against the previous `created_at`: `created_at` before the
+  compromise time links, at or after it is `E_MANIFEST_CHAIN`.
+- **X3.** `--keys`, its entries, `--tsa-trust` and `--previous` are examined with
+  `lstat` before opening; a FIFO, device or socket is a usage error (exit 2) and
+  never blocks; `--tsa-trust` is read with the bound `MAX_TIMESTAMP_BYTES`.
+- **X5.** On the previous link a rotation record that is not valid supplies no
+  key material (§11.5 rule 1).
+
+**Current counts (S1-FIX5 hand-off).** Registry: 114 error codes, 14 notices, 11
+limitation identifiers (no code added in S1-FIX1–FIX5 except
+`L_PREVIOUS_CONTENT_UNVERIFIED` in S1-FIX3). Vectors: main corpus **479 cases**
+(revision 3 hand-off 343; +41 S1-FIX1, +19 S1-FIX2, +18 S1-FIX3, +47 S1-FIX4,
++11 S1-FIX5); candidate regression set **202 cases**. No gate figures are recorded
+for the S1 rounds; the only recorded figures are those of the revision-1 snapshot
+under "Verifying this snapshot" below.
 
 ### Explicitly not yet true in this version
 

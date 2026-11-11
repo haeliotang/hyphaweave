@@ -45,8 +45,8 @@ Read this before using anything in this repository:
   import adapter, and no network service in this repository.
 - **Revised after review.** This snapshot includes H0 revision 1 (decision
   2026-11-10 #34), revision 2 (decision 2026-11-10 #42) and revision 3 (decision
-  2026-11-11 #2) with its four follow-up rounds S1-FIX1 to S1-FIX4 (decisions
-  2026-11-11 #5, #12, #14 and #16). Independent reviews found wire-semantics
+  2026-11-11 #2) with its five follow-up rounds S1-FIX1 to S1-FIX5 (decisions
+  2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1). Independent reviews found wire-semantics
   defects, and the revisions changed the format rules, the error-code registry,
   the trust-root model, the resource limits, the verifier and the vectors.
   Revision 3 reacts to the review of the second (Rust) implementation, which
@@ -182,8 +182,9 @@ These are the same commands as the Python job of
 before `check_spec_examples.py` start parallel workers; on a machine that also
 runs other work, add `--jobs 2` to each (see [`tools/README.md`](tools/README.md)).
 This README does not claim that a particular gate run passed; run the commands
-to check your checkout. The gate results reported for the H0 hand-off snapshot
-are summarized in [`CHANGELOG.md`](CHANGELOG.md).
+to check your checkout. The only recorded gate figures are those of the
+revision-1 snapshot, kept in [`CHANGELOG.md`](CHANGELOG.md) ("Verifying this
+snapshot").
 
 To verify a container by hand without trusting any implementation, follow
 [`spec/offline-verification.md`](spec/offline-verification.md): it uses only

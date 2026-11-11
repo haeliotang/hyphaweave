@@ -8,7 +8,7 @@ A complete, offline, deterministic verifier for the `weave-record/1` exchange fo
 manifest and manifest signatures, key lifecycle and authorisation, labels and
 consent, erasure, the five-state reference resolution, and L2 RFC 3161 timestamps.
 
-**Status: draft (decisions 2026-11-10 #34, 2026-11-10 #42 and 2026-11-11 #2, with the S1 rounds of decisions 2026-11-11 #5, #12, #14 and #16).**
+**Status: draft (decisions 2026-11-10 #34, 2026-11-10 #42 and 2026-11-11 #2, with the S1 rounds of decisions 2026-11-11 #5, #12, #14 and #16 and 2026-11-12 #1).**
 `weave-record/1` v0.1 has not
 passed its J1/J2 round-trip acceptance cases yet, and this is currently the only
 implementation, so it is not yet an independent implementation. The specification

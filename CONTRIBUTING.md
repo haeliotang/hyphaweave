@@ -65,6 +65,7 @@ python tools/check_schemas.py
 python tools/check_external.py
 python tools/anti_verification.py
 python tools/byte_flip_gate.py
+python tools/crash_fuzz.py
 python tools/check_spec_examples.py
 reuse lint
 ```

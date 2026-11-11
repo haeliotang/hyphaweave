@@ -724,7 +724,9 @@ in revision 1 of the S1-FIX1 round (T11), entry 20 records the S1-FIX2 (`decisio
 2026-11-11 #12`) deterministic-order trade-off (U12/L8), and entries 21–23 record the
 S1-FIX3 (`decision 2026-11-11 #14`) principle decisions V3, V2 and V7/L5, and entries
 24–29 record the S1-FIX4 (`decision 2026-11-11 #16`) principle decisions W1, W5, W6,
-W10/L5, W10/L6 and W3.
+W10/L5, W10/L6 and W3. The S1-FIX5 round (`decision 2026-11-12 #1`) rewrote entries 24,
+26 and 29 and added entries 30–31 (principle decisions X1 and X3) and 32–33 (two
+questions left open for a later round).
 
 1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
    the old §14.5 applies to the whole container, so one code. Reading B: the one-error
@@ -902,13 +904,22 @@ round (T11); they carry the status
     valid without any trust, so under A two fresh keys could rotate into each other and
     link any previous manifest; under B the successor key's own trusted declaration vouches
     for the predecessor, which is exactly the rotated-key case the ruling names.
-    *Compromise:* reading A — a compromise revocation effective after `created_at` does not
-    affect the historical link; reading B — apply §9.4 as for any manifest signature: a
-    compromised key needs timestamp evidence, and the previous container's receipts are not
-    read, so the link breaks. **Chosen B**: it is "the same rules as the target manifest
-    signature", and a thief holding the key can backdate `created_at`, which is the reason
-    §9.4 ignores claimed times for compromise. Marked `decided by principle (Inceptless
-    decision 2026-11-11 #16; W1)`.
+    *Compromise:* reading A — judge a `key-compromise` revocation like a retired one,
+    against the previous `created_at`: `created_at` before the compromise time `T` links,
+    `created_at` at or after `T` is `E_MANIFEST_CHAIN`; reading B — apply §9.4 case 3 as
+    for a target manifest signature: a compromised key needs timestamp evidence, the
+    previous container's receipts are not read, so every such link breaks. S1-FIX4 chose B
+    by principle. **The founder decided A** (Inceptless decision 2026-11-12 #1, X2): the
+    previous manifest's digest is already pinned by the target's trusted signature
+    (`previous_manifest.digest`), so a key reported compromised later cannot be used to
+    substitute that history, while B made every honest exporter's chain break permanently
+    from the moment one of its device keys was reported compromised. §11.5 rule 3 now states
+    one comparison for every revocation reason, and the sentence that let a compromise
+    "always" break the link was removed. *Material:* §11.5 rule 1 also states that a
+    rotation record that is not valid supplies no key material for the link (as §5.3 says
+    for material in general; X5). The trust part remains `decided by principle (Inceptless
+    decision 2026-11-11 #16; W1)`; the compromise part is `decided (Inceptless decision
+    2026-11-12 #1; X2)`.
 25. **Order inside the previous-manifest-chain stage (W5).** Readings: check the embedded
     previous manifest first and read the supplied previous only when the embedded one
     passes (the limitation then depends on unrelated embedded defects), or read and verify
@@ -926,7 +937,12 @@ round (T11); they carry the status
     the chain is known; the chain shape is decided from the attestation array
     alone. A broken chain therefore reports only `E_TS_RENEWAL`. This is a deterministic
     choice, not a more conservative one (both readings make the container invalid). Marked
-    `decided by principle (Inceptless decision 2026-11-11 #16; W6)`.
+    `decided by principle (Inceptless decision 2026-11-11 #16; W6)`. *Note (X5):* this
+    rewrote the wording "checks 1–13 run before check 14" that S8⑪ (entry 11) and T3 had
+    fixed; the behaviour did not change — the vector
+    `integrity-levels/l2-renewal-broken-with-schema-receipt` reported only `E_TS_RENEWAL`
+    under the earlier text as well, and no existing vector changed. The wording change is
+    kept and recorded here for the founder (Inceptless decision 2026-11-12 #1).
 27. **Several `ed25519` entries in one attestation file (W10/L5).** §11.3 said the
     signature is unverifiable when "no entry is a verifiable signature by a declared
     required key" and did not say what happens when one entry verifies and another does
@@ -952,7 +968,47 @@ round (T11); they carry the status
     is defined there). The content octets of OCTET STRINGs and BIT STRINGs (certificate
     extension values, signature values) are not re-decoded by check 1; the TSTInfo inside
     `eContent` is checked on its own by check 2. Marked `decided by principle (Inceptless
-    decision 2026-11-11 #16; W3)`.
+    decision 2026-11-11 #16; W3)`. *Amended by X1 (decision 2026-11-12 #1):* a value of
+    an open type is judged by its TLV framing only (1a) and is never handed to a type
+    decoder; its tag class does not matter (`80 01 01` and `5f 81 48 01 01` are valid
+    values of an unregistered attribute). See entry 30 for the list of open types.
+30. **Which types check 1c decodes (X1).** The ruling fixed that 1c's rules come from
+    X.690 and the module definitions only, that DEFAULT values are judged against the
+    module definitions, that open types are judged by their framing only and that time
+    values are compared raw. It did not list which `ANY DEFINED BY` values the profile
+    decodes. Readings: decode every attribute, algorithm-parameter and certificate type
+    some library knows (signingTime, counterSignature, RSASSA-PSS parameters, attribute
+    certificates…), or decode exactly the types the profile reads. **Chosen** the second:
+    the decoded attribute types are `id-contentType`, `id-messageDigest` and
+    `id-aa-signingCertificateV2`; `AlgorithmIdentifier.parameters` and every other
+    `ANY`/`ANY DEFINED BY` value, the non-`certificate` `CertificateChoices`
+    alternatives and the `x400Address` name form are open types (§12.2 1c lists them). A
+    list fixed by the specification is the only one two independent implementations can
+    agree on; "whatever my library knows" is exactly the dependency X1 removed, and every
+    extra decoded type is a further source of false rejections (for example the
+    RSASSA-PSS-params DEFAULTs). Marked `decided by principle (Inceptless decision
+    2026-11-12 #1; X1)`.
+31. **Symbolic links among operator paths (X3).** The ruling says the kind of each
+    operator path is established with `lstat` before opening. Readings: reject every
+    symbolic link (`lstat` alone), or resolve a link and judge its target the same way.
+    **Chosen** the second: operator paths are routinely links (a keyset directory kept
+    elsewhere), the hazard the ruling addresses is the blocking open of a FIFO or a device,
+    and a link to one is rejected as well; a dangling link is a usage error, as it already
+    was for keyset entries (entry 28). Marked `decided by principle (Inceptless decision
+    2026-11-12 #1; X3)`.
+32. **Open: the target manifest signature is judged more leniently than the previous one
+    (recheck4 L7).** Since W1 the previous manifest's signing key must be trusted in the
+    target's closure, while the target manifest signature itself only needs a required key
+    and records a TOFU limitation: a self-made rotation between two fresh keys can carry a
+    target manifest signature to `valid` with `L_KEY_TRUST_TOFU` only. Whether the target
+    signature should meet the same trust bar is **not decided**; it is left for a later
+    round (Inceptless decision 2026-11-12 #1).
+33. **Open: §9.4 last paragraph versus §11.3 (recheck4 L7).** §9.4 ends by saying that a
+    signature by a key whose declaration is untrusted is `E_KEY_UNKNOWN` and that "this
+    applies to manifest signatures as well", while §11.3 says that "a declared but
+    untrusted signing key … does not make the manifest signature unverifiable". The
+    current implementations follow §11.3. Which sentence governs is **not decided**; it is
+    left for a later round (Inceptless decision 2026-11-12 #1).
 
 Status updates in this revision:
 
