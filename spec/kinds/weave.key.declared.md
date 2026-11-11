@@ -56,7 +56,11 @@ permitted (additive evolution, K3, parent specification §7.5).
    otherwise `E_KEY_ID_MISMATCH` (invalid). A `public_key` that is **missing** or is not
    strict unpadded base64url of exactly 32 bytes is `E_KEY_PUBLIC_KEY` (invalid); the
    missing-member case is decided before the generic `E_KIND_BODY_SCHEMA` and before any
-   trust judgement [S8③] decided (Inceptless decision 2026-11-11 #2; S8③). **No point check
+   trust judgement [S8③] decided (Inceptless decision 2026-11-11 #2; S8③). A missing or
+   malformed `public_key` is a **structural** error (the structural group of parent
+   specification §14.1, V5): the declaration is not structurally valid, it never governs a
+   class and is never used in class determination. In a keyset such a file is a usage error
+   (exit 2, parent specification §14.1), not silently ignored. **No point check
    happens
    here**: whether the 32 bytes decode to a canonical curve point, or whether that point is
    small-order or mixed-order, is checked only when a signature is verified (parent

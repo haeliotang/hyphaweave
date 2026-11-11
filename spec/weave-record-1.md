@@ -801,8 +801,10 @@ pins that key id's class and window (it does not make the key trusted) (T4).
 **Governing class.** The **governing class** of a key id is decided **before** the trust
 closure of this section and **independently of it**, from *structurally valid* declarations
 only (the structural group of §14.1: canonical form, envelope structure, `sigs`
-presence/format and registered-kind body schema; trust, self-signature verification and
-other semantic checks are not part of it):
+presence/format and registered-kind body schema — including a `weave.key.declared`
+`body.public_key` that is present as strictly-encoded base64url decoding to exactly 32
+bytes (V5); trust, self-signature verification and other semantic checks are not part of
+it):
 
 1. if the keyset contains a declaration for the key id, that declaration's `key_type` is the
    governing class (conflicting keyset declarations are a usage error, T4);
@@ -810,8 +812,12 @@ other semantic checks are not part of it):
    record digest)` pair among all declarations in the verification context governs — the
    deterministic declaration-resolution order defined below.
 
-Every structurally valid declaration for that key id whose `key_type` differs from the
-governing class is invalid with `E_KEY_CLASS_CONFLICT`. Class determination does not depend
+A declaration whose `body.public_key` is missing or is not strictly-encoded base64url
+decoding to exactly 32 bytes is **not structurally valid** (V5): it never takes part in
+class determination, so it cannot govern a class, and in a container or record target it is
+reported invalid with `E_KEY_PUBLIC_KEY` (in the keyset a structurally invalid file is a
+usage error, §14.1). Every structurally valid declaration for that key id whose `key_type`
+differs from the governing class is invalid with `E_KEY_CLASS_CONFLICT`. Class determination does not depend
 on which declarations become trusted, and an untrusted but structurally valid declaration can
 still govern the class; the trust closure below then runs afterwards and independently, and
 invalid declarations establish no trust (T4/U4).
@@ -2043,22 +2049,51 @@ target per-case layout remains implementation-defined (Appendix A P7)
   notice and the matching limitation (§14.9) are reported if and only if
   `previous_manifest` is non-null and the previous signature was not re-verified, including
   when a later container check fails; when the manifest cannot be parsed and the previous
-  manifest is not reachable, neither is reported [D1] decided (Inceptless decision
-  2026-11-11 #2; report-construction rule; T12).
-- The `--previous <path>` command option accepts a container directory or its zip, exactly
-  like the `container` command; the supplied previous container (directory or zip) is
-  **parsed exactly like a `container` input**. Any read or structural failure of the
-  supplied previous container — including a zip-structure violation that would be
-  `E_CONTAINER_ZIP` for the target — is `E_MANIFEST_CHAIN` (invalid) in this position, not
-  `E_CONTAINER_ZIP` (U1). It additionally requires that the supplied previous
-  container's manifest digest equals `previous_manifest.digest`; a missing or unreadable
-  supplied path is a usage or I/O error (exit 2, no report), while a supplied container
-  whose manifest is unreadable or invalid, a digest mismatch, and a `--previous` given when
-  `previous_manifest` is `null` are all `E_MANIFEST_CHAIN` (invalid)
-  [S6][S16/F15] decided (Inceptless decision 2026-11-11 #2; S6/F15). A path that exists and
-  is readable but is **not a usable container** — a non-zip plain file, or a directory
-  without `manifest.json` — is `E_MANIFEST_CHAIN` as well (T17/A-L9). A receipt side needs
-  this check to detect an exporter silently restarting its chain.
+  manifest is not reachable, neither is reported. **When a supplied `--previous` container's
+  manifest signature verifies (§11.5), that previous manifest's signature counts as
+  re-verified**, so neither `N_PREVIOUS_SIG_UNVERIFIED` nor `L_PREVIOUS_SIG_UNVERIFIED` is
+  reported for it; the report carries `L_PREVIOUS_CONTENT_UNVERIFIED` instead (V3
+  clarification) [D1] decided (Inceptless decision
+  2026-11-11 #2; report-construction rule; T12; 2026-11-11 #14; V3).
+- The `--previous <path>` command option accepts a container directory or its zip. A
+  supplied previous container is used **only to link the chain**, not as further evidence:
+  the verifier reads exactly two members from it — `manifest.json` and the manifest
+  attestation file `signatures/manifest.sig.json` — each bounded by
+  `MAX_MANIFEST_BYTES`, and verifies only what the link needs (V3). Everything else in the
+  supplied previous container (records, blobs, `readable/`, extra files) is **not
+  verified**; to verify a previous container as evidence, run it as a target container.
+  Specifically:
+  - the read manifest bytes MUST satisfy the canonical file form (§1.8) and parse as a
+    manifest with a supported `format`/`manifest_version`; its §2.4 manifest digest MUST
+    equal the `digest` member of that attestation file, and the attestation file's
+    signature MUST verify over the §2.4 manifest signature message with a key declared in
+    the **supplied keyset** (`--keys`) — declarations inside the previous container are not
+    part of the verification context and cannot supply context-trusted material here;
+  - when comparing, the supplied previous manifest's §2.4 manifest digest MUST equal the
+    current manifest's `previous_manifest.digest`;
+  - in a **directory** previous, both member paths MUST be regular files: a symbolic link,
+    a non-regular file or a missing member is `E_MANIFEST_CHAIN`; in a **zip** previous the
+    archive MUST contain exactly one non-directory entry for each of the two paths, and a
+    duplicate or missing member is `E_MANIFEST_CHAIN`. The zip is parsed only for
+    structure, framing and the §13 limits (single volume, no gaps or overlaps, entry-count
+    and declared-size limits); entry-name safety, duplicate-name, CRC and `readable/` rules
+    are **not** applied to the other members, because those members are not verified
+    (V1);
+  - a read, parse, canonical-form, digest, signature or structure/limit failure of the two
+    members — including a `signatures/manifest.sig.json` that is not valid JSON or cannot be
+    parsed — a `--previous` given when `previous_manifest` is `null`, and a supplied
+    previous manifest digest that does not match are all `E_MANIFEST_CHAIN` (invalid), and
+    the target container's record verdicts are reported as usual. A missing or unreadable
+    supplied path is a usage or I/O error (exit 2, no report). A path that exists and is
+    readable but is **not a usable container** — a non-zip plain file, or a directory
+    without `manifest.json` — is `E_MANIFEST_CHAIN` as well (T17/A-L9).
+  When the supplied previous container's manifest identity is read and its signature
+  verifies, the report carries the limitation `L_PREVIOUS_CONTENT_UNVERIFIED` (§14.9),
+  whether or not the digest comparison or the target container then succeeds; when the
+  previous cannot be read or its signature cannot be verified, no link is established and
+  that limitation is not reported ([S6][S16/F15][V3] decided (Inceptless decision
+  2026-11-11 #2; S6/F15; 2026-11-11 #14; V3)). A receipt side needs this check to detect
+  an exporter silently restarting its chain.
 
 The chain makes tampering with one container detectable in the next; it does not by itself
 detect rollback or truncation — that requires an external anchor (§12) or the latest
@@ -2131,7 +2166,9 @@ stated otherwise (T6):
    the uncompressed size. When general-purpose flag bit 3 (data descriptor) is set, the
    local header's CRC-32 and both size fields **MUST be zero** (U12/L1), and the values in
    the data descriptor — which MAY be prefixed with the signature `PK\x07\x08` — MUST equal
-   the central directory's values instead.
+   the central directory's values instead. Each entry's central-directory "version needed
+   to extract" MUST be at most 63; the local-header version field is not constrained
+   (V6).
 2. **Every byte has a home.** The first local file header starts at offset 0; each entry's
    data followed by its data descriptor (when present) ends exactly where the next local
    file header begins, "next" meaning **physical offset order**; the central-directory order
@@ -2151,7 +2188,8 @@ stated otherwise (T6):
    "number of this disk" and "number of the disk with the start of the central directory"
    MUST be 0; the ZIP64 EOCD's two disk-number fields MUST be 0; the ZIP64 locator's
    "number of the disk with the start of the ZIP64 EOCD" MUST be 0 and its "total number of
-   disks" MUST be 1. Anything else is `E_CONTAINER_ZIP` (U9). The end-of-central-directory
+   disks" MUST be 1. Every per-entry central-directory "disk number start" field MUST be 0
+   as well. Anything else is `E_CONTAINER_ZIP` (U9, V6). The end-of-central-directory
    record MUST have a zero-length comment and MUST end exactly at the last input byte; bytes
    before the first local header, a non-empty archive comment, and bytes after the record
    are rejected. ZIP64 archives MUST be accepted, including ZIP64 end-of-central-directory
@@ -2172,12 +2210,20 @@ stated otherwise (T6):
 The central directory is read before any content is decompressed: the verifier checks the
 entry count and the declared sizes (§13), the entry paths and the structural rules above
 first, then decompresses each entry under a bounded output cap; decompressed output MUST NOT
-exceed the declared uncompressed size. The archive entry count above
+exceed the declared uncompressed size. **Decompression is a structural operation that never
+crashes:** any failure while decompressing a member (a corrupt or malformed DEFLATE stream,
+an unexpected end of stream, a decompressed size that contradicts the declared size) is a
+structural failure of the container, reported as `E_CONTAINER_ZIP` for a target container
+and as `E_MANIFEST_CHAIN` for a supplied previous container (§11.5), never as a process
+crash. The target-container path and the previous-container path use the **same** member
+reading and decompression rule (V1). The archive entry count above
 `MAX_CONTAINER_ENTRIES` (`readable/**` included) and the declared-size total above
 `MAX_CONTAINER_UNCOMPRESSED_BYTES` (`readable/**` excluded) are both invalid
 `E_CONTAINER_SIZE`, never `E_CONTAINER_ZIP` [S4][T15][U2] decided (Inceptless decision
-2026-11-11 #2; S4; 2026-11-11 #12; U2). A zip bomb is bounded by the §13 limits
-(`E_CONTAINER_SIZE`), never a crash.
+2026-11-11 #2; S4; 2026-11-11 #12; U2). These two limits are checked **before** the
+remaining structural rules of this section: an archive that is both over a limit and
+structurally invalid reports `E_CONTAINER_SIZE` (the limit) only (V7/L7). A zip bomb is
+bounded by the §13 limits (`E_CONTAINER_SIZE`), never a crash.
 
 ### 11.10 Encrypted export
 
@@ -2207,12 +2253,15 @@ supplied trust anchor (§12.5) [S5] decided (Inceptless decision 2026-11-10 #34;
 ### 12.2 RFC 3161 timestamp verification profile
 
 Each listed receipt is verified against the following MUST table; the code of the first
-failing check is reported [S5] decided (Inceptless decision 2026-11-10 #34; S5).
+failing check is reported [S5] decided (Inceptless decision 2026-11-10 #34; S5). **Any DER
+decoding or receipt-structure failure, wherever it is discovered** — including a failure
+while re-encoding `signed_attrs` for signature verification — is reported as check 1's
+`E_TS_SCHEMA`, never as a crash and never as a later check's code (V2).
 
 | # | check | code on failure |
 |---|---|---|
-| 1 | The file is a DER-encoded RFC 3161 `TimeStampResp` whose `PKIStatusInfo.status` is `0` (`granted`); `grantedWithMods` (1) and every other status are rejected. | `E_TS_SCHEMA` |
-| 2 | The `SignedData` content type is `id-ct-TSTInfo`, and the encapsulated TSTInfo parses as DER with `version == 1`. | `E_TS_SCHEMA` |
+| 1 | The file is **exactly one** strict-DER-encoded RFC 3161 `TimeStampResp` with no trailing data: the whole file decodes as one `TimeStampResp`, the encoding uses canonical minimal length forms (no BER indefinite form) and re-encoding the parsed object yields the input bytes exactly. `PKIStatusInfo.status` is `0` (`granted`); `grantedWithMods` (1) and every other status are rejected. `SignedData.version` is 3 and `SignerInfo.version` is 1 or 3; any other version is rejected. | `E_TS_SCHEMA` |
+| 2 | The `SignedData` content type is `id-ct-TSTInfo`, and the encapsulated TSTInfo parses as DER with `version == 1` (TSTInfo version is exactly 1; any other value is `E_TS_SCHEMA`). | `E_TS_SCHEMA` |
 | 3 | `messageImprint.hashAlgorithm` is `sha256`; any other algorithm is a schema failure. | `E_TS_SCHEMA` |
 | 4 | `messageImprint.hashedMessage` equals the expected imprint (§12.4): the raw 32 bytes of the manifest digest for the first receipt, or `SHA-256(<previous receipt bytes> ‖ <raw manifest digest>)` for a renewal receipt. | `E_TS_IMPRINT` |
 | 5 | `signerInfo.digestAlgorithm` is `sha256`. | `E_TS_SCHEMA` |
@@ -2324,7 +2373,7 @@ decision 2026-11-10 #34; Q5). The limit-to-code mapping in the table is fixed [Q
 | `MAX_SIGFILE_BYTES` | 1,048,576 (1 MiB) | `signatures/manifest.sig.json` | `E_JSON_SIZE` |
 | `MAX_TIMESTAMP_BYTES` | 1,048,576 (1 MiB) | one `.tsr` file | `E_JSON_SIZE` |
 | `MAX_RECORDS` | 100,000 | `manifest.records` entries | `E_MANIFEST_RECORDS` |
-| `MAX_CONTAINER_ENTRIES` | 200,000 | zip form: **all** archive entries (including `readable/**`); directory form: all files | `E_CONTAINER_SIZE` |
+| `MAX_CONTAINER_ENTRIES` | 200,000 | zip form: **all** archive entries (including `readable/**`); directory form: every file in the directory container, **including `manifest.json`** | `E_CONTAINER_SIZE` |
 | `MAX_CONTAINER_UNCOMPRESSED_BYTES` | 1,073,741,824 (1 GiB) | zip form: the sum of the **declared** uncompressed sizes, excluding `readable/**`; directory form: the summed bytes of the files the verifier actually reads (`readable/**` never read or counted, `tsa-cert-*` presence-only and not counted) | `E_CONTAINER_SIZE` |
 | `MAX_BLOB_BYTES` | 1,073,741,824 (1 GiB) | one blob | `E_MANIFEST_BLOB` |
 | `MAX_BLOBS` | 10,000 | `manifest.blobs` entries | `E_MANIFEST_SCHEMA` |
@@ -2347,8 +2396,10 @@ included) and the sum of the **declared** uncompressed sizes of all entries exce
 the entries and the bytes the verifier actually reads (record, manifest, attestation,
 timestamp and blob files); the entry count is every file in the directory container, while
 `readable/**` is never read or counted toward the byte total and `tsa-cert-*` files are
-presence-only and not counted (T15). Implementations MUST NOT rely on filesystem-reported
-sizes for these checks;
+presence-only and not counted (T15). The entry-count and declared-size limits are checked
+**before** the remaining structural zip rules (§11.9), so an over-limit archive reports
+`E_CONTAINER_SIZE` even when it is also structurally invalid (V7/L7). Implementations MUST
+NOT rely on filesystem-reported sizes for these checks;
 they MUST enforce them while reading: each file of a directory container is read through a
 probe bounded by its class limit plus one byte, the container total is accumulated while
 reading, and the zip central directory is inspected before any entry is decompressed
@@ -2399,17 +2450,23 @@ switch of §14.7 and takes effect only for the test-only check-skip hook.
   usage error (exit 2). The structural group is: JSON classification and canonical form
   (§1.9), envelope structure (§4.1–§4.5), `sigs` presence and format (§4.3, including a
   record that requires per-record signatures but has `sigs` absent or empty), and the
-  registered-kind body **schema** (the shape grammar of the kind page). A file that is
+  registered-kind body **schema** (the shape grammar of the kind page). For
+  `weave.key.declared` the presence and encoding of `body.public_key` (strictly-encoded
+  base64url decoding to exactly 32 bytes, §9.1) is **structural**; for `weave.key.rotated`
+  the encoding and length of `old_public_key`/`new_public_key` (§9.2) are **structural**
+  (V5). A file that is
   structurally valid but whose first failing check is a kind semantic rule, a key-lifecycle
   rule, an actor or authorisation rule, or a cryptographic rule does not establish trust and
   is ignored; it is not a usage error. **Two structurally valid keyset declarations for the
   same key id whose `key_type` differs, or whose `(valid_from, valid_until)` pair differs
   (absent = unbounded; present-versus-absent counts as different), are a usage error
   (exit 2):** the ambiguity must be fixed by the operator, so no report is produced. When
-  there is no conflict, only semantically valid declarations govern class and window, in the
-  deterministic order of §5.3 (smallest `recorded_at`, tie by lexicographically smallest
-  record digest), and any keyset declaration — whatever its class — governs its key id's
-  class and window (T4). The keyset is verified first; each valid
+  there is no conflict, the §5.3 definitions apply: the **governing class** is determined
+  from structurally valid declarations (keyset declaration first, otherwise the smallest
+  `(recorded_at, record digest)` among structurally valid declarations) and the governing
+  validity window from
+  semantically valid declarations, both independently of the trust closure; any keyset
+  declaration — whatever its class — governs its key id's class and window (T4, V4). The keyset is verified first; each valid
   `weave.key.declared` of class `human`/`organization` in it is a trusted root, with no
   cosignature needed and no self-attestation notice (§5.3). Other keyset records
   participate in the verification context like container records: in particular
@@ -2654,7 +2711,12 @@ Report rules:
   `summary` stay empty; a previous-manifest or `.tsr` oversize reports `E_JSON_SIZE` with
   the processed records and their `summary` counts
   [S8⑩][S16/F12][T16] decided (Inceptless decision 2026-11-11 #5; T16; 2026-11-11 #2;
-  S8/F12).
+  S8/F12). **`record_count` rule (V7/L5):** once the manifest has parsed **and its
+  structure checks have passed**, `record_count` is the number of records listed in
+  `manifest.records` for every later failure — records listing/consistency, blobs, the
+  previous-manifest chain, timestamps, aggregation — and is never reset to 0 by a later
+  failure. It is 0 only when the failure occurs before the manifest structure stage
+  (absent, unreadable, oversize, unparseable or structurally invalid manifest).
 - `records` holds one entry for a record target and the manifest-ordered entries for a
   container target. For a `weave.erased` entry, `records[].digest` is the §2.2 record
   digest computed over the placeholder object itself (not the placeholder's original-digest
@@ -2686,9 +2748,12 @@ Report rules:
   [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11 #2; S8/F12).
 - `container.timestamps[]` entries carry `index`, `path`, `state` and `gen_time`;
   `gen_time` is filled whenever §12.2 checks 1–4 passed, even if a later check fails, and
-  is `null` for `E_TS_FILE` or an unparseable token. When the renewal chain itself is
+  is `null` for `E_TS_FILE` or an unparseable token. A receipt whose DER or structure
+  cannot be decoded anywhere in its processing reports `E_TS_SCHEMA` (reported in the
+  timestamp phase as a container-level `E_TS_SCHEMA`) and its `gen_time` is `null` (V2).
+  When the renewal chain itself is
   broken (§12.2 check 14), every receipt is reported `invalid` with `gen_time` `null`
-  [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11 #2; S8/F12).
+  [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11 #2; S8/F12; 2026-11-11 #14; V2).
 - Container-level errors and notices (manifest, level/chain, blob, timestamp and container
   structure problems) live in `container.errors` / `container.notices` (sorted,
   lexicographically unique, registry codes only). An invalid container stage reports every
@@ -2745,9 +2810,10 @@ Report rules:
   implementations [S8⑬][S16/F5] decided (Inceptless decision 2026-11-11 #2; S8/F5).
 - `limitations` is a sorted, unique array of closed limitation **identifiers** — never
   free prose — drawn from the registry list in `spec/error-codes.md`: `L_OFFLINE_CONTEXT`,
-  `L_CHAIN_CLAIM_UNVERIFIED`, `L_KEY_TRUST_TOFU`, `L_PREVIOUS_SIG_UNVERIFIED`,
-  `L_TSA_TRUST_UNVERIFIED`, `L_ERASED_PLACEHOLDER`, `L_ERASED_STANDALONE`,
-  `L_LABELS_ARE_CLAIMS`, `L_UNKNOWN_KIND_OPAQUE`, `L_LABEL_PROPAGATION_UNCHECKED`. The
+  `L_CHAIN_CLAIM_UNVERIFIED`, `L_KEY_TRUST_TOFU`, `L_PREVIOUS_CONTENT_UNVERIFIED`,
+  `L_PREVIOUS_SIG_UNVERIFIED`, `L_TSA_TRUST_UNVERIFIED`, `L_ERASED_PLACEHOLDER`,
+  `L_ERASED_STANDALONE`, `L_LABELS_ARE_CLAIMS`, `L_UNKNOWN_KIND_OPAQUE`,
+  `L_LABEL_PROPAGATION_UNCHECKED`. The
   conditions under which each identifier is emitted are normative in §14.9; a verifier MUST
   NOT emit an identifier outside this list and MUST NOT phrase a limitation as a passed
   check [S12] decided (Inceptless decision 2026-11-11 #2; S12).
@@ -2820,7 +2886,8 @@ its `new_public_key`, and a note signed by that key is verified — the note car
 | `L_OFFLINE_CONTEXT` | the target is a record or a container (not `vectors`): the verification context is the target plus the supplied keyset, and references outside it resolve as `missing` |
 | `L_CHAIN_CLAIM_UNVERIFIED` | `level_claimed` is `L1` or `L2` (the internal-chain claim cannot be recomputed), regardless of later failures |
 | `L_KEY_TRUST_TOFU` | at least one signature check in the report — a record signature or the manifest signature — was context-trusted per the TOFU predicate above |
-| `L_PREVIOUS_SIG_UNVERIFIED` | `previous_manifest` is non-null and the embedded previous manifest's own signature was not re-verified; this is reported even when a later container check fails, and is not reported when the manifest could not be parsed so that the previous manifest is not reachable |
+| `L_PREVIOUS_CONTENT_UNVERIFIED` | a supplied previous container was used to link the chain and its manifest identity was read and its signature verified (§11.5); reported whether or not the digest comparison or the target container then succeeds, and not reported when no `--previous` was supplied or the previous could not be read or verified (V3) |
+| `L_PREVIOUS_SIG_UNVERIFIED` | `previous_manifest` is non-null and the embedded previous manifest's own signature was not re-verified; this is reported even when a later container check fails, and is not reported when the manifest could not be parsed so that the previous manifest is not reachable. When a supplied `--previous` container's manifest signature verifies, that previous manifest's signature counts as re-verified and this identifier is **not** reported for it; `L_PREVIOUS_CONTENT_UNVERIFIED` is reported instead (V3) |
 | `L_TSA_TRUST_UNVERIFIED` | at least one listed receipt is `present-unverified`: its structure and CMS signature pass, but it is not verified-and-trusted (no matching anchor, or its accuracy is unusable evidence per §12.2 check 13). A receipt rejected by a structural, format or CMS check reports its error code and does not by itself trigger this identifier (U7) |
 | `L_ERASED_PLACEHOLDER` | the verified input (container or record target) contains a `weave.erased` placeholder |
 | `L_ERASED_STANDALONE` | the target is a single `weave.erased` record with no container context, so the §10.3 cross-checks could not be applied |
@@ -3099,6 +3166,20 @@ and are normative at the locations given.
 | U11 | H1-FIX1 hand-off corrections (kind pages, §4.1.1, corrected vector id) | report/hand-off; §7.7 makes kind pages normative |
 | U12 | the low-item wording decisions: data-descriptor local fields, `readable/` rule-1 applicability, physical offset order, two EOCD counts, ZIP64 sentinel rules, slash-name-with-data, directory/zip limit wording, revocation-order principle entry, "signature's claimed `recorded_at`", unified declaration-resolution sentence | §11.9, §13, §9.4, §5.3, §9.1, `weave.key.declared.md`, `docs/open-questions.md` §6 entry 20 |
 
+The following rows are fixed by Inceptless decision **2026-11-11 #14** (S1-FIX3, V1–V8)
+and are normative at the locations given.
+
+| ruling | topic | normative location |
+|---|---|---|
+| V1 | a member's decompression failure is a structural failure, never a crash; target and previous containers use the same member-reading rule; a previous-container failure is `E_MANIFEST_CHAIN` | §11.9, §11.5 |
+| V2 | any DER decoding or receipt-structure failure, wherever discovered (including signed-attributes re-encoding), is `E_TS_SCHEMA` (check 1); strict canonical DER and the version rules | §12.2, §14.6, registry |
+| V3 | a supplied previous container links the chain only: the two read members, keyset-only signature verification, regular-file/unique-member rules, everything else unverified, `L_PREVIOUS_CONTENT_UNVERIFIED` | §11.5, §14.6, §14.9, registry |
+| V4 | the governing class is determined from structurally valid declarations per §5.3 (no "semantically valid declarations govern class" wording remains) | §14.1, Appendix D |
+| V5 | `public_key` presence/encoding is structural; a declaration without a valid `public_key` never governs a class; in a keyset it is a usage error; rotated key-material encoding/length is structural too | §5.3, §14.1, `weave.key.declared.md`, `weave.key.rotated.md`, registry |
+| V6 | central-directory "version needed to extract" ≤ 63 (local-header version unconstrained); every per-entry central-directory disk start = 0; else `E_CONTAINER_ZIP` | §11.9 rules 1/3 |
+| V7 | directory entry count includes `manifest.json`; entry-count/declared-total limits are checked before the remaining zip structural rules (over-limit wins); `record_count` keeps the manifest count after the manifest structure stage | §13, §11.9, §14.6 |
+| V8 | the permanent crash-fuzz gate is tooling/CI, not a format rule | outside this document (tools, CI) |
+
 ### A.2 PROVISIONAL implementation shapes
 
 The following are implementation shapes rather than wire-format rulings. The rule text is
@@ -3192,7 +3273,7 @@ per-case layout and input identity are explicitly implementation-defined (S8⑬/
 | `manifest.level` | `L0`, `L1`, `L2` | §11.2 |
 | `chain.algorithm` | `sha256` | §11.2 |
 | digest algorithm | `sha256` (H0) | §2.7 |
-| limitation identifiers | the ten closed `L_*` identifiers of §14.9 (registry: `spec/error-codes.md`) | §14.9, §14.6 |
+| limitation identifiers | the eleven closed `L_*` identifiers of §14.9 (registry: `spec/error-codes.md`) | §14.9, §14.6 |
 | resource limits | the `MAX_*` constants of §13 (including `MAX_JSON_DEPTH`, `MAX_LICENCE_NESTING`, `MAX_TS_ACCURACY`) | §13 |
 | exit codes | `0`, `1`, `2`, `3` | §14.8 |
 | error/notice codes | closed registry in `spec/error-codes.md` | §14.2 |
@@ -3214,7 +3295,7 @@ out-of-range integers; JSON value nesting depth above `MAX_JSON_DEPTH`; a non-ve
 signature; a
 missing required per-record signature where `sigs` is absent/empty; a kind body violating
 its known members; an actor/signing-key class mismatch; a key redeclaration that changes the
-trusted class of an already-trusted key (`E_KEY_CLASS_CONFLICT`); a human key signing a
+governing class of a key id, independent of trust (`E_KEY_CLASS_CONFLICT`); a human key signing a
 non-human record (outside the key-lifecycle exception); a missing salt for
 `personal`/`local-only`; a label downgrade; licence nesting above `MAX_LICENCE_NESTING`;
 `local-only` in a container; a `rel` or kind not matching its grammar; a reference kind
