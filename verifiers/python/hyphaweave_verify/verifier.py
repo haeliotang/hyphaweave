@@ -19,12 +19,15 @@ against a :class:`Context` iterated to a deterministic fixed point.
 
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 from . import ed25519, encoding, envelope as envelope_module, erase, kinds, labels, refs
 from . import keys as keys_module
+from . import operator_input
 from .errors import UsageError, WeaveError
 from .grants import (
     GrantRecord,
@@ -986,8 +989,8 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
     fails its semantic or cryptographic checks does not establish trust; that is
     not a usage error.
     """
-    if not path.exists() or not path.is_dir():
-        raise UsageError("--keys %s is not a directory" % path)
+    # X3: lstat before listing; only a directory is accepted.
+    operator_input.path_kind(path, "--keys", allowed=(operator_input.DIRECTORY,))
     loaded: list[LoadedRecord] = []
     try:
         entries = sorted(path.iterdir(), key=lambda item: item.name)
@@ -1002,10 +1005,20 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
         # special file) is an operator error, never silently skipped.
         if not entry.name.endswith(".json"):
             continue
-        if not entry.is_file():
-            raise UsageError("--keys %s: entry %s is not a regular file" % (path, entry.name))
+        # X3: lstat before opening (a FIFO entry never blocks the verifier).
         try:
-            with entry.open("rb") as handle:
+            operator_input.path_kind(entry, "--keys entry", allowed=(operator_input.FILE,))
+        except UsageError as error:
+            raise UsageError(
+                "--keys %s: entry %s is not a regular file" % (path, entry.name)
+            ) from error
+        try:
+            descriptor = os.open(entry, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise UsageError(
+                        "--keys %s: entry %s is not a regular file" % (path, entry.name)
+                    )
                 # §13: one keyset file is one record; read at most one byte past
                 # MAX_RECORD_BYTES so an oversize file is rejected without a
                 # full read (it then fails as E_JSON_SIZE below).

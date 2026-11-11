@@ -37,6 +37,7 @@ from . import (
     zipread,
 )
 from . import errors as report_errors
+from . import operator_input
 from .errors import CheckSkipper, UsageError, WeaveError
 from .report import (
     LIMITATION_ERASED_PLACEHOLDER,
@@ -934,10 +935,15 @@ def _check_previous_path(previous_container: Path) -> None:
     naming the path: exit 2, no report. An openable path is evidence for the
     chain link and is judged at step (10) (§11.5, ``E_MANIFEST_CHAIN``).
     """
-    if not previous_container.exists():
-        raise UsageError("--previous %s does not exist" % previous_container)
+    # X3: lstat first; a FIFO, device or socket is a usage error before any
+    # open (opening a FIFO for reading would block).
+    kind = operator_input.path_kind(
+        previous_container,
+        "--previous",
+        allowed=(operator_input.DIRECTORY, operator_input.FILE),
+    )
     try:
-        if previous_container.is_dir():
+        if kind == operator_input.DIRECTORY:
             with os.scandir(previous_container) as listing:
                 next(iter(listing), None)
         else:
@@ -1403,8 +1409,9 @@ class _PreviousLinkContext:
 
     ``candidates``/``sources`` are the §11.3 required-key material of the
     target (keyset plus the target's own ``weave.key.declared`` /
-    ``weave.key.rotated`` records), exactly as for the target manifest
-    signature. ``key_state`` is the target's final key-lifecycle state (valid
+    ``weave.key.rotated`` records), as for the target manifest signature,
+    except that a rotation record that is not valid supplies no material
+    (S1-FIX5 X5④; the verdicts are known at step 10). ``key_state`` is the target's final key-lifecycle state (valid
     records only, keyset included) and ``trusted`` the key ids trusted in the
     target's final trust closure: a valid declaration (keyset root, or a
     context declaration admitted by the closure), or the ``old_key`` of a valid
@@ -1425,7 +1432,19 @@ class _PreviousLinkContext:
         keyset_views: list[verifier.RecordView],
         record_views: list[verifier.RecordView],
     ) -> "_PreviousLinkContext":
-        candidates, sources = _candidate_manifest_keys(container_records, keyset_views)
+        # S1-FIX5 X5④ (§11.5 rule 1, §5.3): the record verdicts exist at step
+        # (10), and a rotation record that is not valid supplies no key material.
+        invalid_rotations = {
+            id(view.loaded)
+            for view in record_views
+            if view.envelope is not None
+            and view.envelope.kind == kinds.KIND_ROTATED
+            and view.verdict != "valid"
+        }
+        candidates, sources = _candidate_manifest_keys(
+            [record for record in container_records if id(record) not in invalid_rotations],
+            keyset_views,
+        )
         context = verifier.Context()
         for view in keyset_views:
             context.register(view)
@@ -1657,6 +1676,7 @@ def _read_previous_identity(
                     previous_manifest.created_at,
                     verified_timestamps=(),
                     timestamp_evidence_present=False,
+                    compromise_at_recorded_time=True,
                 )
             except WeaveError as error:
                 raise WeaveError(

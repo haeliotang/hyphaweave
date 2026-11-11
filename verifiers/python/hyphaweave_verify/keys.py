@@ -207,6 +207,7 @@ class KeyState:
         verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
         timestamp_evidence_present: bool = False,
         prior_order: tuple[tuple[int, ...], str] | None = None,
+        compromise_at_recorded_time: bool = False,
     ) -> None:
         """Apply declaration validity windows and revocation effects.
 
@@ -235,6 +236,13 @@ class KeyState:
         its *own* effect, never from earlier revocations: an already-revoked key
         cannot emit a new valid self-revocation, and a backdated self-compromise
         does not take effect. Mutual revocations stay deterministic.
+
+        ``compromise_at_recorded_time`` is the §11.5 previous-link rule (S1-FIX5
+        X2): a ``key-compromise`` revocation is judged exactly like a retired one,
+        against ``recorded_at`` (the previous manifest's ``created_at``) -- the
+        link breaks iff ``recorded_at >= T`` for the earliest compromise time
+        ``T``. The previous manifest's digest is already pinned by the target's
+        trusted signature, so a later compromise does not reach back into it.
         """
         declaration = self.declarations.get(key_id)
         if declaration is not None:
@@ -273,6 +281,15 @@ class KeyState:
         compromises.sort(
             key=lambda revocation: (revocation.effective_at_ms, revocation.record_digest)
         )
+        if compromise_at_recorded_time:
+            if timestamp_sort_key(recorded_at) >= timestamp_sort_key(
+                compromises[0].effective_at
+            ):
+                raise WeaveError(
+                    "E_KEY_COMPROMISED",
+                    "signature made at or after a key-compromise revocation",
+                )
+            return
         effective_at_us = compromises[0].effective_at_ms * 1000
         rescued = any(
             timestamp.covered_until_us < effective_at_us

@@ -4,8 +4,7 @@
 """S1-FIX4 (Inceptless decision 2026-11-11 #16, W1-W11) unit tests.
 
 The conformance vectors pin every rule that a report can express; these tests
-pin what the vector format cannot (usage errors, exit 2) and check the DER
-re-encoding of check 1c against an independent encoder.
+pin what the vector format cannot (usage errors, exit 2).
 """
 
 from __future__ import annotations
@@ -17,10 +16,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from asn1crypto import tsp
-
-from hyphaweave_verify import timestamps, verifier
-from hyphaweave_verify.errors import UsageError, WeaveError
+from hyphaweave_verify import der_schema, timestamps, verifier
+from hyphaweave_verify.errors import UsageError
 
 from conftest import VECTORS
 
@@ -148,76 +145,16 @@ def test_keyset_other_names_are_ignored(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# W3: the check-1c re-encoding agrees with an independent full re-encoder
+# W3: check 1a/1c on a sorted open-type SET (S1-FIX5 X1 replaced the former
+# comparison with asn1crypto's own re-encoder: a parsing library's behaviour is
+# not a criterion; see test_s1_fix5.py)
 # ---------------------------------------------------------------------------
-
-
-def _committed_receipts() -> list[Path]:
-    return sorted(
-        path
-        for path in VECTORS.rglob("*.tsr")
-        if "previous-container" not in path.parts and path.stat().st_size > 64
-    )
-
-
-def _outcome(encode, data: bytes) -> str:
-    try:
-        return "equal" if encode(tsp.TimeStampResp.load(data, strict=True)) == data else "differs"
-    except (ValueError, TypeError, KeyError, IndexError, timestamps._DerViolation):
-        return "undecodable"
-
-
-#: Receipts on which asn1crypto's whole-tree re-encoding is *expected* to
-#: disagree with check 1c, and why. asn1crypto re-decodes OCTET STRING contents
-#: (the TSTInfo eContent, certificate extension values), which check 1c
-#: re-emits as decoded because check 2 (TSTInfo) and 1e (extension values) judge
-#: them on their own; and it cannot re-encode a universal SET inside a value of
-#: unknown type at all, so it rejects even the sorted control receipt.
-EXPECTED_DIVERGENCE = {
-    "l2-ts-der-boolean-not-ff": "TSTInfo defect: rejected by check 2",
-    "l2-ts-der-default-encoded": "TSTInfo defect: rejected by check 2",
-    "l2-ts-der-implicit-integer-nonminimal": "TSTInfo defect: rejected by check 2",
-    "l2-ts-der-integer-nonminimal": "TSTInfo defect: rejected by check 2",
-    "l2-ts-der-tstinfo-opaque-unsorted": "TSTInfo defect: rejected by check 2",
-    "l2-ts-der-extension-value-nonminimal": "extension-value defect: rejected by check 1e",
-    "l2-ts-der-setof-opaque-unsorted": "open-type SET: rejected by check 1a",
-    "l2-ts-der-setof-sorted-control": "open-type SET in order: valid DER that asn1crypto cannot re-encode",
-}
-
-
-@pytest.mark.parametrize("receipt", _committed_receipts(), ids=lambda path: str(path.relative_to(VECTORS)))
-def test_reencode_agrees_with_asn1crypto_force_dump(receipt: Path) -> None:
-    """On the committed receipts, check 1c agrees with an independent re-encoder.
-
-    asn1crypto's ``dump(force=True)`` re-encodes the whole parsed tree (about
-    100 ms per receipt, too slow for the byte-flip gate). The linear re-encoding
-    of check 1c must reach the same verdict on every committed receipt except
-    the documented ones in ``EXPECTED_DIVERGENCE``; for those, the whole check
-    1/2 pipeline must still reach the vector's conclusion (control accepted,
-    every other one rejected with E_TS_SCHEMA).
-    """
-    data = receipt.read_bytes()
-    case = receipt.parts[receipt.parts.index("container") - 1]
-    ours = _outcome(timestamps._der_reencode, data)
-    theirs = _outcome(lambda value: value.dump(force=True), data)
-    if case not in EXPECTED_DIVERGENCE:
-        assert ours == theirs
-        return
-    assert ours == "equal"
-    assert theirs != "equal"
-    if case.endswith("sorted-control"):
-        timestamps._parse_tst_info(data)
-    else:
-        with pytest.raises(WeaveError) as raised:
-            timestamps._parse_tst_info(data)
-        assert raised.value.code == "E_TS_SCHEMA"
 
 
 def test_sorted_open_type_set_is_not_rejected() -> None:
     """A universal SET of unknown type in ascending order passes check 1."""
     raw = (L2_VALID / "container" / "signatures" / "timestamp-1.tsr").read_bytes()
-    response = tsp.TimeStampResp.load(raw, strict=True)
-    assert timestamps._der_reencode(response) == raw
+    assert der_schema.reencode(der_schema.TIME_STAMP_RESP, raw)[0] == raw
     timestamps._validate_strict_der(bytes.fromhex("3106020101020102"))
     with pytest.raises(Exception):
         timestamps._validate_strict_der(bytes.fromhex("3106020102020101"))

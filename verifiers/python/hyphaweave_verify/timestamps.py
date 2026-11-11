@@ -54,9 +54,13 @@ from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
+from . import der_schema, operator_input
 from .errors import UsageError, WeaveError
 
 MAX_TIMESTAMP_BYTES = 1_048_576
+
+#: Internal strict-DER violation marker (check 1a scan and the 1b/1c walk).
+_DerViolation = der_schema.DerViolation
 
 #: U1 exception audit: asn1crypto DER parsing/access on untrusted bytes raises
 #: these built-in exception types only (no bare ``Exception`` catch remains).
@@ -212,13 +216,13 @@ def parse_trust_anchors(pem_bytes: bytes) -> frozenset[bytes]:
 
 
 def load_trust_anchor_file(path: Path) -> bytes:
-    """Read and validate a ``--tsa-trust`` file; usage error names the file (W4)."""
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise UsageError(
-            "--tsa-trust %s cannot be read: %s" % (path, error.strerror or error)
-        ) from error
+    """Read and validate a ``--tsa-trust`` file; usage error names the file (W4).
+
+    X3/§14.1: the path must be a regular file (``lstat`` before opening, so a
+    FIFO never blocks the verifier) and is read with the bound
+    ``MAX_TIMESTAMP_BYTES``; anything else is a usage error.
+    """
+    data = operator_input.read_bounded_file(path, "--tsa-trust", MAX_TIMESTAMP_BYTES)
     try:
         parse_trust_anchors(data)
     except UsageError as error:
@@ -515,14 +519,13 @@ def _parse_tst_info(tsr_bytes: bytes):
     as a later check's code (W6, recheck3 M2):
 
     1a. the linear strict-DER scan of the whole file (exactly one TLV, no
-        trailing data, definite minimal lengths, canonical universal
-        primitives, sorted universal SET OF);
-    1b. the schema decode of the whole ``TimeStampResp`` (``strict=True``);
-    1c. the **DER re-encoding** of the whole parsed ``TimeStampResp`` must equal
-        the input bytes exactly (W3): asn1crypto's forced re-encoding sorts
-        every SET OF at every level (``digestAlgorithms``, ``certificates``,
-        ``crls``, ``signedAttrs``, ``unsignedAttrs``, every ``attrValues``),
-        omits DEFAULT values and re-derives every length;
+        trailing data, definite minimal lengths, minimal high tag numbers,
+        canonical universal primitives, sorted universal SET OF);
+    1b/1c. the walk of :mod:`.der_schema`: the whole file decodes against the
+        hand-written RFC 3161 / 5652 / 5280 / 5035 module definitions, and its
+        DER re-encoding (SET OF sorted, no DEFAULT encoded, typed primitives
+        rebuilt by X.690, open types re-emitted as decoded) equals the input;
+        no parsing library takes part in this judgement (S1-FIX5 X1);
     1d. ``PKIStatusInfo.status`` is granted; the token is CMS ``SignedData``;
         ``SignedData.version`` is 3; every ``SignerInfo.version`` is 1 or 3;
     1e. every certificate carried in ``SignedData.certificates`` decodes as an
@@ -534,13 +537,14 @@ def _parse_tst_info(tsr_bytes: bytes):
     """
     # Check 1a.
     _validate_strict_der(tsr_bytes)
-    # Check 1b.
+    # Checks 1b and 1c: schema decode and DER re-encoding (X1).
+    walk = _require_der_reencoding(der_schema.TIME_STAMP_RESP, tsr_bytes, "TimeStampResp")
+    # The values read by the later checks come from asn1crypto; it is only a
+    # reader here (the DER judgement above did not consult it).
     try:
         response = tsp.TimeStampResp.load(tsr_bytes, strict=True)
     except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "not a DER TimeStampResp") from error
-    # Check 1c: true DER re-encoding of the whole parsed object (W3).
-    _require_der_reencoding(response, tsr_bytes, "TimeStampResp")
     # Check 1d.
     try:
         status = response["status"]["status"].native
@@ -575,12 +579,11 @@ def _parse_tst_info(tsr_bytes: bytes):
                 continue
             certificate = certificate_choice.chosen
             _load_der_certificate(certificate.dump())
-            # An extension value is itself the DER encoding of the extension
-            # (RFC 5280 §4.1): it is one TLV obeying the universal rules of 1a.
-            extensions = certificate["tbs_certificate"]["extensions"]
-            if not isinstance(extensions, _asn1_core.Void):
-                for extension in extensions:
-                    _validate_strict_der(extension["extn_value"].contents)
+    # An extension value is itself the DER encoding of the extension (RFC 5280
+    # §4.1): it is one TLV obeying the universal rules of 1a. The values were
+    # collected by the 1b/1c walk from every carried certificate.
+    for extension_value in walk.certificate_extension_values:
+        _validate_strict_der(extension_value)
     # Check 2.
     encap = signed_data["encap_content_info"]
     if encap["content_type"].native != "tst_info":
@@ -589,12 +592,15 @@ def _parse_tst_info(tsr_bytes: bytes):
     try:
         raw_content = content.contents
         _validate_strict_der(raw_content)
-        tst_info = tsp.TSTInfo.load(raw_content, strict=True)
     except WeaveError:
         raise
     except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "malformed TSTInfo") from error
-    _require_der_reencoding(tst_info, raw_content, "TSTInfo")
+    _require_der_reencoding(der_schema.TST_INFO, raw_content, "TSTInfo")
+    try:
+        tst_info = tsp.TSTInfo.load(raw_content, strict=True)
+    except _DER_ACCESS_ERRORS as error:
+        raise WeaveError("E_TS_SCHEMA", "malformed TSTInfo") from error
     try:
         version = tst_info["version"].native
     except _DER_ACCESS_ERRORS as error:
@@ -616,21 +622,20 @@ def _load_der_certificate(der: bytes):
         return cryptography_x509.load_der_x509_certificate(der)
 
 
-def _require_der_reencoding(value, data: bytes, label: str) -> None:
-    """W3/§12.2 check 1c: re-encoding the parsed object yields the input exactly.
+def _require_der_reencoding(schema, data: bytes, label: str) -> der_schema.WalkContext:
+    """§12.2 checks 1b/1c: decode against the module definitions, re-encode, compare.
 
-    This is a real DER re-encoding of the parsed schema tree
-    (:func:`_der_reencode`), not a scan: every SET OF at every level is
-    re-emitted in ascending DER order (X.690 §11.6), a DEFAULT value is omitted
-    (§11.5), every header is rebuilt with the minimal definite length, and every
-    typed primitive is rebuilt from its decoded value. The result is compared
-    with the input bytes; any difference is check 1's ``E_TS_SCHEMA``. Decoding
-    errors raised while building the lazy children are parsing-class
-    exceptions caught by the per-receipt boundary (still check 1).
+    The walk (:mod:`.der_schema`) uses only X.690 and the RFC 3161 / 5652 / 5280
+    / 5035 module definitions -- no parsing library: SET OF components are
+    re-emitted in DER order, a component equal to its DEFAULT (the encodings in
+    ``der_schema.DEFAULTS``) is a violation, typed primitives are rebuilt from
+    their content octets by the X.690 rules for their type, time values are
+    compared as their raw DER form, and open-type values are re-emitted as
+    decoded. Any difference from the input is check 1's ``E_TS_SCHEMA``.
     """
     try:
-        encoded = _der_reencode(value)
-    except _DerViolation as error:
+        encoded, context = der_schema.reencode(schema, data)
+    except der_schema.DerViolation as error:
         raise WeaveError(
             "E_TS_SCHEMA", "%s is not DER: %s" % (label, error)
         ) from error
@@ -638,113 +643,7 @@ def _require_der_reencoding(value, data: bytes, label: str) -> None:
         raise WeaveError(
             "E_TS_SCHEMA", "%s is not in DER canonical form (re-encoding differs)" % label
         )
-
-
-#: Default-value encodings per (structure class, field index), computed once.
-_DER_DEFAULT_ENCODINGS: dict[tuple[type, int], bytes] = {}
-
-
-def _der_reencode(value) -> bytes:
-    """Re-encode a parsed asn1crypto value as DER from its schema (W3).
-
-    Linear in the size of the tree (asn1crypto's own ``dump(force=True)``
-    re-derives nested contents repeatedly and costs ~100 ms per receipt, which
-    the byte-flip gate cannot afford for every flipped byte). Rules:
-
-    * ``Sequence``: fields in schema order; an absent OPTIONAL field emits
-      nothing; a field whose encoding equals its DEFAULT value is omitted;
-    * ``SequenceOf``: components in order; ``SetOf``: components sorted by their
-      encodings (X.690 §11.6);
-    * ``Choice``: the chosen alternative plus the choice's explicit tags;
-    * OCTET STRING / octet-aligned BIT STRING: the content octets as decoded
-      (their content is opaque here; the TSTInfo eContent is re-encoded on its
-      own, check 2), and a constructed string encoding is not DER;
-    * every other typed primitive: rebuilt from its decoded value;
-    * ``Any`` (an open type whose schema is unknown here, such as the value of
-      an unregistered attribute): re-emitted as decoded; its encoding was
-      checked against the universal DER rules by the scan of check 1a.
-    """
-    if isinstance(value, _asn1_core.Void):
-        return b""
-    if isinstance(value, _asn1_core.Any):
-        return value.dump()
-    if isinstance(value, _asn1_core.Choice):
-        return _der_explicit(value, _der_reencode(value.chosen))
-    if isinstance(value, _asn1_core.Set):
-        # A SET (not SET OF) with named fields never occurs in the receipt
-        # schemas outside opaque extension values; refuse rather than guess.
-        raise _DerViolation("unexpected SET with named fields")
-    if isinstance(value, _asn1_core.Sequence):
-        if value.children is None:
-            value._parse_children()
-        parts = []
-        for index, field_info in enumerate(value._fields):
-            encoded = _der_reencode(value._lazy_child(index))
-            params = field_info[2] if len(field_info) > 2 else None
-            if params and "default" in params:
-                key = (type(value), index)
-                default = _DER_DEFAULT_ENCODINGS.get(key)
-                if default is None:
-                    default = field_info[1](**params).dump()
-                    _DER_DEFAULT_ENCODINGS[key] = default
-                if encoded == default:
-                    continue
-            parts.append(encoded)
-        return _der_wrap(value, b"".join(parts), constructed=True)
-    if isinstance(value, _asn1_core.SequenceOf):
-        components = [_der_reencode(child) for child in value]
-        if isinstance(value, _asn1_core.SetOf):
-            components.sort()
-        return _der_wrap(value, b"".join(components), constructed=True)
-    if isinstance(
-        value,
-        (_asn1_core.OctetString, _asn1_core.ParsableOctetString, _asn1_core.OctetBitString),
-    ):
-        if value.method != 0:
-            raise _DerViolation("constructed string encoding is not DER")
-        return _der_wrap(value, value.contents or b"", constructed=False)
-    if isinstance(value, _asn1_core.Constructable) and value.method != 0:
-        raise _DerViolation("constructed string encoding is not DER")
-    if isinstance(value, _asn1_core.Primitive):
-        return value.dump(force=True)
-    raise _DerViolation("unexpected ASN.1 value type %s" % type(value).__name__)
-
-
-def _der_identifier(class_: int, constructed: bool, tag: int) -> bytes:
-    first = (class_ << 6) | (0x20 if constructed else 0)
-    if tag < 31:
-        return bytes([first | tag])
-    groups = []
-    while True:
-        groups.append(tag & 0x7F)
-        tag >>= 7
-        if not tag:
-            break
-    encoded = [group | 0x80 for group in reversed(groups[1:])] + [groups[0]]
-    return bytes([first | 0x1F]) + bytes(encoded)
-
-
-def _der_length(length: int) -> bytes:
-    if length < 0x80:
-        return bytes([length])
-    raw = length.to_bytes((length.bit_length() + 7) // 8, "big")
-    return bytes([0x80 | len(raw)]) + raw
-
-
-def _der_explicit(value, inner: bytes) -> bytes:
-    """Apply a value's explicit tags (innermost first, as asn1crypto stores them)."""
-    for class_, tag in value.explicit or ():
-        inner = _der_identifier(class_, True, tag) + _der_length(len(inner)) + inner
-    return inner
-
-
-def _der_wrap(value, contents: bytes, *, constructed: bool) -> bytes:
-    encoded = (
-        _der_identifier(value.class_, constructed, value.tag)
-        + _der_length(len(contents))
-        + contents
-    )
-    return _der_explicit(value, encoded)
+    return context
 
 
 # ---------------------------------------------------------------------------
@@ -793,9 +692,6 @@ def _scan_tlv_end(data: bytes, position: int, end: int) -> int:
         raise WeaveError("E_TS_SCHEMA", "receipt is not strict DER: %s" % error) from error
 
 
-class _DerViolation(ValueError):
-    """Internal strict-DER violation marker."""
-
 
 def _scan_der(data: bytes, start: int, end: int, depth: int) -> None:
     if depth > 64:
@@ -812,6 +708,10 @@ def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
     constructed = bool(first & 0x20)
     tag_number = first & 0x1F
     if tag_number == 0x1F:
+        # X.690 §8.1.2.4: base 128, bit 8 set on every subsequent octet but the
+        # last, and bits 7-1 of the *first* subsequent octet not all zero. Only
+        # the first subsequent octet can make the form non-minimal; a zero group
+        # later on (5f 81 80 00 = 16384) is part of a minimal encoding.
         tag_number = 0
         count = 0
         while True:
@@ -820,14 +720,16 @@ def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
             byte = data[position]
             position += 1
             count += 1
-            if count > 5:
-                raise _DerViolation("high-tag-number form is too long")
-            if count > 1 and position - 2 >= 0 and data[position - 2] == 0x80:
+            if count == 1 and byte == 0x80:
                 raise _DerViolation("non-minimal high-tag-number form")
-            tag_number = (tag_number << 7) | (byte & 0x7F)
+            if count <= 5:
+                # Bounded accumulation: only "below 31" and the universal type
+                # numbers matter here, and two or more octets are always >= 128.
+                tag_number = (tag_number << 7) | (byte & 0x7F)
             if not byte & 0x80:
                 break
         if tag_number < 0x1F:
+            # X.690 §8.1.2.2/8.1.2.4: tag numbers 0-30 use the single-octet form.
             raise _DerViolation("high-tag-number form for a low tag")
     if position >= end:
         raise _DerViolation("missing length")
