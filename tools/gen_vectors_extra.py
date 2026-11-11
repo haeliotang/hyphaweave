@@ -9029,8 +9029,10 @@ def _der_encode(node: _DerNode) -> bytes:
         body = node.content if node.content is not None else b""
     else:
         body = b"".join(_der_encode(child) for child in node.children)
+    # A node built by hand may carry a multi-octet identifier (high tag number).
+    identifier = node.tag if isinstance(node.tag, bytes) else bytes([node.tag])
     return (
-        bytes([node.tag])
+        identifier
         + _der_encode_length(len(body), force_long=node.force_long)
         + body
     )
@@ -9587,6 +9589,55 @@ declare(
     "(L_KEY_TRUST_TOFU) but the link fails with E_MANIFEST_CHAIN.",
 )
 
+_W1_INVALID_ROT_X = "x5-invalid-rotation-x"
+_W1_INVALID_ROT_Y = "x5-invalid-rotation-y"
+
+
+def _x5_invalid_rotation_files() -> dict[str, bytes]:
+    """Previous signed by X; the target's only X material is an invalid rotation X->Y."""
+    previous = _w1_build(
+        [recordlib.key_declaration("human-2")], ("derived", _W1_INVALID_ROT_X),
+        created_at=recordlib.T1,
+    )
+    rotation = _w1_device_rotation(
+        _W1_INVALID_ROT_X, _W1_INVALID_ROT_Y, "key-rotated-x5-invalid", recorded_at=recordlib.T3
+    )
+    _old_private, _old_public, old_id = derived_key(_W1_INVALID_ROT_X)
+    # Drop the old key's signature: only the new key signs (§9.2, E_KEY_ROTATION_SIGS).
+    rotation["sigs"] = [entry for entry in rotation["sigs"] if entry["key"] != old_id]
+    target = _w1_build(
+        [recordlib.key_declaration("human-1"), rotation], ("keyset", "human-1"),
+        created_at=recordlib.T5, previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-invalid-rotation-supplies-no-material",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_ROTATION_SIGS", "E_MANIFEST_CHAIN"),
+    build=lambda case_dir: _x5_invalid_rotation_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED,
+    records=(
+        {"id": "key-declared-human-1", "verdict": "valid", "errors": []},
+        {"id": "key-rotated-x5-invalid", "verdict": "invalid", "errors": ["E_KEY_ROTATION_SIGS"]},
+    ),
+    notes="S1-FIX5 X5 (§11.5 rule 1, §5.3; decision 2026-11-12 #1): the previous "
+    "manifest is signed by key X, and the only record of the target that lists X's "
+    "public key is a rotation X->Y signed by Y alone, which is invalid "
+    "(E_KEY_ROTATION_SIGS). An invalid rotation record supplies no key material, so X "
+    "is not a required key of the target context: the link fails with "
+    "E_MANIFEST_CHAIN, and since no equation was verified with context material "
+    "there is no L_KEY_TRUST_TOFU (the target manifest itself is signed by the "
+    "keyset root human-1).",
+)
+
+
 _W1_REVOKED = "w1-retired-device"
 
 
@@ -9650,9 +9701,15 @@ declare(
 _W1_COMPROMISED = "w1-compromised-device"
 
 
-def _w1_compromised_files() -> dict[str, bytes]:
+def _w1_compromised_files(*, previous_created_at: str = recordlib.EARLY) -> dict[str, bytes]:
+    """Target L2 (receipt genTime T0 rescues the device key); compromise at T1.
+
+    Only the previous manifest's ``created_at`` varies between the X2 cases.
+    """
     declaration = _w1_device_declaration(_W1_COMPROMISED, "key-declared-w1-compromised-device")
-    previous = _w1_build([declaration], ("derived", _W1_COMPROMISED), created_at=recordlib.EARLY)
+    previous = _w1_build(
+        [declaration], ("derived", _W1_COMPROMISED), created_at=previous_created_at
+    )
     revocation = _w1_revocation(
         _W1_COMPROMISED, reason="key-compromise", effective_at=recordlib.T1,
         record_id="key-revoked-w1-compromised-device",
@@ -9678,31 +9735,69 @@ def _w1_compromised_files() -> dict[str, bytes]:
     return result
 
 
+_X2_RECORDS = (
+    {"id": "key-declared-w1-compromised-device", "verdict": "valid", "errors": []},
+    {"id": "key-revoked-w1-compromised-device", "verdict": "valid", "errors": []},
+)
+
 declare(
     "container",
     "previous-signing-key-compromised-after-previous",
     "container",
     "container",
-    "invalid",
-    errors=("E_MANIFEST_CHAIN",),
+    "valid",
     build=lambda case_dir: _w1_compromised_files(),
     args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME, "--previous", "previous-container"),
-    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
-    limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED"),
-    expected_container={"level_claimed": "L2", "anchor_verified": False, "timestamps": []},
-    records=(
-        {"id": "key-declared-w1-compromised-device", "verdict": "valid", "errors": []},
-        {"id": "key-revoked-w1-compromised-device", "verdict": "valid", "errors": []},
+    notices_absent=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=(
+        "L_CHAIN_CLAIM_UNVERIFIED", "L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT",
+        "L_PREVIOUS_CONTENT_UNVERIFIED",
     ),
-    notes="S1-FIX4 W1/§11.5 rule 3 (docs/open-questions.md §6 entry 24) and W5: the "
-    "target is an L2 container whose trusted receipt (genTime T0) rescues the device "
-    "declaration from a key-compromise revocation effective at T1, so both records "
-    "are valid. The previous manifest, signed by the compromised key, claims "
-    "created_at 2025-01-01, before T1; but no timestamp evidence is read from the "
-    "previous container, so §9.4 case 3 applies and the link fails with "
-    "E_MANIFEST_CHAIN. The pipeline stops at step (10): the timestamp phase does "
-    "not run, so container.timestamps is [] and anchor_verified is false.",
+    expected_container=dict(level_claimed="L2", **L2_ANCHOR),
+    records=_X2_RECORDS,
+    notes="S1-FIX4 W1 / S1-FIX5 X2 (§11.5 rule 3; docs/open-questions.md §6 entry 24, "
+    "decision 2026-11-12 #1): the target is an L2 container whose trusted receipt "
+    "(genTime T0) rescues the device declaration from a key-compromise revocation "
+    "effective at T1, so both records are valid. The previous manifest, signed by the "
+    "compromised key, has created_at 2025-01-01, before T1. On the previous link a "
+    "key-compromise revocation is judged like a retired one, against the previous "
+    "created_at: its digest is already pinned by the target's trusted signature, so a "
+    "compromise that takes effect later does not reach back into the link. The link "
+    "holds (L_PREVIOUS_CONTENT_UNVERIFIED; the equation used context material, "
+    "L_KEY_TRUST_TOFU), the timestamp phase runs and the receipt is verified: valid (a claimed L2 chain is never recomputed offline: L_CHAIN_CLAIM_UNVERIFIED).",
 )
+
+for _name, _created_at, _relation in (
+    ("previous-signing-key-compromised-at-previous", recordlib.T1,
+     "equals the compromise time T1"),
+    ("previous-signing-key-compromised-before-previous", recordlib.T2,
+     "is T2, after the compromise time T1"),
+):
+    declare(
+        "container",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_CHAIN",),
+        build=lambda case_dir, _created_at=_created_at: _w1_compromised_files(
+            previous_created_at=_created_at
+        ),
+        args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME, "--previous", "previous-container"),
+        notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+        limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED"),
+        expected_container={"level_claimed": "L2", "anchor_verified": False, "timestamps": []},
+        records=_X2_RECORDS,
+        notes="S1-FIX5 X2 (§11.5 rule 3; docs/open-questions.md §6 entry 24, decision "
+        "2026-11-12 #1): the same target as previous-signing-key-compromised-after-"
+        "previous (its receipt rescues both records), but the previous manifest's "
+        "created_at " + _relation + ". On the previous link a key-compromise "
+        "revocation is judged against the previous created_at exactly like a retired "
+        "one: created_at >= T breaks the link, E_MANIFEST_CHAIN (the equation itself "
+        "verified with context material: L_KEY_TRUST_TOFU). The pipeline stops at step "
+        "(10): container.timestamps is [] and anchor_verified is false.",
+    )
+
 
 # ---------------------------------------------------------------------------
 # S1-FIX4 W2: §11.9 rule 4 applies to every entry of a supplied previous zip
@@ -10459,6 +10554,193 @@ for _name, _mutation, _why in (
         + ". The receipt is invalid with E_TS_SCHEMA and gen_time null.",
         **_W3_SCHEMA_EXPECTED,
     )
+
+# ---------------------------------------------------------------------------
+# S1-FIX5 X1: check 1c follows X.690 and the module definitions only
+# (decision 2026-11-12 #1). Every positive receipt here is fully re-signed with
+# the published test TSA key: messageDigest is recomputed over the (possibly
+# edited) eContent and the signature over DER(SET OF signedAttrs) is renewed.
+# ---------------------------------------------------------------------------
+
+_X1_MESSAGE_DIGEST_OID = _w3_oid("1.2.840.113549.1.9.4").content
+_X1_SIGNING_CERTIFICATE_V2_OID = _w3_oid("1.2.840.113549.1.9.16.2.47").content
+
+
+def _x1_resign(tree: _DerNode) -> None:
+    """Recompute messageDigest and re-sign the signed attributes in place."""
+    signed_data = _w3_signed_data(tree)
+    econtent = signed_data.children[2].children[1].children[0]
+    signer_info = _w3_signer_info(tree)
+    position = next(
+        index for index, child in enumerate(signer_info.children) if child.tag == 0xA0
+    )
+    signed_attrs = signer_info.children[position]
+    for attribute in signed_attrs.children:
+        if attribute.children[0].content == _X1_MESSAGE_DIGEST_OID:
+            attribute.children[1].children[0].content = _sha256_bytes(econtent.content)
+    signed_attrs.children = sorted(signed_attrs.children, key=_der_encode)
+    to_be_signed = _der_encode(_DerNode(0x31, None, signed_attrs.children))
+    signature = next(
+        child for child in signer_info.children[position + 1 :] if child.tag == 0x04
+    )
+    signature.content = _tsa_private_key().sign(
+        to_be_signed, crypto_padding.PKCS1v15(), crypto_hashes.SHA256()
+    )
+
+
+def _x1_resigned(mutate_tree: Callable[[_DerNode], None]) -> Callable[[bytes], bytes]:
+    def mutation(data: bytes) -> bytes:
+        tree = _der_tree(data)
+        mutate_tree(tree)
+        _x1_resign(tree)
+        return _der_encode(tree)
+
+    return mutation
+
+
+def _x1_ess_hash_algorithm(with_null: bool) -> Callable[[_DerNode], None]:
+    """Write ESSCertIDv2.hashAlgorithm explicitly: {sha256, NULL} or {sha256}."""
+
+    def edit(tree: _DerNode) -> None:
+        signed_attrs = next(
+            child for child in _w3_signer_info(tree).children if child.tag == 0xA0
+        )
+        attribute = next(
+            child
+            for child in signed_attrs.children
+            if child.children[0].content == _X1_SIGNING_CERTIFICATE_V2_OID
+        )
+        ess_cert_id = attribute.children[1].children[0].children[0].children[0]
+        if ess_cert_id.children[0].tag != 0x04:
+            raise SystemExit("ESSCertIDv2 already carries a hashAlgorithm")
+        algorithm = [_w3_oid("2.16.840.1.101.3.4.2.1")]
+        if with_null:
+            algorithm.append(_w3_node(0x05, content=b""))
+        ess_cert_id.children.insert(0, _w3_node(0x30, children=algorithm))
+
+    return edit
+
+
+def _x1_gen_time(text: bytes) -> Callable[[_DerNode], None]:
+    def edit(tree: _DerNode) -> None:
+        def set_gen_time(tst_info: _DerNode) -> None:
+            gen_time = tst_info.children[4]
+            if gen_time.tag != 0x18 or gen_time.content != b"20261101000000Z":
+                raise SystemExit("unexpected TSTInfo genTime encoding")
+            gen_time.content = text
+
+        _w3_tst_info_edit(tree, set_gen_time)
+
+    return edit
+
+
+def _x1_unsigned_value(identifier: bytes, content: bytes) -> Callable[[_DerNode], None]:
+    """One unregistered unsigned attribute whose single value has this identifier."""
+
+    def edit(tree: _DerNode) -> None:
+        value = _DerNode(identifier, content, None)
+        _w3_unsigned_attrs(tree, [_w3_attribute("1.2.3.4.8.5", [value])])
+
+    return edit
+
+
+_X1_VALID_EXPECTED = dict(
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+)
+
+for _name, _edit, _gen_time, _why in (
+    ("l2-ts-der-ess-hash-algorithm-sha256-null", _x1_ess_hash_algorithm(True),
+     "2026-11-01T00:00:00.000Z",
+     "the ESS signingCertificateV2 ESSCertIDv2 writes hashAlgorithm {id-sha256, NULL} "
+     "explicitly. The DEFAULT of that component (RFC 5035) is {algorithm id-sha256} "
+     "with no parameters, encoded 30 0b 06 09 60 86 48 01 65 03 04 02 01; "
+     "{id-sha256, NULL} is a different value, so DER must encode it"),
+    ("l2-ts-der-unsigned-attr-context-tag-value", _x1_unsigned_value(b"\x80", b"\x01"),
+     "2026-11-01T00:00:00.000Z",
+     "an unregistered unsigned attribute carries one value encoded 80 01 01 (a "
+     "context-specific [0] primitive). The value of an attribute type the verifier "
+     "does not decode is an open type: only its TLV framing is judged (1a), it is "
+     "never handed to a type decoder"),
+    ("l2-ts-der-unsigned-attr-application-200-value",
+     _x1_unsigned_value(b"\x5f\x81\x48", b"\x01"),
+     "2026-11-01T00:00:00.000Z",
+     "an unregistered unsigned attribute carries one value encoded 5f 81 48 01 01 "
+     "([APPLICATION 200], high-tag-number form). The open-type value is judged by "
+     "its TLV framing only"),
+    ("l2-ts-der-high-tag-number-inner-zero-group",
+     _x1_unsigned_value(b"\x5f\x81\x80\x00", b"\x01"),
+     "2026-11-01T00:00:00.000Z",
+     "an unregistered unsigned attribute carries one value encoded 5f 81 80 00 01 01: "
+     "[APPLICATION 16384] in its minimal high-tag-number form. X.690 §8.1.2.4 only "
+     "forbids 0x80 as the first subsequent octet; the inner 0x80 and 0x00 groups are "
+     "part of the minimal base-128 form"),
+    ("l2-ts-der-gentime-seven-fraction-digits", _x1_gen_time(b"20261101000000.1234567Z"),
+     "2026-11-01T00:00:00.123Z",
+     "the TSTInfo genTime is 20261101000000.1234567Z. X.690 §11.7 limits neither "
+     "the number of fractional digits nor requires fewer; the time is compared as its "
+     "raw DER form, never through a time object. gen_time floors to milliseconds "
+     "(check 13): 00.123"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "valid",
+        build=lambda case_dir, _edit=_edit: _crafted_l2_files(
+            case_dir, tsr_factory=lambda imprint: _x1_resigned(_edit)(_crafted_tsr(imprint))
+        ),
+        expected_container={
+            "level_claimed": "L2",
+            "level_verified": "L0",
+            "anchor_verified": True,
+            "timestamps": [
+                {
+                    "index": 0,
+                    "path": "signatures/timestamp-1.tsr",
+                    "state": "verified",
+                    "gen_time": _gen_time,
+                }
+            ],
+        },
+        notes="S1-FIX5 X1/§12.2 check 1c: "
+        + _why
+        + ". The receipt is fully re-signed with the test TSA key (messageDigest "
+        "recomputed, signature over the signed attributes renewed), so it is strict "
+        "DER, the CMS signature verifies and the container is valid.",
+        **_X1_VALID_EXPECTED,
+    )
+
+for _name, _edit, _why in (
+    ("l2-ts-der-ess-hash-algorithm-default-encoded", _x1_ess_hash_algorithm(False),
+     "the ESSCertIDv2 writes hashAlgorithm {algorithm id-sha256} explicitly, which is "
+     "exactly its DEFAULT value (RFC 5035), so DER omits it (X.690 §11.5)"),
+    ("l2-ts-der-gentime-fraction-trailing-zero", _x1_gen_time(b"20261101000000.1230Z"),
+     "the TSTInfo genTime is 20261101000000.1230Z; X.690 §11.7.3 omits trailing "
+     "fractional zeros"),
+    ("l2-ts-der-high-tag-number-nonminimal",
+     _x1_unsigned_value(b"\x5f\x80\x81\x48", b"\x01"),
+     "an unregistered unsigned attribute carries a value whose identifier 5f 80 81 48 "
+     "starts its high-tag-number form with the octet 0x80, which X.690 §8.1.2.4.2 "
+     "forbids (a non-minimal tag number)"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        build=lambda case_dir, _edit=_edit: _crafted_l2_files(
+            case_dir, tsr_factory=lambda imprint: _x1_resigned(_edit)(_crafted_tsr(imprint))
+        ),
+        notes="S1-FIX5 X1/§12.2 check 1: "
+        + _why
+        + ". The receipt is otherwise fully re-signed with the test TSA key, so the "
+        "only defect is the DER rule: invalid with E_TS_SCHEMA and gen_time null.",
+        **_W3_SCHEMA_EXPECTED,
+    )
+
 
 _W6_EC_CERT: dict[str, bytes] = {}
 
