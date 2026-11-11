@@ -9964,6 +9964,15 @@ def _w7_archive(variant: str) -> bytes:
         struct.pack_into("<H", archive, len(archive) - 2, len(comment))
         archive += comment
     elif variant == "prefix":
+        # One leading byte with every offset shifted to match (the shape of a
+        # self-extracting stub): the central directory still parses, so only
+        # the phase-1 rule "a non-empty archive starts with a local header at
+        # offset 0" rejects it.
+        for central in _w2_central_offsets(bytes(archive)):
+            local = struct.unpack_from("<I", archive, central + 42)[0]
+            struct.pack_into("<I", archive, central + 42, local + 1)
+        cd_offset = struct.unpack_from("<I", archive, len(archive) - 6)[0]
+        struct.pack_into("<I", archive, len(archive) - 6, cd_offset + 1)
         archive = bytearray(b"\x00") + archive
     else:  # pragma: no cover - defensive
         raise SystemExit("unknown W7 variant %r" % (variant,))
@@ -9976,7 +9985,7 @@ for _variant, _code, _what in (
     ("method", "E_CONTAINER_SIZE", "the first central-directory record names compression method 99 (a phase-4 rule)"),
     ("comment", "E_CONTAINER_SIZE", "the end-of-central-directory record carries a non-empty archive comment (a phase-4 rule)"),
     ("directory-with-data", "E_CONTAINER_SIZE", "an entry named readable/ (a directory name) carries data (rule 4, a phase-4 rule)"),
-    ("prefix", "E_CONTAINER_ZIP", "one byte precedes the first local file header, so the archive fails phase 1 (locating the end of central directory) before the limits are reached"),
+    ("prefix", "E_CONTAINER_ZIP", "one byte precedes the first local file header while every offset is shifted to match, so the central directory parses but the archive fails phase 1 (a non-empty archive starts with a local header at offset 0) before the limits are reached"),
 ):
     declare(
         "container",
