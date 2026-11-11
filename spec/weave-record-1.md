@@ -2437,10 +2437,24 @@ structure failure anywhere in the receipt is never reported under a later check'
   - UTCTime and GeneralizedTime values are compared as their **raw content** in the DER
     form of 1a, never through a time value: any number of fractional digits is kept as
     encoded;
+  - the `parameters` of the signer's `SignerInfo.digestAlgorithm` and
+    `SignerInfo.signatureAlgorithm` have exactly the form fixed for the algorithm; any other
+    form (including another well-framed value) is a violation of this check (`E_TS_SCHEMA`)
+    [X6] decided (Inceptless decision 2026-11-12 #2; X6):
+
+    | field | algorithms (OBJECT IDENTIFIER) | permitted `parameters` | source |
+    |---|---|---|---|
+    | `digestAlgorithm` | SHA-2: `id-sha224` (2.16.840.1.101.3.4.2.4), `id-sha256` (…2.1), `id-sha384` (…2.2), `id-sha512` (…2.3) | absent, or `NULL` (`05 00`) | RFC 5754 §2 |
+    | `signatureAlgorithm` | RSA PKCS#1 v1.5: `rsaEncryption` (1.2.840.113549.1.1.1), `sha224WithRSAEncryption` (…1.14), `sha256WithRSAEncryption` (…1.11), `sha384WithRSAEncryption` (…1.12), `sha512WithRSAEncryption` (…1.13) | `NULL` (`05 00`) only | RFC 3370 §3.2, RFC 4055 §5, RFC 8017 Appendix A.2.4 |
+    | `signatureAlgorithm` | ECDSA: `ecdsa-with-SHA224` (1.2.840.10045.4.3.1), `ecdsa-with-SHA256` (…3.2), `ecdsa-with-SHA384` (…3.3), `ecdsa-with-SHA512` (…3.4) | absent only | RFC 5758 §3.2 |
+
+    The parameters of an algorithm not in this table are an open type (below); checks 5
+    and 6 then reject such an algorithm;
   - a value of an **open type** is re-emitted exactly as decoded: only its framing — tag,
     length and nesting, with the universal rules of 1a — is judged, and it is never handed
     to a type decoder, whatever its tag class. The open types of this schema are
-    `AlgorithmIdentifier.parameters`; `AttributeTypeAndValue.value`; the values of every
+    `AlgorithmIdentifier.parameters` (except those of the signer's `digestAlgorithm` and
+    `signatureAlgorithm` for an algorithm of the table above); `AttributeTypeAndValue.value`; the values of every
     attribute (signed or unsigned) whose type is not `id-contentType`
     (1.2.840.113549.1.9.3, decoded as an OBJECT IDENTIFIER), `id-messageDigest`
     (1.2.840.113549.1.9.4, an OCTET STRING) or `id-aa-signingCertificateV2`
@@ -3445,7 +3459,8 @@ and are normative at the locations given.
 | W8, W9, W11 | gate and vector coverage (byte-flip `.tsr` exemptions, V3 core checks pinned by vectors, crash-fuzz seeds) are tooling, not format rules | outside this document (tools, vectors) |
 | W10 | every `ed25519` attestation entry is judged (multi-signature attestation); keyset entry names and non-regular entries; wording of `--previous` | §11.3, §14.1 |
 
-The following rows are fixed by Inceptless decision **2026-11-12 #1** (S1-FIX5, X1–X5)
+The following rows are fixed by Inceptless decision **2026-11-12 #1** (S1-FIX5, X1–X5;
+row X6 by decision 2026-11-12 #2)
 and are normative at the locations given. They amend the W1 and W3 rows above where they
 differ.
 
@@ -3456,6 +3471,7 @@ differ.
 | X3 | operator paths are examined with `lstat` before opening; a FIFO, device or socket is a usage error; `--tsa-trust` is read with the bound `MAX_TIMESTAMP_BYTES` | §14.1 |
 | X4 | gate coverage (the independent DER judge) is tooling, not a format rule | outside this document (tools) |
 | X5 | §11.5 rules 1–2 wording (an invalid rotation record supplies no key material; keyset declarations trusted through their owner); documentation | §11.5 |
+| X6 | the `parameters` of the signer's `digestAlgorithm` (SHA-2: absent or `NULL`) and `signatureAlgorithm` (RSA PKCS#1 v1.5: `NULL`; ECDSA: absent) have a fixed form; any other form is `E_TS_SCHEMA` (decision 2026-11-12 #2) | §12.2, registry |
 
 ### A.2 PROVISIONAL implementation shapes
 

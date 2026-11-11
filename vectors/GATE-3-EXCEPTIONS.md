@@ -80,16 +80,16 @@ A container may also contain a **symlink** member (for example
 out of the container: the link target string is not verifier input in any
 checked path, so the `symlink-entry` exemption applies instead of a mutation.
 
-## TSA receipts: five DER fields outside the §12.2 checks (S1-FIX4 W8, S1-FIX5 X1)
+## TSA receipts: four DER fields outside the §12.2 checks (S1-FIX4 W8)
 
 When the gate mutates a listed `.tsr` it also re-points the (unsigned)
 attestation digest for that file, so the mutation reaches strict DER decoding
 instead of stopping at the file-level `E_TS_FILE` check (S1-FIX3 V2c). There is
 **no blanket `.tsr` exemption** (the former `tsr-unchecked-metadata` fallback is
 removed, S1-FIX4 W8): an accepted flip is exempt only when it lies inside one of
-the five DER fields below, which no §12.2 check reads beyond check 1 (strict DER
+the four DER fields below, which no §12.2 check reads beyond check 1 (strict DER
 and decodability). Every other receipt byte — status, versions, the TSTInfo
-eContent, the signer's `sid`, the digest and signature algorithm identifiers, the signed
+eContent, the signer's `sid`, digest and signature algorithms, the signed
 attributes, the signature value and the signer certificate — is evidence: an
 accepted flip there is a survivor and fails the gate.
 
@@ -99,7 +99,6 @@ accepted flip there is a survivor and fails the gate.
 | `tsr-non-signer-certificate` | every certificate of `SignedData.certificates` other than the one matching the signer's `issuerAndSerialNumber` | checks 7, 8, 11, 12 and 15 read only the signer certificate; another certificate must only be strict DER and decodable (check 1). |
 | `tsr-revocation-info` | content of `SignedData.crls` | H0 performs no revocation checking of the TSA certificate; the entries must only be strict DER (check 1). |
 | `tsr-unsigned-attributes` | content of `SignerInfo.unsignedAttrs` | outside the CMS signature and read by no check; must only be strict DER (check 1). |
-| `tsr-signer-algorithm-parameters` | the `parameters` of `SignerInfo.digestAlgorithm` and of `SignerInfo.signatureAlgorithm` (the bytes after the algorithm OBJECT IDENTIFIER) | an open type (`ANY DEFINED BY`), judged only by its framing (§12.2 1c, S1-FIX5 X1); checks 5, 6 and 10 read the algorithm OBJECT IDENTIFIER only, and the field is outside the CMS signature. Before X1 the verifier's parsing library decoded these parameters as NULL and rejected other values; that was library behaviour, not a rule of the specification. |
 
 The ranges are computed by `tools/byte_flip_gate.py` (`tsr_exempt_ranges`) from
 the original receipt's DER structure. For the committed positive cases they are
@@ -107,25 +106,17 @@ the original receipt's DER structure. For the committed positive cases they are
 
 | case | file | exempt ranges |
 |---|---|---|
-| `integrity-levels/l2-valid` (and its frozen copy) | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters` |
-| `integrity-levels/l2-renewal-chain-valid` (and its frozen copy) | `signatures/timestamp-1.tsr`, `signatures/timestamp-2.tsr` (1,474 bytes each) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters`, in each |
-| `integrity-levels/l2-submillisecond-rescue` | `signatures/timestamp-1.tsr` (1,485 bytes) | 37–52 `tsr-digest-algorithms`; 1041–1043 and 1223–1225 `tsr-signer-algorithm-parameters` |
-| `key-lifecycle/compromise-rescued-by-timestamp` (and its frozen copy) | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters` |
-| `key-lifecycle/mixed-revocation-compromise-then-retired` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters` |
-| `container/previous-signing-key-compromised-after-previous` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters` |
-| `integrity-levels/l2-ts-der-setof-sorted-control` | `signatures/timestamp-1.tsr` (2,373 bytes) | 37–67 `tsr-digest-algorithms`; 964–1758 `tsr-non-signer-certificate`; 1760–1782 `tsr-revocation-info`; 1863–1865 and 2045–2047 `tsr-signer-algorithm-parameters`; 2309–2373 `tsr-unsigned-attributes` |
-| `integrity-levels/l2-ts-der-ess-hash-algorithm-sha256-null` | `signatures/timestamp-1.tsr` (1,489 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1227–1229 `tsr-signer-algorithm-parameters` |
-| `integrity-levels/l2-ts-der-gentime-seven-fraction-digits` | `signatures/timestamp-1.tsr` (1,482 bytes) | 37–52 `tsr-digest-algorithms`; 1038–1040 and 1220–1222 `tsr-signer-algorithm-parameters` |
-| `integrity-levels/l2-ts-der-unsigned-attr-context-tag-value` | `signatures/timestamp-1.tsr` (1,490 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters`; 1476–1490 `tsr-unsigned-attributes` |
-| `integrity-levels/l2-ts-der-unsigned-attr-application-200-value` | `signatures/timestamp-1.tsr` (1,492 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters`; 1476–1492 `tsr-unsigned-attributes` |
-| `integrity-levels/l2-ts-der-high-tag-number-inner-zero-group` | `signatures/timestamp-1.tsr` (1,493 bytes) | 37–52 `tsr-digest-algorithms`; 1030–1032 and 1212–1214 `tsr-signer-algorithm-parameters`; 1476–1493 `tsr-unsigned-attributes` |
+| `integrity-levels/l2-valid` (and its frozen copy) | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-renewal-chain-valid` (and its frozen copy) | `signatures/timestamp-1.tsr`, `signatures/timestamp-2.tsr` (1,474 bytes each) | 37–52 `tsr-digest-algorithms` in each |
+| `integrity-levels/l2-submillisecond-rescue` | `signatures/timestamp-1.tsr` (1,485 bytes) | 37–52 `tsr-digest-algorithms` |
+| `key-lifecycle/compromise-rescued-by-timestamp` (and its frozen copy) | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
+| `key-lifecycle/mixed-revocation-compromise-then-retired` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-der-setof-sorted-control` | `signatures/timestamp-1.tsr` (2,373 bytes) | 37–67 `tsr-digest-algorithms`; 964–1758 `tsr-non-signer-certificate`; 1760–1782 `tsr-revocation-info`; 2309–2373 `tsr-unsigned-attributes` |
 
-In the single-receipt cases the bytes that survive a flip are the nine content
-octets of the sha256 OBJECT IDENTIFIER inside `digestAlgorithms` (offsets 41–49:
-a flip there yields another well-formed OID, which no check reads) and, since
-S1-FIX5 X1, the two-octet `NULL` parameters of the signer's digest and signature
-algorithm identifiers when the flipped bit turns them into another well-framed
-empty value (for example `05 00` → `45 00`, an empty `[APPLICATION 5]`). In the renewal chain only `timestamp-2.tsr` has survivors, because a flip
+In the single-receipt cases the only bytes that survive a flip are the nine
+content octets of the sha256 OBJECT IDENTIFIER inside `digestAlgorithms`
+(offsets 41–49): a flip there yields another well-formed OID, which no check
+reads. In the renewal chain only `timestamp-2.tsr` has survivors, because a flip
 in `timestamp-1.tsr` changes the imprint the second receipt must carry.
 Disabling the CMS signature check (§12.2 check 10) makes flips in the signed
 attributes and the signature value acceptable, and those lie outside every class
