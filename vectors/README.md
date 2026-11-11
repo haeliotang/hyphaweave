@@ -49,7 +49,7 @@ frozen candidate set is validated separately and is not part of the index).
 
 Authoritative source is `vectors/index.json`; regenerate with
 `tools/gen_index.py` after adding cases. At the time of writing (revision 3
-plus S1-FIX1, `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
+plus S1-FIX1/S1-FIX2, `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
 
 | category | cases |
 |---|---|
@@ -62,12 +62,12 @@ plus S1-FIX1, `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
 | `labels` | 38 |
 | `erasure` | 12 |
 | `grant` | 36 |
-| `key-lifecycle` | 61 |
-| `container` | 59 |
-| `integrity-levels` | 37 |
-| **total** | **384** |
+| `key-lifecycle` | 66 |
+| `container` | 72 |
+| `integrity-levels` | 38 |
+| **total** | **403** |
 
-Verdict distribution: `valid` 87, `erased` 1, `invalid` 267, `unverifiable` 29.
+Verdict distribution: `valid` 90, `erased` 1, `invalid` 283, `unverifiable` 29.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
@@ -216,6 +216,16 @@ implementation's unit tests (and by `tools/anti_verification.py`) rather than
 by a committed vector; the vector cases that exercise keyset *governance*
 (e.g. `key-lifecycle/redeclare-class-conflict`) use valid keysets.
 
+## Supplied `--previous` containers and the zip form
+
+A `--previous` argument may be a container directory **or its zip form**; a
+supplied previous container is interpreted exactly like the `container`
+argument (§11.5), so a read or structural failure of that input is
+`E_MANIFEST_CHAIN` (not `E_CONTAINER_ZIP`). `container/previous-zip-valid` and
+`container/previous-zip-invalid` pin the zip form and the error mapping;
+`container/previous-non-zip-file` pins the "readable but not a usable
+container" branch.
+
 ## Known coverage gaps
 
 Most size-limit rejections (`E_JSON_SIZE` for oversized manifests/attestation
@@ -228,5 +238,11 @@ small committed vectors, and `container/oversize-record-file` commits a
 1,048,577-byte record fixture so the per-record `MAX_RECORD_BYTES` rejection and
 its report shape are pinned by a vector. The directory-container total-byte cap
 (T15) is pinned by unit tests and the resource-limit gate only, for the same
-multi-gigabyte-fixture reason. `expected.json` notes on individual cases
-document the exact specification rule each case is derived from.
+multi-gigabyte-fixture reason. Two zip-form §13 limits are covered by small
+committed vectors instead: `container/zip-declared-total-over-limit` (declared
+uncompressed total) and `container/readable-declared-size-excluded`
+(`readable/**` is excluded from that total). The 200,001-entry
+`MAX_CONTAINER_ENTRIES` case is **not** committed (a ~21 MB fixture); it is
+covered by a unit test that builds the archive in memory, as recorded in
+S1-FIX2. `expected.json` notes on individual cases document the exact
+specification rule each case is derived from.

@@ -46,6 +46,19 @@ still-valid record:
 The byte-flip gate should keep this list as its documented exempt set; any
 survivor outside these cases and the three exceptions above fails gate 3(a).
 
+## readable/ bytes are outside the evidence (both container forms)
+
+`readable/**` is an unsigned human view outside the digest (§11.8/§11.9): it is
+never decompressed and its CRC is never checked. Every byte of a `readable/`
+entry is therefore semantically inert, in the directory form and in the zip
+form alike: the byte-flip gate exempts directory `readable/**` bytes
+(`readable-view` class) and must exempt the payload bytes of archived entries
+whose path starts with `readable/` too (`zip-readable-payload` class). This is
+required by `vectors/container/readable-declared-size-excluded`, whose
+`readable/big.txt` entry declares 1 GiB+1 uncompressed bytes while carrying a
+three-byte deflate payload: a flip inside those three bytes cannot change the
+verdict.
+
 ## What is *not* an exception
 
 `unverifiable` negatives (for example `sig/unknown-alg` or

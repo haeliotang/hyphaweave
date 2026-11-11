@@ -7546,11 +7546,15 @@ declare(
     build=lambda case_dir: _previous_non_zip_file_files(),
     args=("--keys", "@keyset", "--previous", "previous.txt"),
     records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
-    notes="T17/review A L9/§11.5: a --previous path that exists and is readable "
-    "but is not a usable container (here: a plain text file) is "
+    notes="T17/review A L9 + S1-FIX2 U1/§11.5: a --previous path that exists and "
+    "is readable but is not a usable container (here: a plain text file) is "
     "E_MANIFEST_CHAIN invalid. The previous-manifest check is container step "
     "(10), after the record phase, so the container's record is processed and "
-    "valid.",
+    "valid. S1-FIX2/U1: this vector is green for the real reason — the supplied "
+    "previous container is read through the same zip/directory parser as "
+    "`container`, and the 'not a usable container' branch is pinned by the "
+    "ablation mutation `previous-not-a-container` (the old swallowed-exception "
+    "path is gone).",
 )
 
 
@@ -7591,6 +7595,858 @@ declare(
     "recorded at T1, so both are valid.",
 )
 
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U1: a supplied --previous container may be given as a zip
+# (decision 2026-11-11 #12 U1; spec §11.5)
+# ---------------------------------------------------------------------------
+
+
+def _previous_container_internal() -> dict[str, bytes]:
+    """Internal files of the previous container c1 (same bytes as `previous/`)."""
+    return recordlib.build_container(
+        [recordlib.key_declaration("human-2")],
+        level="L0",
+        created_at=recordlib.EARLY,
+        manifest_signers=("human-2",),
+    )
+
+
+def _previous_container_zip(*, defective: bool) -> bytes:
+    internal = _previous_container_internal()
+    if not defective:
+        return as_zip(internal)
+    entries = [
+        (name, internal[name], 3, _STANDARD_ATTR) for name in sorted(internal)
+    ]
+    archive, _meta = _zip_raw(entries, gaps={1: 8})
+    return archive
+
+
+def _previous_zip_files(*, defective: bool) -> dict[str, bytes]:
+    files = _chain_container(Path("."), mismatch=False)
+    files["previous-container.zip"] = _previous_container_zip(defective=defective)
+    return files
+
+
+declare(
+    "container",
+    "previous-zip-valid",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_zip_files(defective=False),
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container={
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "previous_manifest_digest": _chain_previous_digest(),
+    },
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=("L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="U1/§11.5: the caller supplies the previous container in zip form. A "
+    "supplied previous container is interpreted exactly like a `container` "
+    "argument, so the embedded previous manifest is read with the same zip "
+    "parser, its manifest digest matches previous_manifest.digest, and the "
+    "container is valid.",
+)
+
+declare(
+    "container",
+    "previous-zip-invalid",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _previous_zip_files(defective=True),
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container={
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "previous_manifest_digest": _chain_previous_digest(),
+    },
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="U1/§11.5: the supplied previous container is a zip with a structural "
+    "defect (eight zero bytes between two local headers). Reading a supplied "
+    "previous container follows the `container` rules, so any read/structural "
+    "failure is E_MANIFEST_CHAIN invalid (never E_CONTAINER_ZIP). The "
+    "previous-manifest chain is container step (10), after the record phase, so "
+    "the record is processed and valid.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U2: §13 limits in the zip form
+# (decision 2026-11-11 #12 U2; spec §11.9/§13)
+# ---------------------------------------------------------------------------
+
+_TWO_BLOB_SIZES = (600_000_000, 600_000_000)  # each < MAX_BLOB_BYTES, sum > 1 GiB
+_READABLE_BIG_DECLARED = 1_073_741_825  # 1 GiB + 1: excluded from the total
+
+
+def _deflated_tiny_payload() -> bytes:
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return compressor.compress(b"x") + compressor.flush()
+
+
+def _zip_declared_entries(
+    entries: Sequence[tuple[str, bytes, int, int, int, int]]
+) -> bytes:
+    """Deterministic zip over (name, payload, method, usize, crc, attr) tuples.
+
+    The declared uncompressed size is caller-controlled (the payload stays
+    small), which is how the §13 declared-total and readable-exclusion rules are
+    exercised without multi-gigabyte fixtures.
+    """
+    output = bytearray()
+    central = bytearray()
+    for name, payload, method, declared_size, crc, attr in entries:
+        name_bytes = name.encode("utf-8")
+        flags = _ZIP_UTF8_FLAG
+        offset = len(output)
+        output += struct.pack(
+            "<IHHHHHIIIHH",
+            _ZIP_LOCAL_SIG,
+            20,
+            flags,
+            method,
+            0,
+            0,
+            crc,
+            len(payload),
+            declared_size,
+            len(name_bytes),
+            0,
+        )
+        output += name_bytes
+        output += payload
+        central += struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            _ZIP_CENTRAL_SIG,
+            (3 << 8) | 20,
+            20,
+            flags,
+            method,
+            0,
+            0,
+            crc,
+            len(payload),
+            declared_size,
+            len(name_bytes),
+            0,
+            0,
+            0,
+            0,
+            attr,
+            offset,
+        )
+        central += name_bytes
+    central_offset = len(output)
+    output += central
+    count = len(entries)
+    output += struct.pack(
+        "<IHHHHIIH",
+        _ZIP_EOCD_SIG,
+        0,
+        0,
+        count,
+        count,
+        len(central),
+        central_offset,
+        0,
+    )
+    return bytes(output)
+
+
+def _zip_declared_standard_entries() -> list[tuple[str, bytes, int, int, int, int]]:
+    entries = []
+    for name, data, _create_system, attr in _zip_standard_entries():
+        entries.append((name, data, 0, len(data), zlib.crc32(data) & 0xFFFFFFFF, attr))
+    return entries
+
+
+def _zip_declared_total_over_limit() -> dict[str, bytes]:
+    entries = _zip_declared_standard_entries()
+    payload = _deflated_tiny_payload()
+    for label, declared in zip(("a", "b"), _TWO_BLOB_SIZES):
+        entries.append(
+            (
+                "blobs/sha256/" + label * 64,
+                payload,
+                8,
+                declared,
+                0,
+                _STANDARD_ATTR,
+            )
+        )
+    return {"container.zip": _zip_declared_entries(entries)}
+
+
+def _readable_declared_size_excluded() -> dict[str, bytes]:
+    entries = _zip_declared_standard_entries()
+    entries.append(
+        (
+            "readable/big.txt",
+            _deflated_tiny_payload(),
+            8,
+            _READABLE_BIG_DECLARED,
+            0,
+            _STANDARD_ATTR,
+        )
+    )
+    return {"container.zip": _zip_declared_entries(entries)}
+
+
+declare(
+    "container",
+    "zip-declared-total-over-limit",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_SIZE",),
+    build=lambda case_dir: _zip_declared_total_over_limit(),
+    records=[],
+    notes="U2/§13: two zip entries declare 600,000,000 uncompressed bytes each "
+    "(each below MAX_BLOB_BYTES, sum over MAX_CONTAINER_UNCOMPRESSED_BYTES = "
+    "1 GiB). The declared-size total is checked on the archive before entry "
+    "processing, so this is invalid E_CONTAINER_SIZE (not E_CONTAINER_ZIP) "
+    "with no per-record verdicts.",
+)
+
+declare(
+    "container",
+    "readable-declared-size-excluded",
+    "container",
+    "container.zip",
+    "valid",
+    build=lambda case_dir: _readable_declared_size_excluded(),
+    args=("--keys", "@keyset"),
+    expected_container={"level_claimed": "L0", "level_verified": "L0", "record_count": 1},
+    notices=("N_READABLE_PRESENT",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="U2/§11.9/§13: the archive also has a readable/big.txt entry that "
+    "declares 1 GiB + 1 uncompressed bytes (its payload is a few deflated "
+    "bytes). readable/** is never decompressed and is excluded from the "
+    "declared-size total, so the archive stays valid and the entry count and "
+    "record are unaffected.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U9: single-volume archives only — every disk field is checked
+# (decision 2026-11-11 #12 U9; spec §11.9 rule 3)
+# ---------------------------------------------------------------------------
+
+
+def _zip_eocd_disk_number() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    return {"container.zip": _zip_patch(archive, meta["eocd_offset"] + 4, "<H", 1)}
+
+
+def _zip64_locator_total_disks() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    patched = _patch_zip64(archive)
+    locator = meta["eocd_offset"] + 56
+    # locator: sig(4) disk-with-zip64-eocd(4) offset(8) total-disks(4)
+    return {"container.zip": _zip_patch(patched, locator + 16, "<I", 2)}
+
+
+declare(
+    "container",
+    "zip-disk-number-nonzero",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_eocd_disk_number(),
+    records=[],
+    notes="U9/§11.9 rule 3: only single-volume archives are supported. The "
+    "EOCD's \"number of this disk\" field is 1, not 0, so the archive is "
+    "E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip64-locator-total-disks",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip64_locator_total_disks(),
+    records=[],
+    notes="U9/§11.9 rule 3: the ZIP64 EOCD locator's \"total number of disks\" "
+    "field is 2 (a single-volume archive must have 1), so the archive is "
+    "E_CONTAINER_ZIP.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U12: low zip findings L1/L2/L4/L5/L6
+# (decision 2026-11-11 #12 U12; spec §11.9)
+# ---------------------------------------------------------------------------
+
+
+def _zip_data_descriptor_nonzero_local() -> dict[str, bytes]:
+    archive, meta = _zip_standard(data_descriptor=True)
+    offset = meta["locals"][0]["offset"]
+    patched = _zip_patch(archive, offset + 14, "<I", 1)  # CRC
+    patched = _zip_patch(patched, offset + 18, "<I", 1)  # compressed size
+    patched = _zip_patch(patched, offset + 22, "<I", 1)  # uncompressed size
+    return {"container.zip": patched}
+
+
+def _zip_readable_local_central_crc_mismatch() -> dict[str, bytes]:
+    extra_name = "readable/notes.txt"
+    archive, meta = _zip_standard(
+        extra=((extra_name, b"readable payload", 3, _STANDARD_ATTR),)
+    )
+    index = len(_zip_standard_entries())
+    offset = meta["locals"][index]["offset"] + 14
+    local_crc = struct.unpack_from("<I", archive, offset)[0]
+    return {"container.zip": _zip_patch(archive, offset, "<I", local_crc + 1)}
+
+
+def _zip_eocd_per_disk_count() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    count = struct.unpack_from("<H", archive, meta["eocd_offset"] + 8)[0]
+    return {
+        "container.zip": _zip_patch(
+            archive, meta["eocd_offset"] + 8, "<H", count + 1
+        )
+    }
+
+
+def _zip64_sentinel_without_zip64() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    return {
+        "container.zip": _zip_patch(
+            archive, meta["eocd_offset"] + 8, "<HH", 0xFFFF, 0xFFFF
+        )
+    }
+
+
+def _zip_slash_name_with_data() -> dict[str, bytes]:
+    archive, _meta = _zip_standard(
+        extra=(("readable/dir/", b"data", 3, _STANDARD_ATTR),)
+    )
+    return {"container.zip": archive}
+
+
+declare(
+    "container",
+    "zip-data-descriptor-nonzero-local-header",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_data_descriptor_nonzero_local(),
+    records=[],
+    notes="U12/L1/§11.9 rule 1: with general-purpose flag bit 3 set (data "
+    "descriptor), the local header's CRC and sizes MUST be zero (APPNOTE "
+    "4.4.4). This local header carries non-zero values, so the archive is "
+    "E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "readable-local-central-crc-mismatch",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_readable_local_central_crc_mismatch(),
+    records=[],
+    notes="U12/L2/§11.9 rule 5: skipping decompression and CRC-over-data checks "
+    "for readable/ entries does not skip rule 1 — the local header CRC must "
+    "still equal the central-directory CRC. They differ here, so the archive "
+    "is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-eocd-per-disk-count",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_eocd_per_disk_count(),
+    records=[],
+    notes="U12/L4/§11.9 rule 3: the EOCD has two entry-count fields (entries on "
+    "this disk, total entries); both must equal the actual entry count. Only "
+    "the per-disk field is wrong here, so the archive is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip64-sentinel-without-zip64",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip64_sentinel_without_zip64(),
+    records=[],
+    notes="U12/L5/§11.9 rule 3: the 0xFFFF entry-count sentinel is only valid "
+    "when a ZIP64 EOCD record carries the true counts. This archive uses the "
+    "sentinel with no ZIP64 EOCD/locator, so it is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-slash-name-with-data",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_slash_name_with_data(),
+    records=[],
+    notes="U12/L6/§11.9 rule 4: an entry whose name ends with `/` is a "
+    "directory entry and must carry no data; this readable/ entry has data and "
+    "no DOS directory attribute, so the archive is E_CONTAINER_ZIP.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U3: the self-revocation exemption only covers a revocation's own
+# validity, never prior revocations of the signing key
+# (decision 2026-11-11 #12 U3; spec §9.5)
+# ---------------------------------------------------------------------------
+
+
+def _self_revocation_after_retirement_files() -> dict[str, bytes]:
+    retired = recordlib.key_revocation(
+        "key-compromised",
+        reason="retired",
+        effective_at=recordlib.T1,
+        recorded_at=recordlib.T1,
+        signer_name="human-1",
+        record_id="retired-key-compromised-by-human-1",
+    )
+    self_revocation = recordlib.key_revocation(
+        "key-compromised",
+        reason="retired",
+        effective_at=recordlib.T3,
+        recorded_at=recordlib.T3,
+        signer_name="key-compromised",
+        record_id="self-revocation-after-retirement",
+    )
+    note = record_signed_by(
+        "key-compromised",
+        "note-after-retirement",
+        recorded_at=recordlib.T4,
+        stage="accepted",
+    )
+    return _wrap_internal(
+        recordlib.build_container([retired, self_revocation, note])
+    )
+
+
+declare(
+    "key-lifecycle",
+    "self-revocation-after-retirement",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _self_revocation_after_retirement_files(),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "retired-key-compromised-by-human-1",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": "self-revocation-after-retirement",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+        {
+            "id": "note-after-retirement",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+    ),
+    notes="U3/§9.5: the key is already validly retired at T1, so its later "
+    "self-signed revocation (recorded T3) is judged with the prior revocation "
+    "applied: the self-revocation exemption only excludes R's own revocation "
+    "effect, not earlier revocations of the same key. R is invalid "
+    "E_KEY_REVOKED and revokes nothing; the original retirement stays "
+    "effective, so the T4 note is invalid E_KEY_REVOKED too.",
+)
+
+
+def _backdated_self_compromise_ineffective_files() -> dict[str, bytes]:
+    retired = recordlib.key_revocation(
+        "key-compromised",
+        reason="retired",
+        effective_at=recordlib.T1,
+        recorded_at=recordlib.T1,
+        signer_name="human-1",
+        record_id="retired-key-compromised-before-backdate",
+    )
+    honest_note = record_signed_by(
+        "key-compromised",
+        "honest-note-before-retirement",
+        recorded_at="2026-11-01T12:00:00.000Z",
+        stage="accepted",
+    )
+    backdated_compromise = recordlib.key_revocation(
+        "key-compromised",
+        reason="key-compromise",
+        effective_at=recordlib.EARLY,
+        recorded_at=recordlib.T3,
+        signer_name="key-compromised",
+        record_id="backdated-self-compromise-after-retirement",
+    )
+    return _wrap_internal(
+        recordlib.build_container([retired, honest_note, backdated_compromise])
+    )
+
+
+declare(
+    "key-lifecycle",
+    "backdated-self-compromise-ineffective",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _backdated_self_compromise_ineffective_files(),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "retired-key-compromised-before-backdate",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": "honest-note-before-retirement",
+            "verdict": "valid",
+            "errors": [],
+        },
+        {
+            "id": "backdated-self-compromise-after-retirement",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+        },
+    ),
+    notes="U3/§9.5: after the valid retirement at T1 the key self-signs a "
+    "key-compromise revocation recorded at T3 whose effective_at is backdated "
+    "before the retirement. The revocation record itself is judged with the "
+    "prior retirement applied, so it is invalid E_KEY_REVOKED and has no "
+    "effect. The honest note recorded before the retirement stays valid, which "
+    "shows the backdated compromise did not reach back.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U4: the governing class is computed before and independently of the
+# trust closure (decision 2026-11-11 #12 U4; spec §5.3)
+# ---------------------------------------------------------------------------
+
+
+def _keyset_without(*filenames: str) -> dict[str, bytes]:
+    files: dict[str, bytes] = {}
+    for path in sorted((recordlib.KEYS_DIR / "keyset").iterdir()):
+        if path.name in filenames:
+            continue
+        files["keyset/" + path.name] = path.read_bytes()
+    return files
+
+
+def _nonmonotonic_closure_files() -> dict[str, bytes]:
+    declaration_org = recordlib.key_declaration(
+        "org-1",
+        record_id="K-as-org-T0",
+        recorded_at=recordlib.T0,
+        key_type="organization",
+        cosigners=("human-2",),
+    )
+    declaration_human = recordlib.key_declaration(
+        "org-1",
+        record_id="K-as-human-T1",
+        recorded_at=recordlib.T1,
+        key_type="human",
+        cosigners=("human-1",),
+    )
+    declaration_younger = recordlib.key_declaration(
+        "human-2",
+        record_id="Y-human-T2",
+        recorded_at=recordlib.T2,
+        key_type="human",
+        cosigners=("org-1",),
+    )
+    files = _wrap_internal(
+        recordlib.build_container(
+            [declaration_org, declaration_human, declaration_younger]
+        )
+    )
+    files.update(
+        _keyset_without(
+            "key-declared-org-1.json", "key-declared-human-2.json"
+        )
+    )
+    return files
+
+
+declare(
+    "key-lifecycle",
+    "nonmonotonic-closure-class-conflict",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_CLASS_CONFLICT", "E_KEY_UNTRUSTED"),
+    build=lambda case_dir: _nonmonotonic_closure_files(),
+    args=("--keys", "keyset"),
+    records=(
+        {
+            "id": "K-as-org-T0",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+        },
+        {
+            "id": "K-as-human-T1",
+            "verdict": "invalid",
+            "errors": ["E_KEY_CLASS_CONFLICT"],
+        },
+        {
+            "id": "Y-human-T2",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+        },
+    ),
+    notes="U4/§5.3 non-monotone closure example. Keyset omits the org-1 and "
+    "human-2 declarations; the container carries three context declarations: "
+    "D_o = org-1 as organization @T0 cosigned by human-2, D_h = org-1 as human "
+    "@T1 cosigned by the keyset root human-1, D_y = human-2 as human @T2 "
+    "cosigned by org-1. Derivation per U4: (1) governing class comes from "
+    "structurally valid declarations before/independently of trust, keyset "
+    "first else smallest (recorded_at, record digest); org-1's earliest "
+    "declaration is D_o @T0, so organization governs. (2) D_h claims human and "
+    "is invalid E_KEY_CLASS_CONFLICT. (3) The closure runs afterwards and "
+    "invalid declarations establish no trust: D_o's cosigner human-2 and D_y's "
+    "cosigner org-1 have no trusted source (the dependency is circular), so "
+    "D_o and D_y are unverifiable E_KEY_UNTRUSTED. Container invalid; no "
+    "fixed point selects a different class.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U5: a keyset declaration of any class pins the governing class
+# (decision 2026-11-11 #12 U5; spec §9.1)
+# ---------------------------------------------------------------------------
+
+
+def _keyset_device_class_pins_files() -> dict[str, bytes]:
+    declaration = recordlib.key_declaration(
+        "device-1",
+        record_id="device-1-as-human",
+        recorded_at=recordlib.T2,
+        key_type="human",
+        cosigners=("human-1",),
+    )
+    return _wrap_internal(recordlib.build_container([declaration]))
+
+
+declare(
+    "key-lifecycle",
+    "keyset-device-class-pins",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_CLASS_CONFLICT",),
+    build=lambda case_dir: _keyset_device_class_pins_files(),
+    args=("--keys", "@keyset"),
+    records=(
+        {"id": "device-1-as-human", "verdict": "invalid", "errors": ["E_KEY_CLASS_CONFLICT"]},
+    ),
+    notes="U5/§5.3/§9.1: the local keyset declares device-1 as `device`, so "
+    "device-1's governing class is device even though a device declaration "
+    "does not establish a trust root. The container's later re-declaration of "
+    "device-1 as `human` (even cosigned by the keyset root human-1) is invalid "
+    "E_KEY_CLASS_CONFLICT.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U6: rotated key material counts as context-trusted for TOFU
+# (decision 2026-11-11 #12 U6; spec §14.9)
+# ---------------------------------------------------------------------------
+
+
+def _rotated_material_tofu_files() -> dict[str, bytes]:
+    rotation = key_rotation()
+    note = record_signed_by(
+        "key-new",
+        "note-by-rotated-key",
+        recorded_at=recordlib.T4,
+        stage="accepted",
+    )
+    files = _wrap_internal(recordlib.build_container([rotation, note]))
+    files.update(_keyset_without("key-declared-key-new.json"))
+    return files
+
+
+declare(
+    "key-lifecycle",
+    "rotated-material-tofu",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _rotated_material_tofu_files(),
+    args=("--keys", "keyset"),
+    notices=("N_KEY_TOFU",),
+    limitations=(
+        "L_KEY_TRUST_TOFU",
+        "L_OFFLINE_CONTEXT",
+        "L_UNKNOWN_KIND_OPAQUE",
+    ),
+    records=(
+        {"id": "key-rotated-1", "verdict": "valid", "errors": []},
+        {
+            "id": "note-by-rotated-key",
+            "verdict": "valid",
+            "errors": [],
+        },
+    ),
+    notes="U6/§14.9: the local keyset omits key-new's declaration. The note is "
+    "signed by key-new and its material comes from the explicit new_public_key "
+    "of the weave.key.rotated record in the container, which the single TOFU "
+    "criterion counts as context-trusted: the record is valid, carries "
+    "N_KEY_TOFU, and the report carries L_KEY_TRUST_TOFU (plus the "
+    "always-present offline limitation and the opaque-kind limitation for the "
+    "unregistered note kind).",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U7: L_TSA_TRUST_UNVERIFIED requires a present-unverified receipt
+# (decision 2026-11-11 #12 U7; spec §14.9)
+# ---------------------------------------------------------------------------
+
+
+declare(
+    "integrity-levels",
+    "l2-invalid-receipt-no-tsa-limitation",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_TS_CMS",),
+    build=lambda case_dir: _crafted_l2_files(
+        case_dir,
+        tsr_factory=lambda imprint: _crafted_tsr(
+            imprint, tamper_signature=True
+        ),
+    ),
+    args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_OFFLINE_CONTEXT"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="U7/§14.9: the receipt's CMS signature is tampered, so the receipt is "
+    "rejected by a structural/CMS check with E_TS_CMS even though a matching "
+    "anchor is supplied. L_TSA_TRUST_UNVERIFIED is reported only for a "
+    "present-unverified receipt (structure/CMS fine but untrusted), so the "
+    "exact limitations list is [L_CHAIN_CLAIM_UNVERIFIED, L_OFFLINE_CONTEXT] "
+    "and does not contain L_TSA_TRUST_UNVERIFIED.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX2 U8: an oversize record combines with MISSING/EXTRA
+# (decision 2026-11-11 #12 U8; spec §14.5)
+# ---------------------------------------------------------------------------
+
+
+def _oversize_combination_internal(*, extra: bool) -> dict[str, bytes]:
+    records = [
+        recordlib.key_declaration("human-1"),
+        recordlib.key_declaration(
+            "human-2", recorded_at=recordlib.T1, cosigners=("human-1",)
+        ),
+    ]
+    internal = recordlib.build_container(records)
+    record_paths = sorted(
+        path for path in internal if path.startswith("records/")
+    )
+    first = internal[record_paths[0]]
+    internal[record_paths[0]] = first + b" " * (1_048_577 - len(first))
+    if extra:
+        internal["records/" + "0" * 64 + ".json"] = canonical(
+            recordlib.key_declaration(
+                "human-2", recorded_at=recordlib.T1, cosigners=("human-1",)
+            )
+        )
+    else:
+        del internal[record_paths[1]]
+    return internal
+
+
+def _oversize_combination_identity(*, extra: bool) -> dict[str, Any]:
+    internal = _oversize_combination_internal(extra=extra)
+    manifest_bytes = internal["manifest.json"]
+    return {
+        "sha256": recordlib.manifest_digest(manifest_bytes),
+        "size": len(manifest_bytes),
+    }
+
+
+declare(
+    "container",
+    "oversize-record-with-missing",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_JSON_SIZE", "E_MANIFEST_RECORD_MISSING"),
+    build=lambda case_dir: _wrap_internal(
+        _oversize_combination_internal(extra=False)
+    ),
+    args=("--keys", "@keyset"),
+    expected_input=_oversize_combination_identity(extra=False),
+    expected_container={
+        "created_at": recordlib.T0,
+        "manifest_digest": _oversize_combination_identity(extra=False)["sha256"],
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "anchor_verified": False,
+        "chain": {"status": "absent"},
+        "previous_manifest_digest": None,
+        "record_count": 2,
+        "timestamps": [],
+    },
+    records=[],
+    notes="U8/§14.5: the records-listing phase reports every independent "
+    "violation it detects, sorted. One records/ file is 1,048,577 bytes "
+    "(E_JSON_SIZE) and one manifest-listed record file is missing "
+    "(E_MANIFEST_RECORD_MISSING), so container.errors is the sorted pair and "
+    "no per-record verdicts are produced; the manifest-derived report fields "
+    "stay filled and input identifies the raw manifest bytes.",
+)
+
+declare(
+    "container",
+    "oversize-record-with-extra",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_JSON_SIZE", "E_MANIFEST_RECORD_EXTRA"),
+    build=lambda case_dir: _wrap_internal(
+        _oversize_combination_internal(extra=True)
+    ),
+    args=("--keys", "@keyset"),
+    expected_input=_oversize_combination_identity(extra=True),
+    expected_container={
+        "created_at": recordlib.T0,
+        "manifest_digest": _oversize_combination_identity(extra=True)["sha256"],
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "anchor_verified": False,
+        "chain": {"status": "absent"},
+        "previous_manifest_digest": None,
+        "record_count": 2,
+        "timestamps": [],
+    },
+    records=[],
+    notes="U8/§14.5: the same oversize record file (E_JSON_SIZE) together with "
+    "an unlisted extra records/ file (E_MANIFEST_RECORD_EXTRA). The "
+    "records-listing phase reports both independent violations, sorted; "
+    "records is empty and the manifest-derived report fields stay filled.",
+)
 
 # === END CASE SECTIONS ===
 
