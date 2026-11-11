@@ -22,6 +22,9 @@ re-encoded from what was decoded:
   DER form compared as their raw content (§11.7, §11.8: no time-object round
   trip, so any number of fractional digits is kept), strings and OCTET STRING
   content as decoded and always in the primitive form (§10.2);
+* the ``parameters`` of the signer's ``digestAlgorithm`` and
+  ``signatureAlgorithm`` have the form fixed per algorithm in
+  :data:`SIGNER_DIGEST_PARAMETERS` / :data:`SIGNER_SIGNATURE_PARAMETERS` (X6);
 * a value of an **open type** (``ANY`` / ``ANY DEFINED BY`` with a type this
   profile does not decode — see :data:`KNOWN_ATTRIBUTES` and the ``ANY``
   fields below) is re-emitted as its own TLV, untouched. Only its framing (tag,
@@ -43,6 +46,8 @@ __all__ = [
     "reencode",
     "TIME_STAMP_RESP",
     "TST_INFO",
+    "SIGNER_DIGEST_PARAMETERS",
+    "SIGNER_SIGNATURE_PARAMETERS",
     "DEFAULTS",
     "KNOWN_ATTRIBUTES",
 ]
@@ -482,6 +487,56 @@ ALGORITHM_IDENTIFIER = _Sequence(
     _Field("algorithm", OBJECT_IDENTIFIER),
     _Field("parameters", ANY, optional=True),
 )
+#: X6 (decision 2026-11-12 #2): the permitted form of the ``parameters`` of the
+#: signer's ``digestAlgorithm`` and ``signatureAlgorithm``, by algorithm.
+#: "absent-or-null": RFC 5754 §2 (SHA-2: implementations accept both);
+#: "null": RFC 3370 §3.2, RFC 4055 §5, RFC 8017 App. A.2.4 (RSA PKCS#1 v1.5);
+#: "absent": RFC 5758 §3.2 (ECDSA). An algorithm not listed keeps the open-type
+#: rule (framing only); checks 5 and 6 reject it afterwards.
+SIGNER_DIGEST_PARAMETERS: dict[bytes, str] = {
+    _oid_content("2.16.840.1.101.3.4.2.4"): "absent-or-null",  # sha224
+    _oid_content("2.16.840.1.101.3.4.2.1"): "absent-or-null",  # sha256
+    _oid_content("2.16.840.1.101.3.4.2.2"): "absent-or-null",  # sha384
+    _oid_content("2.16.840.1.101.3.4.2.3"): "absent-or-null",  # sha512
+}
+SIGNER_SIGNATURE_PARAMETERS: dict[bytes, str] = {
+    _oid_content("1.2.840.113549.1.1.1"): "null",  # rsaEncryption
+    _oid_content("1.2.840.113549.1.1.14"): "null",  # sha224WithRSAEncryption
+    _oid_content("1.2.840.113549.1.1.11"): "null",  # sha256WithRSAEncryption
+    _oid_content("1.2.840.113549.1.1.12"): "null",  # sha384WithRSAEncryption
+    _oid_content("1.2.840.113549.1.1.13"): "null",  # sha512WithRSAEncryption
+    _oid_content("1.2.840.10045.4.3.1"): "absent",  # ecdsa-with-SHA224
+    _oid_content("1.2.840.10045.4.3.2"): "absent",  # ecdsa-with-SHA256
+    _oid_content("1.2.840.10045.4.3.3"): "absent",  # ecdsa-with-SHA384
+    _oid_content("1.2.840.10045.4.3.4"): "absent",  # ecdsa-with-SHA512
+}
+_NULL_ENCODING = b"\x05\x00"
+
+
+class _SignerAlgorithm(_Sequence):
+    """An AlgorithmIdentifier whose parameters form is fixed per algorithm (X6)."""
+
+    def __init__(self, rules: dict[bytes, str]) -> None:
+        super().__init__(
+            _Field("algorithm", OBJECT_IDENTIFIER),
+            _Field("parameters", ANY, optional=True),
+        )
+        self.rules = rules
+
+    def content(self, data: bytes, start: int, end: int, context: WalkContext) -> bytes:
+        encoded = super().content(data, start, end, context)
+        _class, _constructed, _number, oid_start, oid_end = _read_header(encoded, 0, len(encoded))
+        rule = self.rules.get(encoded[oid_start:oid_end])
+        parameters = encoded[oid_end:]
+        if rule == "absent-or-null" and parameters not in (b"", _NULL_ENCODING):
+            raise DerViolation("digest algorithm parameters are neither absent nor NULL")
+        if rule == "null" and parameters != _NULL_ENCODING:
+            raise DerViolation("RSA algorithm parameters are not NULL")
+        if rule == "absent" and parameters:
+            raise DerViolation("ECDSA algorithm parameters are not absent")
+        return encoded
+
+
 _ATTRIBUTE_TYPE_AND_VALUE = _Sequence(
     _Field("type", OBJECT_IDENTIFIER),
     _Field("value", ANY),
@@ -665,9 +720,9 @@ _SIGNER_INFO = _Sequence(
             _Implicit(_CONTEXT, 0, OCTET_STRING),  # subjectKeyIdentifier
         ),
     ),
-    _Field("digestAlgorithm", ALGORITHM_IDENTIFIER),
+    _Field("digestAlgorithm", _SignerAlgorithm(SIGNER_DIGEST_PARAMETERS)),
     _Field("signedAttrs", _Implicit(_CONTEXT, 0, _set_of(_ATTRIBUTE)), optional=True),
-    _Field("signatureAlgorithm", ALGORITHM_IDENTIFIER),
+    _Field("signatureAlgorithm", _SignerAlgorithm(SIGNER_SIGNATURE_PARAMETERS)),
     _Field("signature", OCTET_STRING),
     _Field("unsignedAttrs", _Implicit(_CONTEXT, 1, _set_of(_ATTRIBUTE)), optional=True),
 )
