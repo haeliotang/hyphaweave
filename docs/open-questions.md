@@ -11,8 +11,8 @@
 > decided** by Inceptless decision **2026-11-10 #42**. Revision 3 records the
 > rulings S1–S17 of Inceptless decision **2026-11-11 #2**: the ambiguity classes
 > that S8 left to the reviser are listed, with their readings and rationale, in
-> §6 under `decided by principle (Inceptless decision 2026-11-11 #2)`, and §7
-> records the five further principle decisions of decision 2026-11-11 #5. Each
+> §6 under `decided by principle (Inceptless decision 2026-11-11 #2)`; §6
+> entries 15–19 record the five further principle decisions of decision 2026-11-11 #5. Each
 > entry in §1 carries its decision status; its normative form is in
 > [`../spec/`](../spec/), and this page only records the question, the decision
 > and the reasoning. A small number of *implementation-shape* details were not
@@ -718,7 +718,8 @@ section carries the status `decided by principle (Inceptless decision 2026-11-11
 gives the two readings, the chosen one and why it is the conservative or the deterministic
 one. **The entry numbers 1–14 below are the numbers used by the specification's
 `[S8①]`–`[S8⑭]` labels**; entries 15–19 record five further principle decisions added
-in revision 1 of the S1-FIX1 round (T11).
+in revision 1 of the S1-FIX1 round (T11), and entry 20 records the S1-FIX2 (`decision
+2026-11-11 #12`) deterministic-order trade-off (U12/L8).
 
 1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
    the old §14.5 applies to the whole container, so one code. Reading B: the one-error
@@ -848,6 +849,17 @@ round (T11); they carry the status
     the report depend on check ordering and hide a condition the verifier did establish.
     When the condition cannot be determined (for example entry enumeration fails before a
     `readable/` entry is observed), it is not reported.
+
+20. **`(recorded_at, record digest)` order for revocation validity (§9.5, U12/L8).**
+    Readings: judge whether a revocation record is valid using revocations ordered by
+    `effective_at`, or by the record's own `(recorded_at, record digest)`. **Chosen** the
+    recorded order: when judging R, only a revocation ordered strictly before R by
+    `(recorded_at, record digest)` participates. Reason: mutual revocations need a
+    deterministic fixed point, and ordering by `effective_at` gives none (two revocations
+    effective in the same instant would each be invalidated by the other). The trade-off is
+    explicit: a revocation recorded later but effective earlier cannot invalidate an
+    earlier-recorded revocation. Marked `decided by principle (Inceptless decision
+    2026-11-11 #12; U12/L8)`; the specification and the verifier implement this order.
 
 Status updates in this revision:
 
