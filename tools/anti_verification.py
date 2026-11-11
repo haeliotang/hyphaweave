@@ -1457,7 +1457,14 @@ def _build_catalogue() -> None:
            "judge bytes before the first local header after the §13 limits (W7 phase 1)",
            r'    _check_prefix\(handle, size, eocd_offset, end_record\)\n',
            '    pass  # ablation: the leading-byte rule is not part of phase 1\n',
-           ("container/zip-over-limit-and-prefix",)),
+           ("container/zip-over-limit-and-prefix",),
+           co_mutations=(
+               # The container reader's signature probe also refuses a file that
+               # does not start with a zip signature; both are phase 1.
+               ("container.py",
+                r'    return head in \(',
+                '    return True or head in (  # co-ablation: signature probe disabled'),
+           )),
         _m("tsa-trust-usage-error", "container.py", "container.operator.tsa-trust",
            "treat a malformed --tsa-trust file as an empty anchor set (W4)",
            r'        timestamps_module\.parse_trust_anchors\(tsa_trust\)\n',
@@ -1469,7 +1476,7 @@ def _build_catalogue() -> None:
            "tests test_tsa_trust_malformed_is_usage_error and test_tsa_trust_invalid_version_is_usage_error"),
         _m("keyset-non-regular-entry", "verifier.py", "verifier.keyset.non-regular",
            "silently skip a keyset *.json entry that is not a regular file (W10/L6)",
-           r'        if not entry\.is_file\(\):\n            raise UsageError\("keyset entry %s is not a regular file" % entry\.name\)',
+           r'        if not entry\.is_file\(\):\n            raise UsageError\("--keys %s: entry %s is not a regular file" % \(path, entry\.name\)\)',
            '        if not entry.is_file():\n            continue  # ablation: non-regular keyset entries skipped',
            (),
            equivalent_reason="a keyset usage error (exit 2) cannot be expressed in the vector "
