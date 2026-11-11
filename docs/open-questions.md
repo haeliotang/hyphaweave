@@ -986,15 +986,15 @@ round (T11); they carry the status
     list fixed by the specification is the only one two independent implementations can
     agree on; "whatever my library knows" is exactly the dependency X1 removed, and every
     extra decoded type is a further source of false rejections (for example the
-    RSASSA-PSS-params DEFAULTs). One consequence is visible: the `parameters` of the
-    signer's `digestAlgorithm` and `signatureAlgorithm` are judged only by their framing
-    (checks 5, 6 and 10 compare the algorithm OBJECT IDENTIFIER only), so a receipt whose
-    `rsaEncryption` parameters are not `NULL` is no longer rejected — before X1 the
-    parsing library's typed decode rejected it, which no rule of this specification
-    required. The byte-flip gate exempts these bytes by range
-    (`tsr-signer-algorithm-parameters`, `vectors/GATE-3-EXCEPTIONS.md`). Whether the
-    profile should constrain those parameters (absent or `NULL`) is left open. Marked
-    `decided by principle (Inceptless decision 2026-11-12 #1; X1)`.
+    RSASSA-PSS-params DEFAULTs). Marked `decided by principle (Inceptless decision
+    2026-11-12 #1; X1)`. *Follow-up, decided (Inceptless decision 2026-11-12 #2; X6):*
+    treated as an open type, the `parameters` of the signer's `digestAlgorithm` and
+    `signatureAlgorithm` were judged by their framing only, so a receipt whose
+    `rsaEncryption` parameters were not `NULL` would have been accepted. The more
+    conservative reading was taken: those parameters now have the form fixed per
+    algorithm (SHA-2 absent or `NULL`, RFC 5754 §2; RSA PKCS#1 v1.5 `NULL`, RFC 3370
+    §3.2 / RFC 4055 / RFC 8017; ECDSA absent, RFC 5758 §3.2), listed in §12.2 1c; any
+    other form is `E_TS_SCHEMA`. No byte-flip exemption is needed for them.
 31. **Symbolic links among operator paths (X3).** The ruling says the kind of each
     operator path is established with `lstat` before opening. Readings: reject every
     symbolic link (`lstat` alone), or resolve a link and judge its target the same way.

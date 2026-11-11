@@ -371,12 +371,15 @@ implementation on its own branch has not yet followed them (H1-FIX1).
   never blocks; `--tsa-trust` is read with the bound `MAX_TIMESTAMP_BYTES`.
 - **X5.** On the previous link a rotation record that is not valid supplies no
   key material (§11.5 rule 1).
+- **X6 (decision 2026-11-12 #2).** The `parameters` of the signer's
+  `digestAlgorithm` and `signatureAlgorithm` have a fixed form: SHA-2 absent or
+  `NULL`, RSA PKCS#1 v1.5 `NULL`, ECDSA absent; any other form is `E_TS_SCHEMA`.
 
 **Current counts (S1-FIX5 hand-off).** Registry: 114 error codes, 14 notices, 11
 limitation identifiers (no code added in S1-FIX1–FIX5 except
-`L_PREVIOUS_CONTENT_UNVERIFIED` in S1-FIX3). Vectors: main corpus **479 cases**
+`L_PREVIOUS_CONTENT_UNVERIFIED` in S1-FIX3). Vectors: main corpus **488 cases**
 (revision 3 hand-off 343; +41 S1-FIX1, +19 S1-FIX2, +18 S1-FIX3, +47 S1-FIX4,
-+11 S1-FIX5); candidate regression set **202 cases**. No gate figures are recorded
++20 S1-FIX5); candidate regression set **202 cases**. No gate figures are recorded
 for the S1 rounds; the only recorded figures are those of the revision-1 snapshot
 under "Verifying this snapshot" below.
 
