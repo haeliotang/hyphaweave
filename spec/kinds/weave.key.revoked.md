@@ -79,10 +79,13 @@ Announces that a key must no longer be trusted, and why. The reason is load-bear
    valid. A revocation signed by a key that was already revoked — by a valid revocation
    ordered before it by ascending `(recorded_at, record digest)` — is invalid (the §9.4
    outcome, normally `E_KEY_REVOKED`) and revokes nothing, though it still appears as an
-   invalid record. **Self-revocation is exempt:** a key revoking itself is not invalidated
-   by its own revocation. Mutual revocations resolve deterministically: the earlier
+   invalid record. **Self-revocation is exempt, but only from its own effect:** a key
+   revoking itself is not invalidated by its own revocation, while prior valid revocations
+   of that key still apply — a key already revoked by an earlier-ordered valid revocation
+   cannot emit a new valid self-revocation, and such a record is invalid and revokes
+   nothing. Mutual revocations resolve deterministically: the earlier
    `(recorded_at, record digest)` record is valid, the later one is invalid (parent
-   specification §9.5, T9).
+   specification §9.5, T9/U3).
 5. **Revocation is a claim.** `effective_at` is a claim by the revoker; H0 does not
    establish when a compromise actually happened beyond the timestamp rule of rule 3.
 

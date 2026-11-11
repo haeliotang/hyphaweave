@@ -586,7 +586,7 @@ The five `stage` values name the acting system's relation to the claim:
 
 Stage is an envelope value and a claim like any other; a `proposed` record is not an approval
 workflow item, and projects that need finer sub-states put them in `body`
-[T11; `docs/open-questions.md` §7 entry 15] decided by principle (Inceptless decision 2026-11-11 #5; T11).
+[T11; `docs/open-questions.md` §6 entry 15] decided by principle (Inceptless decision 2026-11-11 #5; T11).
 
 `recorded_at` is the time the source system wrote this record into its own storage.
 `occurred_at`, when present, is the claimed time at which the event described by the record
@@ -792,11 +792,42 @@ keyset whose `key_type` is `human` or `organization`, and which passes its own s
 self-signature and validity checks, establishes that key as a **trusted human/organization
 root**. Keyset declarations do not need a cosignature and never produce
 `N_SELF_ATTESTED_ROOT_KEY`; the keyset **is** the local trust statement [E4][Q12][R2] decided
-(Inceptless decision 2026-11-10 #42; R2). Any keyset `weave.key.declared` record, **whatever
-its `key_type`**, governs the class and validity window of its key id; only the
-`human`/`organization` ones establish trust roots, while an `agent`/`program`/`device`
-keyset declaration only pins that key id's class and window (it does not make the key
-trusted) (T4).
+(Inceptless decision 2026-11-10 #42; R2). A keyset `weave.key.declared` record, **whatever
+its `key_type`**, governs the class and validity window of its key id (see the
+governing-class and governing-window definitions below); only the `human`/`organization`
+ones establish trust roots, while an `agent`/`program`/`device` keyset declaration only
+pins that key id's class and window (it does not make the key trusted) (T4).
+
+**Governing class.** The **governing class** of a key id is decided **before** the trust
+closure of this section and **independently of it**, from *structurally valid* declarations
+only (the structural group of §14.1: canonical form, envelope structure, `sigs`
+presence/format and registered-kind body schema; trust, self-signature verification and
+other semantic checks are not part of it):
+
+1. if the keyset contains a declaration for the key id, that declaration's `key_type` is the
+   governing class (conflicting keyset declarations are a usage error, T4);
+2. otherwise the structurally valid declaration with the smallest `(recorded_at, §2.2
+   record digest)` pair among all declarations in the verification context governs — the
+   deterministic declaration-resolution order defined below.
+
+Every structurally valid declaration for that key id whose `key_type` differs from the
+governing class is invalid with `E_KEY_CLASS_CONFLICT`. Class determination does not depend
+on which declarations become trusted, and an untrusted but structurally valid declaration can
+still govern the class; the trust closure below then runs afterwards and independently, and
+invalid declarations establish no trust (T4/U4).
+
+**Example — class is not decided by closure order.** The keyset declares neither `org-1` nor
+`human-2`, and the container carries three declarations: `D_o` declares `org-1` as
+`organization` at T0, cosigned by `human-2`; `D_h` declares `org-1` as `human` at T1,
+cosigned by `human-1` (a keyset root); `D_y` declares `human-2` as `human` at T2, cosigned
+by `org-1`. A trust-closure-first reading would make `D_h` trusted first (its cosigner is a
+root), then `D_y`, and only then would `D_o`'s cosignature become checkable — and which
+declaration "wins" could depend on iteration order. Under this section `D_o` is the earliest
+structurally valid declaration, so it governs: `org-1`'s governing class is `organization`,
+`D_h` is invalid with `E_KEY_CLASS_CONFLICT` even though its cosignature becomes checkable
+first, and `D_y` is class-consistent (it is handled by the trust closure like any other
+declaration). The two readings differ on *which* record is invalid, not on whether a conflict
+exists.
 
 The `trusted` set is context-level state built from the keyset first and then closed over the
 container/target declarations (an iterative fixed point, so a declaration may be trusted
@@ -806,16 +837,16 @@ only a keyset file that is not a structurally valid record is one (§14.1). **Tw
 structurally valid keyset declarations for the same key id with a different `key_type` or a
 different `(valid_from, valid_until)` pair — absent means unbounded, and present-versus-absent
 counts as different — are a usage error (exit 2):** the operator must fix the keyset, and
-no report is produced. When there is no such conflict, only semantically valid declarations
-govern class and window, in the deterministic order below (T4). A declaration in the container or in a record target is a
+no report is produced. When there is no such conflict, the keyset declaration is authoritative for the key's class
+and window; context declarations never override it. A declaration in the container or in a record target is a
 trust root only if its key is already in `trusted`:
 
 - a `human`/`organization` declaration in the container/target is **valid** only when its
   key id is already trusted **with the same class** (`human` or `organization`), or when it
   carries at least one valid cosignature made by a `trusted` human/organization key; a valid
-  declaration adds its key id to `trusted`. A declaration for a key id that already has a
-  governing class — from the keyset, or from an earlier valid context declaration — but
-  claims a **different** class is invalid with `E_KEY_CLASS_CONFLICT`. Same-class
+  declaration adds its key id to `trusted`. A declaration for a key id whose **governing
+  class** (defined above) differs from the declaration's `key_type` is invalid with
+  `E_KEY_CLASS_CONFLICT`. Same-class
   declarations of an already-trusted key are valid but never override the governing class
   or validity window: for a keyset key the keyset declaration governs, and a container
   declaration cannot extend the window or displace the keyset with a backdated
@@ -847,17 +878,19 @@ keys accepted through declarations in the context, so a human reader can see tha
 from the context rather than from the local keyset [Q12] decided (Inceptless decision
 2026-11-10 #34; Q12).
 
-When the context contains more than one valid declaration for the same key id, the
-declaration whose claimed `recorded_at` is **earliest** governs; when two `recorded_at`
-values tie, the declaration whose record digest is lexicographically smallest governs. This
-"earlier" is always the same deterministic order, and the same sentence is used wherever
-declaration resolution is described. A keyset declaration
+**Governing window and declaration resolution.** The validity window of a key id is
+governed by the keyset declaration if the keyset declares the key id; otherwise by the
+semantically valid context declaration with the smallest **declaration-resolution order**
+pair `(claimed recorded_at, record digest)`. The same declaration-resolution order decides
+which single declaration governs when several are eligible: smallest claimed `recorded_at`
+first, ties broken by the lexicographically smallest §2.2 record digest. That order is
+defined here once; §9.1, the kind pages and the registry refer to it. A keyset declaration
 is never displaced by a container or record-target declaration, however early the latter's
 claimed `recorded_at`: for a keyset key the keyset declaration governs the class and the
 validity window, and context declarations cannot change either [S1] decided (Inceptless
-decision 2026-11-11 #2; S1; T4). Declarations that are not themselves valid never establish or
-govern a key. This is declaration resolution, not root selection [Q12] decided (Inceptless
-decision 2026-11-10 #34; Q12).
+decision 2026-11-11 #2; S1; T4). Declarations that are not themselves semantically valid
+never govern the window or establish trust. This is declaration resolution, not root
+selection [Q12] decided (Inceptless decision 2026-11-10 #34; Q12).
 
 ### 5.4 Agent authorisation: every agent record needs a covering grant
 
@@ -1280,7 +1313,7 @@ accept the body shapes that its project exported while the kind was opaque, beca
 additive evolution is the mechanism by which old records stay verifiable [K3]. A change that
 cannot meet that is a breaking change under §0.3, not a registration. The frozen regression
 set (§16) pins the commitment: registering a kind MUST NOT change a conclusion fixed there
-[T11; `docs/open-questions.md` §7 entry 16] decided by principle (Inceptless decision 2026-11-11 #5; T11).
+[T11; `docs/open-questions.md` §6 entry 16] decided by principle (Inceptless decision 2026-11-11 #5; T11).
 
 ### 7.7 Per-kind pages are normative
 
@@ -1478,10 +1511,11 @@ Semantic rules:
      `human`/`organization` in a container or record target is valid only when its key id is
      already trusted **as the same class**, or when it carries at least one valid
      cosignature by a trusted human/organization key; a valid declaration adds its key id to
-     the trusted set. A declaration whose key id already has a governing trusted class — from
-     the keyset or from an earlier valid context declaration — and which claims a different
-     class is invalid with `E_KEY_CLASS_CONFLICT`; same-class declarations are valid but do
-     not override the governing class or validity window. Otherwise it is `unverifiable`
+     the trusted set. A declaration whose key id already has a **governing class**
+     (defined in §5.3, before and independently of this trust closure) that differs from the
+     declaration's `key_type` is invalid with `E_KEY_CLASS_CONFLICT`; same-class
+     declarations are valid but do not override the governing class or validity window.
+     Otherwise it is `unverifiable`
      with `E_KEY_UNTRUSTED`, and when its only signature is its own it also carries
      `N_SELF_ATTESTED_ROOT_KEY`. An untrusted declaration MUST NOT make any other declaration
      invalid and MUST NOT become trusted. With no keyset there are no roots, so every
@@ -1507,11 +1541,12 @@ Semantic rules:
    `valid_from` MUST be less than or equal to `valid_until`; otherwise `E_KEY_VALIDITY`
    (invalid) [E5][Q20] decided (Inceptless decision 2026-11-10 #34; Q20).
 6. **Effects.** Once a declaration is trusted, signatures by the declared key can be
-   verified within its declaration's validity rules (§9.4). Multiple declarations for the
-   same key id are resolved per §5.3: the semantically valid declaration with the smallest
-   claimed `recorded_at` governs, and a tie is broken by the lexicographically smallest
-   record digest; that is declaration resolution, not root selection
-   [Q12] decided (Inceptless decision 2026-11-10 #34; Q12; T4).
+   verified within its declaration's validity rules (§9.4). The governing class and the
+   governing validity window of a key id, and the declaration-resolution order that picks
+   among multiple declarations, are defined once in §5.3 (smallest claimed `recorded_at`,
+   ties by the lexicographically smallest §2.2 record digest); that is declaration
+   resolution, not root selection [Q12] decided (Inceptless decision 2026-11-10 #34; Q12;
+   T4/U5/U12-L10).
 
 A declaration is never a trust anchor by itself: roots come only from the verifier's local
 keyset input, and a container-only declaration can at most extend existing local trust
@@ -1584,7 +1619,8 @@ keyset or in the container [S2] decided (Inceptless decision 2026-11-11 #2; S2).
 neither overrides the other (T2):
 
 1. **Retired/other family.** The signature is revoked if **any** valid `retired` or `other`
-   revocation of the signing key has `recorded_at >= effective_at`. The outcome is invalid
+   revocation of the signing key has the **signature's claimed** `recorded_at` at or after
+   the revocation's `effective_at` (`recorded_at >= effective_at`). The outcome is invalid
    `E_KEY_REVOKED`, and timestamp evidence **cannot** rescue it.
 2. **Compromise family.** If **any** valid `key-compromise` revocation exists, the
    compromise rescue rule below applies with `T` = the **earliest** `effective_at` among the
@@ -1686,8 +1722,12 @@ was already revoked does not take effect (T9):
   normally `E_KEY_REVOKED`), so **R is invalid and revokes nothing**; R still appears as an
   invalid record in the container, which makes the container invalid, while the key state it
   tried to change is unaffected.
-- **Self-revocation exemption.** The record revoking the very key that signed it is not
-  invalidated by its own revocation: a key may revoke itself.
+- **Self-revocation exemption (limited).** The record revoking the very key that signed it
+  is not invalidated by its **own** revocation, but that exemption only removes R's own
+  effect from the prior set used to judge R: prior valid revocations of the signing key
+  still apply. A key already revoked by an earlier-ordered valid revocation therefore
+  cannot emit a new valid self-revocation — R's signature is itself revoked under §9.4, R
+  is invalid, and R revokes nothing (U3).
 - **Mutual revocations** therefore resolve deterministically: the earlier
   `(recorded_at, record digest)` revocation is valid and takes effect, the later one is
   invalid.
@@ -1938,7 +1978,7 @@ members:
   key produces `E_KEY_UNKNOWN`; the declaration's trust state is evaluated as for any other
   signature (§9.4, T17/A-L8). H0 does not additionally require the manifest signing key to equal
   `manifest.origin.instance`; that binding is a security consideration (§15) and the
-  verification of that claim is left to the consumer [T11; `docs/open-questions.md` §7 entry 17] decided by
+  verification of that claim is left to the consumer [T11; `docs/open-questions.md` §6 entry 17] decided by
   principle (Inceptless decision 2026-11-11 #5; T11).
 - `timestamps` MUST be present (possibly empty) [Q21] decided (Inceptless decision
   2026-11-10 #34; Q21). It is empty for L0/L1 (`E_MANIFEST_LEVEL` otherwise) and MUST
@@ -2006,7 +2046,11 @@ target per-case layout remains implementation-defined (Appendix A P7)
   manifest is not reachable, neither is reported [D1] decided (Inceptless decision
   2026-11-11 #2; report-construction rule; T12).
 - The `--previous <path>` command option accepts a container directory or its zip, exactly
-  like the `container` command. It additionally requires that the supplied previous
+  like the `container` command; the supplied previous container (directory or zip) is
+  **parsed exactly like a `container` input**. Any read or structural failure of the
+  supplied previous container — including a zip-structure violation that would be
+  `E_CONTAINER_ZIP` for the target — is `E_MANIFEST_CHAIN` (invalid) in this position, not
+  `E_CONTAINER_ZIP` (U1). It additionally requires that the supplied previous
   container's manifest digest equals `previous_manifest.digest`; a missing or unreadable
   supplied path is a usage or I/O error (exit 2, no report), while a supplied container
   whose manifest is unreadable or invalid, a digest mismatch, and a `--previous` given when
@@ -2056,8 +2100,10 @@ not JSON and are not canonicalised; they are hashed as raw bytes.
 
 `readable/` is an optional human-readable rendering directory. It is ignored entirely: not
 parsed, not hashed, not decompressed in the zip form, its CRC is not checked, not trusted,
-not listed in the manifest, and in a directory container its bytes are never read, stat-ed
-or counted toward the container total (§13). Its presence or content never changes a
+not listed in the manifest; it is never decompressed or CRC-checked in the zip form; in a
+directory container its bytes are never read, stat-ed or counted toward the container total,
+and in the zip form its **declared** uncompressed sizes are excluded from the declared-size
+total (§13). Its presence or content never changes a
 verdict; a verifier
 MUST report the informational notice `N_READABLE_PRESENT` if and only if an enumerated
 container contains a `readable/` entry, including when a later container check fails; if
@@ -2083,37 +2129,55 @@ stated otherwise (T6):
    central-directory record MUST agree on the raw file-name bytes, the whole
    general-purpose flags word, the compression method, the CRC-32, the compressed size and
    the uncompressed size. When general-purpose flag bit 3 (data descriptor) is set, the
-   local header's CRC and sizes are zero and the values in the data descriptor — which MAY
-   be prefixed with the signature `PK\x07\x08` — MUST equal the central directory's values
-   instead.
+   local header's CRC-32 and both size fields **MUST be zero** (U12/L1), and the values in
+   the data descriptor — which MAY be prefixed with the signature `PK\x07\x08` — MUST equal
+   the central directory's values instead.
 2. **Every byte has a home.** The first local file header starts at offset 0; each entry's
    data followed by its data descriptor (when present) ends exactly where the next local
-   file header begins; the central directory begins immediately after the last entry. Gaps,
-   pad bytes and overlapping ranges are rejected.
-3. **Counts and framing.** The end-of-central-directory entry count, and the ZIP64
-   end-of-central-directory entry count when present, and the central directory's size and
-   offset, MUST equal the actually parsed values. The end-of-central-directory record MUST
-   have a zero-length comment and MUST end exactly at the last input byte; bytes before the
-   first local header, a non-empty archive comment, and bytes after the record are
-   rejected. ZIP64 archives MUST be accepted, including ZIP64 end-of-central-directory
+   file header begins, "next" meaning **physical offset order**; the central-directory order
+   is free and need not match the physical order. The central directory begins immediately
+   after the last entry in physical order. Gaps, pad bytes and overlapping ranges are
+   rejected (U12/L3).
+3. **Counts, framing and single volume.** The end-of-central-directory record carries
+   **two** entry counts — "number of entries on this disk" and "total number of entries" —
+   and both MUST equal the actually parsed entry count (U12/L4). When a ZIP64
+   end-of-central-directory record is present, its entry counts MUST equal the actual count
+   and the 16-bit EOCD count fields MAY be either the `0xFFFF` sentinel or the true count,
+   accepted only when consistent with the ZIP64 record and the actual count; without a
+   ZIP64 end-of-central-directory record the `0xFFFF` sentinel is `E_CONTAINER_ZIP` (the
+   true count would not fit and a ZIP64 record is required), and any wrong non-sentinel
+   value is `E_CONTAINER_ZIP` (U12/L5). The central directory's size and offset MUST equal
+   the actually parsed values. Only **single-volume** archives are supported: the EOCD
+   "number of this disk" and "number of the disk with the start of the central directory"
+   MUST be 0; the ZIP64 EOCD's two disk-number fields MUST be 0; the ZIP64 locator's
+   "number of the disk with the start of the ZIP64 EOCD" MUST be 0 and its "total number of
+   disks" MUST be 1. Anything else is `E_CONTAINER_ZIP` (U9). The end-of-central-directory
+   record MUST have a zero-length comment and MUST end exactly at the last input byte; bytes
+   before the first local header, a non-empty archive comment, and bytes after the record
+   are rejected. ZIP64 archives MUST be accepted, including ZIP64 end-of-central-directory
    records, locators and extra fields; entry counts and declared sizes remain subject to
    §13 [S5].
 4. **Entry classes.** Entries MAY be stored or deflated; directory entries (names ending
-   `/`) with zero data are ignored, while an entry carrying the DOS directory attribute but
-   non-zero data is rejected. Encrypted entries and unsupported compression methods are
-   rejected [Q25].
-5. **`readable/` entries.** They are not decompressed and their CRC is not checked, but they
-   still pass the path-safety, symbolic-link and duplicate-name checks of this section; a
-   violation is `E_CONTAINER_ENTRY` like any other entry (§11.8).
+   `/`) with zero data are ignored. An entry whose name ends with `/` but carries data is
+   `E_CONTAINER_ZIP`, with or without the DOS directory attribute; an entry carrying the DOS
+   directory attribute but non-zero data is likewise `E_CONTAINER_ZIP` (U12/L6). Encrypted
+   entries and unsupported compression methods are rejected [Q25].
+5. **`readable/` entries.** They are not decompressed and the CRC over their data is not
+   checked, but rule 1 still applies to them (the local header and the central directory
+   must agree on name, flags, method, CRC-32 and sizes), and they still pass the
+   path-safety, symbolic-link and duplicate-name checks of this section; a rule-1 violation
+   is `E_CONTAINER_ZIP`, a path/type/duplicate violation is `E_CONTAINER_ENTRY` like any
+   other entry (U12/L2, §11.8).
 
-The central directory is read before any content is decompressed: the verifier checks entry
-count, paths and declared sizes first, then decompresses each entry under a bounded output
-cap; decompressed output MUST NOT exceed the declared uncompressed size, and the declared
-sizes and the total uncompressed bytes are subject to §13 [S4] decided (Inceptless decision
-2026-11-11 #2; S4). A zip bomb is bounded by the §13 limits (`E_CONTAINER_SIZE`), never a
-crash. In both container forms the `MAX_CONTAINER_UNCOMPRESSED_BYTES` limit counts only the
-bytes the verifier actually reads: `readable/**` is never read, hashed or counted, and
-`tsa-cert-*` files are presence-only and not counted (T15).
+The central directory is read before any content is decompressed: the verifier checks the
+entry count and the declared sizes (§13), the entry paths and the structural rules above
+first, then decompresses each entry under a bounded output cap; decompressed output MUST NOT
+exceed the declared uncompressed size. The archive entry count above
+`MAX_CONTAINER_ENTRIES` (`readable/**` included) and the declared-size total above
+`MAX_CONTAINER_UNCOMPRESSED_BYTES` (`readable/**` excluded) are both invalid
+`E_CONTAINER_SIZE`, never `E_CONTAINER_ZIP` [S4][T15][U2] decided (Inceptless decision
+2026-11-11 #2; S4; 2026-11-11 #12; U2). A zip bomb is bounded by the §13 limits
+(`E_CONTAINER_SIZE`), never a crash.
 
 ### 11.10 Encrypted export
 
@@ -2260,8 +2324,8 @@ decision 2026-11-10 #34; Q5). The limit-to-code mapping in the table is fixed [Q
 | `MAX_SIGFILE_BYTES` | 1,048,576 (1 MiB) | `signatures/manifest.sig.json` | `E_JSON_SIZE` |
 | `MAX_TIMESTAMP_BYTES` | 1,048,576 (1 MiB) | one `.tsr` file | `E_JSON_SIZE` |
 | `MAX_RECORDS` | 100,000 | `manifest.records` entries | `E_MANIFEST_RECORDS` |
-| `MAX_CONTAINER_ENTRIES` | 200,000 | all zip entries / all files in a directory container | `E_CONTAINER_SIZE` |
-| `MAX_CONTAINER_UNCOMPRESSED_BYTES` | 1,073,741,824 (1 GiB) | total uncompressed bytes of a zip container; also the summed byte count of all files in a directory container | `E_CONTAINER_SIZE` |
+| `MAX_CONTAINER_ENTRIES` | 200,000 | zip form: **all** archive entries (including `readable/**`); directory form: all files | `E_CONTAINER_SIZE` |
+| `MAX_CONTAINER_UNCOMPRESSED_BYTES` | 1,073,741,824 (1 GiB) | zip form: the sum of the **declared** uncompressed sizes, excluding `readable/**`; directory form: the summed bytes of the files the verifier actually reads (`readable/**` never read or counted, `tsa-cert-*` presence-only and not counted) | `E_CONTAINER_SIZE` |
 | `MAX_BLOB_BYTES` | 1,073,741,824 (1 GiB) | one blob | `E_MANIFEST_BLOB` |
 | `MAX_BLOBS` | 10,000 | `manifest.blobs` entries | `E_MANIFEST_SCHEMA` |
 | `MAX_REFS` | 256 | `refs` entries | `E_ENV_REFS` |
@@ -2273,15 +2337,18 @@ decision 2026-11-10 #34; Q5). The limit-to-code mapping in the table is fixed [Q
 | `MAX_LICENCE_NESTING` | 16 | parenthesis nesting depth of an SPDX licence expression (§8.7) | `E_ENV_LICENCE` |
 | `MAX_TS_ACCURACY` | 86,400 (seconds) | total `accuracy` of one RFC 3161 receipt (§12.2 check 13); exceeding it makes the receipt unusable evidence, not a format error | `E_TS_UNTRUSTED` (unverifiable) |
 
-Limits are checked on the streamed bytes, not on a fully materialised decompression. A zip
-whose decompression would exceed the uncompressed-byte limit is `E_CONTAINER_SIZE`
-(invalid); the same total applies to a directory container, summing only the files the
-verifier actually reads (record, manifest, attestation, timestamp and blob files):
-`readable/**` is never read or counted, and `tsa-cert-*` files are presence-only and not
-counted (`E_CONTAINER_SIZE` when the read total is exceeded) (T15). A
-directory container whose record count exceeds `MAX_CONTAINER_ENTRIES` is likewise
-`E_CONTAINER_SIZE`. Implementations MUST NOT rely on filesystem-reported sizes for
-these checks;
+Limits are checked on the streamed bytes, not on a fully materialised decompression, and
+both container forms use the same error code: exceeding any container limit is
+`E_CONTAINER_SIZE` (invalid). In the **zip form** the verifier checks, before decompressing
+anything, the total number of archive entries (`MAX_CONTAINER_ENTRIES`, `readable/**`
+included) and the sum of the **declared** uncompressed sizes of all entries except
+`readable/**` (`MAX_CONTAINER_UNCOMPRESSED_BYTES`); a declared-size total above the limit is
+`E_CONTAINER_SIZE`, never `E_CONTAINER_ZIP`. In the **directory form** the same limits count
+the entries and the bytes the verifier actually reads (record, manifest, attestation,
+timestamp and blob files); the entry count is every file in the directory container, while
+`readable/**` is never read or counted toward the byte total and `tsa-cert-*` files are
+presence-only and not counted (T15). Implementations MUST NOT rely on filesystem-reported
+sizes for these checks;
 they MUST enforce them while reading: each file of a directory container is read through a
 probe bounded by its class limit plus one byte, the container total is accumulated while
 reading, and the zip central directory is inspected before any entry is decompressed
@@ -2497,8 +2564,9 @@ invalid error found before the per-record checks, so the report carries `records
 lexicographically and unique; an earlier stage that produced only `unverifiable` conditions
 keeps those codes, so `container.errors` can carry both kinds. In particular the
 records-listing and consistency phase (§11.6) reports every independent violation it detects
-together (`E_MANIFEST_RECORD_MISSING`, `E_MANIFEST_RECORD_EXTRA`,
-`E_MANIFEST_RECORD_DIGEST`, `E_MANIFEST_RECORDS`). An in-container file above its §13 class
+together — `E_MANIFEST_RECORD_MISSING`, `E_MANIFEST_RECORD_EXTRA`,
+`E_MANIFEST_RECORD_DIGEST`, `E_MANIFEST_RECORDS`, and `E_JSON_SIZE` for record files above
+`MAX_RECORD_BYTES` (U8). An in-container file above its §13 class
 limit is a container-level `E_JSON_SIZE`, and the report shape follows the stage where it is
 detected (T16): `manifest.json` at the manifest stage → container fields default/`null` and
 `records: []`; the attestation file at step (5) and a `records/` file at step (7) →
@@ -2598,8 +2666,9 @@ Report rules:
   [S8⑩][S16/F12] decided (Inceptless decision 2026-11-11 #2; S8/F12).
 - `N_KEY_TOFU` is the per-record form of the TOFU predicate of §14.9: it is reported on a
   record if and only if at least one of that record's signature checks was context-trusted
-  (the verifying key material came from a context `weave.key.declared` rather than the
-  local keyset), even if that signature or the record then fails (§5.3). For the three
+  (the verifying key material came from a context `weave.key.declared` declaration or from
+  the explicit key material of a context `weave.key.rotated` record, rather than from the
+  local keyset), even if that signature or the record then fails (§5.3, U6). For the three
   key-lifecycle kinds only the actor-key signature counts. The manifest signature never
   produces a record notice; it contributes to `L_KEY_TRUST_TOFU` instead. A J1-style
   container illustrates the split: a container-declared device key (owner-cosigned by a
@@ -2731,10 +2800,20 @@ limitation, and MUST NOT phrase a limitation as a passed check
 identifier (and the corresponding notice) is **not** reported (T12).
 
 **TOFU predicate (single definition).** A signature check was **context-trusted** when the
-key material used to verify it came from a `weave.key.declared` declaration in the
-verification context (container or target records) rather than from the local keyset
-(`--keys`). Manifest-signature checks and record-signature checks both use this one
-definition [T10] decided (Inceptless decision 2026-11-11 #5; T10).
+key material used to verify it came from the verification context (container or target
+records) rather than from the local keyset (`--keys`), where context material means either
+
+- a `weave.key.declared` declaration in the context, or
+- the explicit `old_public_key` / `new_public_key` of a `weave.key.rotated` record in the
+  context.
+
+Rotated key material therefore counts as TOFU exactly like declared material: the check
+emits `N_KEY_TOFU` on the record and makes the report carry `L_KEY_TRUST_TOFU` (T10 rules
+otherwise unchanged). Manifest-signature checks and record-signature checks both use this
+one definition [T10][U6] decided (Inceptless decision 2026-11-11 #5; T10; 2026-11-11 #12;
+U6). Example: the keyset omits the new key, a context `weave.key.rotated` record supplies
+its `new_public_key`, and a note signed by that key is verified — the note carries
+`N_KEY_TOFU` and the report carries `L_KEY_TRUST_TOFU`.
 
 | identifier | emitted if and only if |
 |---|---|
@@ -2742,7 +2821,7 @@ definition [T10] decided (Inceptless decision 2026-11-11 #5; T10).
 | `L_CHAIN_CLAIM_UNVERIFIED` | `level_claimed` is `L1` or `L2` (the internal-chain claim cannot be recomputed), regardless of later failures |
 | `L_KEY_TRUST_TOFU` | at least one signature check in the report — a record signature or the manifest signature — was context-trusted per the TOFU predicate above |
 | `L_PREVIOUS_SIG_UNVERIFIED` | `previous_manifest` is non-null and the embedded previous manifest's own signature was not re-verified; this is reported even when a later container check fails, and is not reported when the manifest could not be parsed so that the previous manifest is not reachable |
-| `L_TSA_TRUST_UNVERIFIED` | timestamps are present and at least one receipt is not verified and trusted (no matching anchor), or its accuracy is unusable evidence (§12.2 check 13) |
+| `L_TSA_TRUST_UNVERIFIED` | at least one listed receipt is `present-unverified`: its structure and CMS signature pass, but it is not verified-and-trusted (no matching anchor, or its accuracy is unusable evidence per §12.2 check 13). A receipt rejected by a structural, format or CMS check reports its error code and does not by itself trigger this identifier (U7) |
 | `L_ERASED_PLACEHOLDER` | the verified input (container or record target) contains a `weave.erased` placeholder |
 | `L_ERASED_STANDALONE` | the target is a single `weave.erased` record with no container context, so the §10.3 cross-checks could not be applied |
 | `L_LABELS_ARE_CLAIMS` | the record target, or at least one record of the container, carries a `labels` member |
@@ -2870,7 +2949,7 @@ This section is informative except where it states a MUST.
     which key signed the manifest bytes; H0 does not require that key to be the key named by
     `manifest.origin.instance` (§11.3). A consumer that needs the publisher identity to be
     the origin instance must check the binding itself, against a key id pinned out of band
-    [T11; `docs/open-questions.md` §7 entry 17] decided by principle (Inceptless decision 2026-11-11 #5; T11).
+    [T11; `docs/open-questions.md` §6 entry 17] decided by principle (Inceptless decision 2026-11-11 #5; T11).
 
 ## 16. Governance, repository and implementation requirements
 
@@ -2994,13 +3073,31 @@ and are normative at the locations given.
 | T8 | depth counting when the verified record is itself a grant: its own link is not part of the chain | §5.5.2 step 7 |
 | T9 | a revocation record takes effect only if it is itself valid; deterministic `(recorded_at, record digest)` order; self-revocation exempt | §9.5, `weave.key.revoked.md` |
 | T10 | one TOFU predicate shared by `N_KEY_TOFU` and `L_KEY_TRUST_TOFU`; the manifest signature counts for the limitation | §14.6, §14.9, registry |
-| T11 | the five principle decisions recorded in `docs/open-questions.md` §7; internal-document references removed | whole document |
+| T11 | the five principle decisions recorded in `docs/open-questions.md` §6 entries 15–19; internal-document references removed | whole document |
 | T12 | limitation and notice emission is if-and-only-if; `N_READABLE_PRESENT`/`N_PREVIOUS_SIG_UNVERIFIED` retention and "undetermined means not reported" | §14.9, §11.5, §11.8 |
 | T13 | rotated key-material structural errors (`E_KEY_ROTATION_KEYS`) precede signature verification | §9.2, §14.5 |
 | T14 | member ordering is UTF-16 code-unit order only | §14.6 |
 | T15 | the directory-container total byte cap counts only the files actually read | §13, §11.8, §11.9 |
 | T16 | container report shape for an oversize in-container file follows the §14.5 stage in which it is detected; `records: []` only before step (7) | §14.5, §14.6 |
 | T17 | the remaining review items (grant-revocation target action, late-recorded grants, unverifiable cited grant, UTF-8 precondition, previous-manifest size mapping, manifest signer trust, `--previous` path semantics, token parsing, relation direction, Appendix C/D) | §1.9, §5.5.2, §5.5.4, §6.2, §11.3, §11.5, §13, §14.6, §14.7, Appendix C |
+
+The following rows are fixed by Inceptless decision **2026-11-11 #12** (S1-FIX2, U1–U12)
+and are normative at the locations given.
+
+| ruling | topic | normative location |
+|---|---|---|
+| U1 | a supplied previous container (directory or zip) is parsed exactly like a `container` input; any read/structural failure of it is `E_MANIFEST_CHAIN`, not `E_CONTAINER_ZIP` | §11.5 |
+| U2 | container limits by form: zip declared uncompressed total excluding `readable/**`, entry count including all entries; directory read bytes; over-limit is `E_CONTAINER_SIZE` | §13, §11.8, §11.9 |
+| U3 | the self-revocation exemption only removes the revocation's own effect; prior valid revocations still apply, so an already-revoked key cannot emit a valid new self-revocation | §9.5, `weave.key.revoked.md` |
+| U4 | the governing class is determined before and independently of the trust closure: keyset declaration first, otherwise the structurally valid declaration with the smallest `(recorded_at, record digest)`; different class is `E_KEY_CLASS_CONFLICT`; non-monotonic-closure example | §5.3 |
+| U5 | "governing class" is the one term used in §5.3, §9.1, the kind page and the registry | §5.3, §9.1, `weave.key.declared.md`, registry |
+| U6 | the TOFU predicate includes key material from a context `weave.key.rotated` record; `N_KEY_TOFU`/`L_KEY_TRUST_TOFU` follow it | §14.9, §14.6, registry |
+| U7 | `L_TSA_TRUST_UNVERIFIED` iff at least one listed receipt is `present-unverified`; a receipt invalid by structure/CMS does not by itself trigger it | §14.9 |
+| U8 | the records-listing phase reports all independent violations together, including `E_JSON_SIZE` for an oversize record file | §14.5 |
+| U9 | single-volume archives only: EOCD/ZIP64 disk-number fields and the locator total-disk count are validated | §11.9 rule 3 |
+| U10 | the `docs/open-questions.md` references point to §6 entries 15–19 (no §7) | whole document |
+| U11 | H1-FIX1 hand-off corrections (kind pages, §4.1.1, corrected vector id) | report/hand-off; §7.7 makes kind pages normative |
+| U12 | the low-item wording decisions: data-descriptor local fields, `readable/` rule-1 applicability, physical offset order, two EOCD counts, ZIP64 sentinel rules, slash-name-with-data, directory/zip limit wording, revocation-order principle entry, "signature's claimed `recorded_at`", unified declaration-resolution sentence | §11.9, §13, §9.4, §5.3, §9.1, `weave.key.declared.md`, `docs/open-questions.md` §6 entry 20 |
 
 ### A.2 PROVISIONAL implementation shapes
 

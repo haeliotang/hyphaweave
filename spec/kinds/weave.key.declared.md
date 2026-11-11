@@ -88,9 +88,12 @@ permitted (additive evolution, K3, parent specification §7.5).
    - a container/target declaration of class `human`/`organization` is valid only when its
      key is already trusted **as the same class** (for example the same key is trusted from
      the keyset) or when it carries a valid cosignature by a trusted human/organization key;
-     a declaration for a key that already has a governing trusted class and claims a
-     different class is invalid with `E_KEY_CLASS_CONFLICT` (same-class redeclarations are
-     valid but never override the governing class or validity window). Otherwise it is
+     a declaration whose key id's **governing class** (defined in the parent specification
+     §5.3: determined before, and independently of, the trust closure from structurally
+     valid declarations; the keyset declaration wins if present, otherwise the declaration
+     with the smallest `(recorded_at, record digest)` order) differs from its `key_type` is
+     invalid with `E_KEY_CLASS_CONFLICT` (same-class redeclarations are valid but never
+     override the governing class or validity window). Otherwise it is
      `unverifiable` with `E_KEY_UNTRUSTED`, plus `N_SELF_ATTESTED_ROOT_KEY` when its only
      signature is its own. An untrusted declaration must not make any other declaration
      invalid and never becomes trusted;
@@ -107,12 +110,12 @@ permitted (additive evolution, K3, parent specification §7.5).
    signature made outside the declared window (either before `valid_from` or after
    `valid_until`) is `E_KEY_EXPIRED` (invalid) [Q20] decided (Inceptless decision
    2026-11-10 #34; Q20).
-6. **Multiple declarations.** When a context contains several semantically valid
-   declarations for one key id, the declaration with the smallest claimed `recorded_at`
-   governs, ties broken by the lexicographically smallest record digest (the same
-   deterministic "earlier" used everywhere); this is declaration resolution, not root
-   selection [Q12] decided (Inceptless decision 2026-11-10 #34; Q12; T4). A keyset
-   declaration is authoritative for its
+6. **Multiple declarations.** The governing class, the governing validity window and the
+   declaration-resolution order (smallest claimed `recorded_at`, ties by the
+   lexicographically smallest record digest) are defined once in parent specification §5.3;
+   this kind page refers to that definition. That is declaration resolution, not root
+   selection [Q12] decided (Inceptless decision 2026-11-10 #34; Q12; T4/U5/U12-L10). A
+   keyset declaration is authoritative for its
    key's class and validity window and is never displaced by a container or target
    declaration, however early the latter's claimed `recorded_at`; a backdated redeclaration
    has no effect [S1] decided (Inceptless decision 2026-11-11 #2; S1).
