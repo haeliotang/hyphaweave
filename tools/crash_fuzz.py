@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
-"""H0 revision-1 gate: deterministic crash fuzzing of the reference verifier.
+"""Crash-fuzz gate: deterministic crash fuzzing of the Python verifier.
 
 The gate feeds the verifier a fixed batch of malformed inputs and requires that
 **every** mutant is rejected *cleanly*: the process exit code must be one of
@@ -9,8 +9,10 @@ The gate feeds the verifier a fixed batch of malformed inputs and requires that
 ``Traceback``. An escaping exception is a crash and makes the gate fail; a crash
 is never an accepted rejection (spec S1-FIX3 V2d).
 
-Input classes (each at least ``--count`` >= 300 deterministic mutants, fixed
-seed ``20261111`` when ``--seed`` is not given):
+Input classes (each ``--count`` >= 300 deterministic mutants that actually change
+the input; the CI seed is ``20261111``, and ``--seed S`` runs another
+deterministic batch, so a crash found with any seed is reproducible with that
+seed):
 
 * ``container-dir`` - a directory-form container with a mutated member;
 * ``container-zip`` - a zip-form container with mutated bytes/zip fields;
@@ -24,7 +26,11 @@ seed ``20261111`` when ``--seed`` is not given):
 Mutation operations are deterministic in ``(seed, class, index)``: byte
 set/flip/truncate/insert/delete/duplicate, JSON structure mutations
 (delete/replace/add member, type change, deep nesting, duplicate key) and zip
-header-field mutations.
+header-field mutations. A **no-op mutant** — one whose files, after the mutation,
+are byte-for-byte identical to the base case (for example a DER ``NULL`` written
+over an existing ``05 00``) — is not run and not counted (S1-FIX4 W11): further
+indices of the same class are drawn, in order, until ``--count`` effective mutants
+exist, so the batch stays deterministic.
 
 Every mutant is executed through the **real CLI process** (``python -m
 hyphaweave_verify.cli``): the gate observes the process exit code and stderr, so
@@ -34,9 +40,14 @@ the exit code must be in ``{0, 1, 2, 3}`` and stderr must not contain
 fails the gate. A crash is never an accepted rejection.
 
 The committed regression corpus under ``tools/crash_corpus/`` holds the 145
-crash inputs found by the S1-FIX2 recheck (6 ``previous`` + 139 ``tsa``); every
-run replays it first and requires zero crashes. ``index.json`` records the
-original recheck seed/category/index for traceability.
+crash inputs found by the S1-FIX2 recheck (6 ``previous`` + 139 ``tsa``) and the
+``--tsa-trust`` PEM with an invalid certificate version found by the S1-FIX3
+recheck with seed 777 (S1-FIX4 W4); every run replays it first and requires zero
+crashes. ``index.json`` records the original seed/category/index for
+traceability.
+
+Load: every worker runs one CLI subprocess at a time. When this gate runs next
+to the other gates on one machine, use ``--jobs 2`` (see ``tools/README.md``).
 
 Usage:
     python tools/crash_fuzz.py [--classes a,b,...] [--count N] [--seed S]
@@ -488,6 +499,23 @@ def _mutate_json_or_bytes(path: Path, rng: random.Random) -> str:
     return desc
 
 
+def _tree_fingerprint(root: Path) -> str:
+    """Digest of a directory tree: relative paths, entry types, bytes, link targets."""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix().encode("utf-8", "surrogateescape")
+        if path.is_symlink():
+            digest.update(b"L" + relative + b"\0" + os.readlink(path).encode("utf-8", "surrogateescape"))
+        elif path.is_dir():
+            digest.update(b"D" + relative)
+        elif path.is_file():
+            digest.update(b"F" + relative + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+        else:
+            digest.update(b"O" + relative)
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def build_job(category: str, index: int, seed: int, work_root: Path) -> dict:
     rng = _rng(category, index, seed)
     bases = BASE_CASES[category]
@@ -497,6 +525,13 @@ def build_job(category: str, index: int, seed: int, work_root: Path) -> dict:
     expected = load_case(base_case)
     keyset = KEYSET
     desc = base_case
+    if category == "keyset":
+        # The keyset class mutates a private copy; fingerprint it with the case.
+        private_keyset = job_dir / "_keyset"
+        if private_keyset.exists():
+            shutil.rmtree(private_keyset)
+        shutil.copytree(KEYSET, private_keyset)
+    before = _tree_fingerprint(job_dir)
 
     if category == "container-dir":
         container = job_dir / expected["input"]
@@ -539,9 +574,6 @@ def build_job(category: str, index: int, seed: int, work_root: Path) -> dict:
                 desc += " +redigest"
     elif category == "keyset":
         keyset = job_dir / "_keyset"
-        if keyset.exists():
-            shutil.rmtree(keyset)
-        shutil.copytree(KEYSET, keyset)
         if rng.random() < 0.2:
             desc += " | " + filesystem_mutation(keyset, rng)
         else:
@@ -564,6 +596,8 @@ def build_job(category: str, index: int, seed: int, work_root: Path) -> dict:
         "base_case": base_case,
         "argv": argv,
         "dir": str(job_dir),
+        # W11: a mutation that left every byte unchanged is not a mutant.
+        "noop": _tree_fingerprint(job_dir) == before,
     }
 
 
@@ -655,8 +689,17 @@ def run_live_job(task: tuple[str, int, int, str]) -> dict:
     work = Path(work_root)
     try:
         job = build_job(category, index, seed, work)
-        outcome = run_cli(job["argv"])
         desc = job["desc"]
+        if job["noop"]:
+            shutil.rmtree(job["dir"], ignore_errors=True)
+            return {
+                "id": "%s-%05d" % (category, index),
+                "category": category,
+                "index": index,
+                "desc": desc,
+                "noop": True,
+            }
+        outcome = run_cli(job["argv"])
         shutil.rmtree(job["dir"], ignore_errors=True)
     except Exception as error:  # noqa: BLE001 - a fuzz-tool failure is a gate failure
         outcome = {
@@ -675,9 +718,40 @@ def run_live_job(task: tuple[str, int, int, str]) -> dict:
             "category": category,
             "index": index,
             "desc": desc,
+            "noop": False,
         }
     )
     return outcome
+
+
+def run_live_batch(classes: list[str], count: int, seed: int, work_root: Path, jobs: int) -> tuple[list[dict], int]:
+    """W11: ``count`` effective (non-no-op) mutants per class, deterministically.
+
+    Indices are drawn in order 0, 1, 2, ...; no-op indices are skipped and the
+    next indices are drawn in further rounds until every class has ``count``
+    effective mutants. Returns the effective results and the number of skipped
+    no-op indices.
+    """
+    effective: dict[str, list[dict]] = {category: [] for category in classes}
+    next_index = {category: 0 for category in classes}
+    skipped = 0
+    with multiprocessing.Pool(processes=max(1, jobs), initializer=_worker_init) as pool:
+        while True:
+            tasks = []
+            for category in classes:
+                missing = count - len(effective[category])
+                for offset in range(missing):
+                    tasks.append((category, next_index[category] + offset, seed, str(work_root)))
+                next_index[category] += max(0, missing)
+            if not tasks:
+                break
+            for item in pool.map(run_live_job, tasks):
+                if item.get("noop"):
+                    skipped += 1
+                    continue
+                effective[item["category"]].append(item)
+    results = [item for category in classes for item in effective[category]]
+    return results, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -791,15 +865,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("  CRASH %s :: %s" % (item["id"], item.get("detail", "")), file=sys.stderr)
 
         if not args.corpus_only:
-            tasks = [
-                (category, index, args.seed, str(work_root))
-                for category in classes
-                for index in range(args.count)
-            ]
-            with multiprocessing.Pool(
-                processes=max(1, args.jobs), initializer=_worker_init
-            ) as pool:
-                live_results = pool.map(run_live_job, tasks)
+            live_results, skipped_noops = run_live_batch(
+                classes, args.count, args.seed, work_root, args.jobs
+            )
             crashes = [item for item in live_results if item["crash"]]
             failures += len(crashes)
             results.extend(live_results)
@@ -807,16 +875,21 @@ def main(argv: list[str] | None = None) -> int:
             for item in live_results:
                 per_class[item["category"]] += 1
             print(
-                "crash-fuzz: %d mutants (seed %d) across %s"
+                "crash-fuzz: %d effective mutants (seed %d) across %s; %d no-op mutation(s) skipped"
                 % (
                     len(live_results),
                     args.seed,
                     ", ".join("%s=%d" % (name, per_class[name]) for name in classes),
+                    skipped_noops,
                 ),
                 file=sys.stderr,
             )
             for item in crashes[:10]:
-                print("  CRASH %s :: %s" % (item["id"], item.get("detail", "")), file=sys.stderr)
+                print(
+                    "  CRASH %s (reproduce with --seed %d) :: %s"
+                    % (item["id"], args.seed, item.get("detail", "")),
+                    file=sys.stderr,
+                )
     finally:
         if not args.keep:
             shutil.rmtree(work_root, ignore_errors=True)
@@ -855,7 +928,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     if failures:
-        print("RESULT: FAIL (%d crash(es); a crash is never an accepted rejection)" % failures)
+        print(
+            "RESULT: FAIL (%d crash(es) with seed %d; a crash is never an accepted rejection)"
+            % (failures, args.seed)
+        )
         return 1
     print("RESULT: PASS")
     return 0

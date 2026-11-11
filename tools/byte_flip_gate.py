@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
-"""H0 revision-1 gate: exhaustive byte-level bit-flip anti-verification.
+"""Byte-flip gate: exhaustive byte-level bit-flip anti-verification.
 
 For **every positive vector case** (expected verdict ``valid`` or ``erased``, and
 also the frozen candidate when present) this gate flips one bit in **every byte**
@@ -21,11 +21,12 @@ not come back with the case's accepted verdict (``valid``, or ``erased`` for an
 erased-placeholder case):
 
 * ``invalid`` - the normal rejection; counted separately.
-* ``unverifiable`` / usage error / verifier crash - also a rejection.  A mutated
-  byte can break a dependency (for example the only key-declaration record), so
-  the honest verdict is ``unverifiable`` rather than ``invalid``; this is counted
-  separately with the observed verdict, never silently folded into ``invalid``.
-  A crash means the verifier did not fail closed; it is counted separately too.
+* ``unverifiable`` / usage error - also a rejection.  A mutated byte can break a
+  dependency (for example the only key-declaration record), so the honest
+  verdict is ``unverifiable`` rather than ``invalid``; this is counted separately
+  with the observed verdict, never silently folded into ``invalid``.
+* a **verifier crash** is never a rejection: it means the verifier did not fail
+  closed, and the gate fails (V2④); each sample keeps its file, offset and bit.
 * **exempt** - a mutant that *is accepted again* is only allowed when the flipped
   byte is in a documented, signature/digest-uncovered byte class (unsigned
   records, erased placeholders, ``sigs`` metadata, ``readable/``, untrusted TSA
@@ -61,6 +62,13 @@ Exemption classes implemented here:
     end-of-central-directory are container metadata, not archived evidence; a
     metadata bit flip must not be reported as invalid evidence.  Bytes of the
     archived entry payloads are *not* exempt.
+``tsr-digest-algorithms``, ``tsr-non-signer-certificate``, ``tsr-revocation-info``, ``tsr-unsigned-attributes``
+    W8: a ``.tsr`` flip (with the attestation digest re-synchronised so it reaches
+    DER decoding) is exempt only inside one of these four DER fields, which no
+    §12.2 check reads beyond strict DER (check 1); the byte ranges are computed
+    from the receipt structure and listed per case in
+    ``vectors/GATE-3-EXCEPTIONS.md``. Every other accepted ``.tsr`` flip is a
+    survivor; there is no blanket ``.tsr`` exemption.
 
 The tool imports the verifier package in-process (the same check path the
 ``hyphaweave-verify`` CLI executes) and caches the verified key set between
@@ -128,11 +136,27 @@ EXEMPT_REASONS = {
         "a zip entry under readable/ is never decompressed, CRC-checked, hashed or counted "
         "(spec §11.8/§11.9): flipping its payload bytes cannot change any verdict"
     ),
-    "tsr-unchecked-metadata": (
-        "a TSA receipt contains DER fields outside every §12.2 check (the SignedData "
-        "digestAlgorithms set and any certificate that is not the located signer); the "
-        "receipt bytes that matter are cryptographically covered or explicitly checked, "
-        "and a mutation of the remaining fields cannot change the verdict"
+    # W8: no blanket .tsr exemption. Each class below names one DER field of the
+    # receipt that no §12.2 check reads beyond check 1 (strict DER, decodable);
+    # the byte ranges per case are listed in vectors/GATE-3-EXCEPTIONS.md.
+    "tsr-digest-algorithms": (
+        "SignedData.digestAlgorithms: RFC 5652 lists the signers' digest algorithms "
+        "here, but §12.2 constrains only the signer's own digestAlgorithm (check 5); a "
+        "flip that keeps the SET OF strict DER and sorted cannot change a verdict"
+    ),
+    "tsr-non-signer-certificate": (
+        "a certificate in SignedData.certificates other than the located signer "
+        "certificate: §12.2 checks 7, 8, 11, 12 and 15 read only the signer "
+        "certificate; another certificate is only required to be strict DER and "
+        "decodable (check 1)"
+    ),
+    "tsr-revocation-info": (
+        "SignedData.crls: H0 performs no revocation checking of the TSA "
+        "certificate; the entries are only required to be strict DER (check 1)"
+    ),
+    "tsr-unsigned-attributes": (
+        "SignerInfo.unsignedAttrs: outside the CMS signature and read by no §12.2 "
+        "check; only required to be strict DER (check 1)"
     ),
 }
 
@@ -586,6 +610,91 @@ def classify_non_invalid(
     return None
 
 
+_TSR_RANGES_CACHE: dict[bytes, list[tuple[int, int, str]]] = {}
+
+
+def tsr_exempt_ranges(raw: bytes) -> list[tuple[int, int, str]]:
+    """W8: the byte ranges of a receipt that no §12.2 check reads beyond check 1.
+
+    Returns ``(start, end, class)`` for the content of ``SignedData.digestAlgorithms``,
+    of every certificate in ``SignedData.certificates`` that is not the located
+    signer certificate, of ``SignedData.crls`` and of ``SignerInfo.unsignedAttrs``.
+    Every other receipt byte is evidence: an accepted flip there is a survivor.
+    """
+    cached = _TSR_RANGES_CACHE.get(raw)
+    if cached is not None:
+        return cached
+    from asn1crypto import tsp
+
+    def header(position: int) -> tuple[int, int, int]:
+        tag = raw[position]
+        length = raw[position + 1]
+        cursor = position + 2
+        if length & 0x80:
+            count = length & 0x7F
+            length = int.from_bytes(raw[cursor : cursor + count], "big")
+            cursor += count
+        return tag, cursor, cursor + length
+
+    def children(start: int, end: int) -> list[tuple[int, int, int, int]]:
+        result = []
+        position = start
+        while position < end:
+            tag, body, after = header(position)
+            result.append((tag, position, body, after))
+            position = after
+        return result
+
+    ranges: list[tuple[int, int, str]] = []
+    _tag, body, end = header(0)
+    token = children(body, end)[1]
+    explicit = children(token[2], token[3])[1]
+    signed_data = children(explicit[2], explicit[3])[0]
+    fields = children(signed_data[2], signed_data[3])
+    response = tsp.TimeStampResp.load(raw)
+    content = response["time_stamp_token"]["content"]
+    sid = content["signer_infos"][0]["sid"]
+    for tag, start, inner, after in fields:
+        if tag == 0x31 and start == fields[1][1]:
+            ranges.append((inner, after, "tsr-digest-algorithms"))
+        elif tag == 0xA0:
+            for index, (_ctag, cstart, _cinner, cafter) in enumerate(children(inner, after)):
+                choice = content["certificates"][index]
+                certificate = choice.chosen if choice.name == "certificate" else None
+                is_signer = (
+                    certificate is not None
+                    and sid.name == "issuer_and_serial_number"
+                    and certificate.serial_number == sid.chosen["serial_number"].native
+                    and certificate.issuer.dump() == sid.chosen["issuer"].dump()
+                )
+                if not is_signer:
+                    ranges.append((cstart, cafter, "tsr-non-signer-certificate"))
+        elif tag == 0xA1:
+            ranges.append((inner, after, "tsr-revocation-info"))
+        elif tag == 0x31:
+            signer_info = children(inner, after)[0]
+            for stag, _sstart, sinner, safter in children(signer_info[2], signer_info[3]):
+                if stag == 0xA1:
+                    ranges.append((sinner, safter, "tsr-unsigned-attributes"))
+    _TSR_RANGES_CACHE[raw] = ranges
+    return ranges
+
+
+def classify_tsr(case_id: str, rel: str, raw: bytes, offset: int) -> str | None:
+    """W8: the exemption class of an accepted ``.tsr`` flip, or None (survivor)."""
+    del case_id, rel  # the classification depends only on the receipt structure
+    try:
+        ranges = tsr_exempt_ranges(raw)
+    except (ValueError, TypeError, KeyError, IndexError):
+        # An original that does not decode has no exempt field: every
+        # accepted flip of it is a survivor.
+        return None
+    for start, end, name in ranges:
+        if start <= offset < end:
+            return name
+    return None
+
+
 def classify_zip(
     offset: int, payload_ranges: list[tuple[int, int, str]]
 ) -> str | None:
@@ -698,7 +807,7 @@ def process_case(
             report = runner.run(["record", str(temp_path)] + args)
             verdict = report.get("verdict")
             if verdict != accepted:
-                note_outcome(verdict, report, None, {})
+                note_outcome(verdict, report, None, {"file": expected["input"], "offset": offset, "bit": offset % 8})
                 continue
             exemption = classify_non_invalid(
                 case=expected,
@@ -774,7 +883,7 @@ def process_case(
                         path.write_bytes(original)
                 verdict = report.get("verdict")
                 if verdict != accepted:
-                    note_outcome(verdict, report, None, {})
+                    note_outcome(verdict, report, None, {"file": rel, "offset": offset, "bit": offset % 8})
                     continue
                 exemption = classify_non_invalid(
                     case=expected,
@@ -786,10 +895,11 @@ def process_case(
                     verdict=verdict,
                 )
                 if exemption is None and is_tsr:
-                    # V2c: with the attestation digest synchronised, a surviving
-                    # .tsr flip can only be in DER the verification profile does
-                    # not cover (unsigned/unchecked metadata).
-                    exemption = "tsr-unchecked-metadata"
+                    # W8: no blanket .tsr exemption. Only the byte positions
+                    # listed (with a reason each) in TSR_EXEMPT_OFFSETS and
+                    # vectors/GATE-3-EXCEPTIONS.md are exempt; every other
+                    # accepted .tsr flip is a survivor.
+                    exemption = classify_tsr(case_id, rel, original, offset)
                 note_outcome(
                     verdict,
                     report,
@@ -810,7 +920,7 @@ def process_case(
         report = runner.run(["container", str(temp_zip)] + _container_args(args))
         verdict = report.get("verdict")
         if verdict != accepted:
-            note_outcome(verdict, report, None, {})
+            note_outcome(verdict, report, None, {"file": expected["input"], "offset": offset, "bit": offset % 8})
             continue
         exemption = classify_zip(offset, payload_ranges)
         if exemption is None and expected.get("verdict") == "erased":

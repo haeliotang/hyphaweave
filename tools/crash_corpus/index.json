@@ -1,5 +1,5 @@
 {
-  "case_count": 145,
+  "case_count": 146,
   "cases": [
     {
       "base_case": "container/previous-zip-valid",
@@ -1733,6 +1733,17 @@
       "overlay": [
         "container/signatures/manifest.sig.json",
         "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "S1-FIX3 recheck crash_fuzz --seed 777 tsa-00048: pem:der-content@12 (a --tsa-trust certificate whose version field is out of range; cryptography InvalidVersion). S1-FIX4 W4: a usage error, exit 2",
+      "file_id": "tsa-s777-00048",
+      "index": 48,
+      "overlay": [
+        "tsa.crt.pem"
       ]
     }
   ],
