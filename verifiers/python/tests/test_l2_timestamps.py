@@ -12,7 +12,7 @@ import re
 import pytest
 
 from hyphaweave_verify import canonical, encoding, timestamps
-from hyphaweave_verify.errors import WeaveError
+from hyphaweave_verify.errors import UsageError, WeaveError
 
 from conftest import VECTORS
 
@@ -191,9 +191,10 @@ def test_renewal_chain_broken() -> None:
 def test_trust_anchor_parsing() -> None:
     anchors = _anchors(_case("l2-valid"))
     assert len(anchors) == 1
-    with pytest.raises(WeaveError) as raised:
+    # W4/§14.1: malformed --tsa-trust input is a usage error, never an empty
+    # anchor set.
+    with pytest.raises(UsageError):
         timestamps.parse_trust_anchors(b"not a pem bundle")
-    assert raised.value.code == "E_TS_UNTRUSTED"
 
 
 @pytest.mark.skipif(not (LEVELS / "l2-valid").is_dir(), reason="L2 fixtures absent")

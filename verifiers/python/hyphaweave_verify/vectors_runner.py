@@ -43,6 +43,7 @@ from . import container as container_module
 from . import report as report_module
 from . import verifier
 from .errors import CheckSkipper, UsageError, WeaveError
+from .timestamps import load_trust_anchor_file
 from .report import (
     LIMITATION_OFFLINE_CONTEXT,
     limitation_list,
@@ -185,7 +186,7 @@ def _run_case(
     keyset_loaded, keyset_views = _load_keyset(case_arguments)
     tsa_trust = default_tsa_trust
     if case_arguments.tsa_trust is not None:
-        tsa_trust = case_arguments.tsa_trust.read_bytes()
+        tsa_trust = load_trust_anchor_file(case_arguments.tsa_trust)
     input_path = _case_input_path(case_dir, expected)
 
     if target == "record":

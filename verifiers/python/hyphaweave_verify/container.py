@@ -36,6 +36,7 @@ from . import (
     verifier,
     zipread,
 )
+from . import errors as report_errors
 from .errors import CheckSkipper, UsageError, WeaveError
 from .report import (
     LIMITATION_ERASED_PLACEHOLDER,
@@ -356,9 +357,9 @@ def _read_zip_container(path: Path) -> ContainerInput:
     actual_total = 0
     try:
         with path.open("rb") as handle:
-            # V7/L7: the §13 entry-count/declared-total limits are checked by the
-            # parser before the remaining structural rules, so a zip that is both
-            # over-limit and structurally invalid reports the size limit.
+            # V7/W7: the parser locates the EOCD, frames the central directory,
+            # checks the §13 limits and only then applies the remaining
+            # structural rules (including rule 4 for every entry, W2).
             archive = zipread.parse_zip(
                 handle,
                 max_entries=MAX_CONTAINER_ENTRIES,
@@ -367,19 +368,10 @@ def _read_zip_container(path: Path) -> ContainerInput:
             for entry in archive.entries:
                 name = entry.name
                 if entry.is_directory:
-                    if entry.uncompressed_size or entry.compressed_size:
-                        raise zipread.ZipStructureError(
-                            "a directory entry carries data"
-                        )
+                    # W2: §11.9 rule 4 (entry classes) is enforced by the shared
+                    # parser for every entry, target and previous alike.
                     directory_entries.add(name.rstrip("/"))
                     continue
-                if entry.external_attr & 0x10 and entry.uncompressed_size:
-                    # DOS directory attribute on an entry that carries data (T6).
-                    raise zipread.ZipStructureError(
-                        "a DOS directory-attribute entry carries data"
-                    )
-                if entry.flags & zipread.FLAG_ENCRYPTED:
-                    raise zipread.ZipStructureError("encrypted entries are not supported")
                 if stat.S_ISLNK(entry.unix_mode):
                     error = error or "E_CONTAINER_ENTRY"
                     continue
@@ -607,6 +599,13 @@ def verify_container(
     active_skipper = skipper if skipper is not None else CheckSkipper()
     keyset_loaded = list(keyset_records)
     keyset_verified = list(keyset_views)
+    if previous_container is not None:
+        _check_previous_path(previous_container)
+    if tsa_trust is not None:
+        # W4/§14.1: --tsa-trust is operator input exactly like --keys: a file
+        # that is not a bundle of well-formed PEM certificates is a usage error
+        # (exit 2, no report), decided before any container stage runs.
+        timestamps_module.parse_trust_anchors(tsa_trust)
     container_input = read_container(path)
     container: dict[str, Any] = _empty_container_report()
     errors: list[str] = []
@@ -791,12 +790,9 @@ def verify_container(
     # deterministic container check order is unchanged.
     trust_fingerprints = None
     if tsa_trust is not None:
-        from .timestamps import parse_trust_anchors
-
-        try:
-            trust_fingerprints = parse_trust_anchors(tsa_trust)
-        except WeaveError:
-            trust_fingerprints = frozenset()
+        # W4/§14.1: the anchors were validated as operator input before the
+        # pipeline started; parsing them again cannot fail here.
+        trust_fingerprints = timestamps_module.parse_trust_anchors(tsa_trust)
     archive = verify_timestamp_archive(
         listed=[
             {"path": entry.path, "digest": entry.digest, "renews": entry.renews}
@@ -811,13 +807,6 @@ def verify_container(
             if _TIMESTAMP_FILE.match(path)
         ),
     )
-    container["timestamps"] = [
-        result.to_report(index) for index, result in enumerate(archive.results)
-    ]
-    container["anchor_verified"] = bool(
-        manifest.level == "L2" and archive.anchor_verified
-    )
-
     # Rescue evidence keeps every verified receipt together with its
     # accuracy; the compromise rule is genTime + accuracy < effective_at (strict).
     verified_timestamps: tuple[VerifiedTimestamp, ...] = tuple(
@@ -859,17 +848,51 @@ def verify_container(
         context_views=keyset_verified,
     )
 
+    def _finish_after_records() -> ContainerVerification:
+        """Report a container whose pipeline stopped after the record phase.
+
+        W5/§14.5: a container-level invalid error stops the pipeline at the
+        stage where it is found; later stages are not run, so they contribute
+        no error, no timestamp entry and no limitation (the timestamp report
+        fields keep their defaults). The record verdicts already produced are
+        reported as usual.
+        """
+        _collect_record_limitations(record_views, limitations)
+        return _finish_container(
+            container_input,
+            container,
+            errors,
+            notices,
+            record_views,
+            limitations,
+            active_skipper,
+            manifest_context_trusted=manifest_context_trusted,
+            **finish_flags,
+        )
+
+    def _stops(codes: Iterable[str]) -> bool:
+        """Whether a stage's errors stop the container pipeline (§14.5)."""
+        return any(
+            report_errors.ERROR_CODES.get(code) == report_errors.EFFECT_INVALID
+            and not active_skipper.skip_error(code)
+            for code in codes
+        )
+
     # Step 8: cross-record state rules.
     container_errors_from_state, state_notices = _cross_record_checks(record_views)
+    notices.extend(state_notices)
     if container_errors_from_state:
         errors.extend(container_errors_from_state)
-    notices.extend(state_notices)
+        if _stops(container_errors_from_state):
+            return _finish_after_records()
 
     # Step 9: blobs.
     try:
         _check_blobs(manifest, container_input)
     except WeaveError as error:
         errors.append(error.code)
+        if _stops([error.code]):
+            return _finish_after_records()
 
     # Step 10: previous manifest chain.
     try:
@@ -877,33 +900,54 @@ def verify_container(
             manifest,
             container_input,
             previous_container,
-            keyset_verified,
+            _PreviousLinkContext.build(
+                listing.records, keyset_verified, record_views
+            )
+            if previous_container is not None
+            else None,
             finish_flags,
         )
     except WeaveError as error:
         errors.append(error.code)
-
-
-    # Step 11: reported timestamp errors (verification was computed early for
-    # the compromise rescue; the deterministic report order is kept here).
+        if _stops([error.code]):
+            return _finish_after_records()
+    # Step 11: timestamps (verification was computed early for the compromise
+    # rescue; the report fields and errors belong to this stage).
+    container["timestamps"] = [
+        result.to_report(index) for index, result in enumerate(archive.results)
+    ]
+    container["anchor_verified"] = bool(
+        manifest.level == "L2" and archive.anchor_verified
+    )
     for error_code in archive.errors:
         if error_code not in errors:
             errors.append(error_code)
 
+    return _finish_after_records()
 
-    # Record-level limitations that apply to what was seen.
-    _collect_record_limitations(record_views, limitations)
-    return _finish_container(
-        container_input,
-        container,
-        errors,
-        notices,
-        record_views,
-        limitations,
-        active_skipper,
-        manifest_context_trusted=manifest_context_trusted,
-        **finish_flags,
-    )
+
+def _check_previous_path(previous_container: Path) -> None:
+    """W4/§14.1: the ``--previous`` path is operator input checked up front.
+
+    A path that does not exist or cannot be opened (a file that cannot be
+    opened for reading, a directory that cannot be listed) is a usage/IO error
+    naming the path: exit 2, no report. An openable path is evidence for the
+    chain link and is judged at step (10) (§11.5, ``E_MANIFEST_CHAIN``).
+    """
+    if not previous_container.exists():
+        raise UsageError("--previous %s does not exist" % previous_container)
+    try:
+        if previous_container.is_dir():
+            with os.scandir(previous_container) as listing:
+                next(iter(listing), None)
+        else:
+            with previous_container.open("rb"):
+                pass
+    except OSError as error:
+        raise UsageError(
+            "--previous %s cannot be opened: %s"
+            % (previous_container, error.strerror or error)
+        ) from error
 
 
 def _empty_container_report() -> dict[str, Any]:
@@ -935,6 +979,7 @@ def _finish_container(
     previous_manifest_declared: bool = False,
     previous_signature_verified: bool = False,
     previous_content_unverified: bool = False,
+    previous_context_trusted: bool = False,
     placeholder_seen: bool = False,
     labels_seen: bool = False,
 ) -> ContainerVerification:
@@ -979,8 +1024,9 @@ def _finish_container(
         limitations.append(LIMITATION_ERASED_PLACEHOLDER)
     if labels_seen:
         limitations.append(LIMITATION_LABELS_ARE_CLAIMS)
-    if manifest_context_trusted:
-        # T10: the single TOFU predicate also covers the manifest signature.
+    if manifest_context_trusted or previous_context_trusted:
+        # T10: the single TOFU predicate also covers the manifest signature;
+        # W1: and a supplied previous's manifest signature verified at step (10).
         limitations.append(LIMITATION_TOFU)
     entries = []
     for view in record_views:
@@ -1351,13 +1397,92 @@ def _check_blobs(manifest: manifest_module.Manifest, container_input: ContainerI
         raise WeaveError("E_MANIFEST_BLOB", "blobs/ contains a file not listed in the manifest")
 
 
+@dataclass(frozen=True)
+class _PreviousLinkContext:
+    """W1/§11.5: the target container's verification context for the link.
+
+    ``candidates``/``sources`` are the §11.3 required-key material of the
+    target (keyset plus the target's own ``weave.key.declared`` /
+    ``weave.key.rotated`` records), exactly as for the target manifest
+    signature. ``key_state`` is the target's final key-lifecycle state (valid
+    records only, keyset included) and ``trusted`` the key ids trusted in the
+    target's final trust closure: a valid declaration (keyset root, or a
+    context declaration admitted by the closure), or the ``old_key`` of a valid
+    rotation record that lists ``old_public_key`` and whose ``new_key`` has a
+    valid declaration. Declarations inside the previous container itself are
+    never part of this context.
+    """
+
+    candidates: dict[str, bytes]
+    sources: dict[str, str]
+    key_state: keys_module.KeyState
+    trusted: frozenset[str]
+
+    @classmethod
+    def build(
+        cls,
+        container_records: list[verifier.LoadedRecord],
+        keyset_views: list[verifier.RecordView],
+        record_views: list[verifier.RecordView],
+    ) -> "_PreviousLinkContext":
+        candidates, sources = _candidate_manifest_keys(container_records, keyset_views)
+        context = verifier.Context()
+        for view in keyset_views:
+            context.register(view)
+        for view in record_views:
+            context.register(view)
+        context.rebuild()
+        key_state = context.key_state
+        declared = frozenset(key_state.declarations)
+        rotated_old = frozenset(
+            rotation.old_key
+            for rotation in key_state.rotations
+            if rotation.old_public_key is not None and rotation.new_key in declared
+        )
+        return cls(
+            candidates=candidates,
+            sources=sources,
+            key_state=key_state,
+            trusted=declared | rotated_old,
+        )
+
+
 def _check_previous_manifest(
     manifest: manifest_module.Manifest,
     container_input: ContainerInput,
     previous_container: Path | None,
-    keyset_views: list[verifier.RecordView],
+    link_context: "_PreviousLinkContext | None",
     finish_flags: dict[str, bool],
 ) -> None:
+    """Step 10 (§11.5), in the fixed W5 order.
+
+    When ``--previous`` is supplied, its identity is read and its signature
+    verified first (W1): that outcome alone decides
+    ``L_PREVIOUS_CONTENT_UNVERIFIED`` and the suppression of the
+    ``*_PREVIOUS_SIG_UNVERIFIED`` pair, whatever else fails in this stage. The
+    stage then reports its first failing check: embedded-manifest size,
+    ``previous_manifest`` null versus present, the embedded manifest, the
+    supplied previous's own failure, and finally the supplied digest
+    comparison.
+    """
+    supplied_digest: str | None = None
+    supplied_error: WeaveError | None = None
+    if previous_container is not None:
+        assert link_context is not None
+        outcome: dict[str, bool] = {}
+        try:
+            supplied_digest = _read_previous_identity(
+                previous_container, link_context, outcome
+            )
+        except WeaveError as error:
+            supplied_error = error
+        else:
+            _mark_previous_verified(finish_flags)
+        if outcome.get("context_trusted"):
+            # W1/§14.9: a previous-signature equation verified with context
+            # material is context-trusted (TOFU), even if the entry then fails
+            # the trust or key-state rule (same as N_KEY_TOFU on records).
+            finish_flags["previous_context_trusted"] = True
     if "previous/manifest.json" in container_input.oversized:
         # A-L7/T16: the embedded previous manifest exceeded MAX_MANIFEST_BYTES;
         # it is an E_JSON_SIZE container error at step 10, after the record pass.
@@ -1365,10 +1490,6 @@ def _check_previous_manifest(
             container_input.oversized["previous/manifest.json"],
             "embedded previous manifest exceeds its size limit",
         )
-    if previous_container is not None and not previous_container.exists():
-        # S6/F15/§11.5: a missing --previous path is a usage/IO error (exit 2),
-        # checked before any chain verdict.
-        raise UsageError("--previous container does not exist")
     embedded = container_input.files.get("previous/manifest.json")
     if manifest.previous_manifest_digest is None:
         if embedded is not None:
@@ -1384,13 +1505,8 @@ def _check_previous_manifest(
                 "previous_manifest is null but previous/ contains a manifest",
             )
         if previous_container is not None:
-            # V3/§11.5: read and verify the supplied previous identity first: a
-            # readable non-container or unreadable previous is the reported chain
-            # reason. A verified but unusable link (the current manifest claims a
-            # null chain) is itself a chain error, and the V3 limitation is still
-            # reported because the previous identity was read and verified.
-            _read_previous_identity(previous_container, keyset_views)
-            _mark_previous_verified(finish_flags)
+            # V3/§11.5: a supplied previous with a null chain is a chain error
+            # whether or not the supplied identity could be verified.
             raise WeaveError(
                 "E_MANIFEST_CHAIN",
                 "a previous container was supplied but previous_manifest is null",
@@ -1427,13 +1543,12 @@ def _check_previous_manifest(
         raise WeaveError(
             "E_MANIFEST_CHAIN", "embedded previous manifest digest does not match"
         )
-    if previous_container is not None:
-        supplied = _read_previous_identity(previous_container, keyset_views)
-        _mark_previous_verified(finish_flags)
-        if supplied != manifest.previous_manifest_digest:
-            raise WeaveError(
-                "E_MANIFEST_CHAIN", "--previous manifest digest does not match"
-            )
+    if supplied_error is not None:
+        raise supplied_error
+    if previous_container is not None and supplied_digest != manifest.previous_manifest_digest:
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous manifest digest does not match"
+        )
 
 
 def _mark_previous_verified(finish_flags: dict[str, bool]) -> None:
@@ -1454,21 +1569,30 @@ _PREVIOUS_ATTESTATION = "signatures/manifest.sig.json"
 
 
 def _read_previous_identity(
-    previous_container: Path, keyset_views: list[verifier.RecordView]
+    previous_container: Path,
+    link_context: _PreviousLinkContext,
+    outcome: dict[str, bool] | None = None,
 ) -> str:
     """Read, validate and verify a supplied previous container's chain identity.
 
     V3/§11.5: exactly two members are read from the supplied previous container
     (directory or zip): ``manifest.json`` and its attestation
-    ``signatures/manifest.sig.json``, each bounded by ``MAX_MANIFEST_BYTES``. The
-    zip is parsed for structure/framing/§13 limits only; every other member is
-    ignored. The §2.2 manifest digest is computed and the attestation's manifest
-    signature is verified with keys from the supplied keyset only (no previous
-    record context). Every read/parse/digest/signature failure is
-    ``E_MANIFEST_CHAIN``; a missing path stays a usage error.
+    ``signatures/manifest.sig.json``, each bounded by ``MAX_MANIFEST_BYTES``.
+    The zip is parsed with the shared parser (every §11.9 framing and
+    structural rule, W2); every other member is otherwise ignored.
+
+    W1: the attestation's signatures are verified in the **target** container's
+    verification context (:class:`_PreviousLinkContext`): every ``ed25519``
+    entry must be made by a §11.3 required key of the target context, verify,
+    belong to a key trusted in the target's final trust closure, and pass the
+    §9.4 lifecycle rules at the previous manifest's ``created_at`` (no timestamp
+    evidence is read from the previous container, so a compromise revocation of
+    the signing key always breaks the link). Returns the previous manifest
+    digest; ``outcome["context_trusted"]`` is set as soon as the signature
+    equations verified with key material from the context rather than the
+    keyset (TOFU), even if a later rule fails. Every failure is
+    ``E_MANIFEST_CHAIN``.
     """
-    if not previous_container.exists():
-        raise UsageError("--previous container does not exist")
     try:
         manifest_bytes, attestation_bytes = _read_previous_members(previous_container)
         try:
@@ -1482,7 +1606,7 @@ def _read_previous_identity(
         if not isinstance(value, dict):
             raise WeaveError("E_MANIFEST_CHAIN", "--previous manifest is malformed")
         try:
-            manifest_module.validate_manifest(value)
+            previous_manifest = manifest_module.validate_manifest(value)
         except WeaveError as error:
             raise WeaveError(
                 "E_MANIFEST_CHAIN", "--previous manifest is not a valid manifest"
@@ -1509,13 +1633,36 @@ def _read_previous_identity(
                 "E_MANIFEST_CHAIN",
                 "--previous manifest attestation digest does not match",
             )
-        candidates, _sources = _candidate_manifest_keys([], keyset_views)
         try:
-            _verify_manifest_signatures(attestation.signatures, digest, candidates)
+            signer_keys = _verify_manifest_signatures(
+                attestation.signatures, digest, link_context.candidates
+            )
         except WeaveError as error:
             raise WeaveError(
                 "E_MANIFEST_CHAIN", "--previous manifest signature does not verify"
             ) from error
+        if outcome is not None:
+            outcome["context_trusted"] = any(
+                link_context.sources.get(key) == "context" for key in signer_keys
+            )
+        for key in signer_keys:
+            if key not in link_context.trusted:
+                raise WeaveError(
+                    "E_MANIFEST_CHAIN",
+                    "--previous manifest signing key is not trusted in the target context",
+                )
+            try:
+                link_context.key_state.check_signature_effects(
+                    key,
+                    previous_manifest.created_at,
+                    verified_timestamps=(),
+                    timestamp_evidence_present=False,
+                )
+            except WeaveError as error:
+                raise WeaveError(
+                    "E_MANIFEST_CHAIN",
+                    "--previous manifest signing key was not usable at its created_at",
+                ) from error
     except UsageError:
         raise
     except WeaveError as error:

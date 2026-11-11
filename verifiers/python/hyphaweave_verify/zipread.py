@@ -92,6 +92,9 @@ class ZipEntry:
     external_attr: int
     is_directory: bool
     has_data_descriptor: bool
+    #: W7: central-directory fields judged in phase 4 (after the §13 limits).
+    version_needed: int = 20
+    disk_number_start: int = 0
 
     @property
     def unix_mode(self) -> int:
@@ -169,9 +172,21 @@ class _EndRecord:
     cd_offset: int
     zip64_eocd_offset: int | None
     has_zip64: bool
+    #: W7: rule-3 consistency/single-volume violations found while locating the
+    #: records. They are reported in phase 4, after the §13 limits.
+    deferred: tuple[str, ...] = ()
 
 
 def _read_end_records(handle: BinaryIO, eocd_offset: int) -> _EndRecord:
+    """Phase 1: locate the EOCD and, when present, the ZIP64 locator and record.
+
+    Only what is needed to *find* the central directory fails here
+    (``E_CONTAINER_ZIP``): the EOCD signature, a ZIP64 sentinel without a
+    locator, and a locator that does not point at a well-formed ZIP64 EOCD
+    record ending at the locator. The single-volume and count/size consistency
+    rules of §11.9 rule 3 are collected in ``deferred`` and judged in phase 4
+    (W7), after the §13 limits.
+    """
     handle.seek(eocd_offset)
     record = _read_exact(handle, _EOCD_SIZE)
     if record[:4] != END_OF_CENTRAL_DIRECTORY:
@@ -182,9 +197,10 @@ def _read_end_records(handle: BinaryIO, eocd_offset: int) -> _EndRecord:
     count_total = struct.unpack_from("<H", record, 10)[0]
     cd_size = struct.unpack_from("<I", record, 12)[0]
     cd_offset = struct.unpack_from("<I", record, 16)[0]
+    deferred: list[str] = []
     # U9/§11.9 rule 3: single-volume archives only; both EOCD disk numbers are 0.
     if this_disk != 0 or central_directory_disk != 0:
-        raise ZipStructureError("EOCD disk numbers are non-zero (multi-volume archive)")
+        deferred.append("EOCD disk numbers are non-zero (multi-volume archive)")
     needs_zip64 = (
         count_disk == 0xFFFF
         or count_total == 0xFFFF
@@ -200,17 +216,19 @@ def _read_end_records(handle: BinaryIO, eocd_offset: int) -> _EndRecord:
         if needs_zip64:
             raise ZipStructureError("ZIP64 sentinel without a ZIP64 locator")
         if count_disk != count_total:
-            raise ZipStructureError("EOCD disk and total entry counts differ")
-        return _EndRecord(count_disk, count_total, cd_size, cd_offset, None, False)
+            deferred.append("EOCD disk and total entry counts differ")
+        return _EndRecord(
+            count_disk, count_total, cd_size, cd_offset, None, False, tuple(deferred)
+        )
     disk_number = struct.unpack_from("<I", locator, 4)[0]
     zip64_eocd_offset = struct.unpack_from("<Q", locator, 8)[0]
     total_disks = struct.unpack_from("<I", locator, 16)[0]
     # U9: the locator names disk 0 for the ZIP64 EOCD and a single-volume
     # archive has exactly one disk.
     if disk_number != 0:
-        raise ZipStructureError("ZIP64 locator names a non-zero disk")
+        deferred.append("ZIP64 locator names a non-zero disk")
     if total_disks != 1:
-        raise ZipStructureError("ZIP64 locator is not a single-volume archive")
+        deferred.append("ZIP64 locator is not a single-volume archive")
     if zip64_eocd_offset + _ZIP64_EOCD_MIN_SIZE > locator_offset:
         raise ZipStructureError("ZIP64 EOCD offset is outside the archive")
     handle.seek(zip64_eocd_offset)
@@ -231,19 +249,19 @@ def _read_end_records(handle: BinaryIO, eocd_offset: int) -> _EndRecord:
     zip64_cd_size = struct.unpack_from("<Q", zip64, 40)[0]
     zip64_cd_offset = struct.unpack_from("<Q", zip64, 48)[0]
     if disk != 0 or cd_disk != 0:
-        raise ZipStructureError("ZIP64 EOCD names a non-zero disk")
+        deferred.append("ZIP64 EOCD names a non-zero disk")
     if (version_made & 0xFF) > 63 or version_needed > 63:
-        raise ZipStructureError("ZIP64 version fields are out of range")
+        deferred.append("ZIP64 version fields are out of range")
     if zip64_count_disk != zip64_count_total:
-        raise ZipStructureError("ZIP64 disk and total entry counts differ")
+        deferred.append("ZIP64 disk and total entry counts differ")
     if count_total not in (0xFFFF, zip64_count_total):
-        raise ZipStructureError("EOCD entry count contradicts the ZIP64 EOCD")
+        deferred.append("EOCD entry count contradicts the ZIP64 EOCD")
     if count_disk not in (0xFFFF, zip64_count_total):
-        raise ZipStructureError("EOCD disk entry count contradicts the ZIP64 EOCD")
+        deferred.append("EOCD disk entry count contradicts the ZIP64 EOCD")
     if cd_size not in (0xFFFFFFFF, zip64_cd_size):
-        raise ZipStructureError("EOCD central-directory size contradicts the ZIP64 EOCD")
+        deferred.append("EOCD central-directory size contradicts the ZIP64 EOCD")
     if cd_offset not in (0xFFFFFFFF, zip64_cd_offset):
-        raise ZipStructureError("EOCD central-directory offset contradicts the ZIP64 EOCD")
+        deferred.append("EOCD central-directory offset contradicts the ZIP64 EOCD")
     return _EndRecord(
         count_disk=zip64_count_total,
         count_total=zip64_count_total,
@@ -251,6 +269,7 @@ def _read_end_records(handle: BinaryIO, eocd_offset: int) -> _EndRecord:
         cd_offset=zip64_cd_offset,
         zip64_eocd_offset=zip64_eocd_offset,
         has_zip64=True,
+        deferred=tuple(deferred),
     )
 
 
@@ -307,14 +326,36 @@ def _resolve_zip64_central(
     raise ZipStructureError("ZIP64 sentinel without a ZIP64 extra field")
 
 
+@dataclass(frozen=True)
+class _CentralDirectory:
+    """Phase 2 result: the framed entries plus the §13 quantities (W7)."""
+
+    entries: list[ZipEntry]
+    count: int
+    declared_total: int
+
+
 def _parse_central_directory(
-    handle: BinaryIO, end_record: _EndRecord
-) -> list[ZipEntry]:
+    handle: BinaryIO, end_record: _EndRecord, *, keep: int | None = None
+) -> _CentralDirectory:
+    """Phase 2: frame every central-directory record (W7).
+
+    Only the record framing fails here: the signature, the fixed and
+    variable-length parts lying inside the declared directory, the ZIP64
+    extended-information field needed to read the sizes, a decodable name, and
+    the records filling the declared directory size exactly. The per-entry
+    rules (version needed, disk start, compression method, entry classes) are
+    judged in phase 4, after the §13 limits. At most ``keep + 1`` entries are
+    stored, so an archive declaring millions of entries is framed with bounded
+    memory and still reaches the entry-count limit of phase 3.
+    """
     count = end_record.count_total
     cd_offset = end_record.cd_offset
     end = cd_offset + end_record.cd_size
     entries: list[ZipEntry] = []
+    declared_total = 0
     position = cd_offset
+    parsed = 0
     for _ in range(count):
         if position + _CENTRAL_HEADER_SIZE > end:
             raise ZipStructureError("central directory entry runs past the directory")
@@ -335,40 +376,66 @@ def _parse_central_directory(
         raw_name = _read_exact(handle, name_length)
         extra = _read_exact(handle, extra_length)
         _read_exact(handle, comment_length)
-        if version_needed > 63:
-            raise ZipStructureError("unsupported zip version needed to extract")
-        if disk_number_start != 0:
-            # V6/§11.9: single-volume archives only; no entry starts on another disk.
-            raise ZipStructureError("central directory entry names a non-zero disk")
-        if method not in (METHOD_STORED, METHOD_DEFLATED) and not (flags & FLAG_ENCRYPTED):
-            raise ZipStructureError("unsupported compression method")
         uncompressed_size, compressed_size, local_offset = _resolve_zip64_central(
             uncompressed_size=uncompressed_size,
             compressed_size=compressed_size,
             local_offset=local_offset,
             extra=extra,
         )
-        entries.append(
-            ZipEntry(
-                raw_name=raw_name,
-                name=_decode_name(raw_name, flags),
-                flags=flags,
-                method=method,
-                crc=crc,
-                compressed_size=compressed_size,
-                uncompressed_size=uncompressed_size,
-                local_offset=local_offset,
-                data_offset=0,
-                entry_end=0,
-                external_attr=external_attr,
-                is_directory=raw_name.endswith(b"/"),
-                has_data_descriptor=bool(flags & FLAG_DATA_DESCRIPTOR),
+        name = _decode_name(raw_name, flags)
+        is_directory = raw_name.endswith(b"/")
+        if not is_directory and not _is_readable_entry(name):
+            declared_total += uncompressed_size
+        parsed += 1
+        if keep is None or len(entries) <= keep:
+            entries.append(
+                ZipEntry(
+                    raw_name=raw_name,
+                    name=name,
+                    flags=flags,
+                    method=method,
+                    crc=crc,
+                    compressed_size=compressed_size,
+                    uncompressed_size=uncompressed_size,
+                    local_offset=local_offset,
+                    data_offset=0,
+                    entry_end=0,
+                    external_attr=external_attr,
+                    is_directory=is_directory,
+                    has_data_descriptor=bool(flags & FLAG_DATA_DESCRIPTOR),
+                    version_needed=version_needed,
+                    disk_number_start=disk_number_start,
+                )
             )
-        )
         position += _CENTRAL_HEADER_SIZE + variable_length
     if position != end:
         raise ZipStructureError("central directory size does not match its entries")
-    return entries
+    return _CentralDirectory(entries=entries, count=parsed, declared_total=declared_total)
+
+
+def _check_entry_rules(entry: ZipEntry) -> None:
+    """Phase 4 per-entry rules: §11.9 rule 1 (version), rule 3 (disk), rule 4.
+
+    Rule 4 (entry classes) lives here, in the shared parser, so a target
+    container and a supplied previous container apply it to **every** entry
+    (W2): a directory entry carrying data, a DOS-directory-attribute entry
+    carrying data, an encrypted entry and an unsupported compression method are
+    all ``E_CONTAINER_ZIP``.
+    """
+    if entry.version_needed > 63:
+        raise ZipStructureError("unsupported zip version needed to extract")
+    if entry.disk_number_start != 0:
+        # V6/§11.9: single-volume archives only; no entry starts on another disk.
+        raise ZipStructureError("central directory entry names a non-zero disk")
+    if entry.flags & FLAG_ENCRYPTED:
+        raise ZipStructureError("encrypted entries are not supported")
+    if entry.method not in (METHOD_STORED, METHOD_DEFLATED):
+        raise ZipStructureError("unsupported compression method")
+    if entry.is_directory and (entry.uncompressed_size or entry.compressed_size):
+        raise ZipStructureError("a directory entry carries data")
+    if entry.external_attr & 0x10 and entry.uncompressed_size:
+        # DOS directory attribute on an entry that carries data (T6).
+        raise ZipStructureError("a DOS directory-attribute entry carries data")
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +530,8 @@ def _validate_local_headers(
                 external_attr=entry.external_attr,
                 is_directory=entry.is_directory,
                 has_data_descriptor=entry.has_data_descriptor,
+                version_needed=entry.version_needed,
+                disk_number_start=entry.disk_number_start,
             )
         )
     return resolved
@@ -522,20 +591,6 @@ def _validate_byte_coverage(entries: list[ZipEntry], end_record: _EndRecord) -> 
 # ---------------------------------------------------------------------------
 
 
-def declared_uncompressed_total(entries: "list[ZipEntry] | tuple[ZipEntry, ...]") -> int:
-    """Declared uncompressed bytes under §13 (V7/spec §13).
-
-    Directory entries never carry data, and ``readable/**`` entries are never
-    read, hashed or counted (§11.8/§11.9/§13), so both are excluded from the
-    declared byte total. The entry **count** still includes every zip entry.
-    """
-    return sum(
-        entry.uncompressed_size
-        for entry in entries
-        if not entry.is_directory and not _is_readable_entry(entry.name)
-    )
-
-
 def _is_readable_entry(name: str) -> bool:
     return name == "readable" or name.startswith("readable/")
 
@@ -546,40 +601,52 @@ def parse_zip(
     max_entries: int | None = None,
     max_declared_total: int | None = None,
 ) -> ZipArchive:
-    """Parse and structure-validate an archive read from ``handle``.
+    """Parse and structure-validate an archive read from ``handle`` (§11.9, W7).
 
-    ``handle`` must be seekable. Structural violations raise
-    :class:`ZipStructureError` (``E_CONTAINER_ZIP``). The §13 limits, when
-    supplied, are checked right after the central directory is parsed and
-    **before** the remaining structural rules (V7/L7: a zip that is both
-    over-limit and structurally invalid reports the size limit); they raise
-    :class:`ZipLimitError`.
+    ``handle`` must be seekable. The order is fixed (§11.9 "Order of the zip
+    checks"):
+
+    1. locate the end-of-central-directory record (and the ZIP64 records); bytes
+       after it and bytes before the first local header fail here;
+    2. frame the central directory;
+    3. the §13 entry-count and declared-total limits (:class:`ZipLimitError`,
+       reported as ``E_CONTAINER_SIZE``); nothing after this runs on failure;
+    4. every remaining structural rule: archive comment, single-volume and
+       count consistency, per-entry version / disk / method / entry class, local
+       headers versus the central directory, and byte coverage.
+
+    Phases 1, 2 and 4 raise :class:`ZipStructureError` (``E_CONTAINER_ZIP``).
     """
     handle.seek(0, 2)
     size = handle.tell()
+    # Phase 1: locate.
     if size < _EOCD_SIZE:
         raise ZipStructureError("file is too short to be a zip archive")
     eocd_offset, comment_length = _find_eocd(handle, size)
-    if comment_length != 0:
-        raise ZipStructureError("a non-empty archive comment is not accepted")
-    if eocd_offset + _EOCD_SIZE != size:
-        raise ZipStructureError("trailing bytes after the end-of-central-directory")
     end_record = _read_end_records(handle, eocd_offset)
     if end_record.cd_offset + end_record.cd_size > size:
         raise ZipStructureError("central directory extends past the end of the file")
     _check_prefix(handle, size, eocd_offset, end_record)
-    entries = _parse_central_directory(handle, end_record)
-    # V7/L7: the §13 limits run before the remaining structural rules so a zip
-    # that is both over-limit and structurally invalid reports the size limit.
-    if max_entries is not None and len(entries) > max_entries:
+    # Phase 2: central-directory framing.
+    directory = _parse_central_directory(handle, end_record, keep=max_entries)
+    # Phase 3: the §13 limits, before every remaining structural rule (V7/W7).
+    if max_entries is not None and directory.count > max_entries:
         raise ZipLimitError("zip entry count exceeds MAX_CONTAINER_ENTRIES")
     if (
         max_declared_total is not None
-        and declared_uncompressed_total(entries) > max_declared_total
+        and directory.declared_total > max_declared_total
     ):
         raise ZipLimitError(
             "declared uncompressed total exceeds MAX_CONTAINER_UNCOMPRESSED_BYTES"
         )
+    # Phase 4: the remaining structural rules.
+    if comment_length != 0:
+        raise ZipStructureError("a non-empty archive comment is not accepted")
+    if end_record.deferred:
+        raise ZipStructureError(end_record.deferred[0])
+    entries = directory.entries
+    for entry in entries:
+        _check_entry_rules(entry)
     entries = _validate_local_headers(handle, entries, end_record.cd_offset)
     _validate_byte_coverage(entries, end_record)
     return ZipArchive(entries=tuple(entries), has_zip64=end_record.has_zip64)

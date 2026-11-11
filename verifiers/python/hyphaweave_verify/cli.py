@@ -25,6 +25,7 @@ from . import report as report_module
 from . import verifier
 from .errors import CheckSkipper, UsageError, WeaveError
 from .report import LIMITATION_OFFLINE_CONTEXT, record_verdict
+from .timestamps import load_trust_anchor_file
 from .verifier import MAX_RECORD_BYTES
 
 PROGRAM = "hyphaweave-verify"
@@ -260,7 +261,9 @@ def _run_container(namespace: argparse.Namespace, skipper: CheckSkipper) -> dict
     keyset_loaded, keyset_views = _load_keyset(namespace.keys)
     tsa_trust = None
     if namespace.tsa_trust:
-        tsa_trust = Path(namespace.tsa_trust).read_bytes()
+        # W4/§14.1: unreadable or malformed anchors are a usage error naming the
+        # file (exit 2, no report), checked before any verification.
+        tsa_trust = load_trust_anchor_file(Path(namespace.tsa_trust))
     previous = Path(namespace.previous) if namespace.previous else None
     verification = container_module.verify_container(
         path,
@@ -283,7 +286,7 @@ def _run_vectors(namespace: argparse.Namespace, skipper: CheckSkipper) -> dict:
 
     default_tsa_trust = None
     if namespace.tsa_trust:
-        default_tsa_trust = Path(namespace.tsa_trust).read_bytes()
+        default_tsa_trust = load_trust_anchor_file(Path(namespace.tsa_trust))
     return vectors_runner.run_vectors(
         Path(namespace.directory), default_tsa_trust=default_tsa_trust, skipper=skipper
     )

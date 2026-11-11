@@ -990,8 +990,14 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
         raise UsageError("keyset path is not a directory")
     loaded: list[LoadedRecord] = []
     for entry in sorted(path.iterdir(), key=lambda item: item.name):
-        if not entry.is_file() or entry.suffix != ".json":
+        # W10/L6 (§14.1): every top-level entry whose name ends in ".json" is a
+        # keyset file, including names that begin with "."; one that does not
+        # resolve to a regular file (a directory, a dangling symbolic link, a
+        # special file) is an operator error, never silently skipped.
+        if not entry.name.endswith(".json"):
             continue
+        if not entry.is_file():
+            raise UsageError("keyset entry %s is not a regular file" % entry.name)
         try:
             raw = entry.read_bytes()
         except OSError as error:

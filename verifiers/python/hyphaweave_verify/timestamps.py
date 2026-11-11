@@ -44,15 +44,17 @@ import calendar
 import datetime as _datetime
 import hashlib
 import re
+import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from asn1crypto import tsp
+from asn1crypto import core as _asn1_core, tsp
 from cryptography import x509 as cryptography_x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
-from .errors import WeaveError
+from .errors import UsageError, WeaveError
 
 MAX_TIMESTAMP_BYTES = 1_048_576
 
@@ -163,20 +165,65 @@ class TimestampArchive:
         return [result for result in self.results if result.state == STATE_VERIFIED]
 
 
+#: W4/§14.1: the exception types the trust-anchor PEM loader can raise for a
+#: malformed operator file. ``load_pem_x509_certificates`` raises ``ValueError``
+#: for a missing/garbled PEM block or undecodable DER and
+#: ``cryptography.x509.InvalidVersion`` (not a ``ValueError``) for a certificate
+#: whose version field is out of range (recheck3 H4, crash_fuzz seed 777);
+#: ``UnsupportedAlgorithm`` and ``TypeError``/``OverflowError``/``UnicodeError``
+#: are the remaining parsing-class types of the cryptography API surface used
+#: here. Every one of them is a usage error (exit 2), never a crash.
+TRUST_ANCHOR_PARSE_ERRORS = (
+    ValueError,
+    TypeError,
+    OverflowError,
+    UnicodeError,
+    cryptography_x509.InvalidVersion,
+    UnsupportedAlgorithm,
+)
+
+
 def parse_trust_anchors(pem_bytes: bytes) -> frozenset[bytes]:
-    """Parse a PEM bundle of trust-anchor certificates into DER SHA-256 fingerprints."""
-    try:
-        certificates = cryptography_x509.load_pem_x509_certificates(pem_bytes)
-    except ValueError as error:
-        raise WeaveError(
-            "E_TS_UNTRUSTED", "TSA trust file is not a PEM certificate bundle"
-        ) from error
+    """Parse a PEM bundle of trust-anchor certificates into DER SHA-256 fingerprints.
+
+    W4/§14.1: ``--tsa-trust`` is operator input exactly like ``--keys``. A file
+    that is not a bundle of one or more well-formed PEM certificates is a usage
+    error (:class:`UsageError`, exit 2, no report); it is never silently treated
+    as an empty anchor set.
+    """
     from cryptography.hazmat.primitives.serialization import Encoding
 
-    return frozenset(
-        hashlib.sha256(certificate.public_bytes(Encoding.DER)).digest()
-        for certificate in certificates
-    )
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            certificates = cryptography_x509.load_pem_x509_certificates(pem_bytes)
+        fingerprints = frozenset(
+            hashlib.sha256(certificate.public_bytes(Encoding.DER)).digest()
+            for certificate in certificates
+        )
+    except TRUST_ANCHOR_PARSE_ERRORS as error:
+        raise UsageError(
+            "TSA trust file is not a bundle of well-formed PEM certificates (%s)"
+            % type(error).__name__
+        ) from error
+    if not fingerprints:
+        raise UsageError("TSA trust file contains no certificate")
+    return fingerprints
+
+
+def load_trust_anchor_file(path: Path) -> bytes:
+    """Read and validate a ``--tsa-trust`` file; usage error names the file (W4)."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise UsageError(
+            "--tsa-trust %s cannot be read: %s" % (path, error.strerror or error)
+        ) from error
+    try:
+        parse_trust_anchors(data)
+    except UsageError as error:
+        raise UsageError("--tsa-trust %s: %s" % (path, error)) from error
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -461,19 +508,40 @@ def _verify_timestamp_token_checks(
 
 
 def _parse_tst_info(tsr_bytes: bytes):
-    """Checks 1-2: strict-DER TimeStampResp, granted status, version profile.
+    """Checks 1-2 of §12.2, in the fixed W6 order.
 
-    V2/M3: §12.2 check 1 requires a *DER-encoded* TimeStampResp. Strict mode
-    rejects trailing data; re-encoding to DER and byte-comparing the result
-    rejects non-minimal length forms, BER indefinite lengths and non-DER string
-    encodings. The version profile (TSTInfo 1, SignedData 3, SignerInfo 1 or 3)
-    is also part of check 1.
+    Check 1 (``E_TS_SCHEMA``) decodes **everything** before any later check
+    runs, so a DER/structure failure anywhere in the receipt is never reported
+    as a later check's code (W6, recheck3 M2):
+
+    1a. the linear strict-DER scan of the whole file (exactly one TLV, no
+        trailing data, definite minimal lengths, canonical universal
+        primitives, sorted universal SET OF);
+    1b. the schema decode of the whole ``TimeStampResp`` (``strict=True``);
+    1c. the **DER re-encoding** of the whole parsed ``TimeStampResp`` must equal
+        the input bytes exactly (W3): asn1crypto's forced re-encoding sorts
+        every SET OF at every level (``digestAlgorithms``, ``certificates``,
+        ``crls``, ``signedAttrs``, ``unsignedAttrs``, every ``attrValues``),
+        omits DEFAULT values and re-derives every length;
+    1d. ``PKIStatusInfo.status`` is granted; the token is CMS ``SignedData``;
+        ``SignedData.version`` is 3; every ``SignerInfo.version`` is 1 or 3;
+    1e. every certificate carried in ``SignedData.certificates`` decodes as an
+        X.509 certificate, and every extension value in it is one TLV obeying the
+        universal DER rules of 1a.
+
+    Check 2: the encapsulated content type is ``id-ct-TSTInfo`` and the
+    TSTInfo bytes pass 1a-1c on their own with ``version == 1``.
     """
+    # Check 1a.
     _validate_strict_der(tsr_bytes)
+    # Check 1b.
     try:
         response = tsp.TimeStampResp.load(tsr_bytes, strict=True)
     except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "not a DER TimeStampResp") from error
+    # Check 1c: true DER re-encoding of the whole parsed object (W3).
+    _require_der_reencoding(response, tsr_bytes, "TimeStampResp")
+    # Check 1d.
     try:
         status = response["status"]["status"].native
     except _DER_ACCESS_ERRORS as error:
@@ -490,6 +558,30 @@ def _parse_tst_info(tsr_bytes: bytes):
         raise WeaveError("E_TS_SCHEMA", "SignedData has no readable version") from error
     if signed_data_version != "v3":
         raise WeaveError("E_TS_SCHEMA", "SignedData version is not 3")
+    for signer_info in signed_data["signer_infos"]:
+        try:
+            signer_info_version = signer_info["version"].native
+        except _DER_ACCESS_ERRORS as error:
+            raise WeaveError("E_TS_SCHEMA", "signerInfo has no readable version") from error
+        if signer_info_version not in ("v1", "v3"):
+            raise WeaveError("E_TS_SCHEMA", "signerInfo version is not 1 or 3")
+    # Check 1e: every carried certificate decodes (cryptography raises
+    # ValueError or InvalidVersion; both are caught by the receipt boundary
+    # *here*, before any later check).
+    certificates = signed_data["certificates"]
+    if not isinstance(certificates, _asn1_core.Void):
+        for certificate_choice in certificates:
+            if certificate_choice.name != "certificate":
+                continue
+            certificate = certificate_choice.chosen
+            _load_der_certificate(certificate.dump())
+            # An extension value is itself the DER encoding of the extension
+            # (RFC 5280 §4.1): it is one TLV obeying the universal rules of 1a.
+            extensions = certificate["tbs_certificate"]["extensions"]
+            if not isinstance(extensions, _asn1_core.Void):
+                for extension in extensions:
+                    _validate_strict_der(extension["extn_value"].contents)
+    # Check 2.
     encap = signed_data["encap_content_info"]
     if encap["content_type"].native != "tst_info":
         raise WeaveError("E_TS_SCHEMA", "timestamp token does not encapsulate TSTInfo")
@@ -502,6 +594,7 @@ def _parse_tst_info(tsr_bytes: bytes):
         raise
     except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "malformed TSTInfo") from error
+    _require_der_reencoding(tst_info, raw_content, "TSTInfo")
     try:
         version = tst_info["version"].native
     except _DER_ACCESS_ERRORS as error:
@@ -509,6 +602,149 @@ def _parse_tst_info(tsr_bytes: bytes):
     if version != "v1":
         raise WeaveError("E_TS_SCHEMA", "unsupported TSTInfo version")
     return signed_data, tst_info, raw_content
+
+
+def _load_der_certificate(der: bytes):
+    """Decode one X.509 certificate without writing library warnings to stderr.
+
+    §14.1: standard error carries usage and I/O errors only; cryptography emits
+    a deprecation warning for some decodable-but-unusual certificates (for
+    example a non-positive serial number), which must not reach the stream.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return cryptography_x509.load_der_x509_certificate(der)
+
+
+def _require_der_reencoding(value, data: bytes, label: str) -> None:
+    """W3/§12.2 check 1c: re-encoding the parsed object yields the input exactly.
+
+    This is a real DER re-encoding of the parsed schema tree
+    (:func:`_der_reencode`), not a scan: every SET OF at every level is
+    re-emitted in ascending DER order (X.690 §11.6), a DEFAULT value is omitted
+    (§11.5), every header is rebuilt with the minimal definite length, and every
+    typed primitive is rebuilt from its decoded value. The result is compared
+    with the input bytes; any difference is check 1's ``E_TS_SCHEMA``. Decoding
+    errors raised while building the lazy children are parsing-class
+    exceptions caught by the per-receipt boundary (still check 1).
+    """
+    try:
+        encoded = _der_reencode(value)
+    except _DerViolation as error:
+        raise WeaveError(
+            "E_TS_SCHEMA", "%s is not DER: %s" % (label, error)
+        ) from error
+    if encoded != data:
+        raise WeaveError(
+            "E_TS_SCHEMA", "%s is not in DER canonical form (re-encoding differs)" % label
+        )
+
+
+#: Default-value encodings per (structure class, field index), computed once.
+_DER_DEFAULT_ENCODINGS: dict[tuple[type, int], bytes] = {}
+
+
+def _der_reencode(value) -> bytes:
+    """Re-encode a parsed asn1crypto value as DER from its schema (W3).
+
+    Linear in the size of the tree (asn1crypto's own ``dump(force=True)``
+    re-derives nested contents repeatedly and costs ~100 ms per receipt, which
+    the byte-flip gate cannot afford for every flipped byte). Rules:
+
+    * ``Sequence``: fields in schema order; an absent OPTIONAL field emits
+      nothing; a field whose encoding equals its DEFAULT value is omitted;
+    * ``SequenceOf``: components in order; ``SetOf``: components sorted by their
+      encodings (X.690 §11.6);
+    * ``Choice``: the chosen alternative plus the choice's explicit tags;
+    * OCTET STRING / octet-aligned BIT STRING: the content octets as decoded
+      (their content is opaque here; the TSTInfo eContent is re-encoded on its
+      own, check 2), and a constructed string encoding is not DER;
+    * every other typed primitive: rebuilt from its decoded value;
+    * ``Any`` (an open type whose schema is unknown here, such as the value of
+      an unregistered attribute): re-emitted as decoded; its encoding was
+      checked against the universal DER rules by the scan of check 1a.
+    """
+    if isinstance(value, _asn1_core.Void):
+        return b""
+    if isinstance(value, _asn1_core.Any):
+        return value.dump()
+    if isinstance(value, _asn1_core.Choice):
+        return _der_explicit(value, _der_reencode(value.chosen))
+    if isinstance(value, _asn1_core.Set):
+        # A SET (not SET OF) with named fields never occurs in the receipt
+        # schemas outside opaque extension values; refuse rather than guess.
+        raise _DerViolation("unexpected SET with named fields")
+    if isinstance(value, _asn1_core.Sequence):
+        if value.children is None:
+            value._parse_children()
+        parts = []
+        for index, field_info in enumerate(value._fields):
+            encoded = _der_reencode(value._lazy_child(index))
+            params = field_info[2] if len(field_info) > 2 else None
+            if params and "default" in params:
+                key = (type(value), index)
+                default = _DER_DEFAULT_ENCODINGS.get(key)
+                if default is None:
+                    default = field_info[1](**params).dump()
+                    _DER_DEFAULT_ENCODINGS[key] = default
+                if encoded == default:
+                    continue
+            parts.append(encoded)
+        return _der_wrap(value, b"".join(parts), constructed=True)
+    if isinstance(value, _asn1_core.SequenceOf):
+        components = [_der_reencode(child) for child in value]
+        if isinstance(value, _asn1_core.SetOf):
+            components.sort()
+        return _der_wrap(value, b"".join(components), constructed=True)
+    if isinstance(
+        value,
+        (_asn1_core.OctetString, _asn1_core.ParsableOctetString, _asn1_core.OctetBitString),
+    ):
+        if value.method != 0:
+            raise _DerViolation("constructed string encoding is not DER")
+        return _der_wrap(value, value.contents or b"", constructed=False)
+    if isinstance(value, _asn1_core.Constructable) and value.method != 0:
+        raise _DerViolation("constructed string encoding is not DER")
+    if isinstance(value, _asn1_core.Primitive):
+        return value.dump(force=True)
+    raise _DerViolation("unexpected ASN.1 value type %s" % type(value).__name__)
+
+
+def _der_identifier(class_: int, constructed: bool, tag: int) -> bytes:
+    first = (class_ << 6) | (0x20 if constructed else 0)
+    if tag < 31:
+        return bytes([first | tag])
+    groups = []
+    while True:
+        groups.append(tag & 0x7F)
+        tag >>= 7
+        if not tag:
+            break
+    encoded = [group | 0x80 for group in reversed(groups[1:])] + [groups[0]]
+    return bytes([first | 0x1F]) + bytes(encoded)
+
+
+def _der_length(length: int) -> bytes:
+    if length < 0x80:
+        return bytes([length])
+    raw = length.to_bytes((length.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def _der_explicit(value, inner: bytes) -> bytes:
+    """Apply a value's explicit tags (innermost first, as asn1crypto stores them)."""
+    for class_, tag in value.explicit or ():
+        inner = _der_identifier(class_, True, tag) + _der_length(len(inner)) + inner
+    return inner
+
+
+def _der_wrap(value, contents: bytes, *, constructed: bool) -> bytes:
+    encoded = (
+        _der_identifier(value.class_, constructed, value.tag)
+        + _der_length(len(contents))
+        + contents
+    )
+    return _der_explicit(value, encoded)
 
 
 # ---------------------------------------------------------------------------
@@ -525,18 +761,35 @@ _DER_UTC_TIME = re.compile(r"^[0-9]{12}Z$")
 
 
 def _validate_strict_der(data: bytes) -> None:
-    """Enforce DER: no trailing data, minimal lengths, canonical primitives (V2).
+    """Check 1a: the schema-independent DER rules, as a linear scan (V2, W3).
 
-    This is the linear-scan equivalent of "re-encode the parsed object to DER and
-    byte-compare": non-minimal length forms, BER indefinite lengths, non-minimal
-    integer/boolean/OID/time encodings and constructed encodings of primitive
-    types are all rejected with check 1's ``E_TS_SCHEMA``. It is used instead of
-    an asn1crypto force re-encode because re-encoding an untrusted 1.5 kB token
-    costs hundreds of milliseconds and this gate runs a bit flip for every byte.
+    This is the *first* half of check 1 only: it rejects trailing data,
+    indefinite and non-minimal lengths, non-minimal high tag numbers,
+    constructed encodings of primitive universal types, non-canonical BOOLEAN /
+    INTEGER / BIT STRING / NULL / OID / time encodings, and a universal SET
+    whose components are not in ascending DER order (every universal SET in the
+    TimeStampResp, CMS and X.509 schemas is a SET OF, X.690 §11.6). It is cheap,
+    so most malformed receipts stop here. It is **not** a substitute for the
+    re-encoding of check 1c (:func:`_require_der_reencoding`), which knows the
+    schema (implicitly tagged SET OF such as ``certificates``/``signedAttrs``,
+    DEFAULT values) and is always run afterwards.
     """
     try:
         _scan_der(data, 0, len(data), 0)
     except _DerViolation as error:
+        raise WeaveError("E_TS_SCHEMA", "receipt is not strict DER: %s" % error) from error
+    if not data:
+        raise WeaveError("E_TS_SCHEMA", "receipt is empty")
+    first_end = _scan_tlv_end(data, 0, len(data))
+    if first_end != len(data):
+        raise WeaveError("E_TS_SCHEMA", "receipt carries data after its TimeStampResp")
+
+
+def _scan_tlv_end(data: bytes, position: int, end: int) -> int:
+    """End offset of the (already validated) TLV at ``position``."""
+    try:
+        return _scan_tlv(data, position, end, 0)
+    except _DerViolation as error:  # pragma: no cover - validated just before
         raise WeaveError("E_TS_SCHEMA", "receipt is not strict DER: %s" % error) from error
 
 
@@ -635,8 +888,26 @@ def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
             except UnicodeDecodeError as error:
                 raise _DerViolation("UTF8String is not valid UTF-8") from error
     if constructed:
-        _scan_der(data, position, content_end, depth + 1)
+        if tag_class == 0 and tag_number == 17:
+            _scan_set_of(data, position, content_end, depth + 1)
+        else:
+            _scan_der(data, position, content_end, depth + 1)
     return content_end
+
+
+def _scan_set_of(data: bytes, start: int, end: int, depth: int) -> None:
+    """A universal SET: components valid and in ascending DER order (X.690 §11.6)."""
+    if depth > 64:
+        raise _DerViolation("nesting is too deep")
+    previous: bytes | None = None
+    position = start
+    while position < end:
+        component_end = _scan_tlv(data, position, end, depth)
+        component = data[position:component_end]
+        if previous is not None and component < previous:
+            raise _DerViolation("SET OF components are not in DER order")
+        previous = component
+        position = component_end
 
 
 def _check_der_integer(data: bytes, start: int, end: int) -> None:
@@ -670,12 +941,6 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     if len(signer_infos) < 1:
         raise WeaveError("E_TS_CMS", "timestamp token has no signerInfo")
     signer_info = signer_infos[0]
-    try:
-        signer_info_version = signer_info["version"].native
-    except _DER_ACCESS_ERRORS as error:
-        raise WeaveError("E_TS_SCHEMA", "signerInfo has no readable version") from error
-    if signer_info_version not in ("v1", "v3"):
-        raise WeaveError("E_TS_SCHEMA", "signerInfo version is not 1 or 3")
     # Check 5: signer digest algorithm.
     if _oid(signer_info["digest_algorithm"]["algorithm"]) != _SHA256_OID:
         raise WeaveError("E_TS_SCHEMA", "signerInfo digest algorithm is not sha256")
@@ -686,15 +951,13 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     signed_attrs = signer_info["signed_attrs"]
     if signed_attrs.native is None or len(signed_attrs) == 0:
         raise WeaveError("E_TS_CMS", "timestamp token has no signed attributes")
-    try:
-        signed_attrs_der = signed_attrs.untag().dump()
-    except _DER_ACCESS_ERRORS as error:
-        raise WeaveError(
-            "E_TS_SCHEMA", "signed attributes cannot be encoded as DER"
-        ) from error
+    # Check 1 already proved the whole receipt is DER, so the stored signed
+    # attributes are their own DER encoding; the CMS signature input is that
+    # SET OF with the universal SET tag (RFC 5652 §5.4).
+    signed_attrs_der = signed_attrs.untag().dump()
     # Check 7: the signer certificate must be carried inside the token.
     signer_certificate_der = _find_signer_certificate(signed_data, signer_info)
-    certificate = cryptography_x509.load_der_x509_certificate(signer_certificate_der)
+    certificate = _load_der_certificate(signer_certificate_der)
 
     message_digest = hashlib.sha256(raw_content).digest()
     content_type_ok = False
@@ -731,12 +994,14 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     try:
         if signature_algorithm_oid in _RSA_PKCS1V15_OIDS:
             if not isinstance(public_key, rsa.RSAPublicKey):
-                raise WeaveError("E_TS_CERT", "signature algorithm does not match the key")
+                # W6: a key the allowlisted algorithm cannot use means the
+                # signature does not verify (check 10), not a check-6 failure.
+                raise WeaveError("E_TS_CMS", "signature algorithm does not match the key")
             digest_class = _RSA_PKCS1V15_OIDS[signature_algorithm_oid]
             public_key.verify(signature, signed_attrs_der, padding.PKCS1v15(), digest_class())
         else:
             if not isinstance(public_key, ec.EllipticCurvePublicKey):
-                raise WeaveError("E_TS_CERT", "signature algorithm does not match the key")
+                raise WeaveError("E_TS_CMS", "signature algorithm does not match the key")
             digest_class = _ECDSA_OIDS[signature_algorithm_oid]
             public_key.verify(signature, signed_attrs_der, ec.ECDSA(digest_class()))
     except WeaveError:
@@ -803,7 +1068,7 @@ _HASH_OIDS = {
 
 def _check_signer_certificate(certificate_der: bytes, gen_time_value: object) -> None:
     """Checks 11-12: timestamping EKU / key usage / validity at genTime."""
-    certificate = cryptography_x509.load_der_x509_certificate(certificate_der)
+    certificate = _load_der_certificate(certificate_der)
     gen_time = _to_aware_datetime(gen_time_value)
     try:
         extended_key_usage = certificate.extensions.get_extension_for_class(

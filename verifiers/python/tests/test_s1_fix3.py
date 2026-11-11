@@ -200,7 +200,9 @@ def test_previous_manifest_signature_is_verified(tmp_path) -> None:
 
     attestation_path.write_bytes(canonical.canonicalize(attestation))
     with pytest.raises(WeaveError) as raised:
-        container_module._read_previous_identity(directory, [])
+        container_module._read_previous_identity(
+            directory, container_module._PreviousLinkContext.build([], [], [])
+        )
     assert raised.value.code == "E_MANIFEST_CHAIN"
 
 
@@ -213,7 +215,9 @@ def test_previous_attestation_digest_mismatch_is_manifest_chain(tmp_path) -> Non
 
     attestation_path.write_bytes(canonical.canonicalize(attestation))
     with pytest.raises(WeaveError) as raised:
-        container_module._read_previous_identity(directory, [])
+        container_module._read_previous_identity(
+            directory, container_module._PreviousLinkContext.build([], [], [])
+        )
     assert raised.value.code == "E_MANIFEST_CHAIN"
 
 
@@ -223,7 +227,9 @@ def test_previous_symlinked_manifest_is_chain_error(tmp_path) -> None:
     manifest.rename(directory / "real-manifest.json")
     manifest.symlink_to(directory / "real-manifest.json")
     with pytest.raises(WeaveError) as raised:
-        container_module._read_previous_identity(directory, [])
+        container_module._read_previous_identity(
+            directory, container_module._PreviousLinkContext.build([], [], [])
+        )
     assert raised.value.code == "E_MANIFEST_CHAIN"
 
 
