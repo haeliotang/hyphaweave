@@ -65,3 +65,29 @@ verdict.
 `actor/agent-grant-unresolved`) are not "positive cases": the verifier never
 reports them as `valid` by construction. Negatives are covered by the true
 source-ablation gate and by their exact expected error codes.
+
+## Supplied previous containers and their ignored content (S1-FIX3 V3)
+
+A supplied `--previous` container is a chain-linking identity only: the verifier
+reads exactly `manifest.json` and `signatures/manifest.sig.json` from it. Every
+other member (records, blobs, `readable/`, extra files, and the contents the
+previous attestation's `timestamps` list points at) is outside every check, so
+its bytes are not evidence. `vectors/container/previous-ignores-*` are positive
+targets whose previous container carries such inert defects on purpose.
+
+A container may also contain a **symlink** member (for example
+`previous-ignores-record-symlink`). The byte-flip gate must not follow symlinks
+out of the container: the link target string is not verifier input in any
+checked path, so the `symlink-entry` exemption applies instead of a mutation.
+
+## TSA receipts: DER fields outside the §12.2 profile (S1-FIX3 V2c)
+
+When the gate mutates a listed `.tsr` it also re-points the (unsigned)
+attestation digest for that file, so the mutation reaches strict DER parsing
+instead of stopping at the file-level `E_TS_FILE` check. The receipt bytes that
+matter are either cryptographically covered (TSTInfo eContent, signed
+attributes, the signer certificate via ESS) or explicitly checked (status,
+versions, algorithms, DER framing and canonical encodings). The remaining DER
+fields — the `SignedData.digestAlgorithms` set and any certificate that is not
+the located signer — are outside every checksum and every check, so a flip that
+lands only there cannot change the verdict (`tsr-unchecked-metadata` exemption).

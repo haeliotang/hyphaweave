@@ -42,6 +42,7 @@ import argparse
 import datetime
 import hashlib
 import io
+import os
 import shutil
 import struct
 import sys
@@ -98,6 +99,7 @@ class Case:
     limitations: tuple[str, ...] | None = None
     notices_absent: tuple[str, ...] | None = None
     records: tuple[dict[str, Any], ...] | None = None
+    symlinks: tuple[tuple[str, str], ...] = ()
 
     @property
     def id(self) -> str:
@@ -5111,7 +5113,7 @@ declare(
     errors=("E_KEY_UNKNOWN", "E_MANIFEST_RECORD_DIGEST"),
     build=lambda case_dir: _manifest_signature_unverifiable_continues_files(),
     records=[],
-    expected_container={"record_count": 0},
+    expected_container={"record_count": 1},
     notes="S7(2)/§14.5: an unverifiable manifest signature (here: no keyset, so "
     "the signing key is not available, E_KEY_UNKNOWN) MUST NOT stop record "
     "processing. The records-listing phase then finds a record file whose bytes "
@@ -5128,7 +5130,7 @@ declare(
     errors=("E_MANIFEST_RECORD_EXTRA", "E_MANIFEST_RECORD_MISSING"),
     build=lambda case_dir: _record_extra_and_missing_files(),
     records=[],
-    expected_container={"record_count": 0},
+    expected_container={"record_count": 1},
     notes="S8(1)/§11.6: the records-listing phase reports every independent "
     "defect it detects. The manifest lists a record file that was renamed, so "
     "that file is missing and the renamed file is extra (its name is "
@@ -7546,15 +7548,15 @@ declare(
     build=lambda case_dir: _previous_non_zip_file_files(),
     args=("--keys", "@keyset", "--previous", "previous.txt"),
     records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
-    notes="T17/review A L9 + S1-FIX2 U1/§11.5: a --previous path that exists and "
-    "is readable but is not a usable container (here: a plain text file) is "
-    "E_MANIFEST_CHAIN invalid. The previous-manifest check is container step "
-    "(10), after the record phase, so the container's record is processed and "
-    "valid. S1-FIX2/U1: this vector is green for the real reason — the supplied "
-    "previous container is read through the same zip/directory parser as "
-    "`container`, and the 'not a usable container' branch is pinned by the "
-    "ablation mutation `previous-not-a-container` (the old swallowed-exception "
-    "path is gone).",
+    notes="T17/A-L9 + S1-FIX2 U1 + S1-FIX3 V7/L1/§11.5: a --previous path that "
+    "exists and is readable but is not a usable container (here: a plain text "
+    "file) is E_MANIFEST_CHAIN invalid. The previous-manifest chain is "
+    "container step (10), after the record phase, so the container's record is "
+    "processed and valid. This branch is pinned by the ablation mutation "
+    "`previous-non-container-mapping` (the real catalogue id, not the earlier "
+    "`previous-not-a-container` typo); per S1-FIX3 V7/L1 the mutation must "
+    "weaken the check semantically (treat the unusable previous as an absent/"
+    "valid link) so the vector turns red, not merely remap the code.",
 )
 
 
@@ -7642,14 +7644,16 @@ declare(
         "level_verified": "L0",
         "previous_manifest_digest": _chain_previous_digest(),
     },
-    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
-    limitations=("L_OFFLINE_CONTEXT", "L_PREVIOUS_SIG_UNVERIFIED"),
+    limitations=("L_OFFLINE_CONTEXT", "L_PREVIOUS_CONTENT_UNVERIFIED"),
+    notices_absent=("N_PREVIOUS_SIG_UNVERIFIED",),
     records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
-    notes="U1/§11.5: the caller supplies the previous container in zip form. A "
-    "supplied previous container is interpreted exactly like a `container` "
-    "argument, so the embedded previous manifest is read with the same zip "
-    "parser, its manifest digest matches previous_manifest.digest, and the "
-    "container is valid.",
+    notes="U1 + S1-FIX3 V3/§11.5: the caller supplies the previous container in "
+    "zip form. Only manifest.json and signatures/manifest.sig.json are read "
+    "from it, its manifest digest matches previous_manifest.digest and its "
+    "manifest signature verifies with the supplied keyset, so the link "
+    "succeeds, the container is valid and L_PREVIOUS_CONTENT_UNVERIFIED is "
+    "reported. Because the supplied previous signature was verified, "
+    "N_PREVIOUS_SIG_UNVERIFIED/L_PREVIOUS_SIG_UNVERIFIED are not reported.",
 )
 
 declare(
@@ -7667,10 +7671,11 @@ declare(
         "previous_manifest_digest": _chain_previous_digest(),
     },
     records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
-    notes="U1/§11.5: the supplied previous container is a zip with a structural "
-    "defect (eight zero bytes between two local headers). Reading a supplied "
-    "previous container follows the `container` rules, so any read/structural "
-    "failure is E_MANIFEST_CHAIN invalid (never E_CONTAINER_ZIP). The "
+    notes="U1 + S1-FIX3 V1/V3/§11.5: the supplied previous container is a zip "
+    "with a structural defect (eight zero bytes between two local headers). The "
+    "previous path parses the zip only for structure, framing and the §13 "
+    "limits; any read/structural failure of the supplied previous is "
+    "E_MANIFEST_CHAIN invalid (never E_CONTAINER_ZIP) and must not crash. The "
     "previous-manifest chain is container step (10), after the record phase, so "
     "the record is processed and valid.",
 )
@@ -7690,17 +7695,21 @@ def _deflated_tiny_payload() -> bytes:
 
 
 def _zip_declared_entries(
-    entries: Sequence[tuple[str, bytes, int, int, int, int]]
+    entries: Sequence[tuple[str, bytes, int, int, int, int]],
+    *,
+    gaps: dict[int, int] | None = None,
 ) -> bytes:
     """Deterministic zip over (name, payload, method, usize, crc, attr) tuples.
 
     The declared uncompressed size is caller-controlled (the payload stays
     small), which is how the §13 declared-total and readable-exclusion rules are
-    exercised without multi-gigabyte fixtures.
+    exercised without multi-gigabyte fixtures. ``gaps`` inserts that many zero
+    bytes after the local entry with the given index (S1-FIX3 V7).
     """
     output = bytearray()
     central = bytearray()
-    for name, payload, method, declared_size, crc, attr in entries:
+    gap_after = gaps or {}
+    for index, (name, payload, method, declared_size, crc, attr) in enumerate(entries):
         name_bytes = name.encode("utf-8")
         flags = _ZIP_UTF8_FLAG
         offset = len(output)
@@ -7741,6 +7750,8 @@ def _zip_declared_entries(
             offset,
         )
         central += name_bytes
+        if index in gap_after:
+            output += b"\x00" * gap_after[index]
     central_offset = len(output)
     output += central
     count = len(entries)
@@ -8448,6 +8459,720 @@ declare(
     "records is empty and the manifest-derived report fields stay filled.",
 )
 
+# ---------------------------------------------------------------------------
+# S1-FIX3 V1/V3: a supplied --previous container is used only to link the
+# chain (decision 2026-11-11 #14 V1/V3; spec §11.5)
+# ---------------------------------------------------------------------------
+
+V3_VALID_LIMITATIONS = ("L_OFFLINE_CONTEXT", "L_PREVIOUS_CONTENT_UNVERIFIED")
+V3_NO_NOTICES = ("N_PREVIOUS_SIG_UNVERIFIED",)
+
+
+def _stored_deflate(data: bytes) -> bytes:
+    """Deterministic raw DEFLATE stream built only from stored blocks.
+
+    Using our own stored-block framing (instead of ``zlib.compress``) keeps the
+    committed bytes independent of the zlib version; corrupting such a stream
+    (reserved block type) still makes the decoder raise ``zlib.error`` (V1).
+    """
+    chunks = [data[index : index + 65535] for index in range(0, len(data), 65535)]
+    if not chunks:
+        chunks = [b""]
+    out = bytearray()
+    for index, chunk in enumerate(chunks):
+        out.append(0x01 if index == len(chunks) - 1 else 0x00)
+        length = len(chunk)
+        out += struct.pack("<HH", length, length ^ 0xFFFF)
+        out += chunk
+    return bytes(out)
+
+
+def _stored_entry(name: str, data: bytes) -> tuple[str, bytes, int, int, int, int]:
+    return (name, data, 0, len(data), zlib.crc32(data) & 0xFFFFFFFF, _STANDARD_ATTR)
+
+
+def _stored_zip_entries(
+    files: dict[str, bytes],
+    extra: Sequence[tuple[str, bytes, int, int, int, int]] = (),
+) -> list[tuple[str, bytes, int, int, int, int]]:
+    entries = [_stored_entry(name, files[name]) for name in sorted(files)]
+    entries.extend(extra)
+    return entries
+
+
+def _deflated_zip(files: dict[str, bytes]) -> bytes:
+    entries = []
+    for name in sorted(files):
+        data = files[name]
+        entries.append(
+            (name, _stored_deflate(data), 8, len(data), zlib.crc32(data) & 0xFFFFFFFF, _STANDARD_ATTR)
+        )
+    return _zip_declared_entries(entries)
+
+
+def _chain_files_for_previous(previous_internal: dict[str, bytes]) -> dict[str, bytes]:
+    previous_bytes = previous_internal["manifest.json"]
+    previous_digest = recordlib.manifest_digest(previous_bytes)
+    files = recordlib.build_container(
+        [recordlib.key_declaration("human-1")],
+        level="L0",
+        created_at=recordlib.T1,
+        manifest_signers=("human-1",),
+        previous_manifest={"digest": previous_digest},
+        previous_manifest_bytes=previous_bytes,
+    )
+    return wrap(files)
+
+
+def _prepend_previous_directory(
+    files: dict[str, bytes], previous_internal: dict[str, bytes]
+) -> dict[str, bytes]:
+    result = dict(files)
+    result.update(
+        {"previous-container/" + path: data for path, data in previous_internal.items()}
+    )
+    return result
+
+
+def _v3_expected_container(previous_internal: dict[str, bytes]) -> dict[str, Any]:
+    return {
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "previous_manifest_digest": recordlib.manifest_digest(
+            previous_internal["manifest.json"]
+        ),
+    }
+
+
+def _previous_ignores_record_corruption_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    record_paths = sorted(path for path in previous if path.startswith("records/"))
+    data = previous[record_paths[0]]
+    previous[record_paths[0]] = data[: len(data) // 2] + b"\x00"
+    return _prepend_previous_directory(
+        _chain_files_for_previous(previous), previous
+    )
+
+
+declare(
+    "container",
+    "previous-ignores-record-corruption",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_ignores_record_corruption_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5: the supplied previous container is read only for "
+    "its manifest.json and signatures/manifest.sig.json; one record file inside "
+    "it has a changed byte (its CRC/digest no longer match). The previous "
+    "content is not verified, so the link still succeeds, the container is "
+    "valid and L_PREVIOUS_CONTENT_UNVERIFIED is reported. N_PREVIOUS_SIG_UNVERIFIED "
+    "is not reported: the supplied previous manifest's signature was verified.",
+)
+
+
+def _previous_ignores_duplicate_manifest_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    entries = _stored_zip_entries(
+        previous, extra=(_stored_entry("manifest.json", b"{}\n"),)
+    )
+    files = _chain_files_for_previous(previous)
+    files["previous-container.zip"] = _zip_declared_entries(entries)
+    return files
+
+
+declare(
+    "container",
+    "previous-ignores-duplicate-manifest",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _previous_ignores_duplicate_manifest_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5: a zip previous must contain exactly one "
+    "non-directory manifest.json member. This archive has two (the first is the "
+    "valid one); the duplicate makes the link unreadable, so the container is "
+    "invalid E_MANIFEST_CHAIN. The rest of the archive is ignored, but the two "
+    "read members are not optional.",
+)
+
+
+def _previous_ignores_evil_path_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    entries = _stored_zip_entries(
+        previous, extra=(_stored_entry("../evil.json", b"{}\n"),)
+    )
+    files = _chain_files_for_previous(previous)
+    files["previous-container.zip"] = _zip_declared_entries(entries)
+    return files
+
+
+declare(
+    "container",
+    "previous-ignores-evil-path",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_ignores_evil_path_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5: the zip previous contains an extra ../evil.json "
+    "member. Only structure, framing and the §13 limits are applied to a zip "
+    "previous; entry-name safety and duplicate-name rules are not applied to "
+    "the ignored members, so the link still succeeds and the container is "
+    "valid with L_PREVIOUS_CONTENT_UNVERIFIED.",
+)
+
+
+def _previous_ignores_extra_zip_file_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    entries = _stored_zip_entries(
+        previous, extra=(_stored_entry("junk.txt", b"junk\n"),)
+    )
+    files = _chain_files_for_previous(previous)
+    files["previous-container.zip"] = _zip_declared_entries(entries)
+    return files
+
+
+declare(
+    "container",
+    "previous-ignores-extra-zip-file",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_ignores_extra_zip_file_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5: the zip previous contains an extra top-level "
+    "junk.txt member that no manifest lists. Extra members of a supplied "
+    "previous are ignored (only manifest.json and signatures/manifest.sig.json "
+    "are read), so the container is valid with L_PREVIOUS_CONTENT_UNVERIFIED.",
+)
+
+
+def _previous_ignores_extra_directory_file_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    previous["junk.txt"] = b"junk\n"
+    return _prepend_previous_directory(
+        _chain_files_for_previous(_previous_container_internal()), previous
+    )
+
+
+declare(
+    "container",
+    "previous-ignores-extra-directory-file",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_ignores_extra_directory_file_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5: the directory previous contains an extra junk.txt "
+    "file. Extra files in a supplied previous are ignored (only manifest.json "
+    "and signatures/manifest.sig.json are read as regular files), so the "
+    "container is valid with L_PREVIOUS_CONTENT_UNVERIFIED.",
+)
+
+
+def _previous_ignores_record_symlink_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    return _prepend_previous_directory(
+        _chain_files_for_previous(previous), previous
+    )
+
+
+declare(
+    "container",
+    "previous-ignores-record-symlink",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_ignores_record_symlink_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    symlinks=(("previous-container/records/evil.json", "../manifest.json"),),
+    notes="S1-FIX3 V3/§11.5: inside the directory previous, records/evil.json "
+    "is a symbolic link. Only manifest.json and signatures/manifest.sig.json "
+    "are read from a supplied previous and they must be regular files; record "
+    "entries are not read at all, so the link succeeds and the container is "
+    "valid with L_PREVIOUS_CONTENT_UNVERIFIED.",
+)
+
+
+def _previous_ignores_missing_record_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    record_paths = sorted(path for path in previous if path.startswith("records/"))
+    for path in record_paths:
+        del previous[path]
+    return _prepend_previous_directory(
+        _chain_files_for_previous(previous), previous
+    )
+
+
+declare(
+    "container",
+    "previous-ignores-missing-record",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_ignores_missing_record_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5: the directory previous is missing its record "
+    "file (the manifest still lists it). The previous content is not verified "
+    "— only manifest.json and signatures/manifest.sig.json are read — so the "
+    "link succeeds and the container is valid with L_PREVIOUS_CONTENT_UNVERIFIED.",
+)
+
+
+def _previous_bad_manifest_attestation_files() -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    previous["signatures/manifest.sig.json"] = b"this is not a manifest attestation\n"
+    return _prepend_previous_directory(
+        _chain_files_for_previous(previous), previous
+    )
+
+
+declare(
+    "container",
+    "previous-ignores-bad-attestation",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _previous_bad_manifest_attestation_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5 (recheck2 X3 row rewritten): the supplied "
+    "previous's signatures/manifest.sig.json is not valid JSON. That file is "
+    "one of the two members the verifier must read to verify the previous "
+    "manifest signature, so the link cannot be established and the container "
+    "is invalid E_MANIFEST_CHAIN (the old behaviour silently accepted it).",
+)
+
+
+def _timestamped_previous_internal() -> dict[str, bytes]:
+    def builder(imprint: bytes) -> list[tuple[str, bytes, str | None]]:
+        return [("signatures/timestamp-1.tsr", _crafted_tsr(imprint), None)]
+
+    return _build_timestamped_container(
+        [recordlib.key_declaration("human-2")],
+        builder,
+        level="L2",
+        created_at=recordlib.EARLY,
+        manifest_signers=("human-2",),
+    )
+
+
+def _previous_corrupt_timestamp_content_files() -> dict[str, bytes]:
+    previous = _timestamped_previous_internal()
+    tsr_path = "signatures/timestamp-1.tsr"
+    previous[tsr_path] = b"\x30\x00corrupted timestamp content"
+    return _prepend_previous_directory(
+        _chain_files_for_previous(previous), previous
+    )
+
+
+declare(
+    "container",
+    "previous-ignores-corrupt-timestamp-content",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_corrupt_timestamp_content_files(),
+    args=("--keys", "@keyset", "--previous", "previous-container"),
+    expected_container={
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "previous_manifest_digest": recordlib.manifest_digest(
+            _timestamped_previous_internal()["manifest.json"]
+        ),
+    },
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V3/§11.5: the supplied directory previous has a readable "
+    "manifest.json and a valid, signature-checked "
+    "signatures/manifest.sig.json, but the timestamp reply content "
+    "(signatures/timestamp-1.tsr) is corrupted. Attestation timestamp contents "
+    "are not verified when the container is used as a previous, so the link "
+    "succeeds and the container is valid with L_PREVIOUS_CONTENT_UNVERIFIED.",
+)
+
+
+def _previous_zip_deflate_files(*, corrupt: bool) -> dict[str, bytes]:
+    previous = _previous_container_internal()
+    entries = []
+    for name in sorted(previous):
+        data = previous[name]
+        compressed = _stored_deflate(data)
+        if corrupt and name == "manifest.json":
+            compressed = b"\xff" + compressed[1:]
+        entries.append(
+            (
+                name,
+                compressed,
+                8,
+                len(data),
+                zlib.crc32(data) & 0xFFFFFFFF,
+                _STANDARD_ATTR,
+            )
+        )
+    files = _chain_files_for_previous(previous)
+    files["previous-container.zip"] = _zip_declared_entries(entries)
+    return files
+
+
+declare(
+    "container",
+    "previous-zip-deflate-valid",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _previous_zip_deflate_files(corrupt=False),
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container=_v3_expected_container(_previous_container_internal()),
+    limitations=V3_VALID_LIMITATIONS,
+    notices_absent=V3_NO_NOTICES,
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V1/§11.5: the supplied previous container is a zip whose "
+    "members are DEFLATE-compressed (stored-block streams). The two read "
+    "members decompress correctly, so the link succeeds and the container is "
+    "valid with L_PREVIOUS_CONTENT_UNVERIFIED; the previous signature is "
+    "verified, so N_PREVIOUS_SIG_UNVERIFIED is not reported.",
+)
+
+declare(
+    "container",
+    "previous-zip-deflate-corrupt",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: _previous_zip_deflate_files(corrupt=True),
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S1-FIX3 V1/§11.5 (recheck2 X1): the manifest.json member of the "
+    "DEFLATE-compressed previous zip has a corrupted compressed stream; the "
+    "decoder raises zlib.error, which zipread maps to ZipStructureError and the "
+    "previous path maps to E_MANIFEST_CHAIN. The process must not crash. The "
+    "previous identity is not established, so no L_PREVIOUS_CONTENT_UNVERIFIED "
+    "and no previous_manifest_digest are reported; the target record is still "
+    "processed and valid.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX3 V6: zip version-needed and per-entry disk number start
+# (decision 2026-11-11 #14 V6; spec §11.9 rule 1/3)
+# ---------------------------------------------------------------------------
+
+
+def _zip_version_needed_too_high() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    return {"container.zip": _zip_patch(archive, meta["central_offset"] + 6, "<H", 64)}
+
+
+def _zip_entry_disk_start_nonzero() -> dict[str, bytes]:
+    archive, meta = _zip_standard()
+    return {"container.zip": _zip_patch(archive, meta["central_offset"] + 34, "<H", 1)}
+
+
+declare(
+    "container",
+    "zip-version-needed-too-high",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_version_needed_too_high(),
+    records=[],
+    notes="S1-FIX3 V6/§11.9 rule 1: the central-directory \"version needed to "
+    "extract\" is 64 while the accepted range is 20..63 (the local-header "
+    "version field is not constrained). The archive is E_CONTAINER_ZIP.",
+)
+
+declare(
+    "container",
+    "zip-entry-disk-start-nonzero",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _zip_entry_disk_start_nonzero(),
+    records=[],
+    notes="S1-FIX3 V6/§11.9 rule 3: only single-volume archives are supported; "
+    "every per-entry central-directory \"disk number start\" field must be 0. "
+    "This entry's field is 1, so the archive is E_CONTAINER_ZIP.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX3 V7: §13 limits are checked before the remaining zip structure rules
+# (decision 2026-11-11 #14 V7/L7; spec §11.9/§13)
+# ---------------------------------------------------------------------------
+
+
+def _zip_over_limit_and_structure_violation() -> dict[str, bytes]:
+    entries = _zip_declared_standard_entries()
+    payload = _deflated_tiny_payload()
+    for label, declared in zip(("a", "b"), _TWO_BLOB_SIZES):
+        entries.append(
+            ("blobs/sha256/" + label * 64, payload, 8, declared, 0, _STANDARD_ATTR)
+        )
+    # Eight zero bytes between the first and the second local entry: the
+    # archive is over the declared-size limit AND structurally invalid.
+    return {"container.zip": _zip_declared_entries(entries, gaps={0: 8})}
+
+
+declare(
+    "container",
+    "zip-over-limit-and-structure-violation",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_SIZE",),
+    build=lambda case_dir: _zip_over_limit_and_structure_violation(),
+    records=[],
+    notes="S1-FIX3 V7/L7/§11.9/§13: the archive both exceeds the declared "
+    "uncompressed total (two 600,000,000-byte declarations) and has an 8-byte "
+    "gap between local entries. The §13 entry-count/declared-total limits are "
+    "checked before the remaining zip structure rules, so the container is "
+    "invalid E_CONTAINER_SIZE only; the structural violation is not reported.",
+)
+
+# ---------------------------------------------------------------------------
+# S1-FIX3 V2: strict DER for timestamp replies (recomputed attestation digests)
+# (decision 2026-11-11 #14 V2; spec §12.2 check 1)
+# ---------------------------------------------------------------------------
+
+
+class _DerNode:
+    __slots__ = ("tag", "content", "children", "force_long")
+
+    def __init__(
+        self, tag: int, content: bytes | None, children: list["_DerNode"] | None
+    ) -> None:
+        self.tag = tag
+        self.content = content
+        self.children = children
+        self.force_long = False
+
+
+def _der_read_length(data: bytes, position: int) -> tuple[int, int]:
+    first = data[position]
+    position += 1
+    if first < 0x80:
+        return first, position
+    count = first & 0x7F
+    if count == 0:
+        raise ValueError("indefinite-length DER is not supported")
+    length = int.from_bytes(data[position : position + count], "big")
+    return length, position + count
+
+
+def _der_parse_node(data: bytes, position: int) -> tuple[_DerNode, int]:
+    tag = data[position]
+    position += 1
+    length, position = _der_read_length(data, position)
+    end = position + length
+    if end > len(data):
+        raise ValueError("DER node exceeds the buffer")
+    if tag & 0x20:
+        children: list[_DerNode] = []
+        child_position = position
+        while child_position < end:
+            child, child_position = _der_parse_node(data, child_position)
+            children.append(child)
+        if child_position != end:
+            raise ValueError("DER children do not fill their parent")
+        return _DerNode(tag, None, children), end
+    return _DerNode(tag, data[position:end], None), end
+
+
+def _der_tree(data: bytes) -> _DerNode:
+    node, end = _der_parse_node(data, 0)
+    if end != len(data):
+        raise ValueError("trailing data after the top-level DER object")
+    return node
+
+
+def _der_encode_length(length: int, *, force_long: bool) -> bytes:
+    if length < 0x80 and not force_long:
+        return bytes([length])
+    raw = length.to_bytes(max(1, (length.bit_length() + 7) // 8), "big")
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def _der_encode(node: _DerNode) -> bytes:
+    if node.children is None:
+        body = node.content if node.content is not None else b""
+    else:
+        body = b"".join(_der_encode(child) for child in node.children)
+    return (
+        bytes([node.tag])
+        + _der_encode_length(len(body), force_long=node.force_long)
+        + body
+    )
+
+
+def _der_nonminimal_length(data: bytes) -> bytes:
+    """Re-encode PKIStatusInfo with a long-form length for a short body."""
+    tree = _der_tree(data)
+    tree.children[0].force_long = True
+    return _der_encode(tree)
+
+
+def _der_signed_data_version_18(data: bytes) -> bytes:
+    """Change SignedData.version from 3 to 18 (same one-byte encoding)."""
+    tree = _der_tree(data)
+    signed_data = tree.children[1].children[1].children[0]
+    version = signed_data.children[0]
+    if version.tag != 0x02 or version.content != b"\x03":
+        raise SystemExit("unexpected SignedData version encoding")
+    version.content = b"\x12"
+    return _der_encode(tree)
+
+
+def _der_truncated(data: bytes) -> bytes:
+    """Drop the tail so strict whole-file DER decoding fails."""
+    return data[:-20]
+
+
+def _der_mutated_l2_files(
+    case_dir: Path, mutation: Callable[[bytes], bytes]
+) -> dict[str, bytes]:
+    return _crafted_l2_files(
+        case_dir, tsr_factory=lambda imprint: mutation(_crafted_tsr(imprint))
+    )
+
+
+for _name, _mutation, _why in (
+    (
+        "l2-ts-der-nonminimal-length",
+        _der_nonminimal_length,
+        "the PKIStatusInfo length is re-encoded in long form (30 81 03) for a "
+        "three-byte body: BER-valid but not minimal DER (recheck2 M3 probe shape)",
+    ),
+    (
+        "l2-ts-der-version-invalid",
+        _der_signed_data_version_18,
+        "SignedData.version is 18 instead of the required 3 (recheck2 fuzz "
+        "tsa#363 shape); the field is outside the CMS signature coverage",
+    ),
+    (
+        "l2-ts-der-truncated-with-digest",
+        _der_truncated,
+        "the receipt bytes are truncated, so the whole file is not one complete "
+        "DER TimeStampResp",
+    ),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_TS_SCHEMA",),
+        build=lambda case_dir, _mutation=_mutation: _der_mutated_l2_files(
+            case_dir, _mutation
+        ),
+        args=("--keys", "@keyset", "--tsa-trust", TSA_CERT_NAME),
+        expected_container=dict(level_claimed="L2", **L2_NO_ANCHOR),
+        limitations=("L_CHAIN_CLAIM_UNVERIFIED", "L_OFFLINE_CONTEXT"),
+        records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+        notes="S1-FIX3 V2/§12.2 check 1: "
+        + _why
+        + ". The attestation timestamp digest is recomputed over the mutated "
+        "bytes, so the mutation reaches DER parsing instead of stopping at "
+        "E_TS_FILE. Check 1 runs before the CMS checks: the receipt is rejected "
+        "with E_TS_SCHEMA at the timestamp phase (step 11), after the records "
+        "were processed. An invalid receipt is not present-unverified, so "
+        "L_TSA_TRUST_UNVERIFIED is not reported; the exact limitations list is "
+        "[L_CHAIN_CLAIM_UNVERIFIED, L_OFFLINE_CONTEXT].",
+    )
+
+# ---------------------------------------------------------------------------
+# S1-FIX3 V5: a bad public_key is structural and never governs the class
+# (decision 2026-11-11 #14 V5; spec §5.3/§14.1)
+# ---------------------------------------------------------------------------
+
+
+def _bad_public_key_does_not_govern_files() -> dict[str, bytes]:
+    files = _wrap_internal(
+        recordlib.build_container(
+            [
+                recordlib.key_declaration(
+                    "org-1",
+                    record_id="org1-bad-pk-human-T0",
+                    recorded_at=recordlib.T0,
+                    key_type="human",
+                    public_key_b64="AAAA",
+                    cosigners=("human-1",),
+                ),
+                recordlib.key_declaration(
+                    "org-1",
+                    record_id="org1-org-T1",
+                    recorded_at=recordlib.T1,
+                    key_type="organization",
+                    cosigners=("human-1",),
+                ),
+            ]
+        )
+    )
+    files.update(_keyset_without("key-declared-org-1.json"))
+    return files
+
+
+declare(
+    "key-lifecycle",
+    "bad-public-key-does-not-govern",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_PUBLIC_KEY",),
+    build=lambda case_dir: _bad_public_key_does_not_govern_files(),
+    args=("--keys", "keyset"),
+    records=(
+        {
+            "id": "org1-bad-pk-human-T0",
+            "verdict": "invalid",
+            "errors": ["E_KEY_PUBLIC_KEY"],
+        },
+        {"id": "org1-org-T1", "verdict": "valid", "errors": []},
+    ),
+    notes="S1-FIX3 V5/§5.3/§14.1 (recheck2 M2/n4): the local keyset omits "
+    "org-1's declaration. The earliest context declaration (T0) claims org-1 as "
+    "human but its public_key is not 32-byte base64url: public_key is a "
+    "structural property, so that declaration is not structurally valid, is "
+    "invalid E_KEY_PUBLIC_KEY, and never governs the class. The later T1 "
+    "organization declaration (cosigned by the keyset root human-1) is "
+    "structurally valid, is the governing declaration, and is valid; there is "
+    "no E_KEY_CLASS_CONFLICT. A declaration with a bad public_key inside a "
+    "keyset is a usage error (exit 2), which the committed vector format "
+    "cannot express; it is covered by a unit test and noted in vectors/README.md.",
+)
+
 # === END CASE SECTIONS ===
 
 
@@ -8618,15 +9343,19 @@ def write_all(*, check: bool, only: str | None = None) -> list[str]:
         target_files = dict(files)
         target_files["expected.json"] = canonical(expected)
         case_dir = case.case_dir
+        expected_links = dict(case.symlinks)
         if check:
             if not case_dir.is_dir():
                 problems.append("missing case dir %s" % case_dir)
                 continue
-            existing = {
-                str(path.relative_to(case_dir)): path.read_bytes()
-                for path in case_dir.rglob("*")
-                if path.is_file()
-            }
+            existing: dict[str, bytes] = {}
+            existing_links: dict[str, str] = {}
+            for path in case_dir.rglob("*"):
+                relative = str(path.relative_to(case_dir))
+                if path.is_symlink():
+                    existing_links[relative] = os.readlink(path)
+                elif path.is_file():
+                    existing[relative] = path.read_bytes()
             for name, data in sorted(target_files.items()):
                 if name not in existing:
                     problems.append("missing %s/%s" % (case_dir, name))
@@ -8635,6 +9364,14 @@ def write_all(*, check: bool, only: str | None = None) -> list[str]:
             for name in sorted(existing):
                 if name not in target_files:
                     problems.append("unexpected file %s/%s" % (case_dir, name))
+            for name, link_target in sorted(expected_links.items()):
+                if name not in existing_links:
+                    problems.append("missing symlink %s/%s" % (case_dir, name))
+                elif existing_links[name] != link_target:
+                    problems.append("symlink mismatch %s/%s" % (case_dir, name))
+            for name in sorted(existing_links):
+                if name not in expected_links:
+                    problems.append("unexpected symlink %s/%s" % (case_dir, name))
             continue
         if case_dir.exists():
             for path in sorted(case_dir.rglob("*"), reverse=True):
@@ -8647,6 +9384,10 @@ def write_all(*, check: bool, only: str | None = None) -> list[str]:
             destination = case_dir / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(data)
+        for name, link_target in sorted(expected_links.items()):
+            destination = case_dir / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.symlink_to(link_target)
     return problems
 
 

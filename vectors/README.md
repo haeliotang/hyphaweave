@@ -62,12 +62,12 @@ plus S1-FIX1/S1-FIX2, `weave-record/1` v0.1 draft, not yet accepted by J1/J2):
 | `labels` | 38 |
 | `erasure` | 12 |
 | `grant` | 36 |
-| `key-lifecycle` | 66 |
-| `container` | 72 |
-| `integrity-levels` | 38 |
-| **total** | **403** |
+| `key-lifecycle` | 67 |
+| `container` | 86 |
+| `integrity-levels` | 41 |
+| **total** | **421** |
 
-Verdict distribution: `valid` 90, `erased` 1, `invalid` 283, `unverifiable` 29.
+Verdict distribution: `valid` 98, `erased` 1, `invalid` 293, `unverifiable` 29.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
@@ -214,19 +214,46 @@ The `expected.json` format can express verdicts/errors of a record or container
 but not a CLI usage error, so these boundaries are pinned by the reference
 implementation's unit tests (and by `tools/anti_verification.py`) rather than
 by a committed vector; the vector cases that exercise keyset *governance*
-(e.g. `key-lifecycle/redeclare-class-conflict`) use valid keysets.
+(e.g. `key-lifecycle/redeclare-class-conflict`) use valid keysets. The same
+applies to a keyset declaration whose `public_key` is not strict base64url of
+exactly 32 bytes: since S1-FIX3 (V5) `public_key` is a structural property, so
+such a declaration inside a keyset is a usage error (exit 2), not a silently
+ignored declaration; a committed vector cannot express exit 2, so unit tests
+and `key-lifecycle/bad-public-key-does-not-govern` (the container-side rule that
+a structurally invalid declaration never governs the class) cover it.
 
 ## Supplied `--previous` containers and the zip form
 
-A `--previous` argument may be a container directory **or its zip form**; a
-supplied previous container is interpreted exactly like the `container`
-argument (§11.5), so a read or structural failure of that input is
-`E_MANIFEST_CHAIN` (not `E_CONTAINER_ZIP`). `container/previous-zip-valid` and
-`container/previous-zip-invalid` pin the zip form and the error mapping;
-`container/previous-non-zip-file` pins the "readable but not a usable
-container" branch.
+A `--previous` argument may be a container directory **or its zip form**. Since
+S1-FIX3 (V3, §11.5) a supplied previous container is used **only to link the
+chain**: the verifier reads exactly `manifest.json` and
+`signatures/manifest.sig.json` (each bounded by the manifest size limit), checks
+the manifest digest/signature against the supplied keyset, and ignores all other
+previous content (records, blobs, `readable/`, extra files, symlinked members,
+attestation timestamp contents). Read/parse/digest/signature failures of those
+two members, a directory member that is not a regular file, or a zip that does
+not contain exactly one non-directory member for each path are
+`E_MANIFEST_CHAIN`; a zip structural/framing/limit failure of the supplied
+previous is also `E_MANIFEST_CHAIN` (not `E_CONTAINER_ZIP`) and must never crash
+(a corrupted DEFLATE stream is mapped to `E_MANIFEST_CHAIN`). When the previous
+manifest identity is read and its signature verifies, the report carries
+`L_PREVIOUS_CONTENT_UNVERIFIED` (whether or not the digest comparison or the
+target container then succeeds); with `--previous` the previous signature *is*
+re-verified, so `N_PREVIOUS_SIG_UNVERIFIED`/`L_PREVIOUS_SIG_UNVERIFIED` are not
+reported (they remain for the embedded `previous/manifest.json` when no
+`--previous` is supplied). `container/previous-zip-valid`,
+`container/previous-zip-deflate-valid`/`-corrupt`, the nine
+`container/previous-ignores-*` cases and `container/previous-non-zip-file` pin
+this surface; to verify a previous container as evidence, run it as a target.
 
 ## Known coverage gaps
+
+RFC 3161 receipts are checked as strict DER since S1-FIX3 (V2): the whole file
+must be exactly one DER `TimeStampResp` (minimal lengths, fixed
+`SignedData`/`SignerInfo`/`TSTInfo` versions) and any DER/structure failure is
+`E_TS_SCHEMA` at the timestamp phase; `integrity-levels/l2-ts-der-*` pin a
+non-minimal length, a wrong `SignedData.version` and a truncated receipt, each
+with the attestation digest recomputed so the mutation reaches DER parsing.
 
 Most size-limit rejections (`E_JSON_SIZE` for oversized manifests/attestation
 files/timestamp receipts, `E_CONTAINER_SIZE`, and the largest manifest/blob
