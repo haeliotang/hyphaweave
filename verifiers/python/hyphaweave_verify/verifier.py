@@ -987,9 +987,15 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
     not a usage error.
     """
     if not path.exists() or not path.is_dir():
-        raise UsageError("keyset path is not a directory")
+        raise UsageError("--keys %s is not a directory" % path)
     loaded: list[LoadedRecord] = []
-    for entry in sorted(path.iterdir(), key=lambda item: item.name):
+    try:
+        entries = sorted(path.iterdir(), key=lambda item: item.name)
+    except OSError as error:
+        raise UsageError(
+            "--keys %s cannot be listed: %s" % (path, error.strerror or error)
+        ) from error
+    for entry in entries:
         # W10/L6 (§14.1): every top-level entry whose name ends in ".json" is a
         # keyset file, including names that begin with "."; one that does not
         # resolve to a regular file (a directory, a dangling symbolic link, a
@@ -997,11 +1003,18 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
         if not entry.name.endswith(".json"):
             continue
         if not entry.is_file():
-            raise UsageError("keyset entry %s is not a regular file" % entry.name)
+            raise UsageError("--keys %s: entry %s is not a regular file" % (path, entry.name))
         try:
-            raw = entry.read_bytes()
+            with entry.open("rb") as handle:
+                # §13: one keyset file is one record; read at most one byte past
+                # MAX_RECORD_BYTES so an oversize file is rejected without a
+                # full read (it then fails as E_JSON_SIZE below).
+                raw = handle.read(MAX_RECORD_BYTES + 1)
         except OSError as error:
-            raise UsageError("could not read a keyset file") from error
+            raise UsageError(
+                "--keys %s: entry %s cannot be read: %s"
+                % (path, entry.name, error.strerror or error)
+            ) from error
         try:
             record = load_record_bytes(raw, source="keyset")
             if record.value is None or erase.looks_like_placeholder(record.value):
@@ -1018,7 +1031,9 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
             # file.
             _check_keyset_material_structure(envelope.kind, envelope.body)
         except WeaveError as error:
-            raise UsageError("keyset file is not a valid record: %s" % error.code) from error
+            raise UsageError(
+                "--keys %s: entry %s is not a valid record: %s" % (path, entry.name, error.code)
+            ) from error
         loaded.append(record)
     _check_keyset_declaration_conflicts(loaded)
     return loaded

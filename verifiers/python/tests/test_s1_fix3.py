@@ -309,7 +309,9 @@ def test_crash_corpus_index_is_complete() -> None:
     corpus = VECTORS.parent / "tools" / "crash_corpus"
     index = json.loads((corpus / "index.json").read_text(encoding="utf-8"))
     assert index["seed"] == 20261111
-    assert index["case_count"] == 145
+    # 145 S1-FIX2 recheck inputs plus the S1-FIX4 W4 seed-777 --tsa-trust PEM.
+    assert index["case_count"] == len(index["cases"]) == 146
+    assert any(case["file_id"] == "tsa-s777-00048" for case in index["cases"])
     for case in index["cases"]:
         assert case["category"] in ("previous", "tsa")
         assert case["base_case"]
