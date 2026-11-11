@@ -62,9 +62,9 @@ Exemption classes implemented here:
     end-of-central-directory are container metadata, not archived evidence; a
     metadata bit flip must not be reported as invalid evidence.  Bytes of the
     archived entry payloads are *not* exempt.
-``tsr-digest-algorithms``, ``tsr-non-signer-certificate``, ``tsr-revocation-info``, ``tsr-unsigned-attributes``
-    W8: a ``.tsr`` flip (with the attestation digest re-synchronised so it reaches
-    DER decoding) is exempt only inside one of these four DER fields, which no
+``tsr-digest-algorithms``, ``tsr-non-signer-certificate``, ``tsr-revocation-info``, ``tsr-unsigned-attributes``, ``tsr-signer-algorithm-parameters``
+    W8/X1: a ``.tsr`` flip (with the attestation digest re-synchronised so it reaches
+    DER decoding) is exempt only inside one of these five DER fields, which no
     §12.2 check reads beyond strict DER (check 1); the byte ranges are computed
     from the receipt structure and listed per case in
     ``vectors/GATE-3-EXCEPTIONS.md``. Every other accepted ``.tsr`` flip is a
@@ -157,6 +157,12 @@ EXEMPT_REASONS = {
     "tsr-unsigned-attributes": (
         "SignerInfo.unsignedAttrs: outside the CMS signature and read by no §12.2 "
         "check; only required to be strict DER (check 1)"
+    ),
+    "tsr-signer-algorithm-parameters": (
+        "the parameters of SignerInfo.digestAlgorithm and SignerInfo.signatureAlgorithm: "
+        "an open type (ANY DEFINED BY, §12.2 1c, S1-FIX5 X1) judged only by its framing; "
+        "checks 5, 6 and 10 read the algorithm OBJECT IDENTIFIER only, and the "
+        "parameters are outside the CMS signature"
     ),
 }
 
@@ -618,7 +624,9 @@ def tsr_exempt_ranges(raw: bytes) -> list[tuple[int, int, str]]:
 
     Returns ``(start, end, class)`` for the content of ``SignedData.digestAlgorithms``,
     of every certificate in ``SignedData.certificates`` that is not the located
-    signer certificate, of ``SignedData.crls`` and of ``SignerInfo.unsignedAttrs``.
+    signer certificate, of ``SignedData.crls``, of ``SignerInfo.unsignedAttrs`` and
+    of the parameters of the signer's ``digestAlgorithm`` and ``signatureAlgorithm``
+    (the bytes after the algorithm OBJECT IDENTIFIER, S1-FIX5 X1).
     Every other receipt byte is evidence: an accepted flip there is a survivor.
     """
     cached = _TSR_RANGES_CACHE.get(raw)
@@ -673,7 +681,17 @@ def tsr_exempt_ranges(raw: bytes) -> list[tuple[int, int, str]]:
             ranges.append((inner, after, "tsr-revocation-info"))
         elif tag == 0x31:
             signer_info = children(inner, after)[0]
-            for stag, _sstart, sinner, safter in children(signer_info[2], signer_info[3]):
+            signer_fields = children(signer_info[2], signer_info[3])
+            # SignerInfo: version, sid, digestAlgorithm, [0] signedAttrs OPTIONAL,
+            # signatureAlgorithm, signature, [1] unsignedAttrs OPTIONAL.
+            algorithms = [signer_fields[2]] + [
+                field for field in signer_fields[3:] if field[0] == 0x30
+            ][:1]
+            for _atag, _astart, ainner, aafter in algorithms:
+                oid_after = children(ainner, aafter)[0][3]
+                if oid_after < aafter:
+                    ranges.append((oid_after, aafter, "tsr-signer-algorithm-parameters"))
+            for stag, _sstart, sinner, safter in signer_fields:
                 if stag == 0xA1:
                     ranges.append((sinner, safter, "tsr-unsigned-attributes"))
     _TSR_RANGES_CACHE[raw] = ranges
