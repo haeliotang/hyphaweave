@@ -85,7 +85,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import zipfile
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -124,6 +123,10 @@ EXEMPT_REASONS = {
     "zip-metadata": (
         "zip local-file headers, extra fields, data descriptors, central directory and "
         "EOCD are container metadata, not archived evidence"
+    ),
+    "zip-readable-payload": (
+        "a zip entry under readable/ is never decompressed, CRC-checked, hashed or counted "
+        "(spec §11.8/§11.9): flipping its payload bytes cannot change any verdict"
     ),
 }
 
@@ -348,26 +351,30 @@ class _SpanScanner:
 # ------------------------------------------------------------------------ zip layout
 
 
-def zip_ranges(path: Path) -> list[tuple[int, int]]:
-    """Return the byte ranges that are *archived evidence* (entry payloads).
+def zip_ranges(path: Path) -> list[tuple[int, int, str]]:
+    """Return ``(start, end, name)`` ranges of *archived evidence* (entry payloads).
 
     Everything else in the archive (local headers, central directory, EOCD and
     entry descriptors) is container metadata and exempt from the invalid rule.
+    Payloads under ``readable/`` are separately exempt (never decompressed or
+    CRC-checked). The layout is read with the verifier's own ``zipread`` parser,
+    so the byte-flip gate does not depend on the standard library's zip reader.
     """
-    data = path.read_bytes()
-    payload: list[tuple[int, int]] = []
-    with zipfile.ZipFile(path) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
+    from hyphaweave_verify import zipread
+
+    payload: list[tuple[int, int, str]] = []
+    with path.open("rb") as handle:
+        archive = zipread.parse_zip(handle)
+        for entry in archive.entries:
+            if entry.is_directory:
                 continue
-            header = info.header_offset
-            if data[header : header + 4] != b"PK\x03\x04":
-                continue
-            name_len = int.from_bytes(data[header + 26 : header + 28], "little")
-            extra_len = int.from_bytes(data[header + 28 : header + 30], "little")
-            start = header + 30 + name_len + extra_len
-            end = start + info.compress_size
-            payload.append((start, end))
+            payload.append(
+                (
+                    entry.data_offset,
+                    entry.data_offset + entry.compressed_size,
+                    entry.name,
+                )
+            )
     return payload
 
 
@@ -545,9 +552,15 @@ def classify_non_invalid(
     return None
 
 
-def classify_zip(offset: int, payload_ranges: list[tuple[int, int]]) -> str | None:
-    for start, end in payload_ranges:
+def classify_zip(
+    offset: int, payload_ranges: list[tuple[int, int, str]]
+) -> str | None:
+    for start, end, name in payload_ranges:
         if start <= offset < end:
+            if name.startswith("readable/"):
+                # §11.8/§11.9: readable/ payload is never decompressed, hashed or
+                # CRC-checked, so its bytes carry no semantic.
+                return "zip-readable-payload"
             return None
     return "zip-metadata"
 
