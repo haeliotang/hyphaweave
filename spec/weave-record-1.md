@@ -2083,22 +2083,31 @@ target per-case layout remains implementation-defined (Appendix A P7)
        keyset or of the target container), and the signature verifies over the §2.4
        manifest signature message with that key material — so a key rotated away since the
        previous container was exported still links when the target carries the rotation or
-       the old declaration;
+       the old declaration. The record verdicts are known at this step, and, as in §5.3, a
+       `weave.key.rotated` record that is not valid supplies **no** key material: neither
+       its `old_public_key` nor its `new_public_key` counts here [X5; decision 2026-11-12
+       #1];
     2. its key is **trusted in the target's final trust closure** (§5.3): it has a valid
-       `weave.key.declared` record in the target verification context (a keyset root, or a
-       context declaration admitted by the closure — for an `agent`/`program`/`device` key,
-       one whose owner is trusted), or it is the `old_key` of a valid `weave.key.rotated`
-       record of the target context that lists `old_public_key` and whose `new_key` has
-       such a valid declaration. Explicit rotation material alone, without that trusted
-       successor, does not make a key trusted here;
-    3. its key passes the §9.4 key-state rules **at the previous manifest's claimed
-       `created_at`**, evaluated with the target context's valid declarations and
-       revocations and exactly as for a target manifest signature: a validity window that
-       excludes that instant, or a `retired`/`other` revocation effective at or before it,
-       breaks the link, while a revocation that takes effect after it does not affect the
-       historical link. The previous container's timestamp receipts are not read, so no
-       timestamp evidence exists for this signature: a `key-compromise` revocation of the
-       signing key always breaks the link (§9.4 case 3).
+       `weave.key.declared` record in the target verification context (a keyset root; an
+       `agent`/`program`/`device` declaration of the keyset that is trusted through its
+       owner; or a context declaration admitted by the closure — for an
+       `agent`/`program`/`device` key, one whose owner is trusted), or it is the `old_key`
+       of a valid `weave.key.rotated` record of the target context that lists
+       `old_public_key` and whose `new_key` has such a valid declaration. Explicit rotation
+       material alone, without that trusted successor, does not make a key trusted here;
+    3. its key passes the §9.4 validity-window and revocation rules **at the previous
+       manifest's claimed `created_at`**, evaluated with the target context's valid
+       declarations and revocations: a validity window that excludes that instant breaks the
+       link, and so does a revocation of the signing key — `retired`, `other` **or
+       `key-compromise`** — whose effective time `T` is at or before it (`created_at >= T`;
+       for several revocations of one family, the earliest `T`). A revocation whose `T` is
+       after `created_at` does not affect the link. On this link a `key-compromise`
+       revocation is judged by that same comparison, not by §9.4 case 3: the previous
+       container's timestamp receipts are not read, but the previous manifest's digest is
+       already pinned by the target's trusted manifest signature
+       (`previous_manifest.digest`), so a compromise reported later cannot reach back into
+       the history that signature pins [X2; `docs/open-questions.md` §6 entry 24] decided
+       (Inceptless decision 2026-11-12 #1; X2).
     Any entry failing 1–3 is `E_MANIFEST_CHAIN` [W1; `docs/open-questions.md` §6 entry 24]
     decided (Inceptless decision 2026-11-11 #16; W1). When the material that verified the
     equation of an entry came from the context rather than the keyset, the check counts for
@@ -2369,32 +2378,78 @@ while re-encoding `signed_attrs` for signature verification — is reported as c
 structure failure anywhere in the receipt is never reported under a later check's code:
 
 - **1a — universal DER rules.** The bytes are one TLV with no trailing data; every length
-  is definite and minimal; every high tag number is minimal; no universal primitive type
+  is definite and minimal; tag numbers 0–30 use the single-octet identifier and larger ones
+  the high-tag-number form of X.690 §8.1.2.4, read in base 128, whose **first** subsequent
+  octet is not `0x80` (later subsequent octets may be `0x80` or `0x00`: `5f 81 80 00` is
+  the minimal form of `[APPLICATION 16384]`; the number of subsequent octets is not
+  limited); no universal primitive type
   (BOOLEAN, INTEGER, BIT STRING, OCTET STRING, NULL, OBJECT IDENTIFIER, the string and
   time types) uses the constructed form; BOOLEAN is `0x00` or `0xFF`; INTEGER has no
   redundant leading `0x00`/`0xFF` octet; a BIT STRING's unused-bit count is 0–7 (0 when
-  it has no content octets) and its unused bits are zero; NULL is empty; OBJECT IDENTIFIER sub-identifiers are minimal; UTCTime and
-  GeneralizedTime use the DER forms (`Z`, no trailing fractional zeros); and the components
+  it has no content octets) and its unused bits are zero; NULL is empty; OBJECT IDENTIFIER sub-identifiers are minimal; a UTF8String is
+  well-formed UTF-8; UTCTime is `YYMMDDHHMMSSZ` and GeneralizedTime is `YYYYMMDDHHMMSS`,
+  optionally followed by `.` and one or more fractional digits whose last digit is not `0`,
+  then `Z` (X.690 §11.7–§11.8: any number of fractional digits, no trailing zero, no empty
+  fraction); and the components
   of every universal SET are in ascending DER order (X.690 §11.6). These rules apply to
   every TLV of the file, including values whose type is not known to the verifier (an
   unregistered attribute's value, for example): every universal SET in the
   `TimeStampResp`, CMS and X.509 schemas is a SET OF, so a universal SET of unknown type is
   checked as a SET OF [W3; `docs/open-questions.md` §6 entry 29].
-- **1b — schema decoding.** The file decodes as an RFC 3161 `TimeStampResp` (RFC 3161,
-  RFC 5652, RFC 5280 and RFC 5816 module definitions).
-- **1c — re-encoding.** Re-encoding the decoded `TimeStampResp` from its schema values
-  yields the input bytes exactly. The re-encoding emits every SET OF — including the
-  implicitly tagged ones, which 1a cannot recognise — with its components in ascending DER
-  order: `SignedData.digestAlgorithms`, `SignedData.certificates`, `SignedData.crls`,
-  `SignerInfo.signedAttrs`, `SignerInfo.unsignedAttrs`, every `Attribute.attrValues`, every
-  `RelativeDistinguishedName` and `SignedData.signerInfos`; it omits every component equal
-  to its DEFAULT value (for example `TSTInfo.ordering` FALSE, `Extension.critical` FALSE,
-  `ESSCertIDv2.hashAlgorithm` sha256); and it rebuilds every typed primitive from its
-  decoded value, so implicitly tagged primitives obey the same canonical-content rules as
-  in 1a. The content octets of an OCTET STRING or BIT STRING are re-emitted as decoded
-  (their inner encoding is not part of this sub-step: the TSTInfo inside `eContent` is
-  checked on its own by check 2 and certificate extension values by 1e), and a value of a
-  type unknown to the verifier is re-emitted as decoded (it was checked by 1a).
+- **1b — schema decoding.** The file decodes as an RFC 3161 `TimeStampResp` against the
+  module definitions of RFC 3161, RFC 5652, RFC 5280 and RFC 5035/RFC 5816 (ESS), with the
+  open types listed under 1c.
+- **1c — re-encoding.** Re-encoding the decoded `TimeStampResp` yields the input bytes
+  exactly. The re-encoding is defined by X.690 (DER) and those module definitions
+  **only**: no parsing library's value model, default object or time type is a criterion
+  [X1] decided (Inceptless decision 2026-11-12 #1; X1). In detail:
+  - every SET OF — including the implicitly tagged ones, which 1a cannot recognise — is
+    emitted with its components in ascending DER order: `SignedData.digestAlgorithms`,
+    `SignedData.certificates`, `SignedData.crls`, `SignerInfo.signedAttrs`,
+    `SignerInfo.unsignedAttrs`, every `Attribute.attrValues`, every
+    `RelativeDistinguishedName` and `SignedData.signerInfos`;
+  - a component equal to its DEFAULT value is omitted (X.690 §11.5). Equality is equality
+    of the value the module definition gives, so it is decided on DER encodings: a
+    component is "equal to its DEFAULT" exactly when its encoding equals the encoding of
+    the default below, and every other value is encoded. In particular the ESSCertIDv2
+    default is `{algorithm id-sha256}` with the `parameters` component absent; an explicit
+    `{id-sha256, NULL}` is a different value and is encoded, while an explicit
+    `{id-sha256}` is the default and is a violation. The DEFAULT components of this schema
+    are exactly:
+
+    | component | module | definition | DER encoding of the default |
+    |---|---|---|---|
+    | `TBSCertificate.version` | RFC 5280 | `version [0] EXPLICIT Version DEFAULT v1` | `a0 03 02 01 00` |
+    | `Extension.critical` (certificate, CRL, CRL-entry and TSTInfo extensions) | RFC 5280 | `critical BOOLEAN DEFAULT FALSE` | `01 01 00` |
+    | `TSTInfo.ordering` | RFC 3161 | `ordering BOOLEAN DEFAULT FALSE` | `01 01 00` |
+    | `ESSCertIDv2.hashAlgorithm` | RFC 5035 (RFC 5816) | `hashAlgorithm AlgorithmIdentifier DEFAULT {algorithm id-sha256}` | `30 0b 06 09 60 86 48 01 65 03 04 02 01` |
+
+  - every typed primitive, universally or implicitly tagged, is rebuilt from its content
+    octets by the X.690 rules for its type, so implicitly tagged primitives obey the same
+    canonical-content rules as in 1a: INTEGER in its shortest two's-complement form,
+    BOOLEAN as `0xFF`/`0x00`, NULL empty, OBJECT IDENTIFIER sub-identifiers minimal, BIT
+    STRING with zero unused bits and, for the named bit list `PKIStatusInfo.failInfo`, no
+    trailing zero bit (X.690 §11.2.2); every primitive is in the primitive form;
+  - the content octets of an OCTET STRING, a BIT STRING or a character string are
+    re-emitted as decoded (their inner encoding is not part of this sub-step: the TSTInfo
+    inside `eContent` is checked on its own by check 2 and certificate extension values by
+    1e);
+  - UTCTime and GeneralizedTime values are compared as their **raw content** in the DER
+    form of 1a, never through a time value: any number of fractional digits is kept as
+    encoded;
+  - a value of an **open type** is re-emitted exactly as decoded: only its framing — tag,
+    length and nesting, with the universal rules of 1a — is judged, and it is never handed
+    to a type decoder, whatever its tag class. The open types of this schema are
+    `AlgorithmIdentifier.parameters`; `AttributeTypeAndValue.value`; the values of every
+    attribute (signed or unsigned) whose type is not `id-contentType`
+    (1.2.840.113549.1.9.3, decoded as an OBJECT IDENTIFIER), `id-messageDigest`
+    (1.2.840.113549.1.9.4, an OCTET STRING) or `id-aa-signingCertificateV2`
+    (1.2.840.113549.1.9.16.2.47, a `SigningCertificateV2`); `ContentInfo.content` when
+    the content type is not `id-signedData` (check 1d then rejects it); the
+    `CertificateChoices` alternatives other than `certificate` (`extendedCertificate`,
+    `v1AttrCert` and `v2AttrCert` as whole values, and `other`'s `otherCert`);
+    `OtherRevocationInfoFormat.otherRevInfo`; the `x400Address` alternative of
+    `GeneralName` and `AnotherName.value`; and `PolicyQualifierInfo.qualifier`.
 - **1d — status and versions.** `PKIStatusInfo.status` is `granted`; the token's content
   type is `id-signedData`; `SignedData.version` is 3; every `SignerInfo.version` is 1 or 3.
 - **1e — certificates.** Every `certificate` choice of `SignedData.certificates` decodes as
@@ -2610,7 +2665,16 @@ switch of §14.7 and takes effect only for the test-only check-skip hook.
   or decoding these inputs — whatever the decoding library reports — is such a usage error,
   never a crash and never an empty input. The content of an openable `--previous` is
   evidence for the chain link and is judged by §11.5 (`E_MANIFEST_CHAIN`), not by this rule
-  [W4] decided (Inceptless decision 2026-11-11 #16; W4).
+  [W4] decided (Inceptless decision 2026-11-11 #16; W4). **The kind of every operator path
+  is established before it is opened (X3):** the `--keys` directory, each of its `*.json`
+  entries, the `--tsa-trust` file and the `--previous` path are examined with `lstat`; a
+  symbolic link is resolved and its target judged the same way. `--keys` must be a
+  directory, a keyset entry and `--tsa-trust` a regular file, `--previous` a directory or a
+  regular file; a FIFO, a character or block device, a socket, a dangling link or any other
+  kind is a usage error (exit 2) without opening it, so a FIFO can never block the
+  verifier. The `--tsa-trust` file is read with the bound `MAX_TIMESTAMP_BYTES` (§13); a
+  larger file is a usage error (exit 2) [X3; `docs/open-questions.md` §6 entry 31] decided
+  (Inceptless decision 2026-11-12 #1; X3).
 - `--keys <dir>` supplies the verifier's **local trust input**: every top-level entry of
   the directory whose name ends in `.json`, names beginning with `.` included; an entry
   with such a name that does not resolve to a regular file (a directory, a dangling
@@ -3371,7 +3435,7 @@ and are normative at the locations given.
 
 | ruling | topic | normative location |
 |---|---|---|
-| W1 | a supplied previous container's manifest signature is verified in the **target** container's verification context: §11.3 required-key material of the target, the key trusted in the target's final trust closure, §9.4 key state at the previous `created_at` (a compromise always breaks the link); the previous container's own declarations never count | §11.5, §14.1, §14.9, registry |
+| W1 | a supplied previous container's manifest signature is verified in the **target** container's verification context: §11.3 required-key material of the target, the key trusted in the target's final trust closure, §9.4 key state at the previous `created_at` (a compromise judged by its time against `created_at`, X2); the previous container's own declarations never count | §11.5, §14.1, §14.9, registry |
 | W2 | §11.9 rules 1–4 and the §13 limits apply to the framing of the whole zip, every entry, for a supplied previous zip as for a target zip; only name safety, duplicate names, CRC and `readable/` rules are not applied to the unread previous members | §11.5, §11.9 rule 4 |
 | W3 | check 1 is a real DER check: universal DER rules over every TLV (1a), schema decoding (1b), re-encoding equal to the input with every SET OF sorted and no DEFAULT encoded (1c), versions (1d), certificate decoding (1e); the TSTInfo gets 1a–1c on its own | §12.2, registry |
 | W4 | `--keys`, `--tsa-trust` and the `--previous` path are operator inputs checked before verification; any read/decode failure is a usage error (exit 2) naming the file | §14.1, registry |
@@ -3380,6 +3444,18 @@ and are normative at the locations given.
 | W7 | the zip check order: locate the EOCD (prefix/trailing bytes) → parse the central directory → §13 limits (`E_CONTAINER_SIZE`, stop) → every remaining structural rule | §11.9, §13, registry |
 | W8, W9, W11 | gate and vector coverage (byte-flip `.tsr` exemptions, V3 core checks pinned by vectors, crash-fuzz seeds) are tooling, not format rules | outside this document (tools, vectors) |
 | W10 | every `ed25519` attestation entry is judged (multi-signature attestation); keyset entry names and non-regular entries; wording of `--previous` | §11.3, §14.1 |
+
+The following rows are fixed by Inceptless decision **2026-11-12 #1** (S1-FIX5, X1–X5)
+and are normative at the locations given. They amend the W1 and W3 rows above where they
+differ.
+
+| ruling | topic | normative location |
+|---|---|---|
+| X1 | check 1's DER rules come from X.690 and the ASN.1 module definitions only: the DEFAULT components and their encodings are listed (ESSCertIDv2's default is `{id-sha256}` without parameters, so `{id-sha256, NULL}` is encoded); open-type values are judged by their TLV framing only; time values are compared as their raw DER form; the high-tag-number form follows X.690 §8.1.2.4 | §12.2, registry |
+| X2 | on the previous link a `key-compromise` revocation is judged like a retired one, against the previous `created_at`: `created_at >= T` breaks the link, an earlier `created_at` links | §11.5, registry |
+| X3 | operator paths are examined with `lstat` before opening; a FIFO, device or socket is a usage error; `--tsa-trust` is read with the bound `MAX_TIMESTAMP_BYTES` | §14.1 |
+| X4 | gate coverage (the independent DER judge) is tooling, not a format rule | outside this document (tools) |
+| X5 | §11.5 rules 1–2 wording (an invalid rotation record supplies no key material; keyset declarations trusted through their owner); documentation | §11.5 |
 
 ### A.2 PROVISIONAL implementation shapes
 
