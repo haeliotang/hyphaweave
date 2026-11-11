@@ -39,7 +39,7 @@ nuisance.
 | `check_external.py` | vectors-extra | Gate 4: cross-checks WR-CJ/Ed25519 against the official RFC 8785, RFC 8032 and Wycheproof data under `vectors/external/`. This is the only gate tool that may import the verifier. |
 | `check_schemas.py` | schemas-writer | JSON Schema self-check gate over the vectors. |
 | `anti_verification.py` | QA | Gate 3: true source-level ablation of verifier checks over the whole vector suite. |
-| `byte_flip_gate.py` | QA | Gate 3(a): flips every input byte of every positive case; documented exemptions live in `vectors/GATE-3-EXCEPTIONS.md` (for `.tsr` receipts only four named DER fields, by byte range; S1-FIX4 W8). |
+| `byte_flip_gate.py` | QA | Gate 3(a): flips every input byte of every positive case; documented exemptions live in `vectors/GATE-3-EXCEPTIONS.md` (for `.tsr` receipts only five named DER fields, by byte range; S1-FIX4 W8, S1-FIX5 X1). |
 | `crash_fuzz.py` | QA | Gate 3(c): deterministic crash fuzzing over six input classes (fixed CI seed, `--seed` for any other deterministic batch), plus a replay of the committed 146-input regression corpus under `tools/crash_corpus/`. A non-{0,1,2,3} exit code or a `Traceback` on stderr is a gate failure. |
 
 **Load.** `anti_verification.py`, `byte_flip_gate.py` and `crash_fuzz.py` default
@@ -96,9 +96,11 @@ positive zip-form container that embeds a `.tsr`, so the zip path does not need
 that rewriting: the same DER-decoding paths are covered by the committed bad-DER
 vectors (`integrity-levels/l2-ts-der-*`) and by the `tsa` class of
 `crash_fuzz.py` (which always synchronises the digest). An accepted `.tsr` flip
-is exempt only inside the four DER fields no §12.2 check reads beyond strict
-DER (`digestAlgorithms`, non-signer certificates, `crls`, `unsignedAttrs`),
-computed from the receipt structure; every other accepted flip is a survivor.
+is exempt only inside the five DER fields no §12.2 check reads beyond strict
+DER (`digestAlgorithms`, non-signer certificates, `crls`, `unsignedAttrs`, and
+since S1-FIX5 X1 the parameters of the signer's digest and signature
+algorithms, an open type), computed from the receipt structure; every other
+accepted flip is a survivor.
 
 ## Regeneration order
 
