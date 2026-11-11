@@ -55,6 +55,17 @@ from .errors import WeaveError
 
 MAX_TIMESTAMP_BYTES = 1_048_576
 
+#: U1 exception audit: asn1crypto DER parsing/access on untrusted bytes raises
+#: these built-in exception types only (no bare ``Exception`` catch remains).
+_DER_ACCESS_ERRORS = (
+    ValueError,
+    TypeError,
+    KeyError,
+    IndexError,
+    OverflowError,
+    UnicodeError,
+)
+
 #: S11/§13: total accuracy of one receipt, in seconds. A receipt whose
 #: normalised accuracy exceeds this (or whose conversion overflows a signed
 #: 64-bit microsecond value) is invalid with ``E_TS_SCHEMA`` and can never
@@ -410,11 +421,11 @@ def _parse_tst_info(tsr_bytes: bytes):
     """Checks 1-2: DER TimeStampResp, granted status, TSTInfo version 1."""
     try:
         response = tsp.TimeStampResp.load(tsr_bytes)
-    except Exception as error:
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "not a DER TimeStampResp") from error
     try:
         status = response["status"]["status"].native
-    except Exception as error:
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "TimeStampResp has no readable status") from error
     if status != "granted":
         raise WeaveError("E_TS_SCHEMA", "TimeStampResp status is not granted")
@@ -429,11 +440,11 @@ def _parse_tst_info(tsr_bytes: bytes):
     try:
         raw_content = content.contents
         tst_info = tsp.TSTInfo.load(raw_content)
-    except Exception as error:
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "malformed TSTInfo") from error
     try:
         version = tst_info["version"].native
-    except Exception as error:
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "TSTInfo has no readable version") from error
     if version != "v1":
         raise WeaveError("E_TS_SCHEMA", "unsupported TSTInfo version")
@@ -458,7 +469,7 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
         raise WeaveError("E_TS_CMS", "timestamp token has no signed attributes")
     try:
         signed_attrs_der = signed_attrs.untag().dump()
-    except Exception as error:
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_CMS", "signed attributes cannot be encoded") from error
     # Check 7: the signer certificate must be carried inside the token.
     signer_certificate_der = _find_signer_certificate(signed_data, signer_info)
@@ -509,9 +520,10 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
             public_key.verify(signature, signed_attrs_der, ec.ECDSA(digest_class()))
     except WeaveError:
         raise
-    except (InvalidSignature, UnsupportedAlgorithm) as error:
-        raise WeaveError("E_TS_CMS", "CMS signature does not verify") from error
-    except Exception as error:  # pragma: no cover - defensive provider errors
+    except (InvalidSignature, UnsupportedAlgorithm, ValueError, TypeError) as error:
+        # U1 exception audit: cryptography's verify() raises InvalidSignature for
+        # a failing signature, UnsupportedAlgorithm for an unusable key/curve and
+        # ValueError/TypeError for malformed key material.
         raise WeaveError("E_TS_CMS", "CMS signature does not verify") from error
     return signer_info, signer_certificate_der
 
@@ -536,7 +548,7 @@ def _find_signer_certificate(signed_data, signer_info) -> bytes:
         elif sid.name == "subject_key_identifier":
             try:
                 extension = certificate.key_identifier_value
-            except Exception:
+            except (ValueError, KeyError):
                 extension = None
             if extension is not None and extension == chosen.native:
                 return certificate.dump()
@@ -646,19 +658,16 @@ def _accuracy_to_us(tst_info) -> int | None:
     """
     try:
         accuracy = tst_info["accuracy"]
-    except Exception:  # pragma: no cover - defensive
+    except (KeyError, ValueError, TypeError):
         return 0
     if accuracy is None or accuracy.native is None:
         return 0
     native = accuracy.native
     if not isinstance(native, dict):
         raise WeaveError("E_TS_SCHEMA", "accuracy is not a sequence")
-    try:
-        seconds = native.get("seconds")
-        millis = native.get("millis")
-        micros = native.get("micros")
-    except Exception as error:  # pragma: no cover - defensive
-        raise WeaveError("E_TS_SCHEMA", "accuracy components are not readable") from error
+    seconds = native.get("seconds")
+    millis = native.get("millis")
+    micros = native.get("micros")
     for component in (seconds, millis, micros):
         if component is not None and (
             isinstance(component, bool) or not isinstance(component, int)

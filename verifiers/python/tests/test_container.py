@@ -14,8 +14,6 @@ import pytest
 from hyphaweave_verify import container as container_module
 from hyphaweave_verify import manifest as manifest_module
 from hyphaweave_verify import verifier
-from hyphaweave_verify.errors import WeaveError
-
 from conftest import KEYSET, VECTORS
 
 
@@ -431,8 +429,6 @@ def test_oversized_manifest_has_null_input_identity(tmp_path) -> None:
 
 
 def test_previous_with_a_null_chain_is_manifest_chain(keyset, tmp_path) -> None:
-    from hyphaweave_verify.errors import WeaveError
-
     previous = VECTORS / "container" / "l0-minimal" / "container"
     result = verify(
         VECTORS / "container" / "l0-minimal" / "container",
@@ -458,7 +454,6 @@ def test_erasure_cross_checks_tolerate_a_missing_body_erased() -> None:
     from types import SimpleNamespace
 
     from hyphaweave_verify import kinds
-    from hyphaweave_verify.errors import UsageError  # noqa: F401
 
     fake_view = SimpleNamespace(
         verdict="invalid",
@@ -546,3 +541,221 @@ def test_previous_readable_non_zip_file_is_manifest_chain(tmp_path) -> None:
     )
     assert result.report["verdict"] == "invalid"
     assert result.report["container"]["errors"] == ["E_MANIFEST_CHAIN"]
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX2: previous containers (U1), zip limits (U2), disk numbers (U9) and the
+# §11.9 rule-level behaviours (U12 L1/L2/L4/L5/L6).
+# ---------------------------------------------------------------------------
+
+
+def test_previous_zip_valid_and_invalid() -> None:
+    """U1: a supplied previous container may be a zip, parsed by zipread."""
+    valid_dir = VECTORS / "container" / "previous-zip-valid"
+    valid_expected = json.loads((valid_dir / "expected.json").read_text(encoding="utf-8"))
+    valid = verify(
+        valid_dir / valid_expected["input"],
+        previous_container=valid_dir / "previous-container.zip",
+    )
+    assert valid.report["verdict"] == "valid"
+
+    invalid_dir = VECTORS / "container" / "previous-zip-invalid"
+    invalid_expected = json.loads((invalid_dir / "expected.json").read_text(encoding="utf-8"))
+    invalid = verify(
+        invalid_dir / invalid_expected["input"],
+        previous_container=invalid_dir / "previous-container.zip",
+    )
+    assert invalid.report["verdict"] == "invalid"
+    assert invalid.report["container"]["errors"] == ["E_MANIFEST_CHAIN"]
+
+
+def test_previous_zip_structural_failure_never_maps_to_container_zip() -> None:
+    from hyphaweave_verify import container as container_module
+
+    case_dir = VECTORS / "container" / "previous-zip-invalid"
+    try:
+        container_module._read_previous_manifest_digest(
+            case_dir / "previous-container.zip"
+        )
+    except container_module.WeaveError as error:  # type: ignore[attr-defined]
+        assert error.code == "E_MANIFEST_CHAIN"
+    else:  # pragma: no cover - the fixture is structurally invalid
+        raise AssertionError("structurally invalid previous zip accepted")
+
+
+def test_zip_entry_count_limit_in_memory(tmp_path) -> None:
+    """U2: more than MAX_CONTAINER_ENTRIES zip entries is E_CONTAINER_SIZE.
+
+    The 200,001-entry fixture would be ~16 MiB, so it is built in memory here
+    instead of being committed (the reason is recorded in the report).
+    """
+    import struct
+
+    entries = 200_001
+    name = b"a/"
+    local_size = 30 + len(name)
+    local = struct.pack(
+        "<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0, 0, 0, 0, len(name), 0
+    ) + name
+    central_header = struct.pack(
+        "<IHHHHHHIIIHHHHHII",
+        0x02014B50,
+        20,
+        20,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        len(name),
+        0,
+        0,
+        0,
+        0,
+        0x10,
+        0,
+    )
+    central_entries = b"".join(
+        central_header[:42]
+        + struct.pack("<I", index * local_size)
+        + name
+        for index in range(entries)
+    )
+    central_offset = entries * local_size
+    central_size_total = len(central_entries)
+    zip64_eocd_offset = central_offset + central_size_total
+    zip64_eocd = (
+        struct.pack("<I", 0x06064B50)
+        + struct.pack("<Q", 44)
+        + struct.pack("<H", 45)
+        + struct.pack("<H", 45)
+        + struct.pack("<I", 0)
+        + struct.pack("<I", 0)
+        + struct.pack("<Q", entries)
+        + struct.pack("<Q", entries)
+        + struct.pack("<Q", central_size_total)
+        + struct.pack("<Q", central_offset)
+    )
+    locator = struct.pack("<IIQI", 0x07064B50, 0, zip64_eocd_offset, 1)
+    eocd_offset = zip64_eocd_offset + len(zip64_eocd) + len(locator)
+    eocd = struct.pack(
+        "<IHHHHIIH", 0x06054B50, 0, 0, 0xFFFF, 0xFFFF, central_size_total, central_offset, 0
+    )
+    archive_path = tmp_path / "entries.zip"
+    archive_path.write_bytes(
+        local * entries + central_entries + zip64_eocd + locator + eocd
+    )
+    result = verify(archive_path)
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_CONTAINER_SIZE"]
+    assert eocd_offset == archive_path.stat().st_size - 22
+
+
+def test_zip_declared_total_over_limit_is_container_size() -> None:
+    """U2: declared uncompressed total over 1 GiB is E_CONTAINER_SIZE, not ZIP."""
+    case_dir = VECTORS / "container" / "zip-declared-total-over-limit"
+    expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+    result = verify(case_dir / expected["input"])
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_CONTAINER_SIZE"]
+
+
+def test_readable_declared_size_is_excluded_from_the_total() -> None:
+    """U2: a huge declared readable/ entry is neither counted nor decompressed."""
+    case_dir = VECTORS / "container" / "readable-declared-size-excluded"
+    expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+    result = verify(case_dir / expected["input"], default_keyset())
+    assert result.report["verdict"] == "valid"
+
+
+def test_zip_disk_numbers_are_single_volume_only() -> None:
+    """U9: non-zero EOCD/locator disk numbers are E_CONTAINER_ZIP."""
+    from hyphaweave_verify import zipread
+
+    for case in ("zip-disk-number-nonzero", "zip64-locator-total-disks"):
+        case_dir = VECTORS / "container" / case
+        expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+        with pytest.raises(zipread.ZipStructureError):
+            with (case_dir / expected["input"]).open("rb") as handle:
+                zipread.parse_zip(handle)
+
+
+def test_zip_rule_level_structural_violations() -> None:
+    """U12 L1/L2/L4/L5: the parser rejects each documented rule violation."""
+    from hyphaweave_verify import zipread
+
+    for case in (
+        "zip-data-descriptor-nonzero-local-header",  # L1
+        "readable-local-central-crc-mismatch",  # L2
+        "zip-eocd-per-disk-count",  # L4
+        "zip64-sentinel-without-zip64",  # L5
+    ):
+        case_dir = VECTORS / "container" / case
+        expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+        with pytest.raises(zipread.ZipStructureError):
+            with (case_dir / expected["input"]).open("rb") as handle:
+                zipread.parse_zip(handle)
+
+
+def test_slash_name_with_data_is_container_zip() -> None:
+    """U12 L6: a directory-style name carrying data is E_CONTAINER_ZIP."""
+    case_dir = VECTORS / "container" / "zip-slash-name-with-data"
+    expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+    result = verify(case_dir / expected["input"])
+    assert result.report["verdict"] == "invalid"
+    assert result.report["container"]["errors"] == ["E_CONTAINER_ZIP"]
+
+
+def test_oversize_record_listing_combines_independent_violations() -> None:
+    """U8: E_JSON_SIZE joins MISSING/EXTRA in the records-listing phase."""
+    for case, expected_codes in (
+        ("oversize-record-file", ["E_JSON_SIZE"]),
+        (
+            "oversize-record-with-missing",
+            ["E_JSON_SIZE", "E_MANIFEST_RECORD_MISSING"],
+        ),
+        (
+            "oversize-record-with-extra",
+            ["E_JSON_SIZE", "E_MANIFEST_RECORD_EXTRA"],
+        ),
+    ):
+        case_dir = VECTORS / "container" / case
+        expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+        result = verify(case_dir / expected["input"])
+        assert result.report["verdict"] == "invalid"
+        assert sorted(result.report["container"]["errors"]) == expected_codes
+        assert result.report["records"] == []
+
+
+def test_zip64_eocd_disk_numbers_are_single_volume(tmp_path) -> None:
+    """U9: non-zero disk fields in the ZIP64 EOCD record are E_CONTAINER_ZIP."""
+    import struct
+
+    from hyphaweave_verify import zipread
+
+    source = VECTORS / "container" / "zip64-valid" / "container.zip"
+    data = bytearray(source.read_bytes())
+    locator = data.rfind(b"PK\x06\x07")
+    zip64_offset = struct.unpack_from("<Q", data, locator + 8)[0]
+    struct.pack_into("<I", data, zip64_offset + 16, 1)  # "number of this disk"
+    archive_path = tmp_path / "disk.zip"
+    archive_path.write_bytes(bytes(data))
+    with pytest.raises(zipread.ZipStructureError):
+        with archive_path.open("rb") as handle:
+            zipread.parse_zip(handle)
+
+
+def test_zip64_sentinel_rule_is_enforced_specifically() -> None:
+    """U12 L5: sentinel counts without a ZIP64 locator are rejected by the
+    sentinel rule itself (the redundantly matching CD-size checks would otherwise
+    hide the specific rule behind the same error code)."""
+    from hyphaweave_verify import zipread
+
+    case_dir = VECTORS / "container" / "zip64-sentinel-without-zip64"
+    expected = json.loads((case_dir / "expected.json").read_text(encoding="utf-8"))
+    with pytest.raises(zipread.ZipStructureError) as raised:
+        with (case_dir / expected["input"]).open("rb") as handle:
+            zipread.parse_zip(handle)
+    assert "ZIP64 sentinel" in str(raised.value)

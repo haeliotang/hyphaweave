@@ -121,7 +121,14 @@ def test_compromise_revocation_ignores_claimed_recorded_at() -> None:
     )
 
 
-def test_self_evidencing_revocation_skips_effects() -> None:
+def test_self_revocation_is_exempt_only_from_its_own_effect() -> None:
+    """U3: R's own effect is excluded by the strict prior-order comparison.
+
+    A self-revocation whose signature is evaluated with ``prior_order`` equal to
+    its own order is not invalidated by itself, so a fresh key's self-revocation
+    is valid evidence.
+    """
+    own_digest = "sha256:" + "04" * 32
     state = keys.KeyState()
     state.add_revocation(
         keys.KeyRevocation(
@@ -129,11 +136,35 @@ def test_self_evidencing_revocation_skips_effects() -> None:
             reason="retired",
             effective_at=T1,
             effective_at_ms=_ms(T1),
-            recorded_at=T1,
-            record_digest="sha256:" + "03" * 32,
+            recorded_at=T2,
+            record_digest=own_digest,
         )
     )
-    state.check_signature_effects(HUMAN_1, T2, skip_revocations=True)
+    own_order = (keys.timestamp_sort_key(T2), own_digest)
+    # The strict "<" comparison excludes the record's own revocation, so this
+    # fresh key's self-revocation is valid evidence.
+    state.check_signature_effects(HUMAN_1, T2, prior_order=own_order)
+
+
+def test_already_revoked_key_cannot_emit_valid_self_revocation() -> None:
+    """U3: only *earlier* revocations are excluded from R's own evaluation."""
+    state = keys.KeyState()
+    retirement = keys.KeyRevocation(
+        key_id=HUMAN_1,
+        reason="retired",
+        effective_at=T1,
+        effective_at_ms=_ms(T1),
+        recorded_at=T1,
+        record_digest="sha256:" + "03" * 32,
+    )
+    state.add_revocation(retirement)
+    self_revocation_order = (keys.timestamp_sort_key(T2), "sha256:" + "04" * 32)
+    require_code(
+        lambda: state.check_signature_effects(
+            HUMAN_1, T2, prior_order=self_revocation_order
+        ),
+        "E_KEY_REVOKED",
+    )
 
 
 def test_earliest_declaration_wins() -> None:
@@ -328,7 +359,7 @@ def test_delegated_grant_chain_codes() -> None:
         transferable=True,
         valid_until=None,
     )
-    parent = grants.grant_record_from_envelope(parent_envelope, "sha256:" + "aa" * 32)
+    grants.grant_record_from_envelope(parent_envelope, "sha256:" + "aa" * 32)
 
     child_grant = {
         "grantee": {"key": "ed25519:" + "d" * 32},

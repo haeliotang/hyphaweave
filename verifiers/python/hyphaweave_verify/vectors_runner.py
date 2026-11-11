@@ -46,7 +46,6 @@ from .errors import CheckSkipper, UsageError, WeaveError
 from .report import (
     LIMITATION_OFFLINE_CONTEXT,
     limitation_list,
-    record_limitations,
     record_verdict,
 )
 

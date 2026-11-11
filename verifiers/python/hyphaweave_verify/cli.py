@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from . import __version__, canonical
+from . import __version__
 from . import container as container_module
 from . import report as report_module
 from . import verifier

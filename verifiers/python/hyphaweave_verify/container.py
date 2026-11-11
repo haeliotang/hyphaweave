@@ -44,7 +44,6 @@ from .report import (
     LIMITATION_PREVIOUS_SIG,
     LIMITATION_TOFU,
     LIMITATION_TSA_TRUST,
-    LIMITATION_UNKNOWN_KIND,
     LIMITATION_CHAIN_CLAIM,
     container_verdict,
     limitation_list,
@@ -53,10 +52,7 @@ from .report import (
     record_verdict,
 )
 from .timestamps import (
-    STATE_INVALID,
     STATE_PRESENT_UNVERIFIED,
-    STATE_VERIFIED,
-    TimestampArchive,
     verify_timestamp_archive,
 )
 from . import keys as keys_module
@@ -350,10 +346,22 @@ def _read_zip_container(path: Path) -> ContainerInput:
     seen_names: set[str] = set()
     readable_present = False
     error: str | None = None
+    actual_total = 0
     try:
         with path.open("rb") as handle:
             archive = zipread.parse_zip(handle)
-            _check_zip_declared_total(archive)
+            # U2/§13: the two zip-form limits are checked before any
+            # decompression; both are size errors, not structural zip errors.
+            if len(archive.entries) > MAX_CONTAINER_ENTRIES or (
+                _zip_declared_total(archive) > MAX_CONTAINER_UNCOMPRESSED_BYTES
+            ):
+                return ContainerInput(
+                    files={},
+                    error="E_CONTAINER_SIZE",
+                    input_sha256=input_sha,
+                    input_size=archive_size,
+                    is_zip=True,
+                )
             for entry in archive.entries:
                 name = entry.name
                 if entry.is_directory:
@@ -400,8 +408,8 @@ def _read_zip_container(path: Path) -> ContainerInput:
                 if _BLOBS_FILE.match(name):
                     digest_hex, size = zipread.digest_entry(handle, entry)
                     blobs[name] = (digest_hex, size)
-                    total = sum(size_value for _, size_value in blobs.values())
-                    if total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
+                    actual_total += size
+                    if actual_total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
                         return ContainerInput(
                             files={}, error="E_CONTAINER_SIZE",
                             input_sha256=input_sha, input_size=archive_size, is_zip=True,
@@ -409,8 +417,8 @@ def _read_zip_container(path: Path) -> ContainerInput:
                     continue
                 data = zipread.read_entry_data(handle, entry)
                 files[name] = data
-                total = sum(len(value) for key, value in files.items() if key != "manifest.json")
-                if total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
+                actual_total += len(data)
+                if actual_total > MAX_CONTAINER_UNCOMPRESSED_BYTES:
                     return ContainerInput(
                         files={}, error="E_CONTAINER_SIZE",
                         input_sha256=input_sha, input_size=archive_size, is_zip=True,
@@ -423,7 +431,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
             input_size=archive_size,
             is_zip=True,
         )
-    except (OSError, ValueError, EOFError, zlib.error) as decode_error:  # pragma: no cover
+    except (OSError, ValueError, EOFError, zlib.error):  # pragma: no cover
         return ContainerInput(
             files={}, error="E_CONTAINER_ZIP",
             input_sha256=input_sha, input_size=archive_size, is_zip=True,
@@ -445,13 +453,23 @@ def _read_zip_container(path: Path) -> ContainerInput:
     )
 
 
-def _check_zip_declared_total(archive: "zipread.ZipArchive") -> None:
-    """Declared uncompressed totals must obey §13 before any decompression."""
-    declared = sum(
-        entry.uncompressed_size for entry in archive.entries if not entry.is_directory
+def _is_readable_entry(name: str) -> bool:
+    """Whether a zip/directory entry lives under the ignored ``readable/`` tree."""
+    return name.startswith("readable/")
+
+
+def _zip_declared_total(archive: "zipread.ZipArchive") -> int:
+    """Declared uncompressed bytes obeying §13 (U2).
+
+    Directory entries never carry data, and ``readable/**`` entries are never
+    read, hashed or counted (§11.8/§11.9/§13), so they are excluded from the
+    declared byte total. The entry **count** still includes every zip entry.
+    """
+    return sum(
+        entry.uncompressed_size
+        for entry in archive.entries
+        if not entry.is_directory and not _is_readable_entry(entry.name)
     )
-    if declared > MAX_CONTAINER_UNCOMPRESSED_BYTES:
-        raise zipread.ZipStructureError("declared uncompressed total exceeds the limit")
 
 
 def _is_safe_relative_path(name: str) -> bool:
@@ -690,8 +708,6 @@ def verify_container(
             container_input.input_sha256 = manifest_digest
             container_input.input_size = len(manifest_bytes)
         attestation = _load_attestation(container_input)
-        if attestation.timestamps:
-            finish_flags["timestamp_evidence_present"] = True
         if attestation.digest != manifest_digest:
             raise WeaveError("E_MANIFEST_DIGEST", "attestation digest does not match the manifest")
         if not attestation.signatures:
@@ -746,16 +762,6 @@ def verify_container(
         for path in container_input.oversized
         if path.startswith("records/")
     )
-    if oversized_records:
-        # T16: a record file beyond MAX_RECORD_BYTES is discovered at the records
-        # listing stage. The manifest-derived fields stay filled (T16) and no
-        # record verdicts are produced.
-        errors.append(container_input.oversized[oversized_records[0]])
-        return _finish_container(
-            container_input, container, errors, notices, [], limitations_iter, active_skipper,
-            manifest_context_trusted=manifest_context_trusted,
-            **finish_flags,
-        )
     listing = _load_container_records(container_input)
     finish_flags["placeholder_seen"] = any(
         verifier.erase.looks_like_placeholder(record.value)
@@ -767,9 +773,19 @@ def verify_container(
         for record in listing.records
     )
     listing_errors = _check_records_listing(manifest, listing, container_input)
+    if oversized_records:
+        # U8/T16: an oversize records/ file is one more independent violation of
+        # the records-listing phase, reported together with MISSING/EXTRA/...;
+        # the manifest-derived fields stay filled (T16 shape).
+        listing_errors = sorted(
+            set(listing_errors)
+            | {container_input.oversized[path] for path in oversized_records}
+        )
     if listing_errors:
         errors.extend(listing_errors)
-        container["record_count"] = 0
+        if not oversized_records:
+            # The S8.1 shape for a pure listing failure has no usable record set.
+            container["record_count"] = 0
         return _finish_container(
             container_input, container, errors, notices, [], limitations_iter, active_skipper,
             manifest_context_trusted=manifest_context_trusted,
@@ -921,7 +937,6 @@ def _finish_container(
     *,
     manifest_context_trusted: bool = False,
     previous_manifest_declared: bool = False,
-    timestamp_evidence_present: bool = False,
     placeholder_seen: bool = False,
     labels_seen: bool = False,
 ) -> ContainerVerification:
@@ -942,11 +957,14 @@ def _finish_container(
         # T12: the chain claim cannot be recomputed offline, regardless of any
         # later container failure.
         limitations.append(LIMITATION_CHAIN_CLAIM)
-    if timestamp_evidence_present and not all(
-        entry.get("state") == STATE_VERIFIED for entry in container.get("timestamps") or ()
+    if any(
+        entry.get("state") == STATE_PRESENT_UNVERIFIED
+        for entry in container.get("timestamps") or ()
     ):
-        # Receipts are present but at least one is not verified+trusted (or its
-        # accuracy is unusable, T3): the timestamp trust is unverified.
+        # U7/§14.9: iff at least one listed receipt is present-unverified (its
+        # structure and CMS signature are fine but it is not verified-and-trusted,
+        # or its accuracy is unusable). A receipt rejected by a structural/CMS/
+        # format check reports its error code and does not itself trigger this.
         limitations.append(LIMITATION_TSA_TRUST)
     if placeholder_seen:
         limitations.append(LIMITATION_ERASED_PLACEHOLDER)
@@ -1286,8 +1304,13 @@ def _check_records_listing(
             errors.add("E_MANIFEST_RECORDS")
     for entry in manifest.records:
         expected_path = "records/%s.json" % entry.digest.partition(":")[2]
-        if expected_path not in listing.by_path:
-            errors.add("E_MANIFEST_RECORD_MISSING")
+        if expected_path in listing.by_path:
+            continue
+        if expected_path in container_input.oversized:
+            # U8: the file is present but exceeded MAX_RECORD_BYTES; that is
+            # reported as E_JSON_SIZE by the caller, not as a missing file.
+            continue
+        errors.add("E_MANIFEST_RECORD_MISSING")
     return sorted(errors)
 
 
@@ -1350,10 +1373,13 @@ def _check_previous_manifest(
                 "previous_manifest is null but previous/ contains a manifest",
             )
         if previous_container is not None:
-            # S6/§11.5: a supplied --previous chain input with a null
-            # previous_manifest is a chain error, never silently skipped (this is
-            # how a recipient detects an exporter that silently restarted the
-            # chain).
+            # U1/§11.5: first read the supplied previous container "exactly like
+            # `container`". If it is unreadable or structurally invalid, that is
+            # the reported chain reason (a readable non-container file must not be
+            # masked by the null-chain rule). A usable container then conflicts
+            # with the null previous_manifest, which is itself a chain error: the
+            # recipient detects an exporter that silently restarted the chain.
+            _read_previous_manifest_digest(previous_container)
             raise WeaveError(
                 "E_MANIFEST_CHAIN",
                 "a previous container was supplied but previous_manifest is null",
@@ -1391,14 +1417,7 @@ def _check_previous_manifest(
             "E_MANIFEST_CHAIN", "embedded previous manifest digest does not match"
         )
     if previous_container is not None:
-        try:
-            supplied = _read_previous_manifest_digest(previous_container)
-        except (WeaveError, UsageError):
-            raise
-        except Exception as error:  # pragma: no cover - defensive
-            raise WeaveError(
-                "E_MANIFEST_CHAIN", "--previous container is unreadable"
-            ) from error
+        supplied = _read_previous_manifest_digest(previous_container)
         if supplied != manifest.previous_manifest_digest:
             raise WeaveError(
                 "E_MANIFEST_CHAIN", "--previous manifest digest does not match"
@@ -1406,35 +1425,29 @@ def _check_previous_manifest(
 
 
 def _read_previous_manifest_digest(previous_container: Path) -> str:
+    """Return the manifest digest of the explicitly supplied previous container.
+
+    U1/§11.5: a supplied previous container is read "exactly like ``container``"
+    (directory or its zip form). Every read or structural failure is a chain
+    error ``E_MANIFEST_CHAIN`` (invalid), never ``E_CONTAINER_ZIP`` or a usage
+    error; only a missing path is a usage error (exit 2). The zip form is parsed
+    by :mod:`zipread`, never by the standard library.
+    """
     if not previous_container.exists():
         # S6/§11.5: a missing --previous path is a usage/IO error (exit 2), not a
         # report-level chain verdict.
         raise UsageError("--previous container does not exist")
     if previous_container.is_dir():
-        manifest_path = previous_container / "manifest.json"
-    elif zipfile.is_zipfile(previous_container):
-        try:
-            with zipfile.ZipFile(previous_container) as archive:
-                data = archive.read("manifest.json")
-        except (
-            KeyError,
-            zipfile.BadZipFile,
-            NotImplementedError,
-            zlib.error,
-            ValueError,
-            EOFError,
-            OSError,
-            RuntimeError,
-        ) as error:
-            raise WeaveError("E_MANIFEST_CHAIN", "--previous container is unreadable") from error
-        manifest_path = None
+        data = _read_bounded_manifest_file(previous_container / "manifest.json")
+    elif previous_container.is_file():
+        if not _looks_like_zip(previous_container):
+            # Readable but not a usable container (§11.5 "unreadable or invalid").
+            raise WeaveError(
+                "E_MANIFEST_CHAIN", "--previous is not a usable container"
+            )
+        data = _read_manifest_from_previous_zip(previous_container)
     else:
-        manifest_path = previous_container
-    if manifest_path is not None:
-        try:
-            data = manifest_path.read_bytes()
-        except OSError as error:
-            raise WeaveError("E_MANIFEST_CHAIN", "--previous container is unreadable") from error
+        raise WeaveError("E_MANIFEST_CHAIN", "--previous is not a usable container")
     try:
         value = canonical.parse_file_bytes(
             data, max_bytes=manifest_module.MAX_MANIFEST_BYTES, require_object=True
@@ -1444,6 +1457,69 @@ def _read_previous_manifest_digest(previous_container: Path) -> str:
     if not isinstance(value, dict):
         raise WeaveError("E_MANIFEST_CHAIN", "--previous manifest is malformed")
     return encoding.manifest_digest(canonical.canonicalize(value))
+
+
+def _read_bounded_manifest_file(path: Path) -> bytes:
+    """Read a manifest file inside its §13 class limit (U1, chain-error mapping)."""
+    try:
+        with path.open("rb") as handle:
+            data, size, truncated = _read_capped(handle, manifest_module.MAX_MANIFEST_BYTES)
+    except OSError as error:
+        raise WeaveError("E_MANIFEST_CHAIN", "--previous container is unreadable") from error
+    if truncated or size > manifest_module.MAX_MANIFEST_BYTES:
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous manifest exceeds the size limit"
+        )
+    return data
+
+
+def _read_manifest_from_previous_zip(path: Path) -> bytes:
+    """Extract ``manifest.json`` from a supplied previous zip with :mod:`zipread` (U1)."""
+    try:
+        with path.open("rb") as handle:
+            archive = zipread.parse_zip(handle)
+            if len(archive.entries) > MAX_CONTAINER_ENTRIES:
+                raise WeaveError(
+                    "E_MANIFEST_CHAIN",
+                    "--previous container exceeds the entry limit",
+                )
+            if _zip_declared_total(archive) > MAX_CONTAINER_UNCOMPRESSED_BYTES:
+                raise WeaveError(
+                    "E_MANIFEST_CHAIN",
+                    "--previous container exceeds the size limit",
+                )
+            entry = next(
+                (
+                    candidate
+                    for candidate in archive.entries
+                    if candidate.name == "manifest.json" and not candidate.is_directory
+                ),
+                None,
+            )
+            if entry is None:
+                raise WeaveError(
+                    "E_MANIFEST_CHAIN",
+                    "--previous container has no manifest.json",
+                )
+            if entry.uncompressed_size > manifest_module.MAX_MANIFEST_BYTES:
+                raise WeaveError(
+                    "E_MANIFEST_CHAIN",
+                    "--previous manifest exceeds the size limit",
+                )
+            return zipread.read_entry_data(handle, entry)
+    except zipread.ZipStructureError as error:
+        # U1/§11.5: a structural failure of the supplied previous zip is a chain
+        # error, never the container-level E_CONTAINER_ZIP (ZipStructureError is
+        # itself a WeaveError, so this must come first).
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous container is unreadable"
+        ) from error
+    except (WeaveError, UsageError):
+        raise
+    except (OSError, ValueError, EOFError) as error:
+        raise WeaveError(
+            "E_MANIFEST_CHAIN", "--previous container is unreadable"
+        ) from error
 
 
 # ---------------------------------------------------------------------------
@@ -1492,8 +1568,6 @@ def _cross_record_checks(
 
 
 def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None:
-    from .erase import looks_like_placeholder
-
     placeholders = [view for view in record_views if view.placeholder is not None]
     erasures = [
         view

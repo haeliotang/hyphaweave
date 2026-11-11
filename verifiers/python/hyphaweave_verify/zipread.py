@@ -166,10 +166,15 @@ def _read_end_records(handle: BinaryIO, eocd_offset: int) -> _EndRecord:
     record = _read_exact(handle, _EOCD_SIZE)
     if record[:4] != END_OF_CENTRAL_DIRECTORY:
         raise ZipStructureError("bad end-of-central-directory signature")
+    this_disk = struct.unpack_from("<H", record, 4)[0]
+    central_directory_disk = struct.unpack_from("<H", record, 6)[0]
     count_disk = struct.unpack_from("<H", record, 8)[0]
     count_total = struct.unpack_from("<H", record, 10)[0]
     cd_size = struct.unpack_from("<I", record, 12)[0]
     cd_offset = struct.unpack_from("<I", record, 16)[0]
+    # U9/§11.9 rule 3: single-volume archives only; both EOCD disk numbers are 0.
+    if this_disk != 0 or central_directory_disk != 0:
+        raise ZipStructureError("EOCD disk numbers are non-zero (multi-volume archive)")
     needs_zip64 = (
         count_disk == 0xFFFF
         or count_total == 0xFFFF
@@ -190,8 +195,12 @@ def _read_end_records(handle: BinaryIO, eocd_offset: int) -> _EndRecord:
     disk_number = struct.unpack_from("<I", locator, 4)[0]
     zip64_eocd_offset = struct.unpack_from("<Q", locator, 8)[0]
     total_disks = struct.unpack_from("<I", locator, 16)[0]
-    if disk_number != 0 or total_disks not in (0, 1):
+    # U9: the locator names disk 0 for the ZIP64 EOCD and a single-volume
+    # archive has exactly one disk.
+    if disk_number != 0:
         raise ZipStructureError("ZIP64 locator names a non-zero disk")
+    if total_disks != 1:
+        raise ZipStructureError("ZIP64 locator is not a single-volume archive")
     if zip64_eocd_offset + _ZIP64_EOCD_MIN_SIZE > locator_offset:
         raise ZipStructureError("ZIP64 EOCD offset is outside the archive")
     handle.seek(zip64_eocd_offset)

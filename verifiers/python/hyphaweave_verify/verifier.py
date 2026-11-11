@@ -46,7 +46,7 @@ from .keys import (
     decode_public_key_material,
 )
 from .report import record_verdict
-from .times import is_valid_timestamp, timestamp_sort_key  # noqa: F401  (timestamp_sort_key used by T9)
+from .times import timestamp_sort_key  # U3/T9 deterministic revocation order
 
 MAX_RECORD_BYTES = 1_048_576
 
@@ -63,6 +63,12 @@ class LoadedRecord:
     value: dict[str, Any] | None
     digest: str | None
     source: str  # "keyset" or "container"
+    #: U4: cached §14.1 structural parse for governing-class determination. It is
+    #: computed from the loaded value only, so class governance is stable from the
+    #: first verification pass and never depends on transient verdicts.
+    structural_checked: bool = False
+    structural_envelope: Any = None
+    structural_key_type: str | None = None
     container_path: str | None = None
 
 
@@ -168,6 +174,14 @@ class Context:
         #: Where a key's governing declaration material came from: ``"keyset"``
         #: or ``"context"`` (S8.10: N_KEY_TOFU covers context declarations only).
         self._material_source: dict[str, str] = {}
+        #: U4: class governance is computed from the §14.1 structural group only
+        #: (canonical form + envelope structure + sigs presence/format +
+        #: registered-kind body schema), independently of semantic validity and
+        #: of the trust closure. ``governing_class`` reads the derived map below.
+        self._structural_declarations: dict[
+            str, list[tuple[tuple[tuple[int, ...], str], str, str, str]]
+        ] = {}
+        self._governing_classes: dict[str, str] = {}
 
     # -- registration -----------------------------------------------------
 
@@ -185,6 +199,7 @@ class Context:
         self._declared_material = {}
         trusted: set[str] = set()
         self._material_source = {}
+        self._rebuild_governing_classes()
         for view in self.views:
             self._register_declared_material(view)
             if view.verdict != "valid":
@@ -238,17 +253,43 @@ class Context:
         return self._material_source.get(key_id)
 
     def governing_class(self, key_id: str, exclude_digest: str) -> str | None:
-        """The class of the key's governing declaration, ignoring itself (S1).
+        """The governing class of a key id (U4/§5.3), verdict-independent.
 
-        The governing declaration is the keyset declaration when the local
-        keyset establishes one, otherwise the earliest valid in-context
-        declaration (Q12). Excluding the record's own digest lets a declaration
-        be judged against the *other* declarations instead of itself.
+        The governing class is derived from the §14.1 structural group only:
+        a keyset declaration wins when the local keyset has one; otherwise the
+        declaration with the smallest ``(recorded_at, record digest)`` among all
+        structurally valid declarations in the verification context governs.
+        Trust closure and semantic validity are computed afterwards and cannot
+        change it. ``exclude_digest`` is kept for interface stability; the set is
+        already independent of the record being judged, and a declaration cannot
+        conflict with itself.
         """
-        declaration = self.key_state.declarations.get(key_id)
-        if declaration is None or declaration.record_digest == exclude_digest:
-            return None
-        return declaration.key_type
+        del exclude_digest  # U4: the structural set includes the record itself.
+        return self._governing_classes.get(key_id)
+
+    def _rebuild_governing_classes(self) -> None:
+        """Compute the U4 governing classes from the §14.1 structural group."""
+        structural: dict[str, list[tuple[tuple[tuple[int, ...], str], str, str, str]]] = {}
+        for view in self.views:
+            declaration = _structural_declaration_class(view)
+            if declaration is None:
+                continue
+            key_id, key_type, order, digest = declaration
+            source = "keyset" if view.loaded.source == "keyset" else "context"
+            structural.setdefault(key_id, []).append((order, key_type, digest, source))
+        self._structural_declarations = structural
+        governing: dict[str, str] = {}
+        for key_id, declarations in structural.items():
+            keyset_declarations = [
+                declaration for declaration in declarations if declaration[3] == "keyset"
+            ]
+            candidates = keyset_declarations or declarations
+            # Keyset conflicts are a usage error (T4), so every keyset entry for
+            # one key id carries the same class; the earliest order breaks ties
+            # deterministically.
+            candidates.sort(key=lambda declaration: (declaration[0], declaration[2]))
+            governing[key_id] = candidates[0][1]
+        self._governing_classes = governing
 
     def _apply_state(self, view: RecordView) -> None:
         if view.key_declaration is not None:
@@ -289,6 +330,57 @@ class Context:
 
     def resolve(self, reference: refs.Reference) -> refs.Resolution:
         return refs.resolve_reference(reference, self)
+
+
+def _structural_declaration_class(
+    view: RecordView,
+) -> tuple[str, str, tuple[tuple[int, ...], str], str] | None:
+    """Return ``(key_id, key_type, order, digest)`` for the §14.1 structural group.
+
+    U4: a declaration participates in governing-class determination iff it passes
+    the §14.1 structural group — canonical form (implicit: it has a parsed
+    value), envelope structure, signature presence/format and the registered-kind
+    body schema. Signature *validity*, trust and kind semantics are deliberately
+    not part of this check, and neither is the current verdict: the parse is
+    cached on the loaded record so class governance is identical in every pass.
+    """
+    loaded = view.loaded
+    if not loaded.structural_checked:
+        loaded.structural_checked = True
+        value = loaded.value
+        if isinstance(value, dict) and not erase.looks_like_placeholder(value):
+            try:
+                envelope = envelope_module.validate_envelope(value)
+            except WeaveError:
+                envelope = None
+            if envelope is not None and envelope.kind == kinds.KIND_DECLARED:
+                structurally_ok = not (
+                    envelope_module.signing_required(envelope.kind, envelope.stage)
+                    and not envelope.sigs
+                )
+                if structurally_ok:
+                    try:
+                        kinds.validate_body_schema(envelope.kind, envelope.body)
+                    except WeaveError:
+                        structurally_ok = False
+                if structurally_ok:
+                    body = envelope.body
+                    key_id = body.get("key")
+                    key_type = body.get("key_type")
+                    if isinstance(key_id, str) and isinstance(key_type, str):
+                        loaded.structural_envelope = envelope
+                        loaded.structural_key_type = key_type
+    envelope = loaded.structural_envelope
+    key_type = loaded.structural_key_type
+    if envelope is None or key_type is None:
+        return None
+    body = envelope.body
+    key_id = body.get("key")
+    if not isinstance(key_id, str):
+        return None
+    digest = view.digest or ""
+    order = (timestamp_sort_key(envelope.recorded_at), digest)
+    return key_id, key_type, order, digest
 
 
 def _record_source(sources: dict[str, str], key_id: str, source: str) -> None:
@@ -390,11 +482,11 @@ def _verify_signatures(
     # self-revocation exemption, every other signer is judged against the key
     # state produced by strictly earlier revocations.
     revocation_prior_order: tuple[tuple[int, ...], str] | None = None
-    self_revoked_key: str | None = None
     if envelope.kind == kinds.KIND_REVOKED:
-        revoked_key = envelope.body.get("key")
-        if isinstance(revoked_key, str):
-            self_revoked_key = revoked_key
+        # U3/§9.5: every signature of a revocation record is judged against the
+        # key state produced by strictly earlier revocations. The record's own
+        # effect is excluded by construction (its order is not < itself), so no
+        # separate self-revocation exemption is needed.
         revocation_prior_order = (
             timestamp_sort_key(envelope.recorded_at),
             digest,
@@ -435,14 +527,9 @@ def _verify_signatures(
                     envelope.recorded_at,
                     verified_timestamps=context.verified_timestamps,
                     timestamp_evidence_present=context.timestamp_evidence_present,
-                    skip_revocations=(
-                        envelope.kind == kinds.KIND_REVOKED
-                        and signature.key == self_revoked_key
-                    ),
                     prior_order=(
                         revocation_prior_order
                         if envelope.kind == kinds.KIND_REVOKED
-                        and signature.key != self_revoked_key
                         else None
                     ),
                 )

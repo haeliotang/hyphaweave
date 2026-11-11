@@ -11,7 +11,6 @@ import pathlib
 import pytest
 
 from hyphaweave_verify import encoding
-from hyphaweave_verify.errors import WeaveError
 
 VECTORS = pathlib.Path(__file__).resolve().parents[3] / "vectors"
 

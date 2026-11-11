@@ -206,7 +206,6 @@ class KeyState:
         *,
         verified_timestamps: tuple[VerifiedTimestamp, ...] = (),
         timestamp_evidence_present: bool = False,
-        skip_revocations: bool = False,
         prior_order: tuple[tuple[int, ...], str] | None = None,
     ) -> None:
         """Apply declaration validity windows and revocation effects.
@@ -228,15 +227,14 @@ class KeyState:
           evidence or trusted evidence failing the bound makes it invalid
           ``E_KEY_COMPROMISED``.
 
-        ``skip_revocations`` is the self-revocation exemption (T9): a
-        ``weave.key.revoked`` record signed by the key it revokes is the
-        evidence and is not invalidated by itself.
-
-        ``prior_order`` is the deterministic T9 evaluation order for a
+        ``prior_order`` is the deterministic U3/T9 evaluation order for a
         ``weave.key.revoked`` record's own signatures: only revocations strictly
-        earlier than ``(recorded_at, record_digest)`` participate, so a
-        revocation signed by an already-revoked key is ineffective and mutual
-        revocations resolve deterministically.
+        earlier than ``(recorded_at, record_digest)`` participate. The record's
+        own revocation is therefore naturally excluded (its order is never
+        strictly earlier than itself), so a self-revocation is exempt only from
+        its *own* effect, never from earlier revocations: an already-revoked key
+        cannot emit a new valid self-revocation, and a backdated self-compromise
+        does not take effect. Mutual revocations stay deterministic.
         """
         declaration = self.declarations.get(key_id)
         if declaration is not None:
@@ -248,8 +246,6 @@ class KeyState:
                 recorded_at
             ) > timestamp_sort_key(declaration.valid_until):
                 raise WeaveError("E_KEY_EXPIRED", "signature made after valid_until")
-        if skip_revocations:
-            return
         revocations = list(self.revocations.get(key_id, ()))
         if prior_order is not None:
             revocations = [
