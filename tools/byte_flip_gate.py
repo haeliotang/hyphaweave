@@ -128,6 +128,12 @@ EXEMPT_REASONS = {
         "a zip entry under readable/ is never decompressed, CRC-checked, hashed or counted "
         "(spec §11.8/§11.9): flipping its payload bytes cannot change any verdict"
     ),
+    "tsr-unchecked-metadata": (
+        "a TSA receipt contains DER fields outside every §12.2 check (the SignedData "
+        "digestAlgorithms set and any certificate that is not the located signer); the "
+        "receipt bytes that matter are cryptographically covered or explicitly checked, "
+        "and a mutation of the remaining fields cannot change the verdict"
+    ),
 }
 
 #: record targets whose whole input is exempt from the "must be invalid" rule, by
@@ -348,6 +354,36 @@ class _SpanScanner:
         return self._scan_value(index)
 
 
+# ------------------------------------------------------------------- DER helpers
+
+
+def is_timestamp_path(rel: str) -> bool:
+    """V2c: whether a container member is a listed TSR file."""
+    return rel.startswith("signatures/timestamp-") and rel.endswith(".tsr")
+
+
+def sync_timestamp_digest(attestation_bytes: bytes, rel: str, tsr_bytes: bytes) -> bytes:
+    """Return the attestation bytes with the digest of ``rel`` re-pointed (V2c).
+
+    ``signatures/manifest.sig.json`` is not itself digested or signed (§11.3), so
+    updating the listed digest lets the byte flip reach DER parsing instead of
+    stopping at the file-level ``E_TS_FILE`` check.
+    """
+    import hashlib
+
+    from hyphaweave_verify import canonical
+
+    value = json.loads(attestation_bytes)
+    updated = False
+    for entry in value.get("timestamps") or ():
+        if isinstance(entry, dict) and entry.get("path") == rel:
+            entry["digest"] = "sha256:" + hashlib.sha256(tsr_bytes).hexdigest()
+            updated = True
+    if not updated:
+        return attestation_bytes
+    return canonical.canonicalize(value)
+
+
 # ------------------------------------------------------------------------ zip layout
 
 
@@ -481,9 +517,7 @@ class VerifierRunner:
         except OSError as error:
             return {"verdict": "usage-error", "error": str(error)}
         except Exception as error:  # noqa: BLE001 - a crash must be reported, not hidden
-            # A malformed mutant may make the verifier raise instead of reporting invalid.
-            # That is not a clean rejection; it is reported as ``verifier-crash`` and the
-            # byte-class exemption rules decide whether it is documented or a survivor.
+            # V2d: a verifier crash is a gate failure, never an accepted rejection.
             return {
                 "verdict": "verifier-crash",
                 "error": "%s: %s" % (type(error).__name__, error),
@@ -610,23 +644,24 @@ def process_case(
         "invalid": 0,
         "rejected": {},
         "exempt": {},
-        "crash_samples": [],
+        "crashes": [],
         "survivors": [],
-        "crash_samples": [],
         "files": [],
     }
 
     def note_outcome(verdict: str, report: dict, exempt_class: str | None, location: dict) -> None:
         result["mutants"] += 1
+        if verdict == "verifier-crash":
+            # V2d: a crash means the verifier did not fail closed; it is a gate
+            # failure, never an accepted rejection or an exemption candidate.
+            if len(result["crashes"]) < 20:
+                result["crashes"].append({**location, "error": report.get("error", "")})
+            return
         if verdict != accepted:
             if verdict == "invalid":
                 result["invalid"] += 1
             else:
                 result["rejected"][verdict] = result["rejected"].get(verdict, 0) + 1
-                if verdict == "verifier-crash" and len(result["crash_samples"]) < 20:
-                    result["crash_samples"].append(
-                        {**location, "error": report.get("error", "")}
-                    )
             return
         if exempt_class is None:
             result["survivors"].append(
@@ -694,24 +729,46 @@ def process_case(
                 shutil.copytree(container_src, container)
 
         _ensure_container()
-        files = sorted(path for path in container.rglob("*") if path.is_file())
+        # V3/§11.8: a symlinked member is not byte-mutated (the gate must not
+        # follow links out of the container); the link target string carries no
+        # verifier semantics. See vectors/GATE-3-EXCEPTIONS.md `symlink-entry`.
+        files = sorted(
+            path
+            for path in container.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        )
+        attestation_path = container / "signatures" / "manifest.sig.json"
         for path in files:
             rel = path.relative_to(container).as_posix()
             original = path.read_bytes()
             file_spans = None
             if rel.startswith("records/") and rel.endswith(".json"):
                 file_spans = record_span_map(original)
+            is_tsr = is_timestamp_path(rel)
             limit = len(original) if max_bytes is None else min(len(original), max_bytes)
             result["files"].append({"file": rel, "bytes": len(original)})
             for offset in range(limit):
                 if not path.parent.is_dir():
                     _ensure_container()
-                path.write_bytes(mutate_bytes_at(original, offset))
+                attestation_original = None
+                if is_tsr and attestation_path.is_file():
+                    # V2c: attestation digests are outside the manifest signature, so
+                    # a mutated .tsr would otherwise be rejected as E_TS_FILE before
+                    # DER parsing. Re-point the (unsigned) listing at the mutant.
+                    attestation_original = attestation_path.read_bytes()
+                mutated = mutate_bytes_at(original, offset)
+                path.write_bytes(mutated)
+                if attestation_original is not None:
+                    attestation_path.write_bytes(
+                        sync_timestamp_digest(attestation_original, rel, mutated)
+                    )
                 try:
                     report = runner.run(["container", str(container)] + _container_args(args))
                 finally:
                     try:
                         path.write_bytes(original)
+                        if attestation_original is not None:
+                            attestation_path.write_bytes(attestation_original)
                     except FileNotFoundError:
                         _ensure_container()
                         path.write_bytes(original)
@@ -728,6 +785,11 @@ def process_case(
                     spans=file_spans,
                     verdict=verdict,
                 )
+                if exemption is None and is_tsr:
+                    # V2c: with the attestation digest synchronised, a surviving
+                    # .tsr flip can only be in DER the verification profile does
+                    # not cover (unsigned/unchecked metadata).
+                    exemption = "tsr-unchecked-metadata"
                 note_outcome(
                     verdict,
                     report,
@@ -918,15 +980,15 @@ def main(argv: list[str] | None = None) -> int:
         "invalid": sum(item["invalid"] for item in results),
         "rejected": {},
         "exempt": {},
-        "crash_samples": [],
+        "crashes": [],
         "survivors": [],
     }
     for item in results:
         for name, count in item.get("rejected", {}).items():
             totals["rejected"][name] = totals["rejected"].get(name, 0) + count
-        for sample in item.get("crash_samples", []):
-            if len(totals["crash_samples"]) < 20:
-                totals["crash_samples"].append({"case": item["case"], **sample})
+        for sample in item.get("crashes", []):
+            if len(totals["crashes"]) < 20:
+                totals["crashes"].append({"case": item["case"], **sample})
         for name, count in item["exempt"].items():
             totals["exempt"][name] = totals["exempt"].get(name, 0) + count
         for survivor in item["survivors"]:
@@ -935,7 +997,8 @@ def main(argv: list[str] | None = None) -> int:
 
     report = {
         "gate": "byte-flip",
-        "ok": not totals["survivors"],
+        # V2d: a crash is a gate failure, exactly like a survivor.
+        "ok": not totals["survivors"] and not totals["crashes"],
         "exempt_reasons": EXEMPT_REASONS,
         **totals,
         "case_results": results,
@@ -961,9 +1024,9 @@ def main(argv: list[str] | None = None) -> int:
         print("non-invalid rejections (fail-closed dependency breaks):")
         for name in sorted(totals["rejected"]):
             print("  %-26s %6d" % (name, totals["rejected"][name]))
-    if totals["crash_samples"]:
-        print("verifier-crash samples (fail-closed gap, reported separately):")
-        for sample in totals["crash_samples"][:10]:
+    if totals["crashes"]:
+        print("VERIFIER CRASHES (a crash is a gate failure, not a rejection):")
+        for sample in totals["crashes"][:10]:
             print(
                 "  %s file=%s offset=%s :: %s"
                 % (sample["case"], sample.get("file", "-"), sample.get("offset"), sample.get("error", "")[:120])
@@ -988,6 +1051,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         print("RESULT: FAIL")
+        return 1
+    if totals["crashes"]:
+        print("RESULT: FAIL (verifier crash)")
         return 1
     print("RESULT: PASS")
     return 0

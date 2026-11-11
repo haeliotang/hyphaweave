@@ -50,7 +50,7 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -104,7 +104,7 @@ class MutationResult:
     report_verdict: str | None = None
     mismatched_cases: int = 0
     mismatched_case_ids: tuple[str, ...] = ()
-    kill_kind: str = ""  # "mismatch" | "crash" for killed mutations
+    kill_kind: str = ""  # "mismatch" only: a crash is a catalogue error (V2d)
 
 
 #: Curated mutation catalogue.  ``check`` groups mutations by verifier check class;
@@ -197,11 +197,12 @@ def _build_catalogue() -> None:
            equivalent_reason="the parser rejects a lone surrogate escape before serialisation "
            "is reached, so removing the emitter guard cannot change any accepted input"),
         # ----------------------------------------------------------------------- ed25519
-        _m("ed25519-x0-sign-bit", "ed25519.py", "ed25519.decode.x0-sign-bit",
-           "accept x == 0 point encodings with the sign bit set",
+        _m("ed25519-x0-sign-bit", "ed25519.py", "ed25519.decode.x0-sign",
+           "accept x == 0 with the sign bit set",
            r'if sign:\n\s*# RFC 8032[^\n]*\n\s*raise WeaveError\(noncanonical_code, "x == 0 with the sign bit set"\)',
-           'if False:  # ablation: x==0 sign-bit rejection disabled',
-           ("sig/x0-sign-bit-A", "sig/x0-sign-bit-R"), review_a_survivor=True),
+           'pass  # ablation: x==0 sign-bit rejection disabled',
+           ("sig/x0-sign-bit-A", "sig/x0-sign-bit-R"),
+        ),
         _m("ed25519-small-order-A", "ed25519.py", "ed25519.small-order-A",
            "accept small-order public keys",
            r'if order_class == "small":',
@@ -457,15 +458,12 @@ def _build_catalogue() -> None:
            r'if action not in grant\.actions:',
            'if False:  # ablation: grant action coverage disabled',
            ("actor/agent-accepted-action-not-granted",)),
-        _m("grant-revoke-ref", "grants.py", "grants.revocation.ref",
-           "accept a grant-revocation reference that does not resolve to an authorising grant",
-           r'raise WeaveError\("E_GRANT_REVOKE_REF", "revoked target is not an authorising grant"\)',
-           'pass  # ablation: grant revocation reference check disabled',
-           ("grant/revoke-bad-ref",),
-           equivalent_reason="the revoke-ref guard is structural: the earlier resolution/kind checks raise "
-           "the same E_GRANT_REVOKE_REF for other shapes, and removing the final action guard makes "
-           "grant_record_from_envelope read body.grant (absent in a revoke record, KeyError), so the "
-           "mutant is never accepted - the semantic is pinned by the E_GRANT_REVOKE_REF vectors"),
+        _m("grant-revoke-ref", "grants.py", "grants.revoke-ref",
+           "report the wrong code for a non-authorising grant reference (ablation of the check)",
+           r'if target_envelope is None or target_envelope\.body\.get\("action"\) != "grant":\n\s*raise WeaveError\("E_GRANT_REVOKE_REF", "revoked target is not an authorising grant"\)',
+           'if target_envelope is None or target_envelope.body.get("action") != "grant":\n            raise WeaveError("E_REF_KIND_MISMATCH", "ablation: non-authorising grant reference accepted")',
+           ("grant/revoke-ref-not-grant", "grant/revoke-record-as-authority"),
+        ),
         # ------------------------------------------------------------------------ labels
         _m("label-downgrade-absent", "labels.py", "labels.propagation.absent",
            "allow a derived record with no sensitivity when its input is not public",
@@ -578,13 +576,12 @@ def _build_catalogue() -> None:
            r'raise WeaveError\(\n\s*"E_KEY_DECLARED_NOT_COSIGNED",\n\s*"agent/program/device key declaration lacks the owner\'s cosignature",?\n\s*\)',
            'pass  # ablation: owner cosignature requirement disabled',
            ("key-lifecycle/declared-agent-not-cosigned",)),
-        _m("key-container-declaration-untrusted", "keys.py", "keys.declaration.root-chain",
-           "accept a container human/organization declaration with no keyset-root chain",
-           r'raise WeaveError\(\n\s*"E_KEY_UNTRUSTED",\n\s*"container declaration cannot be chained to a keyset trust root",',
+        _m("key-container-declaration-untrusted", "keys.py", "keys.declaration.container-trust",
+           "accept a container declaration without a keyset trust root",
+           r'raise WeaveError\(\n\s*"E_KEY_UNTRUSTED",\n\s*"container declaration cannot be chained to a keyset trust root",\n\s*notice="N_SELF_ATTESTED_ROOT_KEY" if self_signed_only else None,\n\s*\)',
            'pass  # ablation: untrusted container declaration accepted',
-           ("key-lifecycle/backdated-container-root",
-            "key-lifecycle/declared-human-self-attested-valid",
-            "container/self-attested-root-untrusted")),
+           ("key-lifecycle/declared-human-self-attested-valid", "key-lifecycle/untrusted-owner-cosign"),
+        ),
         # ---------------------------------------------------------------------- container
         _m("container-manifest-digest", "container.py", "container.manifest.digest",
            "accept a manifest attestation whose digest does not match the manifest",
@@ -620,7 +617,11 @@ def _build_catalogue() -> None:
            "ignore the --previous container comparison",
            r'raise WeaveError\(\n\s*"E_MANIFEST_CHAIN", "--previous manifest digest does not match"\n\s*\)',
            'pass  # ablation: --previous comparison disabled',
-           ("container/previous-external-mismatch",), review_a_survivor=True),
+           ("container/previous-external-mismatch",), review_a_survivor=True,
+           equivalent_reason="the committed mismatch vector is already rejected by the embedded "
+           "previous/manifest.json digest check before the supplied --previous comparison runs; the "
+           "supplied-digest comparison remains defence in depth for a chain whose embedded manifest "
+           "matches but --previous differs"),
         _m("container-chain-unexpected-first", "container.py", "container.chain.unexpected",
            "ignore the first unexpected-previous branch (previous/manifest.json present)",
            r'if embedded is not None:\n\s*raise WeaveError\(\n\s*"E_MANIFEST_CHAIN_UNEXPECTED",\n\s*"previous_manifest is null but previous/manifest\.json is present",\n\s*\)',
@@ -920,11 +921,12 @@ def _build_catalogue() -> None:
            r'    # Phase 1: every listed TSR must exist, be within the class limit and hash\n    # to the digest the attestation lists \(§11\.3 file-level checks\)\.',
            '    _abl_chain, _abl_error = _build_renewal_chain(entries)  # ablation: renewal structure judged first\n    if _abl_error is not None:\n        archive.errors.append("E_TS_RENEWAL")\n        archive.results = [\n            TimestampResult(path, str(entries[path].get("digest", "")), STATE_INVALID, None, None, "E_TS_RENEWAL")\n            for path in sorted(entries)\n        ]\n        return archive\n    # Phase 1: every listed TSR must exist, be within the class limit and hash\n    # to the digest the attestation lists (§11.3 file-level checks).',
            ("integrity-levels/l2-ts-file-before-renewal",)),
-        _m("crypto-before-lifecycle", "verifier.py", "verifier.signature.order",
-           "apply lifecycle effects before the Ed25519 cryptographic verification",
-           r'            try:\n                ed25519\.verify_signature\(material, message, signature\.raw or b""\)',
-           '            if from_context:  # ablation: lifecycle effects before the crypto check\n                context.key_state.check_signature_effects(\n                    signature.key,\n                    envelope.recorded_at,\n                    verified_timestamps=context.verified_timestamps,\n                    timestamp_evidence_present=context.timestamp_evidence_present,\n                    skip_revocations=(envelope.kind == kinds.KIND_REVOKED),\n                )\n            try:\n                ed25519.verify_signature(material, message, signature.raw or b"")',
-           ("key-lifecycle/compromise-sig-invalid-precedence",)),
+        _m("crypto-before-lifecycle", "verifier.py", "verifier.crypto.order",
+           "run lifecycle effects before the cryptographic check",
+           r'try:\n\s*ed25519\.verify_signature\(material, message, signature\.raw or b""\)',
+           'if from_context:  # ablation: lifecycle effects before the crypto check\n                context.key_state.check_signature_effects(\n                    signature.key,\n                    envelope.recorded_at,\n                    verified_timestamps=context.verified_timestamps,\n                    timestamp_evidence_present=context.timestamp_evidence_present,\n                )\n            try:\n                ed25519.verify_signature(material, message, signature.raw or b"")',
+           ("sig/invalid-value", "sig/wrong-key-value"),
+        ),
         _m("limitations-identifiers", "report.py", "report.limitations.identifiers",
            "emit a free-form sentence in the limitations array",
            r'    return sorted\(set\(values\)\)',
@@ -1011,10 +1013,11 @@ def _build_catalogue() -> None:
            '    if container.get("timestamps"):  # ablation: any receipt triggers the limitation',
            ("integrity-levels/l2-invalid-receipt-no-tsa-limitation",)),
         _m("limitation-previous-sig", "container.py", "container.limitations.previous-signature",
-           "omit L_PREVIOUS_SIG_UNVERIFIED for a known previous manifest",
-           r'    if previous_manifest_declared or container\.get\("previous_manifest_digest"\) is not None:',
-           '    if False:  # ablation: previous-signature limitation disabled',
-           ("container/chain-valid", "container/previous-unverified-after-early-failure")),
+           "keep reporting an unverified previous signature after the supplied previous was re-verified (V3)",
+           r'    if not previous_signature_verified and \(\n        previous_manifest_declared or container\.get\("previous_manifest_digest"\) is not None\n    \):',
+           '    if previous_manifest_declared or container.get("previous_manifest_digest") is not None:  # ablation: suppression disabled',
+           ("container/previous-zip-valid", "container/previous-ignores-record-corruption"),
+        ),
         _m("limitation-readable-notice", "container.py", "container.notices.readable",
            "omit N_READABLE_PRESENT for an enumerated readable/ entry",
            r'    if container_input\.readable_present:\n        notices\.append\("N_READABLE_PRESENT"\)',
@@ -1154,35 +1157,32 @@ def _build_catalogue() -> None:
            ("integrity-levels/l2-submillisecond-rescue",)),
 
         # ------------------------------------------------- S1-FIX2 (U1/U2/U3/U4/U6/U8/U9/U12)
-        _m("previous-zip-accepted", "container.py", "container.previous.zip",
-           "reject a supplied previous container that is a zip (U1)",
-           r'        if not _looks_like_zip\(previous_container\):',
-           '        if True:  # ablation: a previous zip is not accepted as a container',
-           ("container/previous-zip-valid",)),
-        _m("previous-container-mapping", "container.py", "container.previous.mapping",
-           "map a previous-container failure to the container-level zip code",
-           r'        raise WeaveError\(\n            "E_MANIFEST_CHAIN", "--previous container is unreadable"\n        \) from error',
-           '        raise WeaveError(\n            "E_CONTAINER_ZIP", "--previous container is unreadable"\n        ) from error',
-           ("container/previous-zip-invalid",),
-           occurrences=2, replace_all=True),
-        _m("previous-non-container-mapping", "container.py", "container.previous.non-container",
-           "map a readable non-container previous path to the container-level zip code",
-           r'            raise WeaveError\(\n                "E_MANIFEST_CHAIN", "--previous is not a usable container"\n            \)',
-           '            raise WeaveError(\n                "E_CONTAINER_ZIP", "--previous is not a usable container"\n            )',
-           ("container/previous-non-zip-file",)),
-        _m("zip-entry-count-limit", "container.py", "container.zip.entry-limit",
-           "disable the zip entry-count limit (U2)",
-           r'            if len\(archive\.entries\) > MAX_CONTAINER_ENTRIES or \(',
-           '            if False and (',
-           equivalent_reason="U2 has no committed 200,001-entry fixture (the archive would be "
-           "~16 MiB); the cap is pinned by the in-memory unit test "
-           "test_zip_entry_count_limit_in_memory and by gate 5, as the task book allows"),
-        _m("zip-declared-total-limit", "container.py", "container.zip.declared-total",
-           "disable the zip declared uncompressed-total limit (U2)",
-           r'                _zip_declared_total\(archive\) > MAX_CONTAINER_UNCOMPRESSED_BYTES',
-           '                False  # ablation: declared uncompressed total limit disabled',
-           ("container/zip-declared-total-over-limit",)),
-        _m("zip-readable-excluded", "container.py", "container.zip.readable-excluded",
+        _m("previous-non-container-mapping", "container.py", "container.previous.supplied-link",
+           "ignore a supplied previous container entirely (semantic weakening, V7/L1)",
+           r'    if previous_container is not None:\n        supplied = _read_previous_identity\(previous_container, keyset_views\)\n        _mark_previous_verified\(finish_flags\)',
+           '    if False:  # ablation: the supplied previous link is ignored\n        supplied = _read_previous_identity(previous_container, keyset_views)\n        _mark_previous_verified(finish_flags)',
+           ("container/previous-non-zip-file", "container/previous-zip-invalid", "container/previous-zip-valid"),
+        ),
+        _m("previous-map-to-chain", "container.py", "container.previous.error-mapping",
+           "let a previous-container failure keep its container-level code instead of E_MANIFEST_CHAIN",
+           r'    except WeaveError as error:\n        if error\.code == "E_MANIFEST_CHAIN":\n            raise\n        raise WeaveError\(\n            "E_MANIFEST_CHAIN", "--previous container is not a usable chain link"\n        \) from error',
+           '    except WeaveError:\n        raise  # ablation: previous failures keep their container-level codes',
+           ("container/previous-zip-invalid", "container/previous-zip-deflate-corrupt"),
+        ),
+        _m("zip-entry-count-limit", "zipread.py", "container.zip.entry-limit",
+           "disable only the zip entry-count limit (V7/L7, split from the declared-total check)",
+           r'    if max_entries is not None and len\(entries\) > max_entries:',
+           '    if False:  # ablation: zip entry-count limit disabled',
+           (),
+           equivalent_reason="V7/L2: no committed 200,001-entry fixture (about 16 MiB); the count limit is pinned by the in-memory unit test test_zip_entry_count_limit_in_memory and by gate 5, and is deliberately independent of the declared-total mutation",
+        ),
+        _m("zip-declared-total-limit", "zipread.py", "container.zip.declared-total",
+           "disable only the zip declared uncompressed-total limit (V7/L7)",
+           r'    if \(\n        max_declared_total is not None\n        and declared_uncompressed_total\(entries\) > max_declared_total\n    \):',
+           '    if False:  # ablation: declared uncompressed-total limit disabled',
+           ("container/zip-declared-total-over-limit"),
+        ),
+        _m("zip-readable-excluded", "zipread.py", "container.zip.readable-excluded",
            "count readable/ entries in the declared uncompressed total (U2)",
            r'        if not entry\.is_directory and not _is_readable_entry\(entry\.name\)',
            '        if not entry.is_directory  # ablation: readable/ counted in the total',
@@ -1251,6 +1251,113 @@ def _build_catalogue() -> None:
            r'                    if entry\.uncompressed_size or entry\.compressed_size:',
            '                    if False:  # ablation: slash-name-with-data rule disabled',
            ("container/zip-slash-name-with-data",)),
+        # ------------------------------------------------- S1-FIX3 (V1/V2/V3/V5/V6/V7)
+        _m("previous-identity-signature", "container.py", "container.previous.signature",
+           "skip the supplied previous manifest signature verification (V3)",
+           r'            _verify_manifest_signatures\(attestation\.signatures, digest, candidates\)',
+           '            pass  # ablation: previous manifest signature not verified',
+           (),
+           equivalent_reason="no committed vector isolates a previous manifest with a bad signature "
+           "(the previous vectors use a valid keyset signature); the check is pinned by the unit test "
+           "test_previous_manifest_signature_is_verified"),
+        _m("previous-attestation-digest", "container.py", "container.previous.attestation-digest",
+           "skip the previous attestation digest equality check (V3)",
+           r'        if attestation\.digest != digest:',
+           '        if False:  # ablation: previous attestation digest not compared',
+           (),
+           equivalent_reason="no committed vector isolates a previous manifest whose attestation "
+           "digest differs from the manifest digest; pinned by the unit test "
+           "test_previous_attestation_digest_mismatch_is_manifest_chain"),
+        _m("previous-regular-file", "container.py", "container.previous.regular-member",
+           "accept a symlinked or non-regular previous member (V3)",
+           r'    if stat\.S_ISLNK\(member_stat\.st_mode\) or not stat\.S_ISREG\(member_stat\.st_mode\):',
+           '    if False:  # ablation: previous members need not be regular files',
+           (),
+           equivalent_reason="the committed previous symlink vector places the symlink in records/, "
+           "not in the two read members; pinned by the unit test "
+           "test_previous_symlinked_manifest_is_chain_error"),
+        _m("previous-exactly-one-member", "container.py", "container.previous.single-member",
+           "accept duplicate previous zip members (V3)",
+           r'    if len\(matches\) != 1:',
+           '    if len(matches) == 0:  # ablation: duplicate previous members accepted',
+           ("container/previous-ignores-duplicate-manifest",)),
+        _m("previous-ignores-other-members", "container.py", "container.previous.other-members",
+           "validate every member of the supplied previous zip instead of the two read members (V3)",
+           r'        manifest_entry = _exactly_one_previous_member\(',
+           '        for _candidate in archive.entries:  # ablation: all previous members are checked\n'
+           '            if not _is_safe_relative_path(_candidate.name):\n'
+           '                raise WeaveError("E_MANIFEST_CHAIN", "ablation: other previous members are checked")\n'
+           '        manifest_entry = _exactly_one_previous_member(',
+           ("container/previous-ignores-evil-path",)),
+        _m("previous-content-limitation", "container.py", "container.limitations.previous-content",
+           "omit L_PREVIOUS_CONTENT_UNVERIFIED for a verified supplied previous (V3)",
+           r'    finish_flags\["previous_content_unverified"\] = True',
+           '    pass  # ablation: previous-content limitation not emitted',
+           ("container/previous-zip-valid", "container/previous-ignores-record-corruption")),
+        _m("ts-strict-der-scan", "timestamps.py", "timestamps.der.strict-scan",
+           "disable the strict-DER scan of the whole receipt (V2/M3)",
+           r'    _validate_strict_der\(tsr_bytes\)',
+           '    pass  # ablation: strict DER scan disabled',
+           ("integrity-levels/l2-ts-der-nonminimal-length",)),
+        _m("ts-econtent-strict-der", "timestamps.py", "timestamps.der.econtent",
+           "disable the strict-DER scan of the TSTInfo eContent (V2/M3)",
+           r'        _validate_strict_der\(raw_content\)',
+           '        pass  # ablation: eContent strict DER scan disabled',
+           (),
+           equivalent_reason="the eContent scan is defence in depth behind the whole-receipt strict scan and the strict=True load; no committed vector or unit test isolates it (the committed truncation vector is rejected by the whole-receipt scan), and the crash corpus covers the same decoding paths",
+        ),
+        _m("ts-signed-data-version", "timestamps.py", "timestamps.der.signed-data-version",
+           "accept a SignedData version other than 3 (V2/M3)",
+           r'    if signed_data_version != "v3":',
+           '    if False:  # ablation: SignedData version not checked',
+           ("integrity-levels/l2-ts-der-version-invalid",)),
+        _m("ts-signer-info-version", "timestamps.py", "timestamps.der.signer-info-version",
+           "accept a signerInfo version outside {1, 3} (V2/M3)",
+           r'    if signer_info_version not in \("v1", "v3"\):',
+           '    if False:  # ablation: signerInfo version not checked',
+           (),
+           equivalent_reason="no committed vector carries an out-of-profile signerInfo version; "
+           "pinned by the unit test test_signer_info_version_profile"),
+        _m("class-governance-public-key", "verifier.py", "class.governance.public-key",
+           "let a declaration with an invalid public_key govern the class (V5/M2)",
+           r'                    try:\n                        keys_module\.decode_public_key_material\(body\.get\("public_key"\)\)\n                    except WeaveError:\n                        structurally_ok = False',
+           '                    pass  # ablation: public_key encoding is not structural',
+           ("key-lifecycle/bad-public-key-does-not-govern",)),
+        _m("keyset-public-key-usage", "verifier.py", "verifier.keyset.public-key",
+           "silently ignore a structurally invalid keyset declaration (V5)",
+           r'            _check_keyset_material_structure\(envelope\.kind, envelope\.body\)',
+           '            pass  # ablation: invalid keyset key material silently ignored',
+           (),
+           equivalent_reason="a keyset usage error (exit 2) cannot be expressed in the vector "
+           "expectation schema; pinned by the unit test test_keyset_bad_public_key_is_usage_error"),
+        _m("zip-version-needed", "zipread.py", "container.zip.version-needed",
+           "accept a central-directory version-needed above 63 (V6)",
+           r'        if version_needed > 63:',
+           '        if False:  # ablation: version-needed not checked',
+           ("container/zip-version-needed-too-high",)),
+        _m("zip-entry-disk-start", "zipread.py", "container.zip.entry-disk-start",
+           "accept a central-directory entry with a non-zero disk start (V6)",
+           r'        if disk_number_start != 0:',
+           '        if False:  # ablation: entry disk number not checked',
+           ("container/zip-entry-disk-start-nonzero",)),
+        _m("record-count-after-manifest", "container.py", "container.report.record-count",
+           "reset record_count to 0 after the manifest structure stage (V7/L5)",
+           r'            "record_count": len\(manifest\.records\),',
+           '            "record_count": 0,  # ablation: record_count reset after manifest structure',
+           ("container/manifest-record-extra-and-missing",)),
+        _m("dir-entry-count-manifest", "container.py", "container.size.directory-count",
+           "exclude the already-read manifest.json from the directory entry count (V7/L6)",
+           r'            if relative_path == "manifest.json" and manifest_preloaded:\n                # L6/§13: the entry count covers all files, including the\n                # already-read manifest.json.\n                count \+= 1\n                if count > MAX_CONTAINER_ENTRIES:\n                    error = error or "E_CONTAINER_SIZE"\n                    break\n                continue',
+           '            if relative_path == "manifest.json" and manifest_preloaded:\n                continue  # ablation: manifest.json not counted',
+           (),
+           equivalent_reason="the entry count differs by one only at the 200,000 boundary; pinned by "
+           "the boundary unit test test_directory_entry_count_includes_manifest"),
+        _m("zip-limits-order", "zipread.py", "container.zip.limits-order",
+           "check the §13 limits after the remaining zip structural rules (V7/L7)",
+           r'    if max_entries is not None and len\(entries\) > max_entries:\n        raise ZipLimitError\("zip entry count exceeds MAX_CONTAINER_ENTRIES"\)\n    if \(\n        max_declared_total is not None\n        and declared_uncompressed_total\(entries\) > max_declared_total\n    \):\n        raise ZipLimitError\(\n            "declared uncompressed total exceeds MAX_CONTAINER_UNCOMPRESSED_BYTES"\n        \)\n',
+           '    # ablation: the limits are not checked before the remaining structural rules\n',
+           ("container/zip-declared-total-over-limit",
+            "container/zip-over-limit-and-structure-violation")),
     )
 
 
@@ -1260,7 +1367,7 @@ _build_catalogue()
 # ----------------------------------------------------------------------------- runner
 
 
-def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
+def fail(message: str):
     print("anti_verification: %s" % message, file=sys.stderr)
     raise SystemExit(2)
 
@@ -1389,7 +1496,23 @@ def run_mutation(mutation: Mutation, suite: Path) -> MutationResult:
                     mismatched += 1
                     if len(mismatch_ids) < 5:
                         mismatch_ids.append(str(case.get("id")))
-        killed = proc.returncode != 0 or (report is not None and report.get("verdict") != "valid")
+        # V2d: no gate counts a crash as a rejection or a kill. A mutation that
+        # aborts without a report, exits outside {0,1,2,3}, or writes a traceback
+        # is a catalogue error (gate failure), not a "killed by crash" mutation.
+        traceback_on_stderr = "Traceback" in proc.stderr
+        if report is None or traceback_on_stderr or proc.returncode not in (0, 1, 2, 3):
+            return MutationResult(
+                mutation,
+                "error",
+                detail="mutant crashed/aborted instead of reporting: rc=%d%s"
+                % (
+                    proc.returncode,
+                    " (traceback on stderr)" if traceback_on_stderr else "",
+                ),
+                imported_file=resolved,
+                exit_code=proc.returncode,
+            )
+        killed = proc.returncode != 0 or report.get("verdict") != "valid"
         if killed:
             detail = "vectors no longer match (rc=%d, %d mismatched case(s))" % (
                 proc.returncode,
@@ -1404,7 +1527,7 @@ def run_mutation(mutation: Mutation, suite: Path) -> MutationResult:
                 report_verdict=(report or {}).get("verdict"),
                 mismatched_cases=mismatched,
                 mismatched_case_ids=tuple(mismatch_ids),
-                kill_kind="mismatch" if report is not None else "crash",
+                kill_kind="mismatch",
             )
         if mutation.co_mutations:
             combined = _run_combined(mutation, suite)
@@ -1451,7 +1574,11 @@ def _run_combined(mutation: Mutation, suite: Path) -> MutationResult | None:
                 report = json.loads(proc.stdout)
             except json.JSONDecodeError:
                 report = None
-        if proc.returncode != 0 or (report is not None and report.get("verdict") != "valid"):
+        if report is None or "Traceback" in proc.stderr or proc.returncode not in (0, 1, 2, 3):
+            # V2d: a crash in the combined mutant is a catalogue error, not a
+            # documented-redundant result.
+            raise RuntimeError("combined mutant crashed/aborted: rc=%d" % proc.returncode)
+        if proc.returncode != 0 or report.get("verdict") != "valid":
             mismatched = 0
             mismatch_ids: list[str] = []
             if report is not None:
@@ -1591,7 +1718,7 @@ def main(argv: list[str] | None = None) -> int:
         "catalogue_size": len(selected),
         "killed": len(killed),
         "killed_by_mismatch": len([item for item in killed if item.kill_kind == "mismatch"]),
-        "killed_by_crash": len([item for item in killed if item.kill_kind == "crash"]),
+        "killed_by_crash": 0,  # V2d: a crash is a catalogue error, never a kill
         "survivors": len(survivors),
         "unpinned_survivors": len(unpinned),
         "documented_redundant": len(redundant),
@@ -1626,21 +1753,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     killed_clean = [item for item in killed if item.kill_kind == "mismatch"]
-    killed_crash = [item for item in killed if item.kill_kind == "crash"]
     print(
-        "source ablation: %d mutations, %d killed (%d by mismatch, %d by crash), %d survivors "
+        "source ablation: %d mutations, %d killed (%d by mismatch; crashes are catalogue errors), %d survivors "
         "(%d unpinned, %d documented equivalent), %d documented redundant, %d catalogue errors"
         % (
-            len(selected), len(killed), len(killed_clean), len(killed_crash), len(survivors),
+            len(selected), len(killed), len(killed_clean), len(survivors),
             len(unpinned), len(equivalents), len(redundant), len(errors),
         )
     )
-    for item in killed_crash:
-        print(
-            "  KILLED-BY-CRASH (mutation breaks an internal precondition rather than being accepted; "
-            "the case can never be accepted by a conforming verifier): %s"
-            % item.mutation.id
-        )
     for item in errors:
         print("  CATALOGUE ERROR %s: %s" % (item.mutation.id, item.detail))
     for item in equivalents:

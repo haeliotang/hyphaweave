@@ -40,7 +40,48 @@ nuisance.
 | `check_schemas.py` | schemas-writer | JSON Schema self-check gate over the vectors. |
 | `anti_verification.py` | QA | Gate 3: true source-level ablation of verifier checks over the whole vector suite. |
 | `byte_flip_gate.py` | QA | Gate 3(a): flips every input byte of every positive case; documented exemptions live in `vectors/GATE-3-EXCEPTIONS.md`. |
+| `crash_fuzz.py` | QA | Gate 3(c): deterministic crash fuzzing over six input classes (fixed seed and fixed batch), plus a replay of the committed 145-input regression corpus under `tools/crash_corpus/`. A non-{0,1,2,3} exit code or a `Traceback` on stderr is a gate failure. |
 | `check_frozen.py` | QA | Gate 7: validates the frozen-candidate `SHA256SUMS` file set and count. |
+
+## Crash fuzz gate (`crash_fuzz.py`, `crash_corpus/`)
+
+`tools/crash_fuzz.py` feeds the verifier a fixed, deterministic batch of
+malformed inputs and requires every mutant to be rejected **cleanly**. Each
+mutant is executed as a **real CLI subprocess** (`python -m
+hyphaweave_verify.cli`, 60 s timeout, parallel workers), so the gate observes
+exactly what a user would: the process exit code must be `0`, `1`, `2` or `3`
+and stderr must not contain `Traceback`. A non-conforming exit code, a
+traceback, a timeout or a signal is a crash and makes the gate fail; a crash is
+never an accepted rejection.
+
+* Six classes, 300 mutants each by default, seed `20261111`:
+  `container-dir`, `container-zip`, `previous`, `tsa`, `keyset`, `record`.
+* Mutations are deterministic from `(seed, class, index)`: byte
+  set/flip/truncate/insert/delete/duplicate, JSON structure mutations
+  (delete/replace/add member, type change, deep nesting, duplicate key) and zip
+  header-field mutations. `tsa` mutants also re-point the (unsigned) attestation
+  digest for the mutated `.tsr`, so the DER parsing path is exercised.
+* `--jsonl PATH` emits one result per mutant for 3.12/3.14 parity; `--classes`,
+  `--count` and `--seed` exist for debugging, but CI runs the fixed defaults.
+* The committed regression corpus under `tools/crash_corpus/` holds the 145
+  crash inputs found by the S1-FIX2 recheck (6 `previous` + 139 `tsa`). Each run
+  replays it first and requires zero crashes. `index.json` records the recheck
+  seed, category and index for traceability; `file_id` directories contain only
+  the mutated (overlay) files, and the base container is copied from `vectors/`.
+  Regeneration uses the recheck2 helper scripts (`make_job` in `fuzz.py`,
+  `regen.py`), kept outside the repository in the planning directory:
+  `python recheck2/scripts/regen.py <export> <work> <category> <index>`.
+
+### `.tsr` byte flips and the DER path (S1-FIX3 V2c)
+
+For a **directory-form** container the gate rewrites the (unsigned) attestation
+`signatures/manifest.sig.json` so the timestamps entry for the mutated `.tsr`
+lists the mutant digest; the mutation therefore reaches strict DER parsing
+instead of stopping at the file-level `E_TS_FILE` check. There is no committed
+positive zip-form container that embeds a `.tsr`, so the zip path does not need
+that rewriting: the same DER-decoding paths are covered by the committed bad-DER
+vectors (`integrity-levels/l2-ts-der-*`) and by the `tsa` class of
+`crash_fuzz.py` (which always synchronises the digest).
 
 ## Regeneration order
 
