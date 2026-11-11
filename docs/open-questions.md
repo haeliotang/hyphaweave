@@ -722,7 +722,9 @@ one. **The entry numbers 1–14 below are the numbers used by the specification'
 `[S8①]`–`[S8⑭]` labels**; entries 15–19 record five further principle decisions added
 in revision 1 of the S1-FIX1 round (T11), entry 20 records the S1-FIX2 (`decision
 2026-11-11 #12`) deterministic-order trade-off (U12/L8), and entries 21–23 record the
-S1-FIX3 (`decision 2026-11-11 #14`) principle decisions V3, V2 and V7/L5.
+S1-FIX3 (`decision 2026-11-11 #14`) principle decisions V3, V2 and V7/L5, and entries
+24–29 record the S1-FIX4 (`decision 2026-11-11 #16`) principle decisions W1, W5, W6,
+W10/L5, W10/L6 and W3.
 
 1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
    the old §14.5 applies to the whole container, so one code. Reading B: the one-error
@@ -889,6 +891,68 @@ round (T11); they carry the status
     implementations disagree on report shape for the same input. It stays 0 only for a
     failure before the manifest structure stage. Marked `decided by principle (Inceptless
     decision 2026-11-11 #14; V7/L5)`.
+24. **Which keys and which trust link a supplied previous container (W1).** The ruling
+    fixed the context (the target's keyset plus target records, never the previous
+    container's own declarations), the key material (the §11.3 required-key definition)
+    and the time rule (§9.4 at the previous `created_at`). Two details were left to
+    principle. *Trust:* reading A — any key that resolves in the target's final key state,
+    including key material that only a self-consistent rotation record supplies; reading B —
+    a key with a valid declaration in the target context, or the `old_key` of a valid
+    rotation whose `new_key` has a valid declaration. **Chosen B**: a rotation record is
+    valid without any trust, so under A two fresh keys could rotate into each other and
+    link any previous manifest; under B the successor key's own trusted declaration vouches
+    for the predecessor, which is exactly the rotated-key case the ruling names.
+    *Compromise:* reading A — a compromise revocation effective after `created_at` does not
+    affect the historical link; reading B — apply §9.4 as for any manifest signature: a
+    compromised key needs timestamp evidence, and the previous container's receipts are not
+    read, so the link breaks. **Chosen B**: it is "the same rules as the target manifest
+    signature", and a thief holding the key can backdate `created_at`, which is the reason
+    §9.4 ignores claimed times for compromise. Marked `decided by principle (Inceptless
+    decision 2026-11-11 #16; W1)`.
+25. **Order inside the previous-manifest-chain stage (W5).** Readings: check the embedded
+    previous manifest first and read the supplied previous only when the embedded one
+    passes (the limitation then depends on unrelated embedded defects), or read and verify
+    the supplied previous first whenever the stage runs. **Chosen** the second for the
+    limitation and the suppressed `*_PREVIOUS_SIG_UNVERIFIED` pair, so that
+    `L_PREVIOUS_CONTENT_UNVERIFIED` has one criterion; the reported code is still the first
+    failing check of a fixed order (embedded size, null-versus-present, embedded manifest,
+    supplied previous, digest comparison), which keeps the existing codes. Marked
+    `decided by principle (Inceptless decision 2026-11-11 #16; W5)`.
+26. **Renewal-chain shape before the per-receipt checks (W6).** The previous text said
+    checks 1–13 run before check 14 "over the receipts that passed them". Readings: decode
+    every receipt first, or decide the chain shape from the `renews` links first.
+    **Chosen** the chain shape first: the expected imprint of a renewal receipt (check 4)
+    is defined by its place in the chain, so per-receipt checks cannot be completed before
+    the chain is known; the chain shape is decided from the attestation array
+    alone. A broken chain therefore reports only `E_TS_RENEWAL`. This is a deterministic
+    choice, not a more conservative one (both readings make the container invalid). Marked
+    `decided by principle (Inceptless decision 2026-11-11 #16; W6)`.
+27. **Several `ed25519` entries in one attestation file (W10/L5).** §11.3 said the
+    signature is unverifiable when "no entry is a verifiable signature by a declared
+    required key" and did not say what happens when one entry verifies and another does
+    not. Readings: one verifying entry suffices, or every `ed25519` entry must be by a
+    required key and verify. **Chosen** every entry: an extra entry by an undeclared key
+    keeps the manifest signature `unverifiable` (`E_KEY_UNKNOWN`), a failing entry is
+    `E_MANIFEST_SIG_INVALID`, and a supplied previous attestation follows the same rule
+    (`E_MANIFEST_CHAIN`). This is the more conservative reading and the one existing
+    verifiers already apply. Marked `decided by principle (Inceptless decision 2026-11-11
+    #16; W10/L5)`.
+28. **Keyset directory entries (W10/L6).** §14.1 said "the top-level `*.json` files".
+    Readings: skip hidden names and non-files silently, or treat every top-level name
+    ending in `.json` as a keyset file and reject one that is not a regular file.
+    **Chosen** the second: a keyset is the operator's trust statement, and a silently
+    skipped entry (a dangling link, a directory named `*.json`) would change which roots
+    exist without any signal. A hidden name is read like any other. Marked `decided by
+    principle (Inceptless decision 2026-11-11 #16; W10/L6)`.
+29. **DER of values whose type is unknown, and of OCTET STRING contents (W3).** Readings:
+    exempt values of unknown type from DER checking, or apply the universal DER rules to
+    them. **Chosen** apply them, and check a universal SET of unknown type as a SET OF
+    (every universal SET in the `TimeStampResp`, CMS and X.509 schemas is one; a SET with
+    mixed constructed/primitive context tags would be the only false rejection, and none
+    is defined there). The content octets of OCTET STRINGs and BIT STRINGs (certificate
+    extension values, signature values) are not re-decoded by check 1; the TSTInfo inside
+    `eContent` is checked on its own by check 2. Marked `decided by principle (Inceptless
+    decision 2026-11-11 #16; W3)`.
 
 Status updates in this revision:
 

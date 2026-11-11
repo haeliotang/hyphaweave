@@ -8,7 +8,7 @@ A complete, offline, deterministic verifier for the `weave-record/1` exchange fo
 manifest and manifest signatures, key lifecycle and authorisation, labels and
 consent, erasure, the five-state reference resolution, and L2 RFC 3161 timestamps.
 
-**Status: draft (decisions 2026-11-10 #34, 2026-11-10 #42 and 2026-11-11 #2).**
+**Status: draft (decisions 2026-11-10 #34, 2026-11-10 #42 and 2026-11-11 #2, with the S1 rounds of decisions 2026-11-11 #5, #12, #14 and #16).**
 `weave-record/1` v0.1 has not
 passed its J1/J2 round-trip acceptance cases yet, and this is currently the only
 implementation, so it is not yet an independent implementation. The specification
@@ -189,11 +189,15 @@ The prose below is explanatory documentation, not report content.
   `present-unverified`, the container is at most `unverifiable`
   (`E_TS_UNTRUSTED`), never `valid`. TSTInfo `accuracy` is parsed
   (seconds/millis/micros, absent = 0), must not exceed `MAX_TS_ACCURACY`
-  (86,400 s) and is converted with checked arithmetic (overflow or an
-  out-of-range value is `E_TS_SCHEMA`); it only participates in compromise
+  (86,400 s) and is converted with checked arithmetic (a malformed component is
+  `E_TS_SCHEMA`; a total above the limit or an overflow makes the receipt
+  unusable evidence, `E_TS_UNTRUSTED`); it only participates in compromise
   rescue, where `genTime + accuracy` must be strictly earlier than the
-  revocation time. The listed-receipt file digest (`E_TS_FILE`) is checked before
-  the renewal-chain structure (`E_TS_RENEWAL`). The
+  revocation time. The order is fixed (§12.2): the listed-receipt file digest
+  (`E_TS_FILE`), then the renewal-chain structure (`E_TS_RENEWAL`), then checks
+  1–13 and 15 per receipt. Check 1 is strict DER: a universal-rule scan of every
+  TLV, a full decode and a DER re-encoding of the parsed receipt that must equal
+  the input (every SET OF sorted, no DEFAULT encoded). The
   RFC 3161 profile is fixed: granted
   status, TSTInfo v1, sha256 imprints and digests, RSA PKCS#1 v1.5 / ECDSA
   signature algorithms only (RSA-PSS is rejected), the signer certificate must be
@@ -203,7 +207,10 @@ The prose below is explanatory documentation, not report content.
   (`E_TS_RENEWAL`). The report still says `level_verified: "L0"`; a claimed L2 is
   reported as L0 plus `anchor_verified: true`.
 * The embedded `previous/manifest.json` is checked by digest only; its own
-  signature is not re-verified (`N_PREVIOUS_SIG_UNVERIFIED`).
+  signature is not re-verified (`N_PREVIOUS_SIG_UNVERIFIED`) unless a
+  `--previous` container is supplied, whose manifest signature is then verified
+  in the target container's context and whose other content is not verified
+  (`L_PREVIOUS_CONTENT_UNVERIFIED`).
 * `weave.erased` placeholders carry no content: their integrity rests on the
   signed attestation, the retained original digest and the manifest entry
   (G3b). A standalone placeholder is reported `erased` with its attestation

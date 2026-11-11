@@ -16,11 +16,11 @@ Hyphaweave 定义 `weave-record/1`：一种在相互独立的系统之间交换�
 在使用本仓库的任何内容之前，请先读这一段：
 
 - **草案，未稳定。** `weave-record/1` 目前是 v0.1 草案。格式仍可能变化，在 v1.0 之前不承诺任何兼容性。
-- **尚未验收。** `weave-record/1` v0.1 **尚未**通过 J1/J2 往返验收。只有在相互独立的项目之间真正完成两次往返（导出、原样收下并核验）之后，v0.1 才算成立。H0 交付的是规范、Schema、测试向量和一个核验器，不包含往返验收。
-- **尚不能称为独立实现。** 目前只有**一个**实现：本仓库里的 Python 参考核验器。单一实现无法证明「只看规范就能实现这个格式」，因此本仓库**不**声称已有独立实现。Rust 核验器（H1 里程碑）刻意留给另一位实现者，不属于 H0。
-- **已公开，仍是草案。** 仓库现在是公开的，但这不代表 `weave-record/1` 已稳定：它仍是草案，v1.0 仍取决于 J1/J2 验收和第二个独立实现。核验器尚未发布到 PyPI，只能从本仓库安装。`.github/workflows/ci.yml` 与本 README 下方的本地闸门一致；本 README 不声称某次 GitHub Actions 运行已经通过。
+- **尚未验收。** `weave-record/1` v0.1 **尚未**通过 J1/J2 往返验收。只有在相互独立的项目之间真正完成两次往返（导出、原样收下并核验）之后，v0.1 才算成立。H0 交付的是规范、Schema、测试向量和 Python 核验器，不包含往返验收。
+- **本分支只有一个实现，第二个实现尚未跟上。** `main` 分支上只有**一个**实现：本仓库里的 Python 参考核验器。第二个独立实现（Rust 核验器，H1 里程碑）在另一条分支上；它依据较早的文本写成，**尚未**跟进当前修订（下文的 S1 各轮）。在它通过当前全部向量之前，本仓库**不**声称已有两个符合规范的实现。
+- **已公开，仍是草案。** 仓库现在是公开的，但这不代表 `weave-record/1` 已稳定：它仍是草案，v1.0 仍取决于 J1/J2 验收和一个符合当前修订的第二实现。核验器尚未发布到 PyPI，只能从本仓库安装。`.github/workflows/ci.yml` 运行的命令与本 README 下方的本地闸门相同；本 README 不声称某次 GitHub Actions 运行已经通过。
 - **范围仅限 H0。** 本仓库没有离线传输件，没有各项目的导出/导入适配器，也没有任何网络服务。
-- **经过独立复核后的修订。** 本快照包含 H0 修订 1（决定 2026-11-10 #34）、修订 2（决定 2026-11-10 #42）与修订 3（决定 2026-11-11 #2）：独立复核发现了线协议语义缺陷，修订改变了格式规则、错误码表、信任根模型、资源上限、核验器与测试向量。修订 3 回应第二个实现的复核，修正了规范歧义、若干资源上限与参考核验器的四处缺陷。回归集目前是**候选集**（`vectors/frozen/v0.1-candidate/`）；正式冻结在 J1/J2 验收通过后才开始。详见 [`CHANGELOG.md`](CHANGELOG.md)。
+- **经过独立复核后的修订。** 本快照包含 H0 修订 1（决定 2026-11-10 #34）、修订 2（决定 2026-11-10 #42）与修订 3（决定 2026-11-11 #2），以及修订 3 之后的四轮修订 S1-FIX1 至 S1-FIX4（决定 2026-11-11 #5、#12、#14、#16）：独立复核发现了线协议语义缺陷，修订改变了格式规则、错误码表、信任根模型、资源上限、核验器与测试向量。修订 3 回应第二个（Rust）实现的复核——该实现在自己的分支上依据较早的文本运行；随后的 S1 各轮修掉了后续复核在修订后文本与 Python 核验器里发现的缺陷。回归集目前是**候选集**（`vectors/frozen/v0.1-candidate/`）；正式冻结在 J1/J2 验收通过后才开始。详见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 Python 核验器是参考实现，不是产品：它的用途是让规范可被测试、给第二位实现者一个对照物，并不代表格式已经定型。
 
@@ -49,13 +49,13 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
 ```
 
-H0 构建所用的精确依赖版本固定在 [`verifiers/python/constraints.txt`](verifiers/python/constraints.txt)；只有该文件与 `pyproject.toml` 中固定的版本有保证。本机开发环境是 Python 3.14，Python 3.11 与 3.12 未在本机实测；3.12 工作流定义在 `.github/workflows/ci.yml`，本文件不声称它已在 GitHub 上通过。
+H0 构建所用的精确依赖版本固定在 [`verifiers/python/constraints.txt`](verifiers/python/constraints.txt)；只有该文件与 `pyproject.toml` 中固定的版本有保证。S1 各轮在本机用 Python 3.12（CI 所用版本）与 Python 3.14 跑过全部闸门，结果逐项相同；Python 3.11 未实测。3.12 工作流定义在 `.github/workflows/ci.yml`，本文件不声称它已在 GitHub 上通过。
 
 命令行接口如下：
 
 ```bash
 hyphaweave-verify record <file> [--keys <dir>] [--json]
-hyphaweave-verify container <dir|zip> [--keys <dir>] [--tsa-trust <pem>] [--previous <dir>]
+hyphaweave-verify container <dir|zip> [--keys <dir>] [--tsa-trust <pem>] [--previous <dir|zip>]
 hyphaweave-verify vectors <dir> [--tsa-trust <pem>]
 hyphaweave-verify --help
 hyphaweave-verify --version
@@ -75,9 +75,9 @@ hyphaweave-verify vectors vectors
 hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 ```
 
-`--keys` 指向一个密钥生命周期记录目录（取其顶层 `*.json` 文件），用于提供公钥及其声明状态，不属于被核验的容器。`--tsa-trust` 提供 L2 时间戳信任锚；`--previous` 额外核对上一份容器的清单摘要与容器内嵌链是否一致。
+`--keys` 指向一个密钥生命周期记录目录（取其顶层名字以 `.json` 结尾的全部条目），用于提供公钥及其声明状态，不属于被核验的容器。`--tsa-trust` 提供 L2 时间戳信任锚（一个 PEM 证书文件）。`--previous` 给出链上的上一份容器（目录或 zip），用来接上链：只读它的 `manifest.json` 与 `signatures/manifest.sig.json`，它的清单签名在**被核验容器的验证上下文**里核验（所给 keyset 加上该容器自己的密钥记录，因此只经由 owner 受信的设备密钥也能接上），它的清单摘要必须等于该容器的 `previous_manifest.digest`。上一份容器的其余内容一概不核验，报告用 `L_PREVIOUS_CONTENT_UNVERIFIED` 如实说明；要核验上一份容器本身，就把它当作目标单独跑一遍。`--keys`、`--tsa-trust` 与 `--previous` 路径都是运营者给的输入：读不出或解析不了，是用法错误（退出码 `2`，不出报告）。
 
-每次运行只向 stdout 输出一份确定性的 JSON 报告（无颜色、无进度输出）；用法与 I/O 错误只写入 stderr。退出码：`0` 表示有效（`weave.erased` 占位记录的结论为 `erased` 也算成功，或所有向量用例吻合），`1` 表示无效、不可核验或向量不吻合，`2` 表示用法或 I/O 错误。结论分为 `valid`、`invalid`、`unverifiable` 与 `erased`；当某项检查无法完成时（例如未知公钥、缺少时间戳信任锚），如实报告 `unverifiable`，绝不当作 `valid`。核验器不联网，输出不使用墙钟、区域设置、时区或当前目录。
+每次运行只向 stdout 输出一份确定性的 JSON 报告（无颜色、无进度输出）；用法与 I/O 错误只写入 stderr。退出码：`0` 表示有效（`weave.erased` 占位记录的结论为 `erased` 也算成功，或所有向量用例吻合），`1` 表示无效、不可核验或向量不吻合，`2` 表示用法或 I/O 错误，`3` 表示仅供测试的跳过检查钩子（`--test-hooks`，绝不用于生产）至少关掉了一项检查。结论分为 `valid`、`invalid`、`unverifiable` 与 `erased`；当某项检查无法完成时（例如未知公钥、缺少时间戳信任锚），如实报告 `unverifiable`，绝不当作 `valid`。核验器不联网，输出不使用墙钟、区域设置、时区或当前目录。
 
 L2 时间戳只在通过 `--tsa-trust` 提供信任锚时才验证。没有信任锚时，时间戳报告为 `present-unverified`，容器报告为 `unverifiable`。容器的 `level_verified` 恒为 `"L0"`（L1/L2 的内部哈希链无法离线复核）；L2 只有在整条时间戳链通过所提供信任锚验证时才报告 `anchor_verified: true`。`vectors/keys/tsa/` 下的 TSA 密钥与证书是公开测试材料，测试向量之外绝不要信任它们。
 
@@ -99,11 +99,12 @@ python tools/check_schemas.py
 python tools/check_external.py
 python tools/anti_verification.py
 python tools/byte_flip_gate.py
+python tools/crash_fuzz.py
 python tools/check_spec_examples.py
 reuse lint
 ```
 
-这些命令与 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 中的相同。本 README 不声称某一次闸门运行已经通过；请在你的检出上运行这些命令自行核对。H0 交付快照的闸门结果汇总见 [`CHANGELOG.md`](CHANGELOG.md)。
+这些命令与 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 的 Python job 相同。`check_spec_examples.py` 之前的三道闸门会开并行 worker；机器上同时还有别的负载时，给它们各加 `--jobs 2`（见 [`tools/README.md`](tools/README.md)）。本 README 不声称某一次闸门运行已经通过；请在你的检出上运行这些命令自行核对。H0 交付快照的闸门结果汇总见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 如果要在不信任任何实现的前提下手工核验一个容器，请按 [`spec/offline-verification.md`](spec/offline-verification.md) 操作：它只用 `sha256sum`、`openssl` 与一个 JSON 查看器，并用 `vectors/` 里的一个 L0 容器实例完整走一遍。
 

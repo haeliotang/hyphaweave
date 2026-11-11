@@ -25,31 +25,36 @@ Read this before using anything in this repository:
 - **Not accepted yet.** `weave-record/1` v0.1 has **not** passed the J1/J2
   round-trip acceptance cases yet. Until those round trips between independent
   projects are actually performed, v0.1 is not valid. H0 produces the
-  specification, schemas, vectors and one verifier; it does not perform the
-  round trips.
-- **Not independently implemented yet.** Only **one** implementation exists:
-  the Python reference verifier in this repository. A single implementation
-  cannot demonstrate that the format is implementable from the specification
-  alone, so this repository does **not** claim independent implementations.
-  The Rust verifier (milestone H1) is deliberately left to a separate
-  implementer and is not part of H0.
-- **Public, still draft.** The repository is now public, but that does not make
+  specification, schemas, vectors and the Python verifier; it does not perform
+  the round trips.
+- **One implementation on this branch, a second one not yet caught up.** The
+  `main` branch carries **one** implementation: the Python reference verifier in
+  this repository. A second, independent implementation (the Rust verifier,
+  milestone H1) exists on a separate branch; it was written from an earlier text
+  and has **not yet** been brought up to the current revision (the S1 rounds
+  described below). Until it passes the current vectors, this repository does
+  **not** claim two conforming implementations.
+- **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
-  J1/J2 acceptance cases and on a second, independent implementation. The
-  verifier has not been released to PyPI and is installed from this repository.
-  The workflow in `.github/workflows/ci.yml` mirrors the local gates below; this
-  README does not claim that a particular GitHub Actions run passed.
+  J1/J2 acceptance cases and on a second implementation that conforms to the
+  current revision. The verifier has not been released to PyPI and is installed
+  from this repository. The workflow in `.github/workflows/ci.yml` runs the
+  same commands as the local gates below; this README does not claim that a
+  particular GitHub Actions run passed.
 - **H0 scope only.** There is no offline transport package, no project export or
   import adapter, and no network service in this repository.
 - **Revised after review.** This snapshot includes H0 revision 1 (decision
   2026-11-10 #34), revision 2 (decision 2026-11-10 #42) and revision 3 (decision
-  2026-11-11 #2); independent reviews found wire-semantics defects, and the
-  revisions changed the format rules, the error-code registry, the trust-root
-  model, the resource limits, the verifier and the vectors. Revision 3 reacts to
-  the review of the second implementation and fixes ambiguities, several resource
-  limits and four reference-verifier defects. The regression set is a
-  **candidate** (`vectors/frozen/v0.1-candidate/`); official freeze begins only
-  after J1/J2 acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
+  2026-11-11 #2) with its four follow-up rounds S1-FIX1 to S1-FIX4 (decisions
+  2026-11-11 #5, #12, #14 and #16). Independent reviews found wire-semantics
+  defects, and the revisions changed the format rules, the error-code registry,
+  the trust-root model, the resource limits, the verifier and the vectors.
+  Revision 3 reacts to the review of the second (Rust) implementation, which
+  ran against the earlier text on its own branch; the S1 rounds then closed the
+  defects that further reviews found in the revised text and in the Python
+  verifier. The regression set is a **candidate**
+  (`vectors/frozen/v0.1-candidate/`); official freeze begins only after J1/J2
+  acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
 
 The Python verifier is a reference implementation, not a product: it is written
 to make the specification testable and to give a second implementer something
@@ -84,16 +89,16 @@ python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[d
 
 The exact dependency versions used for the H0 build are pinned in
 [`verifiers/python/constraints.txt`](verifiers/python/constraints.txt); only the
-versions pinned there and in `pyproject.toml` are guaranteed. Python 3.11 and
-3.12 have not been exercised locally (the build environment was Python 3.14);
-the 3.12 workflow is defined in `.github/workflows/ci.yml` and is not claimed
-here to have passed.
+versions pinned there and in `pyproject.toml` are guaranteed. The S1 rounds ran
+the gates locally on Python 3.12 (the CI version) and on Python 3.14 with
+identical results; Python 3.11 has not been exercised. The 3.12 workflow is
+defined in `.github/workflows/ci.yml` and is not claimed here to have passed.
 
 The command-line surface is:
 
 ```bash
 hyphaweave-verify record <file> [--keys <dir>] [--json]
-hyphaweave-verify container <dir|zip> [--keys <dir>] [--tsa-trust <pem>] [--previous <dir>]
+hyphaweave-verify container <dir|zip> [--keys <dir>] [--tsa-trust <pem>] [--previous <dir|zip>]
 hyphaweave-verify vectors <dir> [--tsa-trust <pem>]
 hyphaweave-verify --help
 hyphaweave-verify --version
@@ -113,17 +118,28 @@ hyphaweave-verify vectors vectors
 hyphaweave-verify vectors vectors/frozen/v0.1-candidate
 ```
 
-`--keys` points at a directory of key-lifecycle records (its top-level
-`*.json` files); it supplies public keys and their declared lifecycle, and is
-not part of the container being verified. `--tsa-trust` supplies L2 timestamp
-trust anchors; `--previous` additionally checks a previous container's manifest
-digest against the embedded chain.
+`--keys` points at a directory of key-lifecycle records (every top-level entry
+whose name ends in `.json`); it supplies public keys and their declared
+lifecycle, and is not part of the container being verified. `--tsa-trust`
+supplies L2 timestamp trust anchors (a file of PEM certificates). `--previous`
+takes the previous container of the chain, as a directory or a zip, and links
+it: only its `manifest.json` and `signatures/manifest.sig.json` are read, its
+manifest signature is verified **in the context of the container being
+verified** (the supplied keyset plus that container's own key records, so a
+device key that the keyset trusts only through its owner links as well), and its
+manifest digest must equal the container's `previous_manifest.digest`.
+Everything else in the previous container is not verified; the report says so
+with `L_PREVIOUS_CONTENT_UNVERIFIED`, and to verify the previous container
+itself, run it as a target. `--keys`, `--tsa-trust` and the `--previous` path
+are operator inputs: one that cannot be read or decoded is a usage error
+(exit `2`, no report).
 
 Every run prints exactly one deterministic JSON report to stdout (no colour, no
 progress output); usage and I/O errors go to stderr. Exit status: `0` means
 valid (or `erased` for an erasure placeholder, or every vector case matched),
-`1` means invalid, unverifiable or a vector mismatch, and `2` means a usage or
-I/O error. Reported verdicts are `valid`, `invalid`, `unverifiable` and
+`1` means invalid, unverifiable or a vector mismatch, `2` means a usage or I/O
+error, and `3` means that the test-only check-skip hook (`--test-hooks`, never
+for production use) disabled at least one check. Reported verdicts are `valid`, `invalid`, `unverifiable` and
 `erased`; `unverifiable` is used honestly when a check cannot be completed (for
 example an unknown key or a missing timestamp trust anchor), and such a result
 is never reported as `valid`. The verifier does not use the network, the wall
@@ -156,11 +172,15 @@ python tools/check_schemas.py
 python tools/check_external.py
 python tools/anti_verification.py
 python tools/byte_flip_gate.py
+python tools/crash_fuzz.py
 python tools/check_spec_examples.py
 reuse lint
 ```
 
-These are the same commands as [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+These are the same commands as the Python job of
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The three last gates
+before `check_spec_examples.py` start parallel workers; on a machine that also
+runs other work, add `--jobs 2` to each (see [`tools/README.md`](tools/README.md)).
 This README does not claim that a particular gate run passed; run the commands
 to check your checkout. The gate results reported for the H0 hand-off snapshot
 are summarized in [`CHANGELOG.md`](CHANGELOG.md).
