@@ -12,7 +12,9 @@
 > rulings S1–S17 of Inceptless decision **2026-11-11 #2**: the ambiguity classes
 > that S8 left to the reviser are listed, with their readings and rationale, in
 > §6 under `decided by principle (Inceptless decision 2026-11-11 #2)`; §6
-> entries 15–19 record the five further principle decisions of decision 2026-11-11 #5. Each
+> entries 15–19 record the five further principle decisions of decision 2026-11-11 #5;
+> entries 20–23 record the S1-FIX2/S1-FIX3 principle decisions (decisions 2026-11-11 #12
+> and #14). Each
 > entry in §1 carries its decision status; its normative form is in
 > [`../spec/`](../spec/), and this page only records the question, the decision
 > and the reasoning. A small number of *implementation-shape* details were not
@@ -718,8 +720,9 @@ section carries the status `decided by principle (Inceptless decision 2026-11-11
 gives the two readings, the chosen one and why it is the conservative or the deterministic
 one. **The entry numbers 1–14 below are the numbers used by the specification's
 `[S8①]`–`[S8⑭]` labels**; entries 15–19 record five further principle decisions added
-in revision 1 of the S1-FIX1 round (T11), and entry 20 records the S1-FIX2 (`decision
-2026-11-11 #12`) deterministic-order trade-off (U12/L8).
+in revision 1 of the S1-FIX1 round (T11), entry 20 records the S1-FIX2 (`decision
+2026-11-11 #12`) deterministic-order trade-off (U12/L8), and entries 21–23 record the
+S1-FIX3 (`decision 2026-11-11 #14`) principle decisions V3, V2 and V7/L5.
 
 1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
    the old §14.5 applies to the whole container, so one code. Reading B: the one-error
@@ -860,6 +863,32 @@ round (T11); they carry the status
     explicit: a revocation recorded later but effective earlier cannot invalidate an
     earlier-recorded revocation. Marked `decided by principle (Inceptless decision
     2026-11-11 #12; U12/L8)`; the specification and the verifier implement this order.
+
+21. **A supplied previous container links the chain only (V3).** Readings: parse the
+    supplied previous container exactly like a target container (full evidence), or read only
+    the manifest and its attestation file and verify the link. **Chosen** the second: the
+    chain needs only the manifest digest and its signature, and narrowing the checked
+    surface removes the places where two implementations could disagree; the report states
+    the narrowing explicitly with `L_PREVIOUS_CONTENT_UNVERIFIED`, and a party that wants
+    the previous container verified runs it as a target. Marked `decided by principle
+    (Inceptless decision 2026-11-11 #14; V3)`.
+22. **TSA receipts must be strict canonical DER (V2).** Readings: accept lenient/BER-ish
+    receipt encodings and only fail later checks, or require strict canonical DER at check
+    1. **Chosen** strict DER: exactly one `TimeStampResp` with no trailing data, canonical
+    minimal length forms, re-encoding equal to the input, and the fixed version values
+    (`SignedData.version` = 3, `SignerInfo.version` ∈ {1, 3}, `TSTInfo.version` = 1); any
+    DER decoding or structure failure anywhere in receipt processing is `E_TS_SCHEMA`.
+    Reason: the attestation digest of a `.tsr` is not covered by the manifest signature, so
+    receipts are attacker-supplied input; one strict profile gives a single deterministic
+    code and cannot depend on a parser's tolerance. Marked `decided by principle
+    (Inceptless decision 2026-11-11 #14; V2)`.
+23. **`record_count` keeps the manifest count (V7/L5).** Readings: reset `record_count` to
+    0 when a later container stage fails, or keep the manifest's record count once the
+    manifest has parsed and its structure checks have passed. **Chosen** keep it: the count
+    is a fact established at the manifest stage, resetting it loses information and made
+    implementations disagree on report shape for the same input. It stays 0 only for a
+    failure before the manifest structure stage. Marked `decided by principle (Inceptless
+    decision 2026-11-11 #14; V7/L5)`.
 
 Status updates in this revision:
 
