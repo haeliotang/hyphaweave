@@ -20,7 +20,14 @@
 > closed `L_*` limitation-identifier list (S12). Revision 4 (Inceptless decision
 > 2026-11-11 #14) adds `L_PREVIOUS_CONTENT_UNVERIFIED` (V3) and sharpens `E_TS_SCHEMA`
 > (strict DER), `E_KEY_PUBLIC_KEY` (structural classification, V5) and
-> `E_CONTAINER_ZIP` (version-needed and per-entry disk start, V6).
+> `E_CONTAINER_ZIP` (version-needed and per-entry disk start, V6). Revision 5 (Inceptless
+> decision 2026-11-11 #16) adds no code; it sharpens `E_MANIFEST_CHAIN` (a supplied
+> previous's signature is verified in the target context, W1; the whole previous zip obeys
+> §11.9 rules 1–4, W2), `E_TS_SCHEMA` (check 1 is a real DER re-encoding check, W3),
+> `E_TS_CMS` (an algorithm/key-type mismatch is check 10, W6), `E_CONTAINER_ZIP` /
+> `E_CONTAINER_SIZE` (the zip check order, W7), the timestamp and container check orders
+> (W5, W6), the usage-error rule for operator inputs (W4) and the
+> `L_PREVIOUS_CONTENT_UNVERIFIED` / `L_KEY_TRUST_TOFU` conditions (W1, W5).
 
 > Every code is a fixed ASCII identifier. Human-readable messages are not part of the
 > format and MUST NOT be used for machine decisions (they may change without a format
@@ -39,16 +46,25 @@ reports its own dedicated code (F2, F3). Within signature verification the Ed255
 have their own fixed order (specification §3.4); the cryptography of §3.4 runs before the
 key-lifecycle effects of §9.4, so a signature that fails the equation reports `E_SIG_INVALID`
 even when its key is expired, revoked or compromised. An unverifiable condition listed in
-specification §14.4 is terminal for the record exactly like an error (F7). In the timestamp
-phase a listed receipt's file digest failure (`E_TS_FILE`) is reported before the
-renewal-chain shape (`E_TS_RENEWAL`).
+specification §14.4 is terminal for the record exactly like an error (F7). The timestamp
+phase runs in the complete order of specification §12.2 (W6): the file checks of every
+listed receipt (`E_TS_FILE`, `E_JSON_SIZE`), then the renewal-chain shape (`E_TS_RENEWAL`),
+then, per receipt in chain order, checks 1–13 and 15, the first failing check being that
+receipt's only code. A zip is checked in the order of specification §11.9 (W7): locate the
+end-of-central-directory record (bytes before the first local header or after the record
+fail here, `E_CONTAINER_ZIP`) → parse the central directory (`E_CONTAINER_ZIP`) → the §13
+entry-count and declared-total limits (`E_CONTAINER_SIZE`, nothing later is checked) →
+every remaining structural rule (`E_CONTAINER_ZIP`).
 
 A **container** is evaluated in this order: safe entry enumeration → manifest bytes →
 manifest structure → manifest digest → manifest signature → level/chain completeness →
 records listing and per-record evaluation → cross-record state → blobs → previous manifest
 chain → timestamps → aggregation. A container-level invalid error stops the container
 pipeline at the stage where it is found: record listing/evaluation does not run for an
-invalid error found before it, and the report carries `records: []`. The failing stage
+invalid error found before it, and the report carries `records: []`; an invalid error at
+the cross-record, blob or previous-manifest-chain stage means the later stages report
+nothing — no code, notice, limitation or timestamp entry — while the records already
+evaluated keep their verdicts (W5). The failing stage
 reports every independent violation it found in that stage (sorted, unique in
 `container.errors`); the records-listing stage in particular reports all of its
 `E_MANIFEST_RECORD_*`/`E_MANIFEST_RECORDS`/`E_JSON_SIZE` violations together. An
@@ -164,17 +180,17 @@ as `valid`.
 | `E_MANIFEST_L1_NO_HEAD` | invalid | The claimed level is `L1`/`L2` but `manifest.chain` is absent or null. |
 | `E_MANIFEST_L1_NO_POSITION` | invalid | The claimed level is `L1`/`L2` but a `records[]` entry lacks a unique non-negative `chain_index`. |
 | `E_MANIFEST_L2_NO_TIMESTAMP` | invalid | The claimed level is `L2` but the manifest attestation lists no RFC 3161 timestamp. |
-| `E_MANIFEST_CHAIN` | invalid | `previous_manifest.digest` does not equal the digest of the embedded `previous/manifest.json`; or the embedded previous manifest's `origin` differs from the current manifest's `origin`; or `--previous` is supplied while `previous_manifest` is `null`; or the supplied `--previous` container's manifest is unreadable/invalid or its digest disagrees with the embedded manifest. A missing or unreadable `--previous` path is a usage/I/O error (exit 2). |
+| `E_MANIFEST_CHAIN` | invalid | `previous_manifest.digest` does not equal the digest of the embedded `previous/manifest.json`; or the embedded previous manifest's `origin` differs from the current manifest's `origin`; or `--previous` is supplied while `previous_manifest` is `null`; or the supplied `--previous` container's manifest is unreadable/invalid or its digest disagrees with the embedded manifest; or the supplied previous's manifest attestation does not verify **in the target container's verification context** — an `ed25519` entry by a key that is not a required key of the target context, that does not verify, that is not trusted in the target's final trust closure, or whose §9.4 key state at the previous manifest's `created_at` fails (a `key-compromise` revocation always fails here, because no timestamp evidence is read from the previous container) (W1); or the supplied previous zip violates a §11.9 rule 1–4 in any entry, read or not (W2). A missing or unopenable `--previous` path is a usage/I/O error (exit 2). |
 | `E_MANIFEST_CHAIN_MISSING` | invalid | `previous_manifest` is non-null but `previous/manifest.json` is absent. |
 | `E_MANIFEST_CHAIN_UNEXPECTED` | invalid | `previous_manifest` is null but `previous/` contains a manifest. |
 | `E_CONTAINER_ENTRY` | invalid | The container contains an entry outside the allowed layout, a path that escapes the root, a duplicate entry name, a symlink or other unsupported entry type, or an unknown file in `signatures/`/`previous/`. These checks also apply to `readable/` entries, even though they are never decompressed or CRC-checked (T6). |
-| `E_CONTAINER_SIZE` | invalid | Entry count or uncompressed total bytes exceed the container limits (zip-bomb protection). |
+| `E_CONTAINER_SIZE` | invalid | Entry count or uncompressed total bytes exceed the container limits (zip-bomb protection). In the zip form this is phase 3 of the §11.9 check order: it is reported only when the end-of-central-directory record was located and the central directory parsed, and it wins over every remaining structural rule (W7). |
 | `E_CONTAINER_ZIP` | invalid | The zip cannot be read as a zip (corrupt archive, unsupported compression, encrypted entries), or a structural zip rule of specification §11.9 is violated: bytes before the first local file header or after the end-of-central-directory record; a non-empty archive comment; a gap, pad byte or overlap between entries or before the central directory; a local file header that disagrees with the central directory on name, flags, method, CRC or sizes (or, with a data descriptor, descriptor values that disagree); an EOCD or ZIP64 EOCD entry count or central-directory size/offset that disagrees with the parsed values; a disk-number field in the EOCD, ZIP64 EOCD or ZIP64 locator that is not that of a single-volume archive (including a locator total-disk count other than 1, and any per-entry central-directory "disk number start" other than 0); a central-directory "version needed to extract" above 63 (the local-header version field is unconstrained); an entry whose name ends with `/` but carries data, or an entry with the DOS directory attribute carrying data. ZIP64 archives are accepted and are not an error by themselves. |
 | `E_TS_FILE` | invalid | A listed timestamp receipt file is missing or does not hash to the listed digest. |
-| `E_TS_SCHEMA` | invalid | A receipt is not strict, canonical DER, or its structure is invalid: not exactly one `TimeStampResp` (trailing data), non-minimal length forms, re-encoding the parsed object differs from the input, `SignedData.version` not 3, `SignerInfo.version` not in {1, 3}, a DER decoding failure **anywhere** in receipt processing (including a signed-attributes re-encoding failure) — these are all check 1's code (V2). Also: `PKIStatus` not `granted`, wrong content type, TSTInfo version not 1, `messageImprint`/`signerInfo` hash algorithm not sha256, an invalid `genTime`, or a malformed `accuracy` component — a present `milliseconds`/`microseconds` outside 1–999 (an explicit `0` included), or a negative/non-integer component. An accuracy total above `MAX_TS_ACCURACY` or a conversion overflow is **not** this code: it makes the receipt unusable evidence (`E_TS_UNTRUSTED`, container unverifiable). |
+| `E_TS_SCHEMA` | invalid | A receipt is not strict, canonical DER, or its structure is invalid: not exactly one `TimeStampResp` (trailing data), non-minimal length forms, a universal DER rule violated anywhere in the file (including inside values of unknown type), re-encoding the parsed object differs from the input — in particular any SET OF at any level not in DER order (`digestAlgorithms`, `certificates`, `crls`, `signedAttrs`, `unsignedAttrs`, `attrValues`, RDNs) or a DEFAULT value encoded (W3) — `SignedData.version` not 3, any `SignerInfo.version` not in {1, 3}, a carried certificate that does not decode, a DER decoding failure **anywhere** in receipt processing — these are all check 1's code, decided before any later check (V2, W3, W6). Also: `PKIStatus` not `granted`, wrong content type, TSTInfo version not 1, `messageImprint`/`signerInfo` hash algorithm not sha256, an invalid `genTime`, or a malformed `accuracy` component — a present `milliseconds`/`microseconds` outside 1–999 (an explicit `0` included), or a negative/non-integer component. An accuracy total above `MAX_TS_ACCURACY` or a conversion overflow is **not** this code: it makes the receipt unusable evidence (`E_TS_UNTRUSTED`, container unverifiable). |
 | `E_TS_IMPRINT` | invalid | The token's `messageImprint.hashedMessage` does not equal the expected imprint (the raw 32-byte manifest digest for the first receipt, or `SHA-256(previous receipt bytes ‖ raw manifest digest)` for a renewal receipt). |
-| `E_TS_CMS` | invalid | The token's CMS evidence fails: the signer certificate is not carried in the token, the ESS `signingCertificateV2` attribute is missing or mismatched, the signed attributes' `messageDigest` is wrong, or the CMS signature does not verify. |
-| `E_TS_CERT` | invalid | The signer certificate or its signature algorithm is unacceptable: a signature algorithm outside the allowlist (RSA PKCS#1 v1.5 with SHA-256/384/512 or ECDSA with SHA-256/384), missing `id-kp-timeStamping` EKU, KeyUsage without `digitalSignature` when the extension is present, or a validity window that does not contain `genTime`. |
+| `E_TS_CMS` | invalid | The token's CMS evidence fails: the token carries no `signerInfo`, the signer certificate is not carried in the token, the signed attributes are absent or lack the content-type/`messageDigest` attributes, the ESS `signingCertificateV2` attribute is missing or mismatched, the signed attributes' `messageDigest` is wrong, or the CMS signature does not verify — including a signer public key that the allowlisted algorithm cannot use (W6). |
+| `E_TS_CERT` | invalid | The signer certificate or the signature algorithm identifier is unacceptable: a signature algorithm outside the allowlist (RSA PKCS#1 v1.5 with SHA-256/384/512 or ECDSA with SHA-256/384), missing `id-kp-timeStamping` EKU, KeyUsage without `digitalSignature` when the extension is present, or a validity window that does not contain `genTime`. |
 | `E_TS_UNTRUSTED` | unverifiable | No trust anchor was supplied that matches the timestamp signer's leaf certificate, so the receipt is reported `present-unverified`; the container must not be reported `valid`. The same code and state apply when the receipt's accuracy is **unusable evidence**: the converted `accuracy` total exceeds `MAX_TS_ACCURACY` or the conversion overflows (T3). Such a receipt cannot support an L2 claim (the container is unverifiable) and cannot rescue; a signature by a `key-compromise`-revoked key with only such receipts is `unverifiable` (missing usable information), never `E_KEY_COMPROMISED`. |
 | `E_TS_RENEWAL` | invalid | The timestamp receipts do not form exactly one renewal chain: no receipt with `renews == null`, a `renews` link that is dangling or not earlier in the chain, duplicate paths or digests, more than one chain, or a receipt listed out of chain order. |
 
@@ -206,8 +222,8 @@ The full emission conditions are in specification §14.9; no free prose is permi
 |---|---|
 | `L_OFFLINE_CONTEXT` | The verification context is the container/target plus the supplied keyset; references to records outside it resolve as `missing`. Always emitted for record and container targets. |
 | `L_CHAIN_CLAIM_UNVERIFIED` | A claimed L1/L2 internal chain cannot be recomputed offline; `level_verified` is `L0`. |
-| `L_KEY_TRUST_TOFU` | At least one signature check in the report — a record signature or the manifest signature — was context-trusted per the TOFU predicate of specification §14.9 (declared or rotated context key material; U6). |
-| `L_PREVIOUS_CONTENT_UNVERIFIED` | A supplied previous container (`--previous`) was used to link the chain and its manifest identity was read and its signature verified; the rest of the previous container's content was not verified. Reported whether or not the digest comparison or the target container then succeeds; not reported when no previous was supplied or it could not be read/verified (V3). |
+| `L_KEY_TRUST_TOFU` | At least one signature check in the report — a record signature, the manifest signature, or a supplied previous container's manifest signature (W1) — was context-trusted per the TOFU predicate of specification §14.9 (declared or rotated context key material; U6). |
+| `L_PREVIOUS_CONTENT_UNVERIFIED` | One criterion (W5): `--previous` was supplied, the previous-manifest-chain stage ran, and the supplied previous's manifest signature verified in the target container's verification context (W1); the rest of the previous container's content was not verified. Reported whether or not a later check of that stage then fails; not reported when no previous was supplied, when the container pipeline stopped before that stage, or when the previous could not be read/verified (V3, W5). |
 | `L_PREVIOUS_SIG_UNVERIFIED` | An embedded previous manifest exists and its own signature was not re-verified. When a supplied `--previous` container's manifest signature verifies, that previous manifest's signature counts as re-verified, so this identifier is not reported for it (`L_PREVIOUS_CONTENT_UNVERIFIED` is reported instead) (V3). |
 | `L_TSA_TRUST_UNVERIFIED` | At least one listed receipt is `present-unverified`: its structure and CMS signature pass but it is not verified-and-trusted (no matching anchor, or its accuracy is unusable evidence). A receipt rejected by a structural, format or CMS check reports its error code and does not by itself trigger this identifier (U7). |
 | `L_ERASED_PLACEHOLDER` | The verified input contains a `weave.erased` placeholder. |
