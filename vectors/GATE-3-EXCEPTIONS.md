@@ -96,7 +96,7 @@ accepted flip there is a survivor and fails the gate.
 | class | DER field | reason |
 |---|---|---|
 | `tsr-digest-algorithms` | content of `SignedData.digestAlgorithms` | RFC 5652 lists the signers' digest algorithms here; §12.2 constrains only the signer's own `digestAlgorithm` (check 5). A flip that keeps the SET OF strict DER and sorted changes nothing. |
-| `tsr-non-signer-certificate` | every certificate of `SignedData.certificates` other than the one matching the signer's `issuerAndSerialNumber` | checks 7, 8, 11, 12 and 15 read only the signer certificate; another certificate must only be strict DER and decodable (check 1). |
+| `tsr-non-signer-certificate` | every certificate of `SignedData.certificates` other than the one matching the signer's `issuerAndSerialNumber` | checks 7, 8, 11, 12 and 15 read only the signer certificate; since S1-FIX5 X7 another certificate is an open type, judged by its framing only (check 1a/1c), and is not decoded. |
 | `tsr-revocation-info` | content of `SignedData.crls` | H0 performs no revocation checking of the TSA certificate; the entries must only be strict DER (check 1). |
 | `tsr-unsigned-attributes` | content of `SignerInfo.unsignedAttrs` | outside the CMS signature and read by no check; must only be strict DER (check 1). |
 
@@ -119,6 +119,10 @@ the original receipt's DER structure. For the committed positive cases they are
 | `integrity-levels/l2-ts-signer-digest-params-null` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
 | `integrity-levels/l2-ts-signer-sha256-rsa-params-null` | `signatures/timestamp-1.tsr` (1,474 bytes) | 37–52 `tsr-digest-algorithms` |
 | `integrity-levels/l2-ts-signer-ecdsa-params-absent` | `signatures/timestamp-1.tsr` (1,050 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-signer-sha256-rsa-params-absent` | `signatures/timestamp-1.tsr` (1,472 bytes) | 37–52 `tsr-digest-algorithms` |
+| `integrity-levels/l2-ts-non-signer-certificate-params-octet-string` | `signatures/timestamp-1.tsr` (2,268 bytes) | 37–52 `tsr-digest-algorithms`; 949–1743 `tsr-non-signer-certificate` |
+| `integrity-levels/l2-ts-non-signer-certificate-undecodable` | `signatures/timestamp-1.tsr` (2,268 bytes) | 37–52 `tsr-digest-algorithms`; 949–1743 `tsr-non-signer-certificate` |
+| `integrity-levels/l2-ts-non-signer-extension-value-nonminimal` | `signatures/timestamp-1.tsr` (2,269 bytes) | 37–52 `tsr-digest-algorithms`; 949–1744 `tsr-non-signer-certificate` |
 | `integrity-levels/l2-ts-der-unsigned-attr-context-tag-value` | `signatures/timestamp-1.tsr` (1,490 bytes) | 37–52 `tsr-digest-algorithms`; 1476–1490 `tsr-unsigned-attributes` |
 | `integrity-levels/l2-ts-der-unsigned-attr-application-200-value` | `signatures/timestamp-1.tsr` (1,492 bytes) | 37–52 `tsr-digest-algorithms`; 1476–1492 `tsr-unsigned-attributes` |
 | `integrity-levels/l2-ts-der-high-tag-number-inner-zero-group` | `signatures/timestamp-1.tsr` (1,493 bytes) | 37–52 `tsr-digest-algorithms`; 1476–1493 `tsr-unsigned-attributes` |
