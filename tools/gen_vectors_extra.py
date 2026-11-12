@@ -10328,15 +10328,32 @@ def _w3_signer_info_version_2(tree: _DerNode) -> None:
     version.content = b"\x02"
 
 
-def _w3_bad_certificate(tree: _DerNode) -> None:
-    """Add a non-signer certificate whose TBSCertificate version is 74."""
-    certificate = _der_tree(_crafted_certificate("wrong-anchor")[0])
-    version = certificate.children[0].children[0].children[0]
+def _x7_signer_certificate(tree: _DerNode) -> _DerNode:
+    """The signer certificate of a crafted receipt (its only certificate)."""
+    certificates = _w3_certificates(tree)
+    if len(certificates.children) != 1:
+        raise SystemExit("expected exactly the signer certificate")
+    return certificates.children[0]
+
+
+def _x7_signer_certificate_version_74(tree: _DerNode) -> None:
+    """X7/M3: the signer certificate's TBSCertificate version is 74 (1e)."""
+    version = _x7_signer_certificate(tree).children[0].children[0].children[0]
     if version.tag != 0x02 or version.content != b"\x02":
         raise SystemExit("unexpected certificate version encoding")
     version.content = b"\x4a"
-    certificates = _w3_certificates(tree)
-    certificates.children = _w3_sorted(certificates.children + [certificate], reverse=False)
+
+
+def _x7_signer_extension_value_nonminimal(tree: _DerNode) -> None:
+    """X7/M3: the signer certificate's basicConstraints value uses a long-form length."""
+    tbs = _x7_signer_certificate(tree).children[0]
+    extensions = next(child for child in tbs.children if child.tag == 0xA3).children[0]
+    value = extensions.children[0].children[-1]
+    if value.tag != 0x04:
+        raise SystemExit("unexpected extension value encoding")
+    inner = _der_tree(value.content)
+    inner.force_long = True
+    value.content = _der_encode(inner)
 
 
 _W3_SCHEMA_EXPECTED = dict(
@@ -10403,8 +10420,8 @@ for _name, _mutation, _factory_kwargs, _why in (
      _w3_tree_mutation(_w3_signer_info_version_2), {"imprint_bytes": _W3_WRONG_IMPRINT},
      "SignerInfo.version is 2 (check 1) and messageImprint.hashedMessage is also wrong (check 4); W6: only the first failing check is reported, E_TS_SCHEMA, never E_TS_IMPRINT"),
     ("l2-ts-certificate-undecodable",
-     _w3_tree_mutation(_w3_bad_certificate), {"imprint_bytes": _W3_WRONG_IMPRINT},
-     "a second, non-signer certificate has TBSCertificate version 74, which does not decode as an X.509 certificate (1e), and the imprint is also wrong; W6: check 1 precedes check 4, so E_TS_SCHEMA"),
+     _w3_tree_mutation(_x7_signer_certificate_version_74), {"imprint_bytes": _W3_WRONG_IMPRINT},
+     "the signer certificate has TBSCertificate version 74, which does not decode as an X.509 certificate (1e; since S1-FIX5 X7/M3 1e decodes the signer certificate only), and the imprint is also wrong; W6: check 1 precedes check 4, so E_TS_SCHEMA"),
 ):
     declare(
         "integrity-levels",
@@ -10516,29 +10533,13 @@ def _w3_tst_opaque(tst_info: _DerNode) -> None:
     tst_info.children.append(_w3_node(0xA0, children=[other_name]))
 
 
-def _w3_extension_value_nonminimal(tree: _DerNode) -> None:
-    """Add a non-signer certificate whose basicConstraints value uses a long-form length."""
-    certificate = _der_tree(_crafted_certificate("wrong-anchor")[0])
-    tbs = certificate.children[0]
-    extensions = next(child for child in tbs.children if child.tag == 0xA3).children[0]
-    basic = extensions.children[0]
-    value = basic.children[-1]
-    if value.tag != 0x04:
-        raise SystemExit("unexpected extension value encoding")
-    inner = _der_tree(value.content)
-    inner.force_long = True
-    value.content = _der_encode(inner)
-    certificates = _w3_certificates(tree)
-    certificates.children = _w3_sorted(certificates.children + [certificate], reverse=False)
-
-
 for _name, _mutation, _why in (
     ("l2-ts-der-tstinfo-opaque-unsorted",
      _w3_tree_mutation(lambda tree: _w3_tst_info_edit(tree, _w3_tst_opaque)),
      "the TSTInfo carries a tsa name of the otherName form whose value (an open type unknown to the verifier) is a universal SET with its INTEGER components out of DER order; only the universal-rule scan of the TSTInfo (check 2, 1a) can see it"),
     ("l2-ts-der-extension-value-nonminimal",
-     _w3_tree_mutation(_w3_extension_value_nonminimal),
-     "a second, non-signer certificate's basicConstraints extnValue holds its SEQUENCE with a long-form length for a short body (30 81 ..); an extension value is itself DER (1e), although its OCTET STRING hides it from the receipt-level scan"),
+     _w3_tree_mutation(_x7_signer_extension_value_nonminimal),
+     "the signer certificate's basicConstraints extnValue holds its SEQUENCE with a long-form length for a short body (30 81 ..); an extension value is itself DER (1e, signer certificate only since S1-FIX5 X7/M3), although its OCTET STRING hides it from the receipt-level scan"),
 ):
     declare(
         "integrity-levels",
@@ -10917,7 +10918,7 @@ for _name, _edit, _ec, _why in (
      "signatureAlgorithm is {rsaEncryption, NULL} (RFC 3370 §3.2)"),
     ("l2-ts-signer-sha256-rsa-params-null", _x6_algorithm("signature", _X6_SHA256_RSA, _X6_NULL), False,
      "signerInfo.signatureAlgorithm is {sha256WithRSAEncryption, NULL}; RFC 4055 §5 / "
-     "RFC 8017 A.2.4 fix the parameters of the RSA PKCS#1 v1.5 identifiers to NULL"),
+     "RFC 5754 §3.2 make NULL the parameters a signer writes (absent is accepted too, X7)"),
     ("l2-ts-signer-ecdsa-params-absent", _x6_algorithm("signature", _X6_ECDSA_SHA256, _X6_ABSENT), True,
      "the receipt is signed with ECDSA P-256 (deterministic, RFC 6979) and "
      "signerInfo.signatureAlgorithm is {ecdsa-with-SHA256} with the parameters absent, as "
@@ -10980,6 +10981,144 @@ for _name, _edit, _ec, _why in (
         + ". The receipt is otherwise fully re-signed, so the only defect is the "
         "parameters form, a check-1 structure rule: invalid with E_TS_SCHEMA and "
         "gen_time null.",
+        **_W3_SCHEMA_EXPECTED,
+    )
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX5 X7 (decision 2026-11-12 #3): time forms matched as whole strings (H1),
+# sha*WithRSAEncryption parameters absent or NULL (M1), exactly one SignerInfo
+# (M2), 1e decodes the signer certificate only (M3). Every receipt is fully
+# re-signed with the test TSA key.
+# ---------------------------------------------------------------------------
+
+
+def _x7_second_signer_info(tree: _DerNode) -> None:
+    """Add a second SignerInfo (a copy with another signature value), in DER order."""
+    signer_infos = _w3_signed_data(tree).children[-1]
+    copy = _der_tree(_der_encode(signer_infos.children[0]))
+    copy.children[-1].content = b"\x00" * len(copy.children[-1].content)
+    if copy.children[-1].tag != 0x04:
+        raise SystemExit("unexpected SignerInfo layout")
+    signer_infos.children = _w3_sorted(signer_infos.children + [copy], reverse=False)
+
+
+def _x7_non_signer(edit: Callable[[_DerNode], None]) -> Callable[[_DerNode], None]:
+    """Add a second, non-signer certificate (the wrong-anchor test certificate), edited."""
+
+    def mutate(tree: _DerNode) -> None:
+        certificate = _der_tree(_crafted_certificate("wrong-anchor")[0])
+        edit(certificate)
+        certificates = _w3_certificates(tree)
+        certificates.children = _w3_sorted(certificates.children + [certificate], reverse=False)
+
+    return mutate
+
+
+def _x7_outer_algorithm_params_octets(certificate: _DerNode) -> None:
+    algorithm = certificate.children[1]
+    if algorithm.tag != 0x30 or len(algorithm.children) != 2 or algorithm.children[1].tag != 0x05:
+        raise SystemExit("unexpected certificate signatureAlgorithm encoding")
+    algorithm.children[1] = _w3_node(0x04, content=b"")
+
+
+def _x7_version_74(certificate: _DerNode) -> None:
+    version = certificate.children[0].children[0].children[0]
+    if version.tag != 0x02 or version.content != b"\x02":
+        raise SystemExit("unexpected certificate version encoding")
+    version.content = b"\x4a"
+
+
+def _x7_extension_value_long_form(certificate: _DerNode) -> None:
+    tbs = certificate.children[0]
+    extensions = next(child for child in tbs.children if child.tag == 0xA3).children[0]
+    value = extensions.children[0].children[-1]
+    inner = _der_tree(value.content)
+    inner.force_long = True
+    value.content = _der_encode(inner)
+
+
+for _name, _edit, _why in (
+    ("l2-ts-signer-sha256-rsa-params-absent", _x6_algorithm("signature", _X6_SHA256_RSA, _X6_ABSENT),
+     "signerInfo.signatureAlgorithm is {sha256WithRSAEncryption} with the parameters absent; "
+     "RFC 4055 §5 and RFC 5754 §3.2 require accepting the absent form as well as NULL "
+     "(X7/M1 corrects the X6 table)"),
+    ("l2-ts-non-signer-certificate-params-octet-string", _x7_non_signer(_x7_outer_algorithm_params_octets),
+     "a second, non-signer certificate writes its outer signatureAlgorithm parameters as 04 00 "
+     "(an empty OCTET STRING). Since X7/M3 every component of SignedData.certificates other "
+     "than the signer certificate is an open type, judged by its TLV framing only and never "
+     "handed to a certificate decoder"),
+    ("l2-ts-non-signer-certificate-undecodable", _x7_non_signer(_x7_version_74),
+     "a second, non-signer certificate has TBSCertificate version 74; it is an open type "
+     "(X7/M3), so only its framing is judged"),
+    ("l2-ts-non-signer-extension-value-nonminimal", _x7_non_signer(_x7_extension_value_long_form),
+     "a second, non-signer certificate's basicConstraints extnValue uses a long-form length; "
+     "1e reads the signer certificate's extension values only (X7/M3), and the OCTET STRING "
+     "content of an open type is not decoded"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "valid",
+        build=lambda case_dir, _edit=_edit: _crafted_l2_files(
+            case_dir, tsr_factory=lambda imprint: _x1_resigned(_edit)(_crafted_tsr(imprint))
+        ),
+        expected_container={
+            "level_claimed": "L2",
+            "level_verified": "L0",
+            "anchor_verified": True,
+            "timestamps": [
+                {
+                    "index": 0,
+                    "path": "signatures/timestamp-1.tsr",
+                    "state": "verified",
+                    "gen_time": "2026-11-01T00:00:00.000Z",
+                }
+            ],
+        },
+        notes="S1-FIX5 X7/§12.2 check 1 (decision 2026-11-12 #3): "
+        + _why
+        + ". The receipt is fully re-signed with the test TSA key, so the CMS signature "
+        "verifies and the container is valid.",
+        **_X1_VALID_EXPECTED,
+    )
+
+for _name, _edit, _why in (
+    ("l2-ts-der-unsigned-attr-utctime-trailing-newline",
+     _x1_unsigned_value(b"\x17", b"260101000000Z\n"),
+     "an unregistered unsigned attribute carries the UTCTime 260101000000Z followed by a line "
+     "feed (17 0e .. 5a 0a); 1a requires exactly YYMMDDHHMMSSZ, matched against the whole "
+     "content (X7/H1)"),
+    ("l2-ts-der-unsigned-attr-gentime-trailing-newline",
+     _x1_unsigned_value(b"\x18", b"20260101000000Z\n"),
+     "an unregistered unsigned attribute carries the GeneralizedTime 20260101000000Z followed "
+     "by a line feed; 1a matches the DER form against the whole content (X7/H1)"),
+    ("l2-ts-der-gentime-trailing-newline", _x1_gen_time(b"20261101000000Z\n"),
+     "the TSTInfo genTime is 20261101000000Z followed by a line feed; 1a and 1c match the DER "
+     "form against the whole content (X7/H1)"),
+    ("l2-ts-signer-sha256-rsa-params-other", _x6_algorithm("signature", _X6_SHA256_RSA, _X6_OTHER),
+     "signerInfo.signatureAlgorithm is {sha256WithRSAEncryption} with an empty OCTET STRING as "
+     "parameters; they must be absent or NULL (RFC 4055 §5, RFC 5754 §3.2)"),
+    ("l2-ts-signer-info-count-two", _x7_second_signer_info,
+     "SignedData.signerInfos carries a second SignerInfo (a copy with another signature value, "
+     "outside every signature) in DER order; RFC 3161 §2.4.2 allows no signature other than "
+     "the TSA's, so check 1d requires exactly one SignerInfo (X7/M2)"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        build=lambda case_dir, _edit=_edit: _crafted_l2_files(
+            case_dir, tsr_factory=lambda imprint: _x1_resigned(_edit)(_crafted_tsr(imprint))
+        ),
+        notes="S1-FIX5 X7/§12.2 check 1 (decision 2026-11-12 #3): "
+        + _why
+        + ". The receipt is otherwise fully re-signed with the test TSA key, so the only "
+        "defect is that check-1 rule: invalid with E_TS_SCHEMA and gen_time null.",
         **_W3_SCHEMA_EXPECTED,
     )
 

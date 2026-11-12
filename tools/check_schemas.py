@@ -412,23 +412,23 @@ def _signature_geometry_problems(entries: list[Any], what: str) -> list[str]:
         ):
             continue
         if alg == "ed25519":
-            if not ED25519_KEY_RE.match(key):
+            if not ED25519_KEY_RE.fullmatch(key):
                 problems.append(
                     f"{what}[{index}].key is not an ed25519 key id although "
                     "alg is ed25519"
                 )
-            if not ED25519_VALUE_RE.match(value):
+            if not ED25519_VALUE_RE.fullmatch(value):
                 problems.append(
                     f"{what}[{index}].value is not a strict 64-byte unpadded "
                     "base64url value although alg is ed25519"
                 )
         else:
-            if not GENERIC_KEY_RE.match(key):
+            if not GENERIC_KEY_RE.fullmatch(key):
                 problems.append(
                     f"{what}[{index}].key does not match the generic key id "
                     f"shape (algorithm token + 1-128 lowercase hex) for alg {alg!r}"
                 )
-            if not any(rx.match(value) for rx in GENERIC_VALUE_RES):
+            if not any(rx.fullmatch(value) for rx in GENERIC_VALUE_RES):
                 problems.append(
                     f"{what}[{index}].value is not strict unpadded base64url of "
                     f"1-2048 bytes for alg {alg!r}"
@@ -875,7 +875,7 @@ def kind_body_supplement(document: Any) -> list[str]:
         _unique_problems(keys, "weave.grant.grant.revocation", "key")
     )
     for index, key in enumerate(keys):
-        if not ED25519_KEY_RE.match(key):
+        if not ED25519_KEY_RE.fullmatch(key):
             problems.append(
                 f"weave.grant.grant.revocation[{index}] is not an ed25519 key id"
             )
@@ -1063,7 +1063,7 @@ class VectorChecks:
             duplicates: list[str] = []
             seen: set[str] = set()
             for value in values:
-                if not isinstance(value, str) or not CODE_RE.match(value):
+                if not isinstance(value, str) or not CODE_RE.fullmatch(value):
                     problems.append(
                         f"expected.json {field!r} contains an invalid code {value!r}"
                     )
@@ -1104,7 +1104,7 @@ class VectorChecks:
         expected_digest = expected.get("expected_digest")
         if expected_digest is not None and (
             not isinstance(expected_digest, str)
-            or not DIGEST_RE.match(expected_digest)
+            or not DIGEST_RE.fullmatch(expected_digest)
         ):
             problems.append(
                 "expected.json member 'expected_digest' must be a sha256:<64 hex> string"
@@ -1144,7 +1144,7 @@ class VectorChecks:
                     expected_input["sha256"] is None
                     or (
                         isinstance(expected_input["sha256"], str)
-                        and DIGEST_RE.match(expected_input["sha256"])
+                        and DIGEST_RE.fullmatch(expected_input["sha256"])
                     )
                 ):
                     problems.append(
@@ -1182,7 +1182,7 @@ class VectorChecks:
         notices_absent = expected.get("notices_absent")
         if notices_absent is not None:
             if not isinstance(notices_absent, list) or not all(
-                isinstance(code, str) and CODE_RE.match(code) and code.startswith("N_")
+                isinstance(code, str) and CODE_RE.fullmatch(code) and code.startswith("N_")
                 for code in notices_absent
             ):
                 problems.append(
@@ -1231,7 +1231,7 @@ class VectorChecks:
                     if record_errors is not None and (
                         not isinstance(record_errors, list)
                         or not all(
-                            isinstance(code, str) and CODE_RE.match(code)
+                            isinstance(code, str) and CODE_RE.fullmatch(code)
                             for code in record_errors
                         )
                     ):
