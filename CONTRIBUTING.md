@@ -45,9 +45,9 @@ python -m pip install reuse==5.0.2
 ```
 
 Dependency versions are pinned in `verifiers/python/constraints.txt`; only the
-versions pinned there and in `pyproject.toml` are guaranteed. The local build
-environment was Python 3.14; Python 3.11 and 3.12 have not been exercised
-locally.
+versions pinned there and in `pyproject.toml` are guaranteed. The S1 rounds ran
+the gates locally on Python 3.12 (the CI version) and on Python 3.14 with
+identical results; Python 3.11 has not been exercised.
 
 Then run the repository gates from the repository root:
 

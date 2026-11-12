@@ -46,7 +46,7 @@ Read this before using anything in this repository:
 - **Revised after review.** This snapshot includes H0 revision 1 (decision
   2026-11-10 #34), revision 2 (decision 2026-11-10 #42) and revision 3 (decision
   2026-11-11 #2) with its five follow-up rounds S1-FIX1 to S1-FIX5 (decisions
-  2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1). Independent reviews found wire-semantics
+  2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1, #2 and #3). Independent reviews found wire-semantics
   defects, and the revisions changed the format rules, the error-code registry,
   the trust-root model, the resource limits, the verifier and the vectors.
   Revision 3 reacts to the review of the second (Rust) implementation, which

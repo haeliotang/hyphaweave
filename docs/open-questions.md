@@ -726,7 +726,8 @@ S1-FIX3 (`decision 2026-11-11 #14`) principle decisions V3, V2 and V7/L5, and en
 24–29 record the S1-FIX4 (`decision 2026-11-11 #16`) principle decisions W1, W5, W6,
 W10/L5, W10/L6 and W3. The S1-FIX5 round (`decision 2026-11-12 #1`) rewrote entries 24,
 26 and 29 and added entries 30–31 (principle decisions X1 and X3) and 32–33 (two
-questions left open for a later round).
+questions left open for a later round); decisions 2026-11-12 #2 and #3 (X6, X7)
+amended entry 30 and added entry 34.
 
 1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
    the old §14.5 applies to the whole container, so one code. Reading B: the one-error
@@ -992,9 +993,20 @@ round (T11); they carry the status
     `signatureAlgorithm` were judged by their framing only, so a receipt whose
     `rsaEncryption` parameters were not `NULL` would have been accepted. The more
     conservative reading was taken: those parameters now have the form fixed per
-    algorithm (SHA-2 absent or `NULL`, RFC 5754 §2; RSA PKCS#1 v1.5 `NULL`, RFC 3370
-    §3.2 / RFC 4055 / RFC 8017; ECDSA absent, RFC 5758 §3.2), listed in §12.2 1c; any
-    other form is `E_TS_SCHEMA`. No byte-flip exemption is needed for them.
+    algorithm (SHA-2 absent or `NULL`, RFC 5754 §2; `rsaEncryption` `NULL`, RFC 3370
+    §3.2; ECDSA absent, RFC 5758 §3.2), listed in §12.2 1c; any other form is
+    `E_TS_SCHEMA`. No byte-flip exemption is needed for them. *Corrected (Inceptless
+    decision 2026-11-12 #3; X7/M1):* X6 first required `NULL` for sha*WithRSAEncryption
+    as well, contrary to RFC 4055 §5 and RFC 5754 §3.2 ("MUST accept the parameters being
+    absent as well as present"); those rows are now "absent or `NULL`".
+34. **Known open type: `SignedData.digestAlgorithms` parameters (recheck5 L1).** The
+    parameters of the algorithm identifiers in `SignedData.digestAlgorithms` are outside
+    the signature and read by no check; under X1 they are an open type, judged by their
+    framing only, and the byte-flip gate exempts them (`tsr-digest-algorithms`). The
+    reason given for X6 (outside the signature, changeable by anyone) applies to them as
+    well, but they are deliberately **not** fixed: no check reads them, so two
+    implementations following the specification cannot disagree on a verdict. Recorded as
+    a known open type (Inceptless decision 2026-11-12 #3).
 31. **Symbolic links among operator paths (X3).** The ruling says the kind of each
     operator path is established with `lstat` before opening. Readings: reject every
     symbolic link (`lstat` alone), or resolve a link and judge its target the same way.
