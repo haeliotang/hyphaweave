@@ -137,13 +137,18 @@ def _tlv(tag_class: int, constructed: bool, number: int, content: bytes) -> byte
 
 
 class WalkContext:
-    """Facts the walk hands to the later sub-steps (check 1e)."""
+    """Facts the walk hands to the later sub-steps (checks 1d and 1e)."""
 
-    __slots__ = ("certificate_extension_values",)
+    __slots__ = ("certificate_extension_values", "certificates", "signer_identifiers")
 
     def __init__(self) -> None:
-        #: The ``extnValue`` contents of every carried certificate's extensions.
+        #: The ``extnValue`` contents of the extensions of the certificate walked
+        #: with :data:`CERTIFICATE` (1e: the signer certificate only).
         self.certificate_extension_values: list[bytes] = []
+        #: Every component of ``SignedData.certificates``, as its raw TLV.
+        self.certificates: list[bytes] = []
+        #: The raw ``sid`` TLV of every ``SignerInfo``, in input order.
+        self.signer_identifiers: list[bytes] = []
 
 
 # ---------------------------------------------------------------------------
@@ -266,11 +271,11 @@ class _Primitive(_Type):
             return _canonical_bit_string(raw, named_bits=True)
         if kind == "generalized-time":
             # X.690 §11.7 checked on the raw content; never a time-object round trip.
-            if not _GENERALIZED_TIME_DER.match(raw):
+            if not _GENERALIZED_TIME_DER.fullmatch(raw):
                 raise DerViolation("GeneralizedTime is not in its DER form")
             return raw
         if kind == "utc-time":
-            if not _UTC_TIME_DER.match(raw):
+            if not _UTC_TIME_DER.fullmatch(raw):
                 raise DerViolation("UTCTime is not in its DER form")
             return raw
         # OCTET STRING and the character string types: content as decoded.
@@ -331,6 +336,20 @@ class _Opaque(_Type):
 
     def content(self, data: bytes, start: int, end: int, context: WalkContext) -> bytes:
         return data[start:end]
+
+
+class _Collected(_Any):
+    """An open type whose raw TLV is also recorded in the walk context."""
+
+    def __init__(self, slot: str) -> None:
+        self.slot = slot
+
+    def decode(
+        self, data: bytes, position: int, end: int, context: WalkContext
+    ) -> tuple[bytes, int]:
+        encoded, content_end = super().decode(data, position, end, context)
+        getattr(context, self.slot).append(encoded)
+        return encoded, content_end
 
 
 class _Choice(_Type):
@@ -489,9 +508,10 @@ ALGORITHM_IDENTIFIER = _Sequence(
 )
 #: X6 (decision 2026-11-12 #2): the permitted form of the ``parameters`` of the
 #: signer's ``digestAlgorithm`` and ``signatureAlgorithm``, by algorithm.
-#: "absent-or-null": RFC 5754 §2 (SHA-2: implementations accept both);
-#: "null": RFC 3370 §3.2, RFC 4055 §5, RFC 8017 App. A.2.4 (RSA PKCS#1 v1.5);
-#: "absent": RFC 5758 §3.2 (ECDSA). An algorithm not listed keeps the open-type
+#: "absent-or-null": RFC 5754 §2 (SHA-2 digests) and RFC 4055 §5 / RFC 5754
+#: §3.2 (sha*WithRSAEncryption: "MUST accept the parameters being absent as
+#: well as present"); "null": RFC 3370 §3.2 (rsaEncryption); "absent": RFC 5758
+#: §3.2 (ECDSA). X7/M1 (decision 2026-11-12 #3) corrected the sha*WithRSA rows. An algorithm not listed keeps the open-type
 #: rule (framing only); checks 5 and 6 reject it afterwards.
 SIGNER_DIGEST_PARAMETERS: dict[bytes, str] = {
     _oid_content("2.16.840.1.101.3.4.2.4"): "absent-or-null",  # sha224
@@ -501,10 +521,10 @@ SIGNER_DIGEST_PARAMETERS: dict[bytes, str] = {
 }
 SIGNER_SIGNATURE_PARAMETERS: dict[bytes, str] = {
     _oid_content("1.2.840.113549.1.1.1"): "null",  # rsaEncryption
-    _oid_content("1.2.840.113549.1.1.14"): "null",  # sha224WithRSAEncryption
-    _oid_content("1.2.840.113549.1.1.11"): "null",  # sha256WithRSAEncryption
-    _oid_content("1.2.840.113549.1.1.12"): "null",  # sha384WithRSAEncryption
-    _oid_content("1.2.840.113549.1.1.13"): "null",  # sha512WithRSAEncryption
+    _oid_content("1.2.840.113549.1.1.14"): "absent-or-null",  # sha224WithRSAEncryption
+    _oid_content("1.2.840.113549.1.1.11"): "absent-or-null",  # sha256WithRSAEncryption
+    _oid_content("1.2.840.113549.1.1.12"): "absent-or-null",  # sha384WithRSAEncryption
+    _oid_content("1.2.840.113549.1.1.13"): "absent-or-null",  # sha512WithRSAEncryption
     _oid_content("1.2.840.10045.4.3.1"): "absent",  # ecdsa-with-SHA224
     _oid_content("1.2.840.10045.4.3.2"): "absent",  # ecdsa-with-SHA256
     _oid_content("1.2.840.10045.4.3.3"): "absent",  # ecdsa-with-SHA384
@@ -529,9 +549,9 @@ class _SignerAlgorithm(_Sequence):
         rule = self.rules.get(encoded[oid_start:oid_end])
         parameters = encoded[oid_end:]
         if rule == "absent-or-null" and parameters not in (b"", _NULL_ENCODING):
-            raise DerViolation("digest algorithm parameters are neither absent nor NULL")
+            raise DerViolation("algorithm parameters are neither absent nor NULL")
         if rule == "null" and parameters != _NULL_ENCODING:
-            raise DerViolation("RSA algorithm parameters are not NULL")
+            raise DerViolation("rsaEncryption parameters are not NULL")
         if rule == "absent" and parameters:
             raise DerViolation("ECDSA algorithm parameters are not absent")
         return encoded
@@ -610,19 +630,6 @@ _CERTIFICATE_LIST = _Sequence(
     _Field("signatureValue", BIT_STRING),
 )
 
-# RFC 5652 CertificateChoices: only `certificate` is decoded; the obsolete
-# extendedCertificate and the attribute-certificate alternatives are open.
-_CERTIFICATE_CHOICES = _Choice(
-    CERTIFICATE,
-    _Opaque(_CONTEXT, 0, True),  # extendedCertificate
-    _Opaque(_CONTEXT, 1, True),  # v1AttrCert
-    _Opaque(_CONTEXT, 2, True),  # v2AttrCert
-    _Implicit(  # other OtherCertificateFormat
-        _CONTEXT,
-        3,
-        _Sequence(_Field("otherCertFormat", OBJECT_IDENTIFIER), _Field("otherCert", ANY)),
-    ),
-)
 _REVOCATION_INFO_CHOICE = _Choice(
     _CERTIFICATE_LIST,
     _Implicit(  # other OtherRevocationInfoFormat
@@ -711,11 +718,22 @@ _ATTRIBUTE = _Sequence(
     _Field("attrValues", None, selector=_attribute_values),
 )
 
+class _SignerIdentifier(_Choice):
+    """``SignerIdentifier``; the raw TLV is recorded for locating the signer (1e)."""
+
+    def decode(
+        self, data: bytes, position: int, end: int, context: WalkContext
+    ) -> tuple[bytes, int]:
+        encoded, content_end = super().decode(data, position, end, context)
+        context.signer_identifiers.append(data[position:content_end])
+        return encoded, content_end
+
+
 _SIGNER_INFO = _Sequence(
     _Field("version", INTEGER),
     _Field(
         "sid",
-        _Choice(
+        _SignerIdentifier(
             _Sequence(_Field("issuer", _NAME), _Field("serialNumber", INTEGER)),
             _Implicit(_CONTEXT, 0, OCTET_STRING),  # subjectKeyIdentifier
         ),
@@ -736,7 +754,9 @@ _SIGNED_DATA = _Sequence(
             _Field("eContent", _Explicit(_CONTEXT, 0, OCTET_STRING), optional=True),
         ),
     ),
-    _Field("certificates", _Implicit(_CONTEXT, 0, _set_of(_CERTIFICATE_CHOICES)), optional=True),
+    # X7/M3: every CertificateChoices component is an open type here; only the
+    # signer certificate is decoded, by 1e (:func:`signer_certificate`).
+    _Field("certificates", _Implicit(_CONTEXT, 0, _set_of(_Collected("certificates"))), optional=True),
     _Field("crls", _Implicit(_CONTEXT, 1, _set_of(_REVOCATION_INFO_CHOICE)), optional=True),
     _Field("signerInfos", _set_of(_SIGNER_INFO)),
 )
@@ -803,3 +823,88 @@ def reencode(schema: _Type, data: bytes) -> tuple[bytes, WalkContext]:
     if position != len(data):
         raise DerViolation("data after the top-level value")
     return encoded, context
+
+
+# ---------------------------------------------------------------------------
+# 1e: locating the signer certificate among the open certificate components
+# ---------------------------------------------------------------------------
+
+_ID_SUBJECT_KEY_IDENTIFIER = _oid_content("2.5.29.14")
+
+
+def _children(data: bytes, start: int, end: int) -> list[tuple[int, int, int, int, int]]:
+    """``(class, number, tlv_start, content_start, content_end)`` of each child TLV."""
+    out = []
+    position = start
+    while position < end:
+        tag_class, _constructed, number, content_start, content_end = _read_header(
+            data, position, end
+        )
+        out.append((tag_class, number, position, content_start, content_end))
+        position = content_end
+    return out
+
+
+def _certificate_identity(certificate: bytes) -> tuple[bytes, bytes, bytes | None]:
+    """``(issuer TLV, serial content, subjectKeyIdentifier or None)`` of a certificate.
+
+    Read by position from the raw TLVs (RFC 5280 TBSCertificate); raises
+    :class:`DerViolation` when the component does not have that shape.
+    """
+    outer = _children(certificate, 0, len(certificate))
+    if len(outer) != 1 or (outer[0][0], outer[0][1]) != (_UNIVERSAL, 16):
+        raise DerViolation("not a certificate")
+    certificate_fields = _children(certificate, outer[0][3], outer[0][4])
+    if not certificate_fields:
+        raise DerViolation("not a certificate")
+    tbs = _children(certificate, certificate_fields[0][3], certificate_fields[0][4])
+    if tbs and (tbs[0][0], tbs[0][1]) == (_CONTEXT, 0):
+        tbs = tbs[1:]  # version
+    if len(tbs) < 6:
+        raise DerViolation("not a certificate")
+    serial = certificate[tbs[0][3] : tbs[0][4]]
+    issuer = certificate[tbs[2][2] : tbs[2][4]]
+    key_identifier = None
+    for tag_class, number, _start, content_start, content_end in tbs[6:]:
+        if (tag_class, number) != (_CONTEXT, 3):
+            continue
+        for extensions in _children(certificate, content_start, content_end)[:1]:
+            for extension in _children(certificate, extensions[3], extensions[4]):
+                parts = _children(certificate, extension[3], extension[4])
+                if parts and certificate[parts[0][3] : parts[0][4]] == _ID_SUBJECT_KEY_IDENTIFIER:
+                    value = certificate[parts[-1][3] : parts[-1][4]]
+                    inner = _children(value, 0, len(value))
+                    if len(inner) == 1 and (inner[0][0], inner[0][1]) == (_UNIVERSAL, 4):
+                        key_identifier = value[inner[0][3] : inner[0][4]]
+    return issuer, serial, key_identifier
+
+
+def signer_certificate(context: WalkContext) -> bytes | None:
+    """1e: the carried certificate that the (single) SignerInfo's ``sid`` names.
+
+    ``issuerAndSerialNumber`` matches the certificate whose issuer TLV and serial
+    number content octets are equal; ``[0] subjectKeyIdentifier`` matches the
+    certificate whose subjectKeyIdentifier extension carries the same octets.
+    The first matching component wins; a component that does not have the
+    shape of a certificate is skipped (it is an open type, X7/M3).
+    """
+    if not context.signer_identifiers:
+        return None
+    sid = context.signer_identifiers[0]
+    sid_class, _constructed, sid_number, sid_start, sid_end = _read_header(sid, 0, len(sid))
+    by_key_identifier = (sid_class, sid_number) == (_CONTEXT, 0)
+    if not by_key_identifier:
+        parts = _children(sid, sid_start, sid_end)
+        wanted_issuer = sid[parts[0][2] : parts[0][4]]
+        wanted_serial = sid[parts[1][3] : parts[1][4]]
+    for certificate in context.certificates:
+        try:
+            issuer, serial, key_identifier = _certificate_identity(certificate)
+        except (DerViolation, IndexError):
+            continue
+        if by_key_identifier:
+            if key_identifier is not None and key_identifier == sid[sid_start:sid_end]:
+                return certificate
+        elif issuer == wanted_issuer and serial == wanted_serial:
+            return certificate
+    return None

@@ -137,22 +137,22 @@ def _stream_sha256(handle, limit: int | None = None) -> tuple[str, int, bool]:
 
 def _file_class_limit(relative_path: str) -> int | None:
     """§13 class limit for a container path, or ``None`` when it has no class."""
-    if _RECORDS_FILE.match(relative_path) or relative_path.startswith("records/"):
+    if _RECORDS_FILE.fullmatch(relative_path) or relative_path.startswith("records/"):
         return verifier.MAX_RECORD_BYTES
     if relative_path in ("manifest.json", "previous/manifest.json"):
         return manifest_module.MAX_MANIFEST_BYTES
     if relative_path == "signatures/manifest.sig.json":
         return manifest_module.MAX_SIGFILE_BYTES
-    if _TIMESTAMP_FILE.match(relative_path):
+    if _TIMESTAMP_FILE.fullmatch(relative_path):
         return timestamps_module.MAX_TIMESTAMP_BYTES
-    if _BLOBS_FILE.match(relative_path):
+    if _BLOBS_FILE.fullmatch(relative_path):
         return MAX_BLOB_BYTES
     return None
 
 
 def _class_size_code(relative_path: str) -> str:
     """The §13 violation code for a file that exceeds its class limit (T16)."""
-    if _BLOBS_FILE.match(relative_path):
+    if _BLOBS_FILE.fullmatch(relative_path):
         return "E_MANIFEST_BLOB"
     return "E_JSON_SIZE"
 
@@ -278,7 +278,7 @@ def _read_directory_container(path: Path) -> ContainerInput:
                 # never counted (T15: the total counts streamed bytes only).
                 readable_present = True
                 continue
-            if _TSA_CERT_FILE.match(relative_path):
+            if _TSA_CERT_FILE.fullmatch(relative_path):
                 # Transport-only file that is never trusted on its own (§12.3):
                 # only its presence matters, and it is not counted (T15).
                 files[relative_path] = b""
@@ -290,7 +290,7 @@ def _read_directory_container(path: Path) -> ContainerInput:
                 continue
             try:
                 with file_path.open("rb") as handle:
-                    if _BLOBS_FILE.match(relative_path):
+                    if _BLOBS_FILE.fullmatch(relative_path):
                         digest_hex, size, truncated = _stream_sha256(
                             handle, min(limit, MAX_BLOB_BYTES)
                         )
@@ -320,7 +320,7 @@ def _read_directory_container(path: Path) -> ContainerInput:
         if error == "E_CONTAINER_SIZE":
             break
     oversized_timestamps = frozenset(
-        path for path, code in oversized.items() if _TIMESTAMP_FILE.match(path)
+        path for path, code in oversized.items() if _TIMESTAMP_FILE.fullmatch(path)
     )
     return ContainerInput(
         files=files,
@@ -390,7 +390,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
                     # checks above, but are never decompressed or CRC-checked.
                     readable_present = True
                     continue
-                if _TSA_CERT_FILE.match(name):
+                if _TSA_CERT_FILE.fullmatch(name):
                     files[name] = b""
                     continue
                 limit = _file_class_limit(name)
@@ -400,7 +400,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
                 if entry.uncompressed_size > limit:
                     oversized[name] = _class_size_code(name)
                     continue
-                if _BLOBS_FILE.match(name):
+                if _BLOBS_FILE.fullmatch(name):
                     digest_hex, size = zipread.digest_entry(handle, entry)
                     blobs[name] = (digest_hex, size)
                     actual_total += size
@@ -441,7 +441,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
             input_sha256=input_sha, input_size=archive_size, is_zip=True,
         )
     oversized_timestamps = frozenset(
-        entry_name for entry_name in oversized if _TIMESTAMP_FILE.match(entry_name)
+        entry_name for entry_name in oversized if _TIMESTAMP_FILE.fullmatch(entry_name)
     )
     return ContainerInput(
         files=files,
@@ -487,9 +487,9 @@ def _validate_layout(container: ContainerInput) -> None:
             continue
         if relative_path == "signatures/manifest.sig.json":
             continue
-        if _TIMESTAMP_FILE.match(relative_path):
+        if _TIMESTAMP_FILE.fullmatch(relative_path):
             continue
-        if _TSA_CERT_FILE.match(relative_path):
+        if _TSA_CERT_FILE.fullmatch(relative_path):
             continue
         if relative_path == "previous/manifest.json":
             continue
@@ -805,7 +805,7 @@ def verify_container(
         oversized=frozenset(
             path
             for path in container_input.oversized
-            if _TIMESTAMP_FILE.match(path)
+            if _TIMESTAMP_FILE.fullmatch(path)
         ),
     )
     # Rescue evidence keeps every verified receipt together with its
@@ -1302,7 +1302,7 @@ def _load_container_records(container_input: ContainerInput) -> _RecordListing:
     for relative_path in sorted(container_input.files):
         if not relative_path.startswith("records/"):
             continue
-        if not _RECORDS_FILE.match(relative_path):
+        if not _RECORDS_FILE.fullmatch(relative_path):
             continue
         raw = container_input.files[relative_path]
         try:
@@ -1337,7 +1337,7 @@ def _check_records_listing(
             errors.add("E_MANIFEST_RECORD_EXTRA")
             continue
         record = listing.by_path[relative_path]
-        match = _RECORDS_FILE.match(relative_path)
+        match = _RECORDS_FILE.fullmatch(relative_path)
         if match is None:  # pragma: no cover - filtered by _load_container_records
             errors.add("E_MANIFEST_RECORD_EXTRA")
             continue

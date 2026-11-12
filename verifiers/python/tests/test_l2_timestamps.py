@@ -76,7 +76,7 @@ def test_committed_tsr_verifies_with_anchor() -> None:
     assert result.state == timestamps.STATE_VERIFIED
     assert result.error is None
     assert result.gen_time is not None
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", result.gen_time)
+    assert re.fullmatch(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", result.gen_time)
     assert result.gen_time_ms is not None and isinstance(result.gen_time_ms, int)
     assert result.to_report(0)["path"] == "signatures/timestamp-1.tsr"
 

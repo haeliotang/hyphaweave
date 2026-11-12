@@ -63,12 +63,12 @@ def is_algorithm_name(value: object) -> bool:
         return False
     if len(value.encode("utf-8")) > ALGORITHM_MAX_BYTES:
         return False
-    return ALGORITHM_PATTERN.match(value) is not None
+    return ALGORITHM_PATTERN.fullmatch(value) is not None
 
 
 def is_generic_key_id(value: object) -> bool:
     """The ``<alg>:<lowercase hex>`` key-id shape for non-ed25519 algorithms."""
-    return isinstance(value, str) and GENERIC_KEY_ID_PATTERN.match(value) is not None
+    return isinstance(value, str) and GENERIC_KEY_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_valid_project_slug(value: object) -> bool:
@@ -77,7 +77,7 @@ def is_valid_project_slug(value: object) -> bool:
         return False
     if len(value.encode("utf-8")) > MAX_ORIGIN_PROJECT_BYTES:
         return False
-    return PROJECT_SLUG_PATTERN.match(value) is not None
+    return PROJECT_SLUG_PATTERN.fullmatch(value) is not None
 
 
 def has_control_characters(value: str) -> bool:
@@ -106,7 +106,7 @@ def is_valid_model(value: object) -> bool:
         return False
     if not 1 <= len(value.encode("utf-8")) <= 256:
         return False
-    return MODEL_PATTERN.match(value) is not None
+    return MODEL_PATTERN.fullmatch(value) is not None
 
 
 def is_valid_scope_string(value: object) -> bool:
@@ -125,7 +125,7 @@ def is_valid_hint(value: object) -> bool:
         return False
     if len(value.encode("utf-8")) > MAX_HINT_BYTES:
         return False
-    return HINT_PATTERN.match(value) is not None
+    return HINT_PATTERN.fullmatch(value) is not None
 
 
 # ---------------------------------------------------------------------------

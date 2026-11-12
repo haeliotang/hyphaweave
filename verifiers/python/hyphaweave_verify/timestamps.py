@@ -48,7 +48,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from asn1crypto import core as _asn1_core, tsp
+from asn1crypto import tsp
 from cryptography import x509 as cryptography_x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes
@@ -458,7 +458,7 @@ def _verify_timestamp_token_checks(
         return TimestampResult(
             path, listed_digest, state, gen_time, gen_time_ms, error.code, gen_time_us, accuracy_us
         )
-    signed_data, tst_info, raw_content = parsed
+    signed_data, tst_info, raw_content, located_signer_certificate = parsed
     try:
         # Checks 3-4: hash algorithm and message imprint.
         imprint = tst_info["message_imprint"]
@@ -474,7 +474,9 @@ def _verify_timestamp_token_checks(
         gen_time_us = _gen_time_to_us(gen_time_value)
         # T3(3)/§12.2 first failing check: CMS and certificate checks (5-12) run
         # before the accuracy checks (13).
-        signer_info, signer_certificate_der = _verify_cms(signed_data, raw_content, gen_time_value)
+        signer_info, signer_certificate_der = _verify_cms(
+            signed_data, raw_content, gen_time_value, located_signer_certificate
+        )
         fingerprint = hashlib.sha256(signer_certificate_der).digest()
         _check_signer_certificate(signer_certificate_der, gen_time_value)
         accuracy_value = _accuracy_to_us(tst_info)
@@ -562,6 +564,10 @@ def _parse_tst_info(tsr_bytes: bytes):
         raise WeaveError("E_TS_SCHEMA", "SignedData has no readable version") from error
     if signed_data_version != "v3":
         raise WeaveError("E_TS_SCHEMA", "SignedData version is not 3")
+    # X7/M2 (RFC 3161 §2.4.2: no signature other than the TSA's): exactly one
+    # SignerInfo. Counted on the 1b/1c walk, not by a parsing library.
+    if len(walk.signer_identifiers) != 1:
+        raise WeaveError("E_TS_SCHEMA", "SignedData does not carry exactly one signerInfo")
     for signer_info in signed_data["signer_infos"]:
         try:
             signer_info_version = signer_info["version"].native
@@ -569,21 +575,19 @@ def _parse_tst_info(tsr_bytes: bytes):
             raise WeaveError("E_TS_SCHEMA", "signerInfo has no readable version") from error
         if signer_info_version not in ("v1", "v3"):
             raise WeaveError("E_TS_SCHEMA", "signerInfo version is not 1 or 3")
-    # Check 1e: every carried certificate decodes (cryptography raises
-    # ValueError or InvalidVersion; both are caught by the receipt boundary
-    # *here*, before any later check).
-    certificates = signed_data["certificates"]
-    if not isinstance(certificates, _asn1_core.Void):
-        for certificate_choice in certificates:
-            if certificate_choice.name != "certificate":
-                continue
-            certificate = certificate_choice.chosen
-            _load_der_certificate(certificate.dump())
-    # An extension value is itself the DER encoding of the extension (RFC 5280
-    # §4.1): it is one TLV obeying the universal rules of 1a. The values were
-    # collected by the 1b/1c walk from every carried certificate.
-    for extension_value in walk.certificate_extension_values:
-        _validate_strict_der(extension_value)
+    # Check 1e (X7/M3): only the signer certificate is decoded. The other
+    # components of SignedData.certificates are open types (framing only, 1a).
+    # The signer certificate is located by its sid on the raw TLVs, walked with
+    # the RFC 5280 module definition (1b/1c rules), decoded as an X.509
+    # certificate, and its extension values obey the universal rules of 1a.
+    signer_certificate_der = der_schema.signer_certificate(walk)
+    if signer_certificate_der is not None:
+        certificate_walk = _require_der_reencoding(
+            der_schema.CERTIFICATE, signer_certificate_der, "signer certificate"
+        )
+        _load_der_certificate(signer_certificate_der)
+        for extension_value in certificate_walk.certificate_extension_values:
+            _validate_strict_der(extension_value)
     # Check 2.
     encap = signed_data["encap_content_info"]
     if encap["content_type"].native != "tst_info":
@@ -607,7 +611,7 @@ def _parse_tst_info(tsr_bytes: bytes):
         raise WeaveError("E_TS_SCHEMA", "TSTInfo has no readable version") from error
     if version != "v1":
         raise WeaveError("E_TS_SCHEMA", "unsupported TSTInfo version")
-    return signed_data, tst_info, raw_content
+    return signed_data, tst_info, raw_content, signer_certificate_der
 
 
 def _load_der_certificate(der: bytes):
@@ -782,7 +786,7 @@ def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
         elif tag_number in (23, 24):
             text = data[position:content_end].decode("ascii", "replace")
             pattern = _DER_UTC_TIME if tag_number == 23 else _DER_GENERALIZED_TIME
-            if not pattern.match(text):
+            if not pattern.fullmatch(text):
                 raise _DerViolation("time value is not canonical DER")
         elif tag_number == 12:
             try:
@@ -837,7 +841,9 @@ def _check_der_oid(data: bytes, start: int, end: int) -> None:
         position += 1
 
 
-def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
+def _verify_cms(
+    signed_data, raw_content: bytes, gen_time_value, signer_certificate_der: bytes | None
+):
     """Checks 5-10: CMS signature, ESS v2, messageDigest."""
     signer_infos = signed_data["signer_infos"]
     if len(signer_infos) < 1:
@@ -858,7 +864,8 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     # SET OF with the universal SET tag (RFC 5652 §5.4).
     signed_attrs_der = signed_attrs.untag().dump()
     # Check 7: the signer certificate must be carried inside the token.
-    signer_certificate_der = _find_signer_certificate(signed_data, signer_info)
+    if signer_certificate_der is None:
+        raise WeaveError("E_TS_CMS", "signer certificate not found in the token")
     certificate = _load_der_certificate(signer_certificate_der)
 
     message_digest = hashlib.sha256(raw_content).digest()
@@ -914,33 +921,6 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
         # ValueError/TypeError for malformed key material.
         raise WeaveError("E_TS_CMS", "CMS signature does not verify") from error
     return signer_info, signer_certificate_der
-
-
-def _find_signer_certificate(signed_data, signer_info) -> bytes:
-    certificates = signed_data["certificates"]
-    if certificates.native is None or len(certificates) == 0:
-        raise WeaveError("E_TS_CMS", "timestamp token carries no signer certificate")
-    sid = signer_info["sid"]
-    chosen = sid.chosen
-    for index in range(len(certificates)):
-        certificate_choice = certificates[index]
-        if certificate_choice.name != "certificate":
-            continue
-        certificate = certificate_choice.chosen
-        if sid.name == "issuer_and_serial_number":
-            if (
-                certificate.serial_number == chosen["serial_number"].native
-                and certificate.issuer.dump() == chosen["issuer"].dump()
-            ):
-                return certificate.dump()
-        elif sid.name == "subject_key_identifier":
-            try:
-                extension = certificate.key_identifier_value
-            except (ValueError, KeyError):
-                extension = None
-            if extension is not None and extension == chosen.native:
-                return certificate.dump()
-    raise WeaveError("E_TS_CMS", "signer certificate not found in the token")
 
 
 def _check_ess_signing_certificate_v2(values, signer_certificate_der: bytes) -> None:

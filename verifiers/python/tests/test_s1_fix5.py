@@ -251,3 +251,47 @@ def test_tsa_trust_at_the_read_bound_is_read(tmp_path) -> None:
     at_limit = tmp_path / "limit.pem"
     at_limit.write_bytes(pem + b"\n" * (timestamps.MAX_TIMESTAMP_BYTES - len(pem)))
     assert len(timestamps.load_trust_anchor_file(at_limit)) == timestamps.MAX_TIMESTAMP_BYTES
+
+
+# ---------------------------------------------------------------------------
+# X7/H1 (decision 2026-11-12 #3): whole-string patterns reject a trailing line feed
+# ---------------------------------------------------------------------------
+
+
+def test_time_forms_reject_a_trailing_line_feed() -> None:
+    for identifier, text in ((0x17, b"260101000000Z"), (0x18, b"20260101000000Z")):
+        timestamps._validate_strict_der(bytes([identifier, len(text)]) + text)
+        with pytest.raises(WeaveError):
+            timestamps._validate_strict_der(bytes([identifier, len(text) + 1]) + text + b"\n")
+        schema = der_schema.UTC_TIME if identifier == 0x17 else der_schema.GENERALIZED_TIME
+        with pytest.raises(der_schema.DerViolation):
+            der_schema.reencode(schema, bytes([identifier, len(text) + 1]) + text + b"\n")
+
+
+@pytest.mark.parametrize(
+    "check, good",
+    [
+        ("grammar.is_algorithm_name", "ed25519"),
+        ("grammar.is_generic_key_id", "x25519:00ff"),
+        ("grammar.is_valid_project_slug", "hyphaweave"),
+        ("grammar.is_valid_model", "vendor/model@1.0"),
+        ("grammar.is_valid_hint", "https://example.org/x"),
+        ("kinds.is_kind_syntax", "weave.note"),
+        ("times.is_valid_timestamp", "2026-11-01T00:00:00.000Z"),
+    ],
+)
+def test_whole_string_patterns_reject_a_trailing_line_feed(check, good) -> None:
+    import importlib
+
+    module_name, function_name = check.split(".")
+    function = getattr(importlib.import_module("hyphaweave_verify." + module_name), function_name)
+
+    def accepted(value: str) -> bool:
+        try:
+            result = function(value)
+        except (WeaveError, ValueError):
+            return False
+        return result is not False and result is not None
+
+    assert accepted(good)
+    assert not accepted(good + "\n")
