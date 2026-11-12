@@ -2,7 +2,10 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 
 <p align="center">
-  <img src="assets/hyphaweave-mono.svg" width="120" alt="Hyphaweave — Two threads, braided">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/hyphaweave-mono-inverse.svg">
+    <img src="assets/hyphaweave-mono.svg" width="120" alt="Hyphaweave — Two threads, braided">
+  </picture>
 </p>
 
 # Hyphaweave
