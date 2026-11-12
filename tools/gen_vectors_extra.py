@@ -11003,6 +11003,13 @@ def _x7_second_signer_info(tree: _DerNode) -> None:
     signer_infos.children = _w3_sorted(signer_infos.children + [copy], reverse=False)
 
 
+def _x7_signer_info_version_3(tree: _DerNode) -> None:
+    version = _w3_signer_info(tree).children[0]
+    if version.tag != 0x02 or version.content != b"\x01":
+        raise SystemExit("unexpected SignerInfo version encoding")
+    version.content = b"\x03"
+
+
 def _x7_non_signer(edit: Callable[[_DerNode], None]) -> Callable[[_DerNode], None]:
     """Add a second, non-signer certificate (the wrong-anchor test certificate), edited."""
 
@@ -11101,6 +11108,9 @@ for _name, _edit, _why in (
     ("l2-ts-signer-sha256-rsa-params-other", _x6_algorithm("signature", _X6_SHA256_RSA, _X6_OTHER),
      "signerInfo.signatureAlgorithm is {sha256WithRSAEncryption} with an empty OCTET STRING as "
      "parameters; they must be absent or NULL (RFC 4055 §5, RFC 5754 §3.2)"),
+    ("l2-ts-signer-info-version-3-with-issuer-serial", _x7_signer_info_version_3,
+     "SignerInfo.version is 3 while its sid is issuerAndSerialNumber; RFC 5652 §5.3 requires "
+     "version 1 for that sid form (X7, docs/open-questions.md §6 entry 35)"),
     ("l2-ts-signer-info-count-two", _x7_second_signer_info,
      "SignedData.signerInfos carries a second SignerInfo (a copy with another signature value, "
      "outside every signature) in DER order; RFC 3161 §2.4.2 allows no signature other than "
