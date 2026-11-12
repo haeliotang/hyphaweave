@@ -2471,7 +2471,9 @@ structure failure anywhere in the receipt is never reported under a later check'
   type is `id-signedData`; `SignedData.version` is 3; `SignedData.signerInfos` holds
   **exactly one** `SignerInfo` (RFC 3161 §2.4.2: the token carries no signature other than
   the TSA's), whose `version` is 1 or 3 [X7/M2] decided (Inceptless decision 2026-11-12 #3;
-  X7).
+  X7) and matches its `sid` as RFC 5652 §5.3 requires: 1 for `issuerAndSerialNumber`, 3
+  for `subjectKeyIdentifier` [X7; `docs/open-questions.md` §6 entry 35] decided by
+  principle (Inceptless decision 2026-11-12 #3; X7).
 - **1e — the signer certificate.** The signer certificate is the first component of
   `SignedData.certificates` that the `SignerInfo`'s `sid` names: for
   `issuerAndSerialNumber`, the component whose TBSCertificate `issuer` encoding and
