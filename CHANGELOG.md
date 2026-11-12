@@ -378,14 +378,15 @@ implementation on its own branch has not yet followed them (H1-FIX1).
 - **X7 (decision 2026-11-12 #3).** UTCTime/GeneralizedTime forms are matched
   against the whole content (a trailing line feed is `E_TS_SCHEMA`); every
   whole-string pattern of the verifier uses a full match; the token carries
-  exactly one `SignerInfo`; check 1e decodes the signer certificate only, every
+  exactly one `SignerInfo`, whose version matches its `sid` (RFC 5652 §5.3);
+  check 1e decodes the signer certificate only, every
   other carried certificate is an open type.
 
 **Current counts (S1-FIX5 hand-off).** Registry: 114 error codes, 14 notices, 11
 limitation identifiers (no code added in S1-FIX1–FIX5 except
-`L_PREVIOUS_CONTENT_UNVERIFIED` in S1-FIX3). Vectors: main corpus **497 cases**
+`L_PREVIOUS_CONTENT_UNVERIFIED` in S1-FIX3). Vectors: main corpus **498 cases**
 (revision 3 hand-off 343; +41 S1-FIX1, +19 S1-FIX2, +18 S1-FIX3, +47 S1-FIX4,
-+29 S1-FIX5); candidate regression set **202 cases**. No gate figures are recorded
++30 S1-FIX5); candidate regression set **202 cases**. No gate figures are recorded
 for the S1 rounds; the only recorded figures are those of the revision-1 snapshot
 under "Verifying this snapshot" below.
 

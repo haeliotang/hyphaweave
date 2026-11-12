@@ -1007,6 +1007,17 @@ round (T11); they carry the status
     well, but they are deliberately **not** fixed: no check reads them, so two
     implementations following the specification cannot disagree on a verdict. Recorded as
     a known open type (Inceptless decision 2026-11-12 #3).
+35. **`SignerInfo.version` must match its `sid` (X7, found by the byte-flip gate).** The
+    profile accepted version 1 or 3 with either `sid` form. After X7 the gate found that
+    flipping version 1 to 3 in a receipt whose `sid` is `issuerAndSerialNumber` left the
+    receipt valid: the field is outside the signature and read only as "1 or 3". Readings:
+    exempt that octet in the byte-flip gate, or apply RFC 5652 §5.3 ("If the
+    SignerIdentifier is issuerAndSerialNumber, then the version MUST be 1 … if
+    subjectKeyIdentifier, then the version MUST be 3"). **Chosen** the second, the more
+    conservative reading (the precedent of X6, decision 2026-11-12 #2, which preferred a
+    fixed form to a byte-flip exemption): a mismatch is `E_TS_SCHEMA` (check 1d). Marked
+    `decided by principle (Inceptless decision 2026-11-12 #3; X7)`; the coordinator may
+    reverse it.
 31. **Symbolic links among operator paths (X3).** The ruling says the kind of each
     operator path is established with `lstat` before opening. Readings: reject every
     symbolic link (`lstat` alone), or resolve a link and judge its target the same way.
