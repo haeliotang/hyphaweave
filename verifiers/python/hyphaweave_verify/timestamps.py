@@ -575,6 +575,11 @@ def _parse_tst_info(tsr_bytes: bytes):
             raise WeaveError("E_TS_SCHEMA", "signerInfo has no readable version") from error
         if signer_info_version not in ("v1", "v3"):
             raise WeaveError("E_TS_SCHEMA", "signerInfo version is not 1 or 3")
+        # RFC 5652 §5.3: version 1 with issuerAndSerialNumber, 3 with
+        # subjectKeyIdentifier (the sid's first identifier octet decides).
+        expected_version = "v1" if walk.signer_identifiers[0][0] == 0x30 else "v3"
+        if signer_info_version != expected_version:
+            raise WeaveError("E_TS_SCHEMA", "signerInfo version does not match its sid")
     # Check 1e (X7/M3): only the signer certificate is decoded. The other
     # components of SignedData.certificates are open types (framing only, 1a).
     # The signer certificate is located by its sid on the raw TLVs, walked with
