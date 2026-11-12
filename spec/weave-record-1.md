@@ -2357,7 +2357,7 @@ while re-encoding `signed_attrs` for signature verification — is reported as c
 
 | # | check | code on failure |
 |---|---|---|
-| 1 | The file is **exactly one** strict-DER-encoded RFC 3161 `TimeStampResp` with no trailing data, decoded completely before any later check (sub-steps 1a–1e below): the whole file decodes as one `TimeStampResp`, the encoding uses canonical minimal length forms (no BER indefinite form) and **re-encoding the parsed object yields the input bytes exactly** — every SET OF at every level in DER order, no DEFAULT value encoded. `PKIStatusInfo.status` is `0` (`granted`); `grantedWithMods` (1) and every other status are rejected. The token is CMS `SignedData`; `SignedData.version` is 3 and **every** `SignerInfo.version` is 1 or 3; any other version is rejected. Every certificate carried in `SignedData.certificates` decodes as an X.509 certificate. | `E_TS_SCHEMA` |
+| 1 | The file is **exactly one** strict-DER-encoded RFC 3161 `TimeStampResp` with no trailing data, decoded completely before any later check (sub-steps 1a–1e below): the whole file decodes as one `TimeStampResp`, the encoding uses canonical minimal length forms (no BER indefinite form) and **re-encoding the parsed object yields the input bytes exactly** — every SET OF at every level in DER order, no DEFAULT value encoded. `PKIStatusInfo.status` is `0` (`granted`); `grantedWithMods` (1) and every other status are rejected. The token is CMS `SignedData`; `SignedData.version` is 3, it carries **exactly one** `SignerInfo`, and its `SignerInfo.version` is 1 or 3; any other version is rejected. The signer certificate carried in `SignedData.certificates` decodes as an X.509 certificate. | `E_TS_SCHEMA` |
 | 2 | The `SignedData` content type is `id-ct-TSTInfo`, and the encapsulated TSTInfo parses as DER with `version == 1` (TSTInfo version is exactly 1; any other value is `E_TS_SCHEMA`). | `E_TS_SCHEMA` |
 | 3 | `messageImprint.hashAlgorithm` is `sha256`; any other algorithm is a schema failure. | `E_TS_SCHEMA` |
 | 4 | `messageImprint.hashedMessage` equals the expected imprint (§12.4): the raw 32 bytes of the manifest digest for the first receipt, or `SHA-256(<previous receipt bytes> ‖ <raw manifest digest>)` for a renewal receipt. | `E_TS_IMPRINT` |
@@ -2390,7 +2390,9 @@ structure failure anywhere in the receipt is never reported under a later check'
   well-formed UTF-8; UTCTime is `YYMMDDHHMMSSZ` and GeneralizedTime is `YYYYMMDDHHMMSS`,
   optionally followed by `.` and one or more fractional digits whose last digit is not `0`,
   then `Z` (X.690 §11.7–§11.8: any number of fractional digits, no trailing zero, no empty
-  fraction); and the components
+  fraction), each form matched against the **whole** content octets, so a trailing line
+  feed or any other octet after the `Z` is a violation [X7] decided (Inceptless decision
+  2026-11-12 #3; X7/H1); and the components
   of every universal SET are in ascending DER order (X.690 §11.6). These rules apply to
   every TLV of the file, including values whose type is not known to the verifier (an
   unregistered attribute's value, for example): every universal SET in the
@@ -2445,7 +2447,8 @@ structure failure anywhere in the receipt is never reported under a later check'
     | field | algorithms (OBJECT IDENTIFIER) | permitted `parameters` | source |
     |---|---|---|---|
     | `digestAlgorithm` | SHA-2: `id-sha224` (2.16.840.1.101.3.4.2.4), `id-sha256` (…2.1), `id-sha384` (…2.2), `id-sha512` (…2.3) | absent, or `NULL` (`05 00`) | RFC 5754 §2 |
-    | `signatureAlgorithm` | RSA PKCS#1 v1.5: `rsaEncryption` (1.2.840.113549.1.1.1), `sha224WithRSAEncryption` (…1.14), `sha256WithRSAEncryption` (…1.11), `sha384WithRSAEncryption` (…1.12), `sha512WithRSAEncryption` (…1.13) | `NULL` (`05 00`) only | RFC 3370 §3.2, RFC 4055 §5, RFC 8017 Appendix A.2.4 |
+    | `signatureAlgorithm` | `rsaEncryption` (1.2.840.113549.1.1.1) | `NULL` (`05 00`) only | RFC 3370 §3.2 |
+    | `signatureAlgorithm` | `sha224WithRSAEncryption` (1.2.840.113549.1.1.14), `sha256WithRSAEncryption` (…1.11), `sha384WithRSAEncryption` (…1.12), `sha512WithRSAEncryption` (…1.13) | absent, or `NULL` (`05 00`) | RFC 4055 §5 and RFC 5754 §3.2 ("MUST accept the parameters being absent as well as present") |
     | `signatureAlgorithm` | ECDSA: `ecdsa-with-SHA224` (1.2.840.10045.4.3.1), `ecdsa-with-SHA256` (…3.2), `ecdsa-with-SHA384` (…3.3), `ecdsa-with-SHA512` (…3.4) | absent only | RFC 5758 §3.2 |
 
     The parameters of an algorithm not in this table are an open type (below); checks 5
@@ -2459,17 +2462,28 @@ structure failure anywhere in the receipt is never reported under a later check'
     (1.2.840.113549.1.9.3, decoded as an OBJECT IDENTIFIER), `id-messageDigest`
     (1.2.840.113549.1.9.4, an OCTET STRING) or `id-aa-signingCertificateV2`
     (1.2.840.113549.1.9.16.2.47, a `SigningCertificateV2`); `ContentInfo.content` when
-    the content type is not `id-signedData` (check 1d then rejects it); the
-    `CertificateChoices` alternatives other than `certificate` (`extendedCertificate`,
-    `v1AttrCert` and `v2AttrCert` as whole values, and `other`'s `otherCert`);
+    the content type is not `id-signedData` (check 1d then rejects it); **every component
+    of `SignedData.certificates`** as a whole value (the signer certificate among them is
+    decoded by 1e, X7/M3);
     `OtherRevocationInfoFormat.otherRevInfo`; the `x400Address` alternative of
     `GeneralName` and `AnotherName.value`; and `PolicyQualifierInfo.qualifier`.
 - **1d — status and versions.** `PKIStatusInfo.status` is `granted`; the token's content
-  type is `id-signedData`; `SignedData.version` is 3; every `SignerInfo.version` is 1 or 3.
-- **1e — certificates.** Every `certificate` choice of `SignedData.certificates` decodes as
-  an X.509 certificate, and every `extnValue` of its extensions — itself the DER encoding of
-  the extension value (RFC 5280 §4.1) — is exactly one TLV obeying the universal rules of
-  1a.
+  type is `id-signedData`; `SignedData.version` is 3; `SignedData.signerInfos` holds
+  **exactly one** `SignerInfo` (RFC 3161 §2.4.2: the token carries no signature other than
+  the TSA's), whose `version` is 1 or 3 [X7/M2] decided (Inceptless decision 2026-11-12 #3;
+  X7).
+- **1e — the signer certificate.** The signer certificate is the first component of
+  `SignedData.certificates` that the `SignerInfo`'s `sid` names: for
+  `issuerAndSerialNumber`, the component whose TBSCertificate `issuer` encoding and
+  `serialNumber` content octets are equal to the `sid`'s; for `subjectKeyIdentifier`, the
+  component whose subjectKeyIdentifier extension carries the same octets. That certificate
+  is walked under the RFC 5280 `Certificate` definition with the rules of 1b and 1c (its
+  DEFAULT components included), decodes as an X.509 certificate, and every `extnValue` of
+  its extensions — itself the DER encoding of the extension value (RFC 5280 §4.1) — is
+  exactly one TLV obeying the universal rules of 1a. **Every other component is an open
+  type** (1c): only its framing is judged, and it is never handed to a certificate decoder.
+  When no component matches, 1e decodes nothing and check 7 fails [X7/M3] decided
+  (Inceptless decision 2026-11-12 #3; X7).
 
 Check 2 applies 1a–1c to the encapsulated `TSTInfo` bytes on their own before reading
 `TSTInfo.version` [W3] decided (Inceptless decision 2026-11-11 #16; W3).
@@ -3460,7 +3474,7 @@ and are normative at the locations given.
 | W10 | every `ed25519` attestation entry is judged (multi-signature attestation); keyset entry names and non-regular entries; wording of `--previous` | §11.3, §14.1 |
 
 The following rows are fixed by Inceptless decision **2026-11-12 #1** (S1-FIX5, X1–X5;
-row X6 by decision 2026-11-12 #2)
+row X6 by decision 2026-11-12 #2, row X7 by decision 2026-11-12 #3)
 and are normative at the locations given. They amend the W1 and W3 rows above where they
 differ.
 
@@ -3471,7 +3485,8 @@ differ.
 | X3 | operator paths are examined with `lstat` before opening; a FIFO, device or socket is a usage error; `--tsa-trust` is read with the bound `MAX_TIMESTAMP_BYTES` | §14.1 |
 | X4 | gate coverage (the independent DER judge) is tooling, not a format rule | outside this document (tools) |
 | X5 | §11.5 rules 1–2 wording (an invalid rotation record supplies no key material; keyset declarations trusted through their owner); documentation | §11.5 |
-| X6 | the `parameters` of the signer's `digestAlgorithm` (SHA-2: absent or `NULL`) and `signatureAlgorithm` (RSA PKCS#1 v1.5: `NULL`; ECDSA: absent) have a fixed form; any other form is `E_TS_SCHEMA` (decision 2026-11-12 #2) | §12.2, registry |
+| X6 | the `parameters` of the signer's `digestAlgorithm` (SHA-2: absent or `NULL`) and `signatureAlgorithm` (`rsaEncryption`: `NULL`; sha*WithRSAEncryption: absent or `NULL`, as corrected by X7; ECDSA: absent) have a fixed form; any other form is `E_TS_SCHEMA` (decision 2026-11-12 #2) | §12.2, registry |
+| X7 | time forms matched against the whole content (a trailing line feed is a violation); sha*WithRSAEncryption parameters absent or `NULL`; exactly one `SignerInfo`; 1e decodes the signer certificate only, every other certificate is an open type (decision 2026-11-12 #3) | §12.2, registry |
 
 ### A.2 PROVISIONAL implementation shapes
 
