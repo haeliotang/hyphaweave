@@ -65,10 +65,10 @@ J1/J2):
 | `grant` | 36 |
 | `key-lifecycle` | 67 |
 | `container` | 115 |
-| `integrity-levels` | 79 |
-| **total** | **488** |
+| `integrity-levels` | 88 |
+| **total** | **497** |
 
-Verdict distribution: `valid` 112, `erased` 1, `invalid` 346, `unverifiable` 29.
+Verdict distribution: `valid` 116, `erased` 1, `invalid` 351, `unverifiable` 29.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
@@ -95,7 +95,7 @@ zip (W2), real DER re-encoding with every SET OF class and DER rule (W3), the
 stop-at-failing-stage rule and the one criterion of
 `L_PREVIOUS_CONTENT_UNVERIFIED` (W5), the complete timestamp check order (W6),
 the zip check order (W7) and the previous-container core checks (W9). S1-FIX5
-(decisions 2026-11-12 #1 and #2) added 20 cases and changed the expectation of one:
+(decisions 2026-11-12 #1, #2 and #3) added 29 cases and changed the expectation of one:
 check 1's DER rules taken from X.690 and the module definitions only (X1: the
 ESSCertIDv2 DEFAULT by value, open-type values of any tag class, seven fractional
 `genTime` digits and a trailing zero, the high-tag-number form — every positive
@@ -105,7 +105,10 @@ valid, `-at-previous` and `-before-previous` are `E_MANIFEST_CHAIN`) and an
 invalid rotation record supplying no key material for the link (X5), and the
 fixed form of the signer's digest and signature algorithm parameters (X6: one
 positive per permitted form, RSA and ECDSA receipts, one negative per forbidden
-form).
+form) and X7 (time forms with a trailing line feed, sha*WithRSAEncryption
+parameters absent, exactly one SignerInfo, non-signer certificates as open types;
+`l2-ts-certificate-undecodable` and `l2-ts-der-extension-value-nonminimal` now
+carry their defect in the signer certificate, expectations unchanged).
 
 ## Running the vectors
 
