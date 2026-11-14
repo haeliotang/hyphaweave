@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_SCHEMA"],"id":"container/manifest-unknown-member","input":"container","notes":"F2/S8(6): the manifest is a closed object owned by §11.2; an unknown member is E_MANIFEST_SCHEMA (not the envelope-level E_ENV_UNKNOWN_FIELD).","records":[],"target":"container","verdict":"invalid"}

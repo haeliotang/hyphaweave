@@ -87,8 +87,8 @@ class Signature:
 def _validate_sigs(value: Any) -> tuple[Signature, ...]:
     if not isinstance(value, list):
         raise WeaveError("E_ENV_SIGS", "sigs must be an array")
-    if not 1 <= len(value) <= grammar.MAX_SIGS:
-        raise WeaveError("E_ENV_SIGS", "sigs must contain 1-16 entries")
+    if not 0 <= len(value) <= grammar.MAX_SIGS:
+        raise WeaveError("E_ENV_SIGS", "sigs must contain 0-16 entries")
     signatures: list[Signature] = []
     for entry in value:
         if not isinstance(entry, dict):
@@ -104,6 +104,10 @@ def _validate_sigs(value: Any) -> tuple[Signature, ...]:
             raise WeaveError("E_ENV_SIGS", "signature alg is not a well-formed algorithm name")
         key = entry["key"]
         encoded = entry["value"]
+        if not isinstance(key, str):
+            # S8/F2: a sigs entry whose key is not a string is a sigs-array
+            # structural defect, not a key-id-grammar one.
+            raise WeaveError("E_ENV_SIGS", "signature key must be a string")
         if alg == "ed25519":
             if not is_key_id(key):
                 raise WeaveError("E_ENV_SIG_KEY", "signature key is not a key id")
@@ -154,19 +158,23 @@ def ed25519_signatures(signatures: tuple[Signature, ...]) -> tuple[Signature, ..
 
 
 def _validate_actor(value: Any, *, kind: str) -> tuple[str, str, Reference | None]:
+    """Validate the closed ``actor`` object (S8/F2 ordering: presence, closedness, grammar)."""
     if not isinstance(value, dict):
         raise WeaveError("E_ENV_ACTOR", "actor must be an object")
+    # Presence first, in the actor-member table order; a closed nested object
+    # reports its own dedicated code (S8.5/S8.6, F2/F3).
+    if "type" not in value:
+        raise WeaveError("E_ENV_ACTOR_TYPE", "actor.type is required")
+    if "key" not in value:
+        raise WeaveError("E_ENV_ACTOR_KEY", "actor.key is required")
+    # Closedness next.
     for member in value:
         if member not in ACTOR_MEMBERS:
-            raise WeaveError("E_ENV_UNKNOWN_FIELD", "unknown member in actor object")
-    if "type" not in value:
-        raise WeaveError("E_ENV_ACTOR", "actor.type is required")
+            raise WeaveError("E_ENV_ACTOR", "unknown member in actor object")
     actor_type = value["type"]
-    if actor_type not in ACTOR_TYPES:
-        raise WeaveError("E_ENV_ACTOR_TYPE", "actor.type is not one of the closed values")
-    if "key" not in value:
-        raise WeaveError("E_ENV_ACTOR", "actor.key is required")
     actor_key = value["key"]
+    if not isinstance(actor_type, str) or actor_type not in ACTOR_TYPES:
+        raise WeaveError("E_ENV_ACTOR_TYPE", "actor.type is not one of the closed values")
     if not is_key_id(actor_key):
         raise WeaveError("E_ENV_ACTOR_KEY", "actor.key is not a key id")
 
@@ -197,8 +205,10 @@ def _validate_actor(value: Any, *, kind: str) -> tuple[str, str, Reference | Non
             try:
                 grant_reference = validate_reference(value["grant"])
             except WeaveError as error:
+                # S8.6/F2: a malformed reference object reports the reference
+                # grammar code from the section that defines it.
                 raise WeaveError(
-                    "E_ENV_ACTOR", "actor.grant is not a valid reference"
+                    "E_ENV_REFS", "actor.grant is not a valid reference"
                 ) from error
         if "idempotency_key" not in value:
             if not exempt:

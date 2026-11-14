@@ -83,6 +83,9 @@ class Case:
     expected_digest: str = ""  # "auto" = computed from the built input record
     expected_resolution: tuple[str, ...] | None = None
     expected_container: dict[str, Any] | None = None
+    expected_input: dict[str, Any] | None = None
+    limitations: tuple[str, ...] | None = None
+    notices_absent: tuple[str, ...] | None = None
     records: tuple[dict[str, Any], ...] | None = None
 
     @property
@@ -944,10 +947,16 @@ declare(
         }
     ),
     expected_digest="auto",
+    limitations=(
+        "L_ERASED_PLACEHOLDER",
+        "L_ERASED_STANDALONE",
+        "L_OFFLINE_CONTEXT",
+    ),
     notes="A weave.erased placeholder has no sigs; records[0].digest is the §2.2 "
     "digest over the placeholder, records[0].verdict is 'erased', its attestation "
     "reference resolves to 'missing' (reported in the separate attestation object, "
-    "refs stays empty) and the top-level verdict is 'erased'.",
+    "refs stays empty) and the top-level verdict is 'erased'. The standalone "
+    "placeholder pins L_ERASED_PLACEHOLDER and L_ERASED_STANDALONE (T12).",
 )
 
 declare(
@@ -1290,9 +1299,12 @@ declare(
         )
     ),
     args=("--keys", "@keyset"),
+    notices_absent=("N_NO_HUMAN_SIGNATURE",),
     notes="Q13: an unknown-algorithm signature entry is ignored. The record is "
     "required to be signed and has no verifiable required signature, so it is "
-    "unverifiable (spec §3.6, signature aggregation).",
+    "unverifiable (spec §3.6, signature aggregation). F6/P10: the "
+    "human-signature notice is reported only for an accepted record whose "
+    "verdict is valid, so it must be absent here.",
 )
 
 declare(
@@ -2177,9 +2189,12 @@ declare(
     ),
     notices=("N_KIND_UNKNOWN_OPAQUE",),
     records=({"id": UNKNOWN_KIND_RECORD_ID, "kind_known": False},),
+    limitations=("L_OFFLINE_CONTEXT", "L_UNKNOWN_KIND_OPAQUE"),
     notes="An unregistered but well-formed kind is opaque: verified at the "
     "envelope level, reported as not understood (kind_known false plus "
-    "N_KIND_UNKNOWN_OPAQUE) and never invalidated for being unknown (spec §7.3).",
+    "N_KIND_UNKNOWN_OPAQUE) and never invalidated for being unknown (spec "
+    "§7.3). The valid opaque record also pins the L_UNKNOWN_KIND_OPAQUE "
+    "limitation identifier (T12).",
 )
 
 declare(
@@ -2894,8 +2909,15 @@ declare(
     ),
     notices=("N_LABEL_PROPAGATION_UNCHECKED",),
     expected_resolution=("missing",),
+    limitations=(
+        "L_LABEL_PROPAGATION_UNCHECKED",
+        "L_OFFLINE_CONTEXT",
+        "L_UNKNOWN_KIND_OPAQUE",
+    ),
     notes="An unresolvable derived_from reference only makes label propagation "
-    "unchecked (notice); the record stays valid (§8.4).",
+    "unchecked (notice); the record stays valid (§8.4). The report pins "
+    "L_LABEL_PROPAGATION_UNCHECKED (T12); the record kind is also unregistered, "
+    "so L_UNKNOWN_KIND_OPAQUE appears too.",
 )
 
 declare(
@@ -3435,6 +3457,460 @@ declare(
     "effective_at is unaffected (recorded_at < effective_at).",
 )
 
+# ---------------------------------------------------------------------------
+# S1 revision: nesting limits, number-class order, nested closed-object codes,
+# check-order precedence and empty `sigs` (decisions 2026-11-11 #2; S3/S7/S8)
+# ---------------------------------------------------------------------------
+
+
+def _depth_record(depth: int) -> dict[str, Any]:
+    """A valid declaration record whose JSON container depth is exactly *depth*.
+
+    Depth counts the root-to-leaf path with the top-level value as depth 1: the
+    record object is depth 1, `body` depth 2 and each nested array adds one.
+    The deep member is an unknown `body` member of a registered kind, which
+    additive evolution permits (§7.5); the body itself stays schema-valid.
+    """
+    if depth < 3:
+        raise SystemExit("depth vector needs at least depth 3")
+    arrays = depth - 2
+    nested: Any = []
+    for _ in range(arrays - 1):
+        nested = [nested]
+    body = {
+        "algorithm": "ed25519",
+        "key": _kid("human-1"),
+        "key_type": "human",
+        "public_key": _key("human-1").public_b64url(),
+        "nested": nested,
+    }
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id="jcs-depth-%d" % depth,
+        actor=recordlib.actor("human-1"),
+        body=body,
+        stage="accepted",
+        recorded_at=recordlib.T0,
+        origin_instance=_kid("human-1"),
+    )
+    return recordlib.signed(record, "human-1")
+
+
+def _licence_nested(depth: int) -> str:
+    """`(<depth-1 nested expressions>)` around a valid licence identifier."""
+    return "(" * depth + "MIT" + ")" * depth
+
+
+declare(
+    "jcs",
+    "depth-limit-32",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(_depth_record(32)),
+    args=("--keys", "@keyset"),
+    limitations=("L_OFFLINE_CONTEXT",),
+    notes="S3/§13: MAX_JSON_DEPTH is 32, counted on the root-to-leaf path with "
+    "the top-level value as depth 1. This otherwise-valid declaration record has "
+    "container depth exactly 32, so it must be accepted; the unknown deep `body` "
+    "member is permitted by additive evolution (§7.5).",
+)
+
+declare(
+    "jcs",
+    "depth-limit-plus-one",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_SIZE",),
+    build=lambda: rec(_depth_record(33)),
+    records=({"id": None, "kind_known": None, "refs": []},),
+    notes="S3/§13: one more container level (depth 33) exceeds MAX_JSON_DEPTH "
+    "and is E_JSON_SIZE, checked before/while parsing. F9 report shape: the "
+    "record failed before any field could be determined, so scalar/object "
+    "fields are null and list fields are empty.",
+)
+
+declare(
+    "jcs",
+    "minus-zero-before-float",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_NOT_CANONICAL",),
+    build=lambda: raw(b'{"a":-0,"b":1.5}\n'),
+    notes="S8(4)/§1.6-§1.9: `-0` and a later float are classified at their "
+    "token position among the number classes; `-0` comes first in input byte "
+    "order, so the first number-class violation is the non-canonical -0.",
+)
+
+declare(
+    "jcs",
+    "float-before-minus-zero",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_NUMBER_NOT_INTEGER",),
+    build=lambda: raw(b'{"b":1.5,"a":-0}\n'),
+    notes="S8(4)/§1.6-§1.9: the float token comes before the `-0` token in "
+    "input byte order, so the first number-class violation is the float.",
+)
+
+declare(
+    "labels",
+    "licence-nesting-limit-16",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(
+        recordlib.note(
+            "labels-40",
+            labels={"licence": _licence_nested(16)},
+        )
+    ),
+    notes="S3/§13: MAX_LICENCE_NESTING is 16; an SPDX expression with exactly "
+    "16 nested parentheses is accepted. §8.7 no longer says the nesting is "
+    "bounded only by the record size limit.",
+)
+
+declare(
+    "labels",
+    "licence-nesting-plus-one",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_LICENCE",),
+    build=lambda: rec(
+        recordlib.note(
+            "labels-41",
+            labels={"licence": _licence_nested(17)},
+        )
+    ),
+    notes="S3/§13: one parenthesis level beyond MAX_LICENCE_NESTING is an SPDX "
+    "syntax violation, E_ENV_LICENCE.",
+)
+
+declare(
+    "labels",
+    "sensitivity-wrong-type",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_SENSITIVITY",),
+    build=lambda: rec(
+        recordlib.note("labels-42", labels={"sensitivity": 1})
+    ),
+    notes="F2/S8(6): the owning section's dedicated code wins for a closed "
+    "nested object; `labels.sensitivity` with the wrong JSON type is "
+    "E_ENV_SENSITIVITY, not the envelope-level E_ENV_UNKNOWN_FIELD.",
+)
+
+declare(
+    "sig",
+    "required-empty-sigs",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_SIG_REQUIRED",),
+    build=lambda: rec(
+        set_sigs(recordlib.note("sig-40", stage="accepted"), [])
+    ),
+    notes="S7(1)/§4.3-§4.4: the `sigs` array bound is 0-16 entries, but a "
+    "record that must be signed by its actor and carries an empty array is "
+    "E_SIG_REQUIRED (invalid), not an envelope-shape error.",
+)
+
+declare(
+    "sig",
+    "proposed-empty-sigs",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(
+        set_sigs(recordlib.note("sig-41", stage="proposed"), [])
+    ),
+    notes="S7(1): a `proposed` ordinary record is not required to be signed, so "
+    "an explicit empty `sigs` array is valid (no error).",
+)
+
+declare(
+    "sig",
+    "key-not-string",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_SIGS",),
+    build=lambda: rec(
+        set_sigs(
+            recordlib.note("sig-42", stage="proposed"),
+            [
+                {
+                    "alg": "ed25519",
+                    "key": 255,
+                    "value": keyutil.b64url_encode(bytes(64)),
+                }
+            ],
+        )
+    ),
+    notes="F2/S8(6): a `sigs` entry whose `key` is not a string is a "
+    "signature-array grammar violation, E_ENV_SIGS, not a key-format code.",
+)
+
+declare(
+    "sig",
+    "unknown-key-terminal",
+    "record",
+    "record.json",
+    "unverifiable",
+    errors=("E_KEY_UNKNOWN",),
+    notices=("N_KEY_UNDECLARED",),
+    build=lambda: (
+        lambda undeclared: rec(
+            set_sigs(
+                recordlib.build_record(
+                    kind="weave.grant",
+                    id="sig-43",
+                    actor={"type": "human", "key": undeclared},
+                    body={"action": "grant"},
+                    stage="accepted",
+                    recorded_at=recordlib.T0,
+                    origin_instance=undeclared,
+                ),
+                [
+                    {
+                        "alg": "ed25519",
+                        "key": undeclared,
+                        "value": keyutil.b64url_encode(bytes(64)),
+                    }
+                ],
+            )
+        )
+    )("ed25519:" + "ab" * 16),
+    notes="F7/§14.5: a blocking condition is terminal exactly like an error. "
+    "The signing key is undeclared everywhere in the context (E_KEY_UNKNOWN at "
+    "step 4), so the later kind-body/semantic defect of this weave.grant record "
+    "(an incomplete body that would be E_GRANT_SCHEMA) is never evaluated; the "
+    "record is unverifiable and carries N_KEY_UNDECLARED.",
+)
+
+declare(
+    "stage",
+    "multi-defect-envelope",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_MISSING_FIELD",),
+    build=lambda: rec(
+        with_field(without(recordlib.note("stage-40"), "stage"), "extra", 1)
+    ),
+    notes="F3/§14.5: within envelope structure the required top-level members "
+    "are checked first in §4.1 table order, then top-level closedness. This "
+    "record is missing `stage` and carries an unknown top-level member, so the "
+    "first failing check is the missing required member.",
+)
+
+declare(
+    "actor",
+    "missing-type",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_ACTOR_TYPE",),
+    build=lambda: rec(
+        recordlib.note(
+            "actor-40",
+            actor_value={"key": _kid("human-1")},
+        )
+    ),
+    notes="F2/S8(6): `actor` is a closed nested object owned by §4.2; a missing "
+    "`actor.type` reports the dedicated member code E_ENV_ACTOR_TYPE.",
+)
+
+declare(
+    "actor",
+    "grant-malformed-reference",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_REFS",),
+    build=lambda: rec(
+        recordlib.note(
+            "actor-41",
+            actor_value=recordlib.agent_actor(
+                "agent-1",
+                grant={"rel": "derived_from"},
+            ),
+        )
+    ),
+    args=("--keys", "@keyset"),
+    notes="F2/S8(6): the reference object in `actor.grant` is owned by §6.1; a "
+    "malformed reference object reports the reference-object grammar code "
+    "E_ENV_REFS, not E_ENV_ACTOR.",
+)
+
+def _ref_to_invalid_target_files() -> dict[str, bytes]:
+    """A container whose one record references another, individually invalid record."""
+    target = recordlib.build_record(
+        kind="example.note",
+        id="ref-invalid-target-record",
+        actor=recordlib.actor("human-1"),
+        body={"text": "individually invalid target"},
+        stage="proposed",
+        recorded_at=recordlib.T0,
+        origin_instance=_kid("human-1"),
+    )
+    target = recordlib.signed(target, "human-1")
+    entries = [dict(entry) for entry in target["sigs"]]
+    raw = keyutil.b64url_decode(entries[0]["value"], expected_len=64)
+    entries[0]["value"] = keyutil.b64url_encode(bytes([raw[0] ^ 0x01]) + raw[1:])
+    target["sigs"] = entries
+    reference = recordlib.make_ref(
+        target["origin"]["instance"],
+        target["id"],
+        recordlib.record_digest(target),
+        kind=target["kind"],
+    )
+    referrer = recordlib.build_record(
+        kind="example.note",
+        id="ref-invalid-target-referrer",
+        actor=recordlib.actor("human-1"),
+        body={"text": "references an invalid record"},
+        stage="proposed",
+        recorded_at=recordlib.T1,
+        origin_instance=_kid("human-1"),
+        refs=[{"rel": "derived_from", "ref": reference}],
+    )
+    referrer = recordlib.signed(referrer, "human-1")
+    return build_container([target, referrer])
+
+
+declare(
+    "ref",
+    "invalid-target",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_SIG_INVALID",),
+    build=lambda: _ref_to_invalid_target_files(),
+    args=("--keys", "@keyset"),
+    expected_resolution=("unverifiable",),
+    notices=("N_REF_UNVERIFIABLE",),
+    records=(
+        {
+            "id": "ref-invalid-target-record",
+            "verdict": "invalid",
+            "errors": ["E_SIG_INVALID"],
+        },
+        {
+            "id": "ref-invalid-target-referrer",
+            "verdict": "valid",
+            "errors": [],
+        },
+    ),
+    notes="S8(7)/§6.3: a reference whose target is present, digest-matching but "
+    "individually invalid resolves to `unverifiable` (N_REF_UNVERIFIABLE), not "
+    "`missing`, and does not by itself invalidate the referring record. The "
+    "container is invalid because of the target record's own E_SIG_INVALID.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T14: canonical member order is UTF-16 code units (decision 2026-11-11
+# #5 T14; spec §14.6)
+# ---------------------------------------------------------------------------
+
+
+declare(
+    "jcs",
+    "supplementary-plane-member-order",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(
+        recordlib.note(
+            "jcs-40",
+            body={
+                "\U0001f600": 1,
+                "\ue000": 2,
+            },
+        )
+    ),
+    expected_digest="auto",
+    notes="T14/§1.3-§14.6: member names sort by UTF-16 code units, full stop. "
+    "The body has the supplementary-plane key U+1F600 (surrogate pair D83D "
+    "DE00) and the BMP key U+E000; UTF-16 order puts U+1F600 first, while a "
+    "code-point sort would put U+E000 first. The canonical bytes are produced "
+    "by the independent tools/wcj.py, and the record is signed over them.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T12: L_LABELS_ARE_CLAIMS limitation identifier
+# ---------------------------------------------------------------------------
+
+
+def _labels_claims_limitation_record() -> dict[str, Any]:
+    body = {
+        "purpose": "vector test consent",
+        "scope": ["test-scope"],
+        "valid_from": recordlib.T0,
+        "valid_until": None,
+        "data_subject": None,
+        "terms": None,
+    }
+    record = recordlib.build_record(
+        kind="weave.consent.granted",
+        id="labels-claims-limitation",
+        actor=recordlib.actor("human-1"),
+        body=body,
+        labels={"sensitivity": "public"},
+        stage="accepted",
+        recorded_at=recordlib.T0,
+    )
+    return recordlib.signed(record, "human-1")
+
+
+declare(
+    "labels",
+    "labels-claims-limitation",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(_labels_claims_limitation_record()),
+    args=("--keys", "@keyset"),
+    limitations=("L_LABELS_ARE_CLAIMS", "L_OFFLINE_CONTEXT"),
+    notes="T12/§14.9: the record carries a labels member, so the report lists "
+    "L_LABELS_ARE_CLAIMS even though the labels were checked for consistency. "
+    "The kind is registered, so no opaque-kind limitation appears.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S1-FIX1 T17 (review A L6): UTF-8 validity is a whole-input precondition
+# ---------------------------------------------------------------------------
+
+
+def _invalid_utf8_after_depth_violation() -> bytes:
+    """JSON with a depth violation early and an invalid UTF-8 byte later."""
+    nested = b"[" * 33 + b"0" + b"]" * 33
+    return b'{"a":' + nested + b',"b":"' + b"\xff" + b'"}'
+
+
+declare(
+    "jcs",
+    "invalid-utf8-after-depth-violation",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_INVALID",),
+    build=lambda: raw(_invalid_utf8_after_depth_violation()),
+    notes="T17/review A L6/§1.9: UTF-8 validity is a whole-input precondition. "
+    "The input has a depth violation in an earlier byte range and an invalid "
+    "UTF-8 byte later; decoding the whole input fails first, so the code is "
+    "E_JSON_INVALID (deterministic), not E_JSON_SIZE.",
+)
+
+
 # === END CASE SECTIONS ===
 
 
@@ -3615,6 +4091,12 @@ def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
         expected["expected_resolution"] = list(case.expected_resolution)
     if case.expected_container is not None:
         expected["expected_container"] = case.expected_container
+    if case.expected_input is not None:
+        expected["expected_input"] = case.expected_input
+    if case.limitations is not None:
+        expected["limitations"] = list(case.limitations)
+    if case.notices_absent is not None:
+        expected["notices_absent"] = list(case.notices_absent)
     if case.records is not None:
         expected["records"] = list(case.records)
     if case.notes:

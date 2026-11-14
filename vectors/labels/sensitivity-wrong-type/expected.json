@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_SENSITIVITY"],"id":"labels/sensitivity-wrong-type","input":"record.json","notes":"F2/S8(6): the owning section's dedicated code wins for a closed nested object; `labels.sensitivity` with the wrong JSON type is E_ENV_SENSITIVITY, not the envelope-level E_ENV_UNKNOWN_FIELD.","target":"record","verdict":"invalid"}

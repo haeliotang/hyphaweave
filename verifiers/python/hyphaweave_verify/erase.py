@@ -51,19 +51,37 @@ def validate_placeholder(record: Any) -> Placeholder:
     """
     if not isinstance(record, dict):
         raise WeaveError("E_JSON_INVALID", "record must be a JSON object")
+    # §4.5: every structural violation of the placeholder is E_KIND_BODY_SCHEMA
+    # (missing member, unknown member, wrong member type, malformed members);
+    # E_ENV_MISSING_FIELD / E_ENV_UNKNOWN_FIELD are envelope-level only (S8/F2).
     for member in REQUIRED_IN_ORDER:
         if member not in record:
-            raise WeaveError("E_ENV_MISSING_FIELD", "placeholder is missing a member")
+            raise WeaveError(
+                "E_KIND_BODY_SCHEMA", "placeholder is missing a required member"
+            )
     for member in record:
         if member not in PLACEHOLDER_MEMBERS:
-            raise WeaveError("E_ENV_UNKNOWN_FIELD", "placeholder has an unknown member")
+            raise WeaveError(
+                "E_KIND_BODY_SCHEMA", "placeholder has an unknown member"
+            )
     if record["format"] != "weave-record/1":
-        raise WeaveError("E_ENV_FORMAT", "placeholder format is not weave-record/1")
+        raise WeaveError(
+            "E_KIND_BODY_SCHEMA", "placeholder format is not weave-record/1"
+        )
     if record["kind"] != "weave.erased":
-        raise WeaveError("E_ENV_KIND_SYNTAX", "placeholder kind is not weave.erased")
-    origin = validate_origin(record["origin"])
+        raise WeaveError(
+            "E_KIND_BODY_SCHEMA", "placeholder kind is not weave.erased"
+        )
+    try:
+        origin = validate_origin(record["origin"])
+    except WeaveError as error:
+        raise WeaveError(
+            "E_KIND_BODY_SCHEMA", "placeholder origin is malformed"
+        ) from error
     if not grammar.is_valid_id(record["id"]):
-        raise WeaveError("E_ENV_ID", "placeholder id violates the id grammar")
+        raise WeaveError(
+            "E_KIND_BODY_SCHEMA", "placeholder id violates the id grammar"
+        )
     digest = record["digest"]
     if not is_digest_string(digest):
         raise WeaveError(

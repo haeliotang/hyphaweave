@@ -7,7 +7,8 @@
 ``--help`` and ``--version``. stdout carries exactly one deterministic JSON
 report per verification run; usage and IO errors go to stderr and exit 2.
 Exit codes: 0 = valid (or all vector cases matched), 1 = invalid/unverifiable or
-a vector mismatch, 2 = usage/IO error.
+a vector mismatch, 2 = usage/IO error, 3 = the test-only check-skip hook
+disabled at least one check (report emitted, ``checks_disabled`` non-empty).
 """
 
 from __future__ import annotations
@@ -18,18 +19,21 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from . import __version__, canonical
+from . import __version__
 from . import container as container_module
 from . import report as report_module
 from . import verifier
 from .errors import CheckSkipper, UsageError, WeaveError
-from .report import LIMITATION_ERASED_PLACEHOLDER, LIMITATION_OFFLINE_CONTEXT, LIMITATION_TOFU
-from .report import LIMITATION_UNKNOWN_KIND, LIMITATION_LABELS_ARE_CLAIMS, record_verdict
+from .report import LIMITATION_OFFLINE_CONTEXT, record_verdict
+from .timestamps import load_trust_anchor_file
+from .verifier import MAX_RECORD_BYTES
 
 PROGRAM = "hyphaweave-verify"
 EXIT_VALID = 0
 EXIT_MISMATCH = 1
 EXIT_USAGE = 2
+EXIT_HOOK_DISABLED = 3
+
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--version",
         action="version",
         version="%s %s (report_version 1)" % (PROGRAM, __version__),
+    )
+    parser.add_argument(
+        "--test-hooks",
+        action="store_true",
+        help=(
+            "enable the test-only check-skip hook (spec §14.7); reads "
+            "WEAVE_VERIFY_SKIP_CHECKS and exits 3 when a check was skipped"
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", metavar="command")
 
@@ -79,14 +91,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if namespace.command is None:
         parser.print_usage(sys.stderr)
         return EXIT_USAGE
-    skipper = CheckSkipper.from_env()
     try:
+        skipper = CheckSkipper.from_env(bool(namespace.test_hooks))
         if namespace.command == "record":
             report = _run_record(namespace, skipper)
         elif namespace.command == "container":
             report = _run_container(namespace, skipper)
         else:
-            report = _run_vectors(namespace)
+            report = _run_vectors(namespace, skipper)
     except UsageError as error:
         print("%s: %s" % (PROGRAM, error), file=sys.stderr)
         return EXIT_USAGE
@@ -96,7 +108,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     output = report_module.serialize(report)
     sys.stdout.buffer.write(output)
     sys.stdout.buffer.flush()
+    if report.get("checks_disabled"):
+        # A skipped check is never reported as an ordinary success (S13/§14.8).
+        return EXIT_HOOK_DISABLED
     return EXIT_VALID if report["verdict"] in ("valid", "erased") else EXIT_MISMATCH
+
 
 
 # ---------------------------------------------------------------------------
@@ -104,34 +120,68 @@ def main(argv: Sequence[str] | None = None) -> int:
 # ---------------------------------------------------------------------------
 
 
+_READ_CHUNK_BYTES = 1 << 20
+
+
+def _read_limited(
+    path: Path, limit: int
+) -> tuple[bytes, int | None, str | None]:
+    """Read a file with a hard stop at ``limit + 1`` bytes (spec §13/S4).
+
+    Returns ``(bytes, size, sha256_hex)``. When the input exceeds the limit the
+    read stops immediately and both identity values are ``None``: the full input
+    was never read, so §14.6 requires ``input.sha256``/``input.size`` to be
+    ``null`` rather than hashing an oversized file to completion.
+    """
+    digest = hashlib.sha256()
+    kept = bytearray()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            kept.extend(chunk)
+            if len(kept) > limit:
+                return bytes(kept[: limit + 1]), None, None
+    return bytes(kept), len(kept), digest.hexdigest()
+
+
 def _run_record(namespace: argparse.Namespace, skipper: CheckSkipper) -> dict:
     path = Path(namespace.file)
-    raw = path.read_bytes()
-    input_sha = "sha256:" + hashlib.sha256(raw).hexdigest()
+    raw, size, sha_hex = _read_limited(path, MAX_RECORD_BYTES)
     keyset_loaded, keyset_views = _load_keyset(namespace.keys)
 
     limitations = [LIMITATION_OFFLINE_CONTEXT]
+    if sha_hex is None:
+        # The record exceeded MAX_RECORD_BYTES; the read stopped and the input
+        # identity is unknown (§13/S4, §14.6 null rule).
+        return _record_report_for_error(
+            "E_JSON_SIZE", None, None, skipper, limitations
+        )
+    input_sha = "sha256:" + sha_hex
     try:
         loaded = verifier.load_record_bytes(raw, source="record")
     except WeaveError as error:
-        return _record_report_for_error(error.code, input_sha, len(raw), skipper, limitations)
+        return _record_report_for_error(error.code, input_sha, size, skipper, limitations)
 
     target_view, _context_views = verifier.verify_single_record(
         loaded, keyset_loaded, verified_timestamps=()
     )
     entry = _record_entry(target_view, skipper)
     verdict = entry["verdict"]
-    limitations = _record_limitations(target_view, limitations)
+    limitations = [LIMITATION_OFFLINE_CONTEXT, *_record_limitations(target_view, verdict)]
     report = report_module.build_report(
         target="record",
         verdict=verdict,
         input_sha256=input_sha,
-        input_size=len(raw),
+        input_size=size,
         records=[entry],
         checks_disabled=skipper.tokens,
         limitations=limitations,
     )
     return report
+
 
 
 def _record_entry(view: verifier.RecordView, skipper: CheckSkipper) -> dict:
@@ -144,7 +194,11 @@ def _record_entry(view: verifier.RecordView, skipper: CheckSkipper) -> dict:
 
 
 def _record_report_for_error(
-    code: str, input_sha: str, size: int, skipper: CheckSkipper, limitations: list[str]
+    code: str,
+    input_sha: str | None,
+    size: int | None,
+    skipper: CheckSkipper,
+    limitations: list[str],
 ) -> dict:
     filtered = [candidate for candidate in [code] if not skipper.skip_error(candidate)]
     verdict = record_verdict(filtered) if filtered else "valid"
@@ -154,7 +208,7 @@ def _record_report_for_error(
         kind=None,
         stage=None,
         origin=None,
-        kind_known=False,
+        kind_known=None,
         verdict=verdict,
         errors=filtered,
         notices=[],
@@ -172,21 +226,17 @@ def _record_report_for_error(
     )
 
 
-def _record_limitations(view: verifier.RecordView, limitations: list[str]) -> list[str]:
-    result = list(limitations)
-    if "N_KEY_TOFU" in view.notices:
-        result.append(LIMITATION_TOFU)
-    if view.envelope is not None and not view.envelope.kind_known:
-        result.append(LIMITATION_UNKNOWN_KIND)
-    if view.placeholder is not None:
-        result.append(LIMITATION_ERASED_PLACEHOLDER)
-    if view.envelope is not None and view.envelope.labels is not None:
-        result.append(LIMITATION_LABELS_ARE_CLAIMS)
-    deduped: list[str] = []
-    for item in result:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped
+def _record_limitations(view: verifier.RecordView, verdict: str) -> list[str]:
+    """The record-target limitation identifiers (S12; same rule as containers)."""
+    envelope = view.envelope
+    return report_module.record_limitations(
+        notices=view.notices,
+        verdict=verdict,
+        kind_known=envelope.kind_known if envelope is not None else False,
+        placeholder=view.placeholder is not None,
+        has_labels=envelope is not None and envelope.labels is not None,
+        standalone=True,
+    )
 
 
 def _load_keyset(
@@ -211,7 +261,9 @@ def _run_container(namespace: argparse.Namespace, skipper: CheckSkipper) -> dict
     keyset_loaded, keyset_views = _load_keyset(namespace.keys)
     tsa_trust = None
     if namespace.tsa_trust:
-        tsa_trust = Path(namespace.tsa_trust).read_bytes()
+        # W4/§14.1: unreadable or malformed anchors are a usage error naming the
+        # file (exit 2, no report), checked before any verification.
+        tsa_trust = load_trust_anchor_file(Path(namespace.tsa_trust))
     previous = Path(namespace.previous) if namespace.previous else None
     verification = container_module.verify_container(
         path,
@@ -229,13 +281,15 @@ def _run_container(namespace: argparse.Namespace, skipper: CheckSkipper) -> dict
 # ---------------------------------------------------------------------------
 
 
-def _run_vectors(namespace: argparse.Namespace) -> dict:
+def _run_vectors(namespace: argparse.Namespace, skipper: CheckSkipper) -> dict:
     from . import vectors_runner
 
     default_tsa_trust = None
     if namespace.tsa_trust:
-        default_tsa_trust = Path(namespace.tsa_trust).read_bytes()
-    return vectors_runner.run_vectors(Path(namespace.directory), default_tsa_trust=default_tsa_trust)
+        default_tsa_trust = load_trust_anchor_file(Path(namespace.tsa_trust))
+    return vectors_runner.run_vectors(
+        Path(namespace.directory), default_tsa_trust=default_tsa_trust, skipper=skipper
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised by python -m

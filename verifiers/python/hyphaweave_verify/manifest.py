@@ -382,14 +382,14 @@ def validate_attestation(value: Any) -> ManifestAttestation:
             _fail("E_MANIFEST_SCHEMA", "timestamp listing entry is missing a member")
         renews = entry["renews"]
         if renews is not None:
-            if not isinstance(renews, str) or TIMESTAMP_PATH_PATTERN.match(renews) is None:
+            if not isinstance(renews, str) or TIMESTAMP_PATH_PATTERN.fullmatch(renews) is None:
                 _fail(
                     "E_MANIFEST_SCHEMA",
                     "timestamp listing renews is not null or a timestamp path",
                 )
         if not encoding.is_supported_digest(entry["digest"]):
             _fail("E_MANIFEST_SCHEMA", "timestamp listing digest is not a supported digest")
-        if not isinstance(entry["path"], str) or TIMESTAMP_PATH_PATTERN.match(entry["path"]) is None:
+        if not isinstance(entry["path"], str) or TIMESTAMP_PATH_PATTERN.fullmatch(entry["path"]) is None:
             _fail("E_MANIFEST_SCHEMA", "timestamp listing path is not signatures/timestamp-<n>.tsr")
         timestamps.append(
             ListedTimestamp(

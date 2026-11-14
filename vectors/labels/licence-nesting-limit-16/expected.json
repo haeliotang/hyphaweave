@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"labels","errors":[],"id":"labels/licence-nesting-limit-16","input":"record.json","notes":"S3/§13: MAX_LICENCE_NESTING is 16; an SPDX expression with exactly 16 nested parentheses is accepted. §8.7 no longer says the nesting is bounded only by the record size limit.","target":"record","verdict":"valid"}

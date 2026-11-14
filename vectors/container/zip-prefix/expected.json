@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-prefix","input":"container.zip","notes":"S5/§11.9: the archive MUST start at byte 0 with a local file header; 32 deterministic bytes before the first local header are E_CONTAINER_ZIP (the conservative reading).","target":"container","verdict":"invalid"}

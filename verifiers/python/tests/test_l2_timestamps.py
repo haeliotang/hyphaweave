@@ -12,7 +12,7 @@ import re
 import pytest
 
 from hyphaweave_verify import canonical, encoding, timestamps
-from hyphaweave_verify.errors import WeaveError
+from hyphaweave_verify.errors import UsageError
 
 from conftest import VECTORS
 
@@ -76,7 +76,7 @@ def test_committed_tsr_verifies_with_anchor() -> None:
     assert result.state == timestamps.STATE_VERIFIED
     assert result.error is None
     assert result.gen_time is not None
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", result.gen_time)
+    assert re.fullmatch(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", result.gen_time)
     assert result.gen_time_ms is not None and isinstance(result.gen_time_ms, int)
     assert result.to_report(0)["path"] == "signatures/timestamp-1.tsr"
 
@@ -191,9 +191,10 @@ def test_renewal_chain_broken() -> None:
 def test_trust_anchor_parsing() -> None:
     anchors = _anchors(_case("l2-valid"))
     assert len(anchors) == 1
-    with pytest.raises(WeaveError) as raised:
+    # W4/§14.1: malformed --tsa-trust input is a usage error, never an empty
+    # anchor set.
+    with pytest.raises(UsageError):
         timestamps.parse_trust_anchors(b"not a pem bundle")
-    assert raised.value.code == "E_TS_UNTRUSTED"
 
 
 @pytest.mark.skipif(not (LEVELS / "l2-valid").is_dir(), reason="L2 fixtures absent")

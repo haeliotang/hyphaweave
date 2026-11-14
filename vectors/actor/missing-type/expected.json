@@ -1,0 +1,1 @@
+{"category":"actor","errors":["E_ENV_ACTOR_TYPE"],"id":"actor/missing-type","input":"record.json","notes":"F2/S8(6): `actor` is a closed nested object owned by §4.2; a missing `actor.type` reports the dedicated member code E_ENV_ACTOR_TYPE.","target":"record","verdict":"invalid"}

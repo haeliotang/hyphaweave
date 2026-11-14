@@ -102,7 +102,7 @@ def is_kind_syntax(value: object) -> bool:
         return False
     if "." not in value:
         return False
-    return KIND_NAME_PATTERN.match(value) is not None
+    return KIND_NAME_PATTERN.fullmatch(value) is not None
 
 
 def is_registered(kind: object) -> bool:

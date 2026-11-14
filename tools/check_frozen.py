@@ -91,7 +91,7 @@ def parse_sums(root: Path) -> dict[str, str]:
         line = raw.rstrip("\n")
         if not line.strip():
             continue
-        match = SUMS_LINE.match(line)
+        match = SUMS_LINE.fullmatch(line)
         if not match:
             raise Failure("%s:%d: not a sha256sum line: %r" % (SUMS_NAME, lineno, line))
         digest, rel = match.group(1), match.group(2)

@@ -48,7 +48,15 @@ Announces that a key must no longer be trusted, and why. The reason is load-bear
 ## Semantic rules
 
 1. **Effective time.** `effective_at` **MUST** be less than or equal to `recorded_at`
-   (`E_KEY_REVOKE_EFFECTIVE`, invalid) [E5].
+   (`E_KEY_REVOKE_EFFECTIVE`, invalid) [E5]. When several valid revocations of one key exist
+   in the verification context (keyset records included), their effect is order-independent
+   and the `retired`/`other` family and the `key-compromise` family are evaluated
+   **independently** (T2): a `retired`/`other` revocation whose `effective_at` is at or
+   before the signature's claimed `recorded_at` makes it invalid `E_KEY_REVOKED`, and that
+   outcome cannot be rescued by timestamps; the compromise family uses the earliest `T`
+   among the valid compromise revocations. When the retired/other family applies, its
+   invalid result is the record's outcome even if a compromise revocation also exists
+   [S2] decided (Inceptless decision 2026-11-11 #5; T2; 2026-11-11 #2; S2).
 2. **Retired / other.** A signature by the revoked key whose claimed `recorded_at` is at or
    after `effective_at` is invalid (`E_KEY_REVOKED`); a signature claimed earlier is
    unaffected. The boundary belongs to revocation (equality counts as revoked) [Q11][M-2]
@@ -67,8 +75,17 @@ Announces that a key must no longer be trusted, and why. The reason is load-bear
    The claimed `recorded_at` is **not** evidence: it is attacker-controlled. For a manifest
    signature the same test uses the manifest's timestamp chain [S2][R3][R4] decided
    (Inceptless decision 2026-11-10 #42; R3/R4).
-4. **Self-evidencing.** A revocation of the key that signed this record does not invalidate
-   this record; it is the revocation itself (parent specification §9.5).
+4. **Validity and self-evidencing.** A revocation record takes effect only if it is itself
+   valid. A revocation signed by a key that was already revoked — by a valid revocation
+   ordered before it by ascending `(recorded_at, record digest)` — is invalid (the §9.4
+   outcome, normally `E_KEY_REVOKED`) and revokes nothing, though it still appears as an
+   invalid record. **Self-revocation is exempt, but only from its own effect:** a key
+   revoking itself is not invalidated by its own revocation, while prior valid revocations
+   of that key still apply — a key already revoked by an earlier-ordered valid revocation
+   cannot emit a new valid self-revocation, and such a record is invalid and revokes
+   nothing. Mutual revocations resolve deterministically: the earlier
+   `(recorded_at, record digest)` record is valid, the later one is invalid (parent
+   specification §9.5, T9/U3).
 5. **Revocation is a claim.** `effective_at` is a claim by the revoker; H0 does not
    establish when a compromise actually happened beyond the timestamp rule of rule 3.
 

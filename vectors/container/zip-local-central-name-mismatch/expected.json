@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-local-central-name-mismatch","input":"container.zip","notes":"T6/§11.9 rule 1: the raw filename bytes must agree between the local header and the central directory; a one-byte name difference is E_CONTAINER_ZIP.","records":[],"target":"container","verdict":"invalid"}

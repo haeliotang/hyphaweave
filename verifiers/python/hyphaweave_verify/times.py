@@ -40,7 +40,7 @@ def parse_timestamp(value: object) -> tuple[int, int, int, int, int, int, int]:
     """
     if not isinstance(value, str):
         raise ValueError("timestamp must be a string")
-    match = TS_PATTERN.match(value)
+    match = TS_PATTERN.fullmatch(value)
     if match is None:
         raise ValueError("timestamp does not match YYYY-MM-DDTHH:MM:SS.sssZ")
     year = int(match.group("year"))

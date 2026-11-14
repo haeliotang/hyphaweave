@@ -1,0 +1,1 @@
+{"category":"jcs","errors":["E_JSON_NUMBER_NOT_INTEGER"],"id":"jcs/float-before-minus-zero","input":"record.json","notes":"S8(4)/§1.6-§1.9: the float token comes before the `-0` token in input byte order, so the first number-class violation is the float.","target":"record","verdict":"invalid"}

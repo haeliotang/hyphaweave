@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ENTRY"],"id":"container/readable-duplicate-name","input":"container.zip","notes":"T6/§11.9 rule 4: duplicate entry names are E_CONTAINER_ENTRY even under readable/.","records":[],"target":"container","verdict":"invalid"}

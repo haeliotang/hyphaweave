@@ -48,30 +48,68 @@ frozen candidate set is validated separately and is not part of the index).
 ## Current inventory
 
 Authoritative source is `vectors/index.json`; regenerate with
-`tools/gen_index.py` after adding cases. At the time of writing (revision 2,
-`weave-record/1` v0.1 draft, not yet accepted by J1/J2):
+`tools/gen_index.py` after adding cases. At the time of writing (revision 3
+plus S1-FIX1 to S1-FIX5, `weave-record/1` v0.1 draft, not yet accepted by
+J1/J2):
 
 | category | cases |
 |---|---|
-| `jcs` | 24 |
+| `jcs` | 30 |
 | `digest` | 5 |
-| `sig` | 43 |
-| `ref` | 12 |
-| `stage` | 17 |
-| `actor` | 26 |
-| `labels` | 34 |
-| `erasure` | 11 |
-| `grant` | 29 |
-| `key-lifecycle` | 36 |
-| `container` | 28 |
-| `integrity-levels` | 29 |
-| **total** | **294** |
+| `sig` | 47 |
+| `ref` | 13 |
+| `stage` | 18 |
+| `actor` | 28 |
+| `labels` | 38 |
+| `erasure` | 12 |
+| `grant` | 36 |
+| `key-lifecycle` | 67 |
+| `container` | 115 |
+| `integrity-levels` | 89 |
+| **total** | **498** |
 
-Verdict distribution: `valid` 71, `erased` 1, `invalid` 200, `unverifiable` 22.
+Verdict distribution: `valid` 116, `erased` 1, `invalid` 352, `unverifiable` 29.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
-bound by the Ed25519 manifest signature.
+bound by the Ed25519 manifest signature. Revision 3 added the rulings of
+Inceptless decision 2026-11-11 #2 (keyset-governed key class/window,
+order-independent revocations, JSON/licence nesting limits, ZIP64 and archive
+prefix/trailing rejection, `--previous` chain continuity, container
+size-limit and listing multi-error semantics, pre-issued grants, grant-chain
+and revocation depth bounds, RFC 3161 accuracy bounds, limitation identifiers,
+container input identity, and the report-level rules of §14.6/§14.10).
+S1-FIX1 (decision 2026-11-11 #5) added the mixed-revocation, TSA-accuracy,
+ZIP-structure, frozen-candidate-restoration, depth-counting, revocation-validity,
+TOFU-criterion, limitation/notice-coverage, rotated-key-material,
+supplementary-plane ordering and oversize-record report-shape rulings; the
+affected existing cases were updated and the index regenerated. S1-FIX2
+(decision 2026-11-11 #12) added the zip-form previous container, the zip §13
+limits, self-revocation, governing-class, rotated-material TOFU, TSA-limitation,
+oversize-listing and single-volume rulings. S1-FIX3 (decision 2026-11-11 #14)
+added the narrowed `--previous` link, strict receipt DER, the public-key
+structural rule, version-needed/disk-start and limits-before-structure. S1-FIX4
+(decision 2026-11-11 #16) added 47 cases: the previous signature verified in
+the target container's context (W1), §11.9 rule 4 on every entry of a previous
+zip (W2), real DER re-encoding with every SET OF class and DER rule (W3), the
+stop-at-failing-stage rule and the one criterion of
+`L_PREVIOUS_CONTENT_UNVERIFIED` (W5), the complete timestamp check order (W6),
+the zip check order (W7) and the previous-container core checks (W9). S1-FIX5
+(decisions 2026-11-12 #1, #2 and #3) added 30 cases and changed the expectation of one:
+check 1's DER rules taken from X.690 and the module definitions only (X1: the
+ESSCertIDv2 DEFAULT by value, open-type values of any tag class, seven fractional
+`genTime` digits and a trailing zero, the high-tag-number form — every positive
+receipt fully re-signed), a key-compromise revocation judged against the previous
+`created_at` (X2: `previous-signing-key-compromised-after-previous` is now
+valid, `-at-previous` and `-before-previous` are `E_MANIFEST_CHAIN`) and an
+invalid rotation record supplying no key material for the link (X5), and the
+fixed form of the signer's digest and signature algorithm parameters (X6: one
+positive per permitted form, RSA and ECDSA receipts, one negative per forbidden
+form) and X7 (time forms with a trailing line feed, sha*WithRSAEncryption
+parameters absent, exactly one SignerInfo whose version matches its sid,
+non-signer certificates as open types;
+`l2-ts-certificate-undecodable` and `l2-ts-der-extension-value-nonminimal` now
+carry their defect in the signer certificate, expectations unchanged).
 
 ## Running the vectors
 
@@ -106,15 +144,18 @@ bytes plus one trailing LF. Fields:
 | `notices` | optional | expected notice codes; matching is *subset* (a verifier may report additional notices) |
 | `args` | optional | verifier CLI arguments. Tokens: `@keyset` -> `vectors/keys/keyset`; `@case` -> the case directory; anything else is a path relative to the case directory (e.g. `keys`, `tsa.crt.pem`, `container.zip`) |
 | `expected_digest` | optional | expected `records[i].digest` for record targets (computed here by the independent generator, never by the verifier) |
-| `expected_resolution` | optional | expected ref-resolution states by reference index for records with `refs` |
-| `expected_container` | optional | recursive subset match against the report's `container` object |
-| `records` | optional | per-record subset expectations matched by `id` (e.g. `kind_known=false` for an unknown kind) |
+| `expected_resolution` | optional | expected ref-resolution states as a position map: element *i* is the state of the record report's reference *i* (a record target's `records[0]`, or the concatenation over the manifest-ordered records for a container target) |
+| `expected_container` | optional | recursive subset match against the report's `container` object; nested objects are recursive subsets and arrays compare element by element, recursively, with scalars and `null` exact |
+| `expected_input` | optional | recursive subset match against the report's top-level `input` object (`{"sha256": ...|null, "size": ...|null}`); a `null` expectation requires `null` |
+| `limitations` | optional | the report's exact `limitations` array: the sorted, unique closure of the closed `L_*` identifier set (§14.9) |
+| `notices_absent` | optional | notice codes that MUST NOT appear anywhere in the aggregated report (container plus every record) |
+| `records` | optional | per-record matches by `id`; `verdict` and `errors` compare exactly, every other listed member is a recursive subset (so a case can assert e.g. `"refs": []`, `"kind_known": null`); an explicit empty array `"records": []` asserts that the report's `records` array is empty (pre-record failures) |
 | `notes` | optional | why the case exists, and which specification section it exercises |
 
 Runner rules: `verdict` exact; `errors` as a set over the container's top-level
-and per-record errors; `notices` subset; `expected_digest`,
-`expected_resolution`, `expected_container` and `records` as above. Everything
-besides `expected.json` inside a case directory is input material.
+and per-record errors; `notices` subset; `limitations` exact; everything else as
+described in the table. Everything besides `expected.json` inside a case
+directory is input material.
 
 ## Test keys and key material
 
@@ -172,7 +213,7 @@ first `make_keys.py` run and then reused byte-for-byte.
 ## Gate 3 exceptions
 
 Gate 3(a) flips one seeded bit in every positive input and requires that the
-verifier never returns `valid`/`erased` afterwards. The two deliberately
+verifier never returns `valid`/`erased` afterwards. The deliberately
 unsigned positive records, the `weave.erased` placeholder shape, and the
 ignored unknown-algorithm signature entries (whose bytes are semantically inert)
 are documented in [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); everything
@@ -190,10 +231,83 @@ tests. Until then the candidate may be regenerated after a ruling. The CI gate
 validates the file set and checksums and runs the verifier over the candidate
 set; removing a case turns that gate red.
 
+## Keyset usage errors and the vector format
+
+A keyset directory (`--keys <dir>`) is a *usage input*, not a record target:
+when two keyset files declare the same key id with a different class or a
+different validity window, or a keyset file is structurally invalid, the
+verifier exits with status 2 and emits no JSON report (specification §14.1).
+The `expected.json` format can express verdicts/errors of a record or container
+but not a CLI usage error, so these boundaries are pinned by the reference
+implementation's unit tests (and by `tools/anti_verification.py`) rather than
+by a committed vector; the vector cases that exercise keyset *governance*
+(e.g. `key-lifecycle/redeclare-class-conflict`) use valid keysets. The same
+applies to a keyset declaration whose `public_key` is not strict base64url of
+exactly 32 bytes: since S1-FIX3 (V5) `public_key` is a structural property, so
+such a declaration inside a keyset is a usage error (exit 2), not a silently
+ignored declaration; a committed vector cannot express exit 2, so unit tests
+and `key-lifecycle/bad-public-key-does-not-govern` (the container-side rule that
+a structurally invalid declaration never governs the class) cover it.
+
+## Supplied `--previous` containers and the zip form
+
+A `--previous` argument may be a container directory **or its zip form**. Since
+S1-FIX3 (V3, §11.5) a supplied previous container is used **only to link the
+chain**: the verifier reads exactly `manifest.json` and
+`signatures/manifest.sig.json` (each bounded by the manifest size limit), checks
+the manifest digest and verifies the signature **in the target container's
+verification context** (the supplied keyset plus the target's own key records,
+never the previous container's; S1-FIX4 W1), and ignores all other previous
+content (records, blobs, `readable/`, extra files, symlinked members,
+attestation timestamp contents). Read/parse/digest/signature failures of those
+two members, a directory member that is not a regular file, or a zip that does
+not contain exactly one non-directory member for each path are
+`E_MANIFEST_CHAIN`; a zip structural/framing/limit failure of the supplied
+previous — §11.9 rules 1–4 apply to every entry of the archive, read or not
+(S1-FIX4 W2) — is also `E_MANIFEST_CHAIN` (not `E_CONTAINER_ZIP`) and must never crash
+(a corrupted DEFLATE stream is mapped to `E_MANIFEST_CHAIN`). When the previous
+manifest identity is read and its signature verifies, the report carries
+`L_PREVIOUS_CONTENT_UNVERIFIED` (one criterion, S1-FIX4 W5: the
+previous-manifest-chain stage ran and the supplied signature verified, whatever
+else that stage then finds; a container whose pipeline stops earlier never reads
+the supplied previous); with `--previous` the previous signature *is*
+re-verified, so `N_PREVIOUS_SIG_UNVERIFIED`/`L_PREVIOUS_SIG_UNVERIFIED` are not
+reported (they remain for the embedded `previous/manifest.json` when no
+`--previous` is supplied). `container/previous-zip-valid`,
+`container/previous-zip-deflate-valid`/`-corrupt`, the nine
+`container/previous-ignores-*` cases, `container/previous-non-zip-file` and the
+S1-FIX4 cases (`previous-device-key-target-context`, `previous-rotated-old-key-links`,
+`previous-key-*`, `previous-rotation-material-untrusted`, `previous-signing-key-*`,
+`previous-invalid-rotation-supplies-no-material`,
+`previous-zip-rule4-*`, `previous-signature-invalid`,
+`previous-attestation-digest-mismatch`, `previous-attestation-symlink`,
+`previous-not-read-after-*`, `previous-bad-signature-after-blob-failure`,
+`previous-embedded-mismatch-supplied-verified`) pin this surface; to verify a previous container as evidence, run it as a target.
+
 ## Known coverage gaps
 
-Size-limit rejections (`E_JSON_SIZE`, `E_CONTAINER_SIZE`, and the largest
-manifest/blob limits) are not exercised by committed vectors because that would
-require multi-megabyte fixtures; they are covered by the verifier's unit tests.
-`expected.json` notes on individual cases document the exact specification rule
-each case is derived from.
+RFC 3161 receipts are checked as strict DER since S1-FIX3 (V2): the whole file
+must be exactly one DER `TimeStampResp` (minimal lengths, fixed
+`SignedData`/`SignerInfo`/`TSTInfo` versions) and any DER/structure failure is
+`E_TS_SCHEMA` at the timestamp phase; `integrity-levels/l2-ts-der-*` pin a
+non-minimal length, a wrong `SignedData.version` and a truncated receipt, each
+with the attestation digest recomputed so the mutation reaches DER parsing.
+
+Most size-limit rejections (`E_JSON_SIZE` for oversized manifests/attestation
+files/timestamp receipts, `E_CONTAINER_SIZE`, and the largest manifest/blob
+limits) are not exercised by committed vectors because that would require
+multi-megabyte fixtures; they are covered by the verifier's unit tests and the
+resource-limit gate. The JSON nesting limit (`MAX_JSON_DEPTH`, depth 32/33) and
+the licence nesting limit (`MAX_LICENCE_NESTING`, 16/17) *are* exercised by
+small committed vectors, and `container/oversize-record-file` commits a
+1,048,577-byte record fixture so the per-record `MAX_RECORD_BYTES` rejection and
+its report shape are pinned by a vector. The directory-container total-byte cap
+(T15) is pinned by unit tests and the resource-limit gate only, for the same
+multi-gigabyte-fixture reason. Two zip-form §13 limits are covered by small
+committed vectors instead: `container/zip-declared-total-over-limit` (declared
+uncompressed total) and `container/readable-declared-size-excluded`
+(`readable/**` is excluded from that total). The 200,001-entry
+`MAX_CONTAINER_ENTRIES` case is **not** committed (a ~21 MB fixture); it is
+covered by a unit test that builds the archive in memory, as recorded in
+S1-FIX2. `expected.json` notes on individual cases document the exact
+specification rule each case is derived from.

@@ -131,7 +131,7 @@ def _find_marker(lines: list[str], fence_index: int) -> str | None:
         index -= 1
     if index < 0:
         return None
-    match = MARKER_RE.match(lines[index].strip())
+    match = MARKER_RE.fullmatch(lines[index].strip())
     return match.group(1) if match else None
 
 
@@ -141,14 +141,14 @@ def extract_blocks(path: Path) -> list[Block]:
     blocks: list[Block] = []
     index = 0
     while index < len(lines):
-        if not FENCE_OPEN_RE.match(lines[index]):
+        if not FENCE_OPEN_RE.fullmatch(lines[index]):
             index += 1
             continue
         marker = _find_marker(lines, index)
         content_lines: list[str] = []
         cursor = index + 1
         while cursor < len(lines):
-            if FENCE_CLOSE_RE.match(lines[cursor]):
+            if FENCE_CLOSE_RE.fullmatch(lines[cursor]):
                 break
             content_lines.append(lines[cursor])
             cursor += 1

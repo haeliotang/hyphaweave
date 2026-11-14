@@ -58,7 +58,14 @@
       "type": "object"
     },
     "sigs": {
-      "$ref": "manifest.json#/$defs/signatures"
+      "title": "record signature set",
+      "description": "Structurally valid 0-16 signature entries, sorted by key ascending with unique keys; enforced by tools/check_schemas.py. Whether a record MUST carry signatures is a §4.4 semantic rule (minItems is deliberately absent).",
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "manifest.json#/$defs/signature"
+      }
     }
   },
   "allOf": [
@@ -275,9 +282,9 @@
     },
     "spdx_expression": {
       "title": "SPDX licence expression",
-      "description": "SPDX licence expression, syntax-checked only. Approximation: identifiers [A-Za-z0-9][A-Za-z0-9.+-]*, uppercase AND/OR/WITH operators, parentheses nested at most two levels; full SPDX grammar (precedence, exception identifiers, licence-list membership) is checked by the verifier, never offline membership. See schemas/README.md.",
+      "description": "SPDX licence expression, syntax-checked only. This schema approximation constrains only the permitted character alphabet; the full SPDX grammar (operator placement, precedence, exception identifiers), MAX_LICENCE_NESTING and licence-list membership are verifier rules (specification §8.7, §13), never offline membership. See schemas/README.md.",
       "type": "string",
-      "pattern": "^(?:(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*|\\((?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*|\\((?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\))(?:\\s+(?:AND|OR|WITH)\\s+(?:[A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*|\\([A-Za-z0-9][A-Za-z0-9.+-]*(?:\\s+(?:AND|OR|WITH)\\s+[A-Za-z0-9][A-Za-z0-9.+-]*)*\\)))*\\)))*$"
+      "pattern": "^[A-Za-z0-9()+.-]+(?:[ A-Za-z0-9()+.-]+)*$"
     }
   }
 }

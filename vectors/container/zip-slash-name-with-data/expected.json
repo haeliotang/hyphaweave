@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-slash-name-with-data","input":"container.zip","notes":"U12/L6/§11.9 rule 4: an entry whose name ends with `/` is a directory entry and must carry no data; this readable/ entry has data and no DOS directory attribute, so the archive is E_CONTAINER_ZIP.","records":[],"target":"container","verdict":"invalid"}

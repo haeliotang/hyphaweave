@@ -1,0 +1,1 @@
+{"args":["--keys","@keyset"],"category":"actor","errors":["E_ENV_REFS"],"id":"actor/grant-malformed-reference","input":"record.json","notes":"F2/S8(6): the reference object in `actor.grant` is owned by §6.1; a malformed reference object reports the reference-object grammar code E_ENV_REFS, not E_ENV_ACTOR.","target":"record","verdict":"invalid"}
