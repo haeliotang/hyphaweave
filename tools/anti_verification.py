@@ -1306,7 +1306,14 @@ def _build_catalogue() -> None:
            "accept a signerInfo version outside {1, 3} (V2/M3)",
            r'        if signer_info_version not in \("v1", "v3"\):',
            '        if False:  # ablation: signerInfo version not checked',
-           ("integrity-levels/l2-ts-signer-info-version-and-imprint",)),
+           ("integrity-levels/l2-ts-signer-info-version-and-imprint",),
+           co_mutations=(
+               # X7: the RFC 5652 §5.3 version/sid coupling also rejects every
+               # version outside {1, 3} (the expected version is always 1 or 3).
+               ("timestamps.py",
+                r'        if signer_info_version != expected_version:\n',
+                '        if False:  # co-ablation: version/sid coupling not checked\n'),
+           )),
         _m("class-governance-public-key", "verifier.py", "class.governance.public-key",
            "let a declaration with an invalid public_key govern the class (V5/M2)",
            r'                    try:\n                        keys_module\.decode_public_key_material\(body\.get\("public_key"\)\)\n                    except WeaveError:\n                        structurally_ok = False',
