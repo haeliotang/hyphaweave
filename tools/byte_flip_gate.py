@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
-"""H0 revision-1 gate: exhaustive byte-level bit-flip anti-verification.
+"""Byte-flip gate: exhaustive byte-level bit-flip anti-verification.
 
 For **every positive vector case** (expected verdict ``valid`` or ``erased``, and
 also the frozen candidate when present) this gate flips one bit in **every byte**
@@ -21,11 +21,12 @@ not come back with the case's accepted verdict (``valid``, or ``erased`` for an
 erased-placeholder case):
 
 * ``invalid`` - the normal rejection; counted separately.
-* ``unverifiable`` / usage error / verifier crash - also a rejection.  A mutated
-  byte can break a dependency (for example the only key-declaration record), so
-  the honest verdict is ``unverifiable`` rather than ``invalid``; this is counted
-  separately with the observed verdict, never silently folded into ``invalid``.
-  A crash means the verifier did not fail closed; it is counted separately too.
+* ``unverifiable`` / usage error - also a rejection.  A mutated byte can break a
+  dependency (for example the only key-declaration record), so the honest
+  verdict is ``unverifiable`` rather than ``invalid``; this is counted separately
+  with the observed verdict, never silently folded into ``invalid``.
+* a **verifier crash** is never a rejection: it means the verifier did not fail
+  closed, and the gate fails (V2④); each sample keeps its file, offset and bit.
 * **exempt** - a mutant that *is accepted again* is only allowed when the flipped
   byte is in a documented, signature/digest-uncovered byte class (unsigned
   records, erased placeholders, ``sigs`` metadata, ``readable/``, untrusted TSA
@@ -61,6 +62,13 @@ Exemption classes implemented here:
     end-of-central-directory are container metadata, not archived evidence; a
     metadata bit flip must not be reported as invalid evidence.  Bytes of the
     archived entry payloads are *not* exempt.
+``tsr-digest-algorithms``, ``tsr-non-signer-certificate``, ``tsr-revocation-info``, ``tsr-unsigned-attributes``
+    W8: a ``.tsr`` flip (with the attestation digest re-synchronised so it reaches
+    DER decoding) is exempt only inside one of these four DER fields, which no
+    §12.2 check reads beyond strict DER (check 1); the byte ranges are computed
+    from the receipt structure and listed per case in
+    ``vectors/GATE-3-EXCEPTIONS.md``. Every other accepted ``.tsr`` flip is a
+    survivor; there is no blanket ``.tsr`` exemption.
 
 The tool imports the verifier package in-process (the same check path the
 ``hyphaweave-verify`` CLI executes) and caches the verified key set between
@@ -85,7 +93,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import zipfile
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -124,6 +131,32 @@ EXEMPT_REASONS = {
     "zip-metadata": (
         "zip local-file headers, extra fields, data descriptors, central directory and "
         "EOCD are container metadata, not archived evidence"
+    ),
+    "zip-readable-payload": (
+        "a zip entry under readable/ is never decompressed, CRC-checked, hashed or counted "
+        "(spec §11.8/§11.9): flipping its payload bytes cannot change any verdict"
+    ),
+    # W8: no blanket .tsr exemption. Each class below names one DER field of the
+    # receipt that no §12.2 check reads beyond check 1 (strict DER, decodable);
+    # the byte ranges per case are listed in vectors/GATE-3-EXCEPTIONS.md.
+    "tsr-digest-algorithms": (
+        "SignedData.digestAlgorithms: RFC 5652 lists the signers' digest algorithms "
+        "here, but §12.2 constrains only the signer's own digestAlgorithm (check 5); a "
+        "flip that keeps the SET OF strict DER and sorted cannot change a verdict"
+    ),
+    "tsr-non-signer-certificate": (
+        "a certificate in SignedData.certificates other than the located signer "
+        "certificate: §12.2 checks 7, 8, 11, 12 and 15 read only the signer "
+        "certificate; another certificate is only required to be strict DER and "
+        "decodable (check 1)"
+    ),
+    "tsr-revocation-info": (
+        "SignedData.crls: H0 performs no revocation checking of the TSA "
+        "certificate; the entries are only required to be strict DER (check 1)"
+    ),
+    "tsr-unsigned-attributes": (
+        "SignerInfo.unsignedAttrs: outside the CMS signature and read by no §12.2 "
+        "check; only required to be strict DER (check 1)"
     ),
 }
 
@@ -345,29 +378,63 @@ class _SpanScanner:
         return self._scan_value(index)
 
 
+# ------------------------------------------------------------------- DER helpers
+
+
+def is_timestamp_path(rel: str) -> bool:
+    """V2c: whether a container member is a listed TSR file."""
+    return rel.startswith("signatures/timestamp-") and rel.endswith(".tsr")
+
+
+def sync_timestamp_digest(attestation_bytes: bytes, rel: str, tsr_bytes: bytes) -> bytes:
+    """Return the attestation bytes with the digest of ``rel`` re-pointed (V2c).
+
+    ``signatures/manifest.sig.json`` is not itself digested or signed (§11.3), so
+    updating the listed digest lets the byte flip reach DER parsing instead of
+    stopping at the file-level ``E_TS_FILE`` check.
+    """
+    import hashlib
+
+    from hyphaweave_verify import canonical
+
+    value = json.loads(attestation_bytes)
+    updated = False
+    for entry in value.get("timestamps") or ():
+        if isinstance(entry, dict) and entry.get("path") == rel:
+            entry["digest"] = "sha256:" + hashlib.sha256(tsr_bytes).hexdigest()
+            updated = True
+    if not updated:
+        return attestation_bytes
+    return canonical.canonicalize(value)
+
+
 # ------------------------------------------------------------------------ zip layout
 
 
-def zip_ranges(path: Path) -> list[tuple[int, int]]:
-    """Return the byte ranges that are *archived evidence* (entry payloads).
+def zip_ranges(path: Path) -> list[tuple[int, int, str]]:
+    """Return ``(start, end, name)`` ranges of *archived evidence* (entry payloads).
 
     Everything else in the archive (local headers, central directory, EOCD and
     entry descriptors) is container metadata and exempt from the invalid rule.
+    Payloads under ``readable/`` are separately exempt (never decompressed or
+    CRC-checked). The layout is read with the verifier's own ``zipread`` parser,
+    so the byte-flip gate does not depend on the standard library's zip reader.
     """
-    data = path.read_bytes()
-    payload: list[tuple[int, int]] = []
-    with zipfile.ZipFile(path) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
+    from hyphaweave_verify import zipread
+
+    payload: list[tuple[int, int, str]] = []
+    with path.open("rb") as handle:
+        archive = zipread.parse_zip(handle)
+        for entry in archive.entries:
+            if entry.is_directory:
                 continue
-            header = info.header_offset
-            if data[header : header + 4] != b"PK\x03\x04":
-                continue
-            name_len = int.from_bytes(data[header + 26 : header + 28], "little")
-            extra_len = int.from_bytes(data[header + 28 : header + 30], "little")
-            start = header + 30 + name_len + extra_len
-            end = start + info.compress_size
-            payload.append((start, end))
+            payload.append(
+                (
+                    entry.data_offset,
+                    entry.data_offset + entry.compressed_size,
+                    entry.name,
+                )
+            )
     return payload
 
 
@@ -456,10 +523,10 @@ class VerifierRunner:
         return str(Path(hyphaweave_verify.__file__).resolve())
 
     def _skipped(self) -> Any:
-        saved = os.environ.pop("WEAVE_VERIFY_SKIP_CHECKS", None)
-        if saved is not None:
-            os.environ["WEAVE_VERIFY_SKIP_CHECKS"] = saved
-        return self.cli.CheckSkipper.from_env()
+        # S13: the skip hook is available only with an explicit --test-hooks
+        # parameter, which this gate never passes; every flip is judged with all
+        # checks enabled.
+        return self.cli.CheckSkipper()
 
     def run(self, argv: list[str]) -> dict:
         namespace = self.parser.parse_args(argv)
@@ -474,9 +541,7 @@ class VerifierRunner:
         except OSError as error:
             return {"verdict": "usage-error", "error": str(error)}
         except Exception as error:  # noqa: BLE001 - a crash must be reported, not hidden
-            # A malformed mutant may make the verifier raise instead of reporting invalid.
-            # That is not a clean rejection; it is reported as ``verifier-crash`` and the
-            # byte-class exemption rules decide whether it is documented or a survivor.
+            # V2d: a verifier crash is a gate failure, never an accepted rejection.
             return {
                 "verdict": "verifier-crash",
                 "error": "%s: %s" % (type(error).__name__, error),
@@ -545,9 +610,100 @@ def classify_non_invalid(
     return None
 
 
-def classify_zip(offset: int, payload_ranges: list[tuple[int, int]]) -> str | None:
-    for start, end in payload_ranges:
+_TSR_RANGES_CACHE: dict[bytes, list[tuple[int, int, str]]] = {}
+
+
+def tsr_exempt_ranges(raw: bytes) -> list[tuple[int, int, str]]:
+    """W8: the byte ranges of a receipt that no §12.2 check reads beyond check 1.
+
+    Returns ``(start, end, class)`` for the content of ``SignedData.digestAlgorithms``,
+    of every certificate in ``SignedData.certificates`` that is not the located
+    signer certificate, of ``SignedData.crls`` and of ``SignerInfo.unsignedAttrs``.
+    Every other receipt byte is evidence: an accepted flip there is a survivor.
+    """
+    cached = _TSR_RANGES_CACHE.get(raw)
+    if cached is not None:
+        return cached
+    from asn1crypto import tsp
+
+    def header(position: int) -> tuple[int, int, int]:
+        tag = raw[position]
+        length = raw[position + 1]
+        cursor = position + 2
+        if length & 0x80:
+            count = length & 0x7F
+            length = int.from_bytes(raw[cursor : cursor + count], "big")
+            cursor += count
+        return tag, cursor, cursor + length
+
+    def children(start: int, end: int) -> list[tuple[int, int, int, int]]:
+        result = []
+        position = start
+        while position < end:
+            tag, body, after = header(position)
+            result.append((tag, position, body, after))
+            position = after
+        return result
+
+    ranges: list[tuple[int, int, str]] = []
+    _tag, body, end = header(0)
+    token = children(body, end)[1]
+    explicit = children(token[2], token[3])[1]
+    signed_data = children(explicit[2], explicit[3])[0]
+    fields = children(signed_data[2], signed_data[3])
+    response = tsp.TimeStampResp.load(raw)
+    content = response["time_stamp_token"]["content"]
+    sid = content["signer_infos"][0]["sid"]
+    for tag, start, inner, after in fields:
+        if tag == 0x31 and start == fields[1][1]:
+            ranges.append((inner, after, "tsr-digest-algorithms"))
+        elif tag == 0xA0:
+            for index, (_ctag, cstart, _cinner, cafter) in enumerate(children(inner, after)):
+                choice = content["certificates"][index]
+                certificate = choice.chosen if choice.name == "certificate" else None
+                is_signer = (
+                    certificate is not None
+                    and sid.name == "issuer_and_serial_number"
+                    and certificate.serial_number == sid.chosen["serial_number"].native
+                    and certificate.issuer.dump() == sid.chosen["issuer"].dump()
+                )
+                if not is_signer:
+                    ranges.append((cstart, cafter, "tsr-non-signer-certificate"))
+        elif tag == 0xA1:
+            ranges.append((inner, after, "tsr-revocation-info"))
+        elif tag == 0x31:
+            signer_info = children(inner, after)[0]
+            for stag, _sstart, sinner, safter in children(signer_info[2], signer_info[3]):
+                if stag == 0xA1:
+                    ranges.append((sinner, safter, "tsr-unsigned-attributes"))
+    _TSR_RANGES_CACHE[raw] = ranges
+    return ranges
+
+
+def classify_tsr(case_id: str, rel: str, raw: bytes, offset: int) -> str | None:
+    """W8: the exemption class of an accepted ``.tsr`` flip, or None (survivor)."""
+    del case_id, rel  # the classification depends only on the receipt structure
+    try:
+        ranges = tsr_exempt_ranges(raw)
+    except (ValueError, TypeError, KeyError, IndexError):
+        # An original that does not decode has no exempt field: every
+        # accepted flip of it is a survivor.
+        return None
+    for start, end, name in ranges:
         if start <= offset < end:
+            return name
+    return None
+
+
+def classify_zip(
+    offset: int, payload_ranges: list[tuple[int, int, str]]
+) -> str | None:
+    for start, end, name in payload_ranges:
+        if start <= offset < end:
+            if name.startswith("readable/"):
+                # §11.8/§11.9: readable/ payload is never decompressed, hashed or
+                # CRC-checked, so its bytes carry no semantic.
+                return "zip-readable-payload"
             return None
     return "zip-metadata"
 
@@ -597,23 +753,24 @@ def process_case(
         "invalid": 0,
         "rejected": {},
         "exempt": {},
-        "crash_samples": [],
+        "crashes": [],
         "survivors": [],
-        "crash_samples": [],
         "files": [],
     }
 
     def note_outcome(verdict: str, report: dict, exempt_class: str | None, location: dict) -> None:
         result["mutants"] += 1
+        if verdict == "verifier-crash":
+            # V2d: a crash means the verifier did not fail closed; it is a gate
+            # failure, never an accepted rejection or an exemption candidate.
+            if len(result["crashes"]) < 20:
+                result["crashes"].append({**location, "error": report.get("error", "")})
+            return
         if verdict != accepted:
             if verdict == "invalid":
                 result["invalid"] += 1
             else:
                 result["rejected"][verdict] = result["rejected"].get(verdict, 0) + 1
-                if verdict == "verifier-crash" and len(result["crash_samples"]) < 20:
-                    result["crash_samples"].append(
-                        {**location, "error": report.get("error", "")}
-                    )
             return
         if exempt_class is None:
             result["survivors"].append(
@@ -650,7 +807,7 @@ def process_case(
             report = runner.run(["record", str(temp_path)] + args)
             verdict = report.get("verdict")
             if verdict != accepted:
-                note_outcome(verdict, report, None, {})
+                note_outcome(verdict, report, None, {"file": expected["input"], "offset": offset, "bit": offset % 8})
                 continue
             exemption = classify_non_invalid(
                 case=expected,
@@ -681,30 +838,52 @@ def process_case(
                 shutil.copytree(container_src, container)
 
         _ensure_container()
-        files = sorted(path for path in container.rglob("*") if path.is_file())
+        # V3/§11.8: a symlinked member is not byte-mutated (the gate must not
+        # follow links out of the container); the link target string carries no
+        # verifier semantics. See vectors/GATE-3-EXCEPTIONS.md `symlink-entry`.
+        files = sorted(
+            path
+            for path in container.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        )
+        attestation_path = container / "signatures" / "manifest.sig.json"
         for path in files:
             rel = path.relative_to(container).as_posix()
             original = path.read_bytes()
             file_spans = None
             if rel.startswith("records/") and rel.endswith(".json"):
                 file_spans = record_span_map(original)
+            is_tsr = is_timestamp_path(rel)
             limit = len(original) if max_bytes is None else min(len(original), max_bytes)
             result["files"].append({"file": rel, "bytes": len(original)})
             for offset in range(limit):
                 if not path.parent.is_dir():
                     _ensure_container()
-                path.write_bytes(mutate_bytes_at(original, offset))
+                attestation_original = None
+                if is_tsr and attestation_path.is_file():
+                    # V2c: attestation digests are outside the manifest signature, so
+                    # a mutated .tsr would otherwise be rejected as E_TS_FILE before
+                    # DER parsing. Re-point the (unsigned) listing at the mutant.
+                    attestation_original = attestation_path.read_bytes()
+                mutated = mutate_bytes_at(original, offset)
+                path.write_bytes(mutated)
+                if attestation_original is not None:
+                    attestation_path.write_bytes(
+                        sync_timestamp_digest(attestation_original, rel, mutated)
+                    )
                 try:
                     report = runner.run(["container", str(container)] + _container_args(args))
                 finally:
                     try:
                         path.write_bytes(original)
+                        if attestation_original is not None:
+                            attestation_path.write_bytes(attestation_original)
                     except FileNotFoundError:
                         _ensure_container()
                         path.write_bytes(original)
                 verdict = report.get("verdict")
                 if verdict != accepted:
-                    note_outcome(verdict, report, None, {})
+                    note_outcome(verdict, report, None, {"file": rel, "offset": offset, "bit": offset % 8})
                     continue
                 exemption = classify_non_invalid(
                     case=expected,
@@ -715,6 +894,12 @@ def process_case(
                     spans=file_spans,
                     verdict=verdict,
                 )
+                if exemption is None and is_tsr:
+                    # W8: no blanket .tsr exemption. Only the byte positions
+                    # listed (with a reason each) in TSR_EXEMPT_OFFSETS and
+                    # vectors/GATE-3-EXCEPTIONS.md are exempt; every other
+                    # accepted .tsr flip is a survivor.
+                    exemption = classify_tsr(case_id, rel, original, offset)
                 note_outcome(
                     verdict,
                     report,
@@ -735,7 +920,7 @@ def process_case(
         report = runner.run(["container", str(temp_zip)] + _container_args(args))
         verdict = report.get("verdict")
         if verdict != accepted:
-            note_outcome(verdict, report, None, {})
+            note_outcome(verdict, report, None, {"file": expected["input"], "offset": offset, "bit": offset % 8})
             continue
         exemption = classify_zip(offset, payload_ranges)
         if exemption is None and expected.get("verdict") == "erased":
@@ -905,15 +1090,15 @@ def main(argv: list[str] | None = None) -> int:
         "invalid": sum(item["invalid"] for item in results),
         "rejected": {},
         "exempt": {},
-        "crash_samples": [],
+        "crashes": [],
         "survivors": [],
     }
     for item in results:
         for name, count in item.get("rejected", {}).items():
             totals["rejected"][name] = totals["rejected"].get(name, 0) + count
-        for sample in item.get("crash_samples", []):
-            if len(totals["crash_samples"]) < 20:
-                totals["crash_samples"].append({"case": item["case"], **sample})
+        for sample in item.get("crashes", []):
+            if len(totals["crashes"]) < 20:
+                totals["crashes"].append({"case": item["case"], **sample})
         for name, count in item["exempt"].items():
             totals["exempt"][name] = totals["exempt"].get(name, 0) + count
         for survivor in item["survivors"]:
@@ -922,7 +1107,8 @@ def main(argv: list[str] | None = None) -> int:
 
     report = {
         "gate": "byte-flip",
-        "ok": not totals["survivors"],
+        # V2d: a crash is a gate failure, exactly like a survivor.
+        "ok": not totals["survivors"] and not totals["crashes"],
         "exempt_reasons": EXEMPT_REASONS,
         **totals,
         "case_results": results,
@@ -948,9 +1134,9 @@ def main(argv: list[str] | None = None) -> int:
         print("non-invalid rejections (fail-closed dependency breaks):")
         for name in sorted(totals["rejected"]):
             print("  %-26s %6d" % (name, totals["rejected"][name]))
-    if totals["crash_samples"]:
-        print("verifier-crash samples (fail-closed gap, reported separately):")
-        for sample in totals["crash_samples"][:10]:
+    if totals["crashes"]:
+        print("VERIFIER CRASHES (a crash is a gate failure, not a rejection):")
+        for sample in totals["crashes"][:10]:
             print(
                 "  %s file=%s offset=%s :: %s"
                 % (sample["case"], sample.get("file", "-"), sample.get("offset"), sample.get("error", "")[:120])
@@ -975,6 +1161,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         print("RESULT: FAIL")
+        return 1
+    if totals["crashes"]:
+        print("RESULT: FAIL (verifier crash)")
         return 1
     print("RESULT: PASS")
     return 0

@@ -1,0 +1,1 @@
+{"category":"sig","errors":["E_SIG_REQUIRED"],"id":"sig/required-empty-sigs","input":"record.json","notes":"S7(1)/§4.3-§4.4: the `sigs` array bound is 0-16 entries, but a record that must be signed by its actor and carries an empty array is E_SIG_REQUIRED (invalid), not an envelope-shape error.","target":"record","verdict":"invalid"}

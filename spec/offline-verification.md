@@ -258,7 +258,9 @@ fi
 the shell `&&`/`||` turns that into the verdict word above.
 
 The signature list must be non-empty (1–16 entries), sorted by `key` and unique; an empty
-list means the container is unsigned (invalid, `E_MANIFEST_UNSIGNED`). Check the ordering
+list means the container is unsigned (invalid, `E_MANIFEST_UNSIGNED`). If
+`signatures/manifest.sig.json` itself is absent, the container is unsigned in exactly the
+same way (`E_MANIFEST_UNSIGNED`, specification §11.1). Check the ordering
 quickly:
 
 ```bash
@@ -421,8 +423,8 @@ available, repeat steps 3–5 on it to check its signature too.
    consistency; whether the key is *trusted* depends on the local keyset input (§9
    step 2b).
 
-**It does not prove** (these are the honest limits, also reported as `limitations` by a
-verifier):
+**It does not prove** (these are the honest limits; a verifier reports them as the closed
+`limitations` identifiers of specification §14.9, never as prose):
 
 1. **Identity.** A signature proves possession of the private key behind a key id. Trust
    roots come only from the reader's local keyset; a container cannot establish its own

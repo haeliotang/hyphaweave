@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_UNSIGNED"],"id":"container/manifest-unsigned-missing-sigfile","input":"container","notes":"S8(2)/§11.1: the required attestation file signatures/manifest.sig.json is absent. The registry assigns the no-signatures condition to E_MANIFEST_UNSIGNED, not to a manifest schema error.","records":[],"target":"container","verdict":"invalid"}

@@ -9,7 +9,6 @@ this test pins the gate so a specification/verifier drift cannot pass unnoticed.
 
 from __future__ import annotations
 
-import pathlib
 import subprocess
 import sys
 

@@ -251,15 +251,226 @@ changes the remaining trust-selection and timestamp-comparison behaviour:
   CONTRIBUTING, SECURITY), and Q33/P1/P2 were resolved in
   `docs/open-questions.md`.
 
+### Revision 3 (decision 2026-11-11 #2)
+
+Revision 3 implements rulings S1–S17 that followed the H1/J1a reviews of the
+second independent implementation. (The counts in this subsection describe the
+revision-3 hand-off; the S1 rounds below changed several of them, and the
+current counts are given there.) It is a wire-visible specification revision:
+it closes ambiguities found by two independent implementations, adds resource
+limits the earlier text lacked, fixes four reference-verifier defects, and turns
+the report's `limitations` field into a closed identifier vocabulary. The Rust
+implementation (H1-FIX1) follows in a separate change set after this revision is
+merged.
+
+- **Clarified trust and revocation state.** A key's class and validity window are
+  governed by the declaration that established its trust; a container/target
+  redeclaration cannot override them, a different-class redeclaration is invalid
+  with the new `E_KEY_CLASS_CONFLICT`, and a backdated `recorded_at` never wins
+  (S1). Key revocations from the whole verification context — keyset included —
+  take effect independently of record order; retired/other uses the earliest
+  effective time and compromise rescue uses the earliest `T` (S2).
+- **Resource limits and bounded reads.** `MAX_JSON_DEPTH` = 32 (value nesting
+  depth), `MAX_LICENCE_NESTING` = 16 and `MAX_TS_ACCURACY` = 86,400 s are new;
+  violations report `E_JSON_SIZE`, `E_ENV_LICENCE` and `E_TS_SCHEMA`
+  respectively, and nesting must never crash a verifier (S3, S11). Directory and
+  zip containers are read within per-class limits; ZIP64 must be accepted; zip
+  prefix bytes, trailing bytes and archive comments are rejected (S4, S5).
+- **Deterministic verdicts and reports.** An empty `sigs` array is structurally
+  valid and `E_SIG_REQUIRED` is applied by the §4.4 precedence (S7); an
+  unverifiable manifest signature no longer stops record processing (S7); the
+  S8 ambiguity rulings are normative (manifest multi-error reporting, missing
+  attestation file, missing `body.public_key`, `-0` token order, envelope
+  sub-order, nested-object codes, zip details, the keyset structural/semantic
+  boundary, report construction details, check-order precedence; fourteen of
+  them recorded in `docs/open-questions.md` as decided by principle); a grant
+  may be issued for future effect, a grant revocation must itself be valid, and
+  depth bounds are inclusive (S9, S10); `input` fields are `null` when their
+  identity cannot be determined within the limits (S14).
+- **Closed limitation vocabulary.** `limitations` is now a sorted, unique array
+  of ten `L_*` identifiers (S12); report construction is pinned byte-for-byte in
+  §14.6, including the serializer's `\u007f` escaping.
+- **Test-only hook hardened.** `WEAVE_VERIFY_SKIP_CHECKS` is read only with the
+  explicit global `--test-hooks` parameter, an unknown token is a usage error,
+  and a skipped check makes the CLI exit `3` (S13).
+- **Definitions and matcher semantics.** `recorded_at`/`occurred_at` are defined,
+  every `rel` has a direction, and a record's salt is fixed across exports
+  (S15). The H1 findings F1–F17 are adopted (report identity, dedicated
+  nested-object codes, envelope sub-order, unverifiable manifest continuation,
+  terminal blocking conditions, undetermined report fields, the keyset boundary,
+  input identity, report construction, inert `sigs[].alg` bytes, hook tokens,
+  command-surface details, stop rules, matcher semantics).
+- **Error registry.** New `E_KEY_CLASS_CONFLICT`; extended conditions for
+  `E_JSON_SIZE`, `E_ENV_LICENCE`, `E_TS_SCHEMA`, `E_MANIFEST_UNSIGNED`,
+  `E_MANIFEST_CHAIN`, `E_CONTAINER_ZIP`, `E_ENV_SIGS`; the envelope-level
+  `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` rows are narrowed to the top-level
+  envelope; the closed registry is **114 error codes, 14 notices and 10
+  limitation identifiers**.
+- **Schemas.** The record `sigs` array is structurally 0–16 entries (the
+  must-sign rule stays in the specification); the SPDX approximation is
+  documented as a character-alphabet check whose grammar and depth are enforced
+  by the verifier.
+- **Vectors.** The main corpus grows from **294 to 343 cases** (+49) across the
+  twelve categories, pinning every new ruling and fixed error code; the
+  expectation format gains `expected_input`, `limitations` and `notices_absent`,
+  plus exact empty-`records` assertions. The candidate regression set is
+  regenerated from the gated state: **190 cases** (179 previous, +23 selected new
+  cases, −12 previous representatives displaced by a lexicographically earlier
+  case for the same code); every change is listed in
+  `vectors/frozen/v0.1-candidate/FROZEN.md` (S17).
+- **Reference verifier.** The Python verifier implements the revision:
+  authoritative keyset declarations, order-independent revocation state, bounded
+  streaming reads, ZIP64, nesting limits, the new report and limitation
+  vocabulary, `--test-hooks`/exit 3, and the four differential-fuzz defect fixes.
+  The test suite reports **277 passed**.
+- **Tooling.** The vector generators gain the new expectation fields; the schema
+  self-check learns the new structural predicates; the true-source ablation gate
+  grows to **141 mutations (128 killed, 11 documented equivalent, 2 documented
+  redundant, 0 unpinned survivors)**; the byte-flip gate documents the
+  deliberately unsigned `proposed` positive cases.
+
+### S1 rounds after revision 3 (decisions 2026-11-11 #5, #12, #14, #16, 2026-11-12 #1)
+
+Five review rounds on the revised text and on the Python verifier (S1-FIX1 to
+S1-FIX5) followed revision 3 before it was merged. Each is wire-visible; the Rust
+implementation on its own branch has not yet followed them (H1-FIX1).
+
+**S1-FIX1 (decision 2026-11-11 #5, T1–T17).**
+
+- A missing or malformed `weave.key.declared` `body.public_key` is
+  `E_KEY_PUBLIC_KEY`, before `E_KIND_BODY_SCHEMA` (T1).
+- Retired/other and key-compromise revocations act independently, the stricter
+  result wins; there is no "compromise overrides retirement" (T2).
+- TSA `accuracy`: a millis/micros component outside 1–999 is `E_TS_SCHEMA`; a total
+  above `MAX_TS_ACCURACY` or an overflow is *unusable evidence*
+  (`present-unverified`, `E_TS_UNTRUSTED`, container unverifiable, never a rescue);
+  `genTime` is truncated to milliseconds before the rescue comparison (T3).
+- Any keyset declaration governs its key's class and window; conflicting keyset
+  declarations are a usage error (exit 2); "earlier" is `(recorded_at, record
+  digest)` everywhere (T4). `sigs` is structurally 0–16 entries (T5).
+- The zip structure rules of §11.9 (local header versus central directory, data
+  descriptors, no gaps or overlaps, EOCD/ZIP64 counts, `readable/` entry safety),
+  parsed by the verifier itself (T6); the candidate set only grows (T7).
+- A revocation signed by an already-revoked key does not take effect (T9); one
+  TOFU predicate for `N_KEY_TOFU` and `L_KEY_TRUST_TOFU`, the manifest signature
+  included (T10); `E_KEY_ROTATION_KEYS` precedes `E_SIG_*` (T13); member order is
+  UTF-16 code-unit order (T14); the directory form is bounded by
+  `MAX_CONTAINER_UNCOMPRESSED_BYTES` too (T15); the oversize-record report shape
+  is fixed (T16).
+
+**S1-FIX2 (decision 2026-11-11 #12, U1–U12).**
+
+- `--previous` accepts a zip and its failures are `E_MANIFEST_CHAIN` (U1); the §13
+  entry-count and declared-total limits apply to the zip form as
+  `E_CONTAINER_SIZE`, `readable/` excluded from the total (U2).
+- A self-revocation exempts only its own effect (U3); the governing class is
+  decided from structurally valid declarations before and independently of the
+  trust closure (U4, U5); rotated key material counts as TOFU (U6).
+- `L_TSA_TRUST_UNVERIFIED` only for a `present-unverified` receipt (U7); the
+  records-listing stage reports all of its violations together (U8); only
+  single-volume archives (U9).
+
+**S1-FIX3 (decision 2026-11-11 #14, V1–V8).**
+
+- Decompression never crashes; target and previous use one member reader (V1).
+- Any receipt DER/structure failure is check 1's `E_TS_SCHEMA`, receipts must be
+  strict DER, with fixed version values (V2).
+- A supplied previous container only links the chain: two members read, the rest
+  not verified, new limitation `L_PREVIOUS_CONTENT_UNVERIFIED` (V3).
+- `public_key` encoding is structural (V5); central-directory version-needed ≤ 63
+  and per-entry disk start 0 (V6); `record_count` keeps the manifest count once
+  the manifest structure passed (V7); a permanent crash-fuzz gate (V8).
+
+**S1-FIX4 (decision 2026-11-11 #16, W1–W11).**
+
+- **W1.** A supplied previous container's manifest signature is verified in the
+  **target** container's verification context: the key must be a §11.3 required
+  key of the target (keyset plus the target's own declared/rotated records, never
+  the previous container's), trusted in the target's final trust closure, and
+  usable under §9.4 at the previous manifest's `created_at` (a compromise always
+  broke the link; S1-FIX5 X2 replaced this). Device-signed exports whose keyset holds only the owner link
+  again; a key rotated away links through the target's rotation record.
+- **W2.** §11.9 rules 1–4 apply to every entry of a supplied previous zip; only
+  name safety, duplicate names, CRC and `readable/` rules are skipped for the
+  unread members.
+- **W3.** §12.2 check 1 is a real DER check in sub-steps 1a–1e: universal DER rules
+  over every TLV (universal SETs in DER order), a full decode, a DER re-encoding
+  of the decoded receipt that must equal the input (every SET OF sorted —
+  `digestAlgorithms`, `certificates`, `crls`, `signedAttrs`, `unsignedAttrs`,
+  `attrValues`, RDNs — and no DEFAULT encoded), the version values, and decoding
+  of every carried certificate and its extension values; the TSTInfo gets 1a–1c
+  on its own.
+- **W4.** `--keys`, `--tsa-trust` and the `--previous` path are operator inputs
+  checked before verification; any read or decode failure is a usage error
+  (exit 2, the file named on stderr, no report).
+- **W5.** A container-level invalid error at the cross-record, blob or
+  previous-chain stage stops the pipeline: later stages report no code, notice,
+  limitation or timestamp entry. Inside the previous-chain stage the supplied
+  previous is verified first, and `L_PREVIOUS_CONTENT_UNVERIFIED` has one
+  criterion (the stage ran and the supplied signature verified).
+- **W6.** The complete timestamp order: file checks, then the renewal-chain shape,
+  then checks 1–13 and 15 per receipt; one code per receipt; an algorithm/key-type
+  mismatch is check 10 (`E_TS_CMS`).
+- **W7.** The zip check order: locate the EOCD (prefix and trailing bytes) → parse
+  the central directory → §13 limits (`E_CONTAINER_SIZE`, stop) → every remaining
+  structural rule.
+- **W10.** Every `ed25519` entry of an attestation file is judged, the first
+  failing entry in array order deciding the code (a supplied previous follows the
+  same rule); every top-level keyset entry whose name ends in `.json`, hidden names
+  included, is a keyset file, and one that is not a regular file is a usage error
+  (exit 2).
+- **W8, W9, W11 (gates).** No blanket `.tsr` byte-flip exemption; the V3 core
+  checks are pinned by vectors; crash-fuzz skips no-op mutants, prints the seed on
+  failure, and its corpus gains the seed-777 PEM.
+
+**S1-FIX5 (decision 2026-11-12 #1, X1–X5).**
+
+- **X1.** §12.2 check 1's DER rules come from X.690 and the ASN.1 module
+  definitions only. The DEFAULT components are listed with the encodings of their
+  defaults; the ESSCertIDv2 default is `{id-sha256}` without parameters, so an
+  explicit `{id-sha256, NULL}` is valid and an explicit `{id-sha256}` is
+  `E_TS_SCHEMA`. A value of an open type (an unregistered attribute's value, for
+  example) is judged by its TLV framing only, whatever its tag class. `genTime`
+  and the other time values are compared as their raw DER form, so seven or more
+  fractional digits are valid. The high-tag-number form follows X.690 §8.1.2.4
+  (only the first subsequent octet may not be `0x80`).
+- **X2.** On the previous link a `key-compromise` revocation is judged like a
+  retired one, against the previous `created_at`: `created_at` before the
+  compromise time links, at or after it is `E_MANIFEST_CHAIN`.
+- **X3.** `--keys`, its entries, `--tsa-trust` and `--previous` are examined with
+  `lstat` before opening; a FIFO, device or socket is a usage error (exit 2) and
+  never blocks; `--tsa-trust` is read with the bound `MAX_TIMESTAMP_BYTES`.
+- **X5.** On the previous link a rotation record that is not valid supplies no
+  key material (§11.5 rule 1).
+- **X6 (decision 2026-11-12 #2).** The `parameters` of the signer's
+  `digestAlgorithm` and `signatureAlgorithm` have a fixed form: SHA-2 absent or
+  `NULL`, `rsaEncryption` `NULL`, sha*WithRSAEncryption absent or `NULL` (as
+  corrected by X7), ECDSA absent; any other form is `E_TS_SCHEMA`.
+- **X7 (decision 2026-11-12 #3).** UTCTime/GeneralizedTime forms are matched
+  against the whole content (a trailing line feed is `E_TS_SCHEMA`); every
+  whole-string pattern of the verifier uses a full match; the token carries
+  exactly one `SignerInfo`, whose version matches its `sid` (RFC 5652 §5.3);
+  check 1e decodes the signer certificate only, every
+  other carried certificate is an open type.
+
+**Current counts (S1-FIX5 hand-off).** Registry: 114 error codes, 14 notices, 11
+limitation identifiers (no code added in S1-FIX1–FIX5 except
+`L_PREVIOUS_CONTENT_UNVERIFIED` in S1-FIX3). Vectors: main corpus **498 cases**
+(revision 3 hand-off 343; +41 S1-FIX1, +19 S1-FIX2, +18 S1-FIX3, +47 S1-FIX4,
++30 S1-FIX5); candidate regression set **202 cases**. No gate figures are recorded
+for the S1 rounds; the only recorded figures are those of the revision-1 snapshot
+under "Verifying this snapshot" below.
+
 ### Explicitly not yet true in this version
 
 - **The format is not accepted.** `weave-record/1` v0.1 has **not** been
   accepted by the J1/J2 round-trip acceptance cases; that acceptance is what
   would make v0.1 valid. The draft may still change.
-- **There is only one implementation.** The Python reference verifier is the
-  only verifier in this repository, so the format cannot yet claim independent
-  implementations. The second (Rust) implementation is deliberately left to a
-  separate implementer and is not part of H0.
+- **Only one implementation follows this revision.** On this branch the Python
+  reference verifier is the only verifier. A second, independent implementation
+  (Rust, H1) exists on a separate branch but has not yet been brought up to
+  revision 3 and the S1 rounds, so the format cannot yet claim two conforming
+  independent implementations.
 - **The regression set is a candidate.** `vectors/frozen/v0.1-candidate/` is not
   frozen. Its conclusions may still change with a new decision; the official
   freeze begins only after J1/J2 acceptance.

@@ -128,6 +128,10 @@ structure; the verifier decides what it can verify.
   64 bytes. For any other algorithm name, `key` has the generic key-id shape
   (algorithm token, colon, 1-128 lowercase hex) and `value` is strict unpadded
   base64url of 1-2048 bytes.
+- The record `sigs` array is structurally allowed to be **empty** (0–16 entries):
+  whether a record must carry signatures is the specification §4.4 semantic rule, so
+  the record schema sets no `minItems` for `sigs`. The manifest `signatures` array
+  stays non-empty (1–16 entries).
 - Unknown-algorithm signatures are **structurally valid but semantically ignored**:
   H0 verifiers do not reject a record just because one signature entry names an
   algorithm they do not implement, and they report that entry as ignored. This is the
@@ -200,11 +204,11 @@ vectors.
    character-count classes and their unused-bit final characters. Full strict
    decoding (no `=`, no whitespace, correct lengths, zero unused bits) is a
    verifier/encoding rule.
-8. **SPDX licence expressions.** `labels.licence` accepts a bounded approximation:
-   identifiers `[A-Za-z0-9][A-Za-z0-9.+-]*`, uppercase `AND`/`OR`/`WITH` operators
-   and parentheses nested at most two levels. Operator precedence, exception
-   identifiers and licence-list membership are not checked offline ("syntax only,
-   no membership").
+8. **SPDX licence expressions.** `labels.licence` accepts a character-alphabet
+   approximation: non-empty ASCII letters, digits, `+`, `-`, `.`, spaces and
+   parentheses. Operator placement, precedence, exception identifiers, nesting depth
+   (`MAX_LICENCE_NESTING`, specification §8.7/§13) and licence-list membership are
+   verifier rules, not schema rules ("syntax only, no membership").
 9. **Kind name grammar and the project segment.** `$defs.kind_name` follows the
    published regex, which permits names without a dot. The specification additionally
    requires a project segment (`<project>.<kind>`), so a dotless synthetic kind is a

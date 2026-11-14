@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""The test-only WEAVE_VERIFY_SKIP_CHECKS hook (spec §14.7 / Q18)."""
+"""The test-only check-skip hook and exit code 3 (spec §14.7/§14.8, S13)."""
 
 from __future__ import annotations
 
 import json
+
+import pytest
 
 from conftest import VECTORS, run_cli
 
@@ -18,68 +20,100 @@ def _report(result) -> dict:
     return json.loads(result.stdout.decode("utf-8"))
 
 
-def test_hook_is_off_by_default() -> None:
-    result = run_cli("record", str(UNDECLARED))
+def test_hook_ignores_environment_without_the_flag() -> None:
+    result = run_cli(
+        "record", str(UNDECLARED), extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_KEY_UNKNOWN"}
+    )
     assert result.returncode == 1
     report = _report(result)
     assert report["checks_disabled"] == []
     assert report["verdict"] == "unverifiable"
 
 
-def test_exact_code_is_skipped_and_echoed() -> None:
+def test_exact_code_is_skipped_echoed_and_exit_3() -> None:
     result = run_cli(
-        "record", str(UNDECLARED), extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_KEY_UNKNOWN"}
+        "--test-hooks",
+        "record",
+        str(UNDECLARED),
+        extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_KEY_UNKNOWN"},
     )
     report = _report(result)
     assert report["checks_disabled"] == ["E_KEY_UNKNOWN"]
-    # The suppressed check is treated as passed: no error, verdict valid.
+    # The suppressed check is treated as passed: no error, verdict valid; the
+    # exit code still distinguishes the degraded run from an ordinary valid one.
     assert report["records"][0]["errors"] == []
     assert report["verdict"] == "valid"
-    assert result.returncode == 0
+    assert result.returncode == 3
 
 
-def test_family_prefix_is_skipped() -> None:
-    normal = run_cli(
-        "record", str(INVALID_SIG), "--keys", str(KEYSET)
-    )
-    assert _report(normal)["records"][0]["errors"] == ["E_SIG_INVALID"]
-    skipped = run_cli(
-        "record",
-        str(INVALID_SIG),
-        "--keys",
-        str(KEYSET),
-        extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_SIG"},
-    )
-    report = _report(skipped)
-    assert report["checks_disabled"] == ["E_SIG"]
-    assert report["records"][0]["errors"] == []
-    assert report["verdict"] == "valid"
+def test_family_and_wildcard_tokens_are_usage_errors() -> None:
+    for token in ("E_SIG", "E_SIG_*"):
+        result = run_cli(
+            "--test-hooks",
+            "record",
+            str(INVALID_SIG),
+            "--keys",
+            str(KEYSET),
+            extra_env={"WEAVE_VERIFY_SKIP_CHECKS": token},
+        )
+        assert result.returncode == 2
+        assert result.stdout == b""
+        assert token.encode() in result.stderr
 
 
-def test_multiple_tokens_sorted_unique() -> None:
+def test_multiple_tokens_sorted_unique_and_exit_3() -> None:
     result = run_cli(
+        "--test-hooks",
         "record",
         str(UNDECLARED),
-        extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_SIG,E_KEY_UNKNOWN,E_SIG,,"},
+        extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_SIG_INVALID,E_KEY_UNKNOWN,E_SIG_INVALID,,"},
     )
     report = _report(result)
-    assert report["checks_disabled"] == ["E_KEY_UNKNOWN", "E_SIG"]
+    assert report["checks_disabled"] == ["E_KEY_UNKNOWN", "E_SIG_INVALID"]
+    assert result.returncode == 3
 
 
-def test_unknown_token_has_no_effect() -> None:
+def test_unknown_token_is_a_usage_error() -> None:
     result = run_cli(
-        "record", str(UNDECLARED), extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_NOT_A_CODE"}
+        "--test-hooks",
+        "record",
+        str(UNDECLARED),
+        extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_NOT_A_CODE"},
     )
-    report = _report(result)
-    assert report["checks_disabled"] == ["E_NOT_A_CODE"]
-    assert report["records"][0]["errors"] == ["E_KEY_UNKNOWN"]
+    assert result.returncode == 2
+    assert result.stdout == b""
+    assert b"E_NOT_A_CODE" in result.stderr
 
 
 def test_hook_applies_to_vectors_command() -> None:
-    result = run_cli("vectors", str(VECTORS), extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_JSON"})
+    result = run_cli(
+        "--test-hooks",
+        "vectors",
+        str(VECTORS),
+        extra_env={"WEAVE_VERIFY_SKIP_CHECKS": "E_JSON_SIZE"},
+    )
     report = _report(result)
-    assert report["checks_disabled"] == ["E_JSON"]
-    # Suppressing parse errors breaks the parse-negative cases, which proves the
-    # family is exercised: the suite must no longer fully match.
+    assert report["checks_disabled"] == ["E_JSON_SIZE"]
+    # Suppressing the JSON-size check breaks the parse-negative cases, which
+    # proves the family is exercised; the degraded run exits 3.
     assert report["verdict"] == "invalid"
     assert report["summary"]["matched"] < report["summary"]["case_count"]
+    assert result.returncode == 3
+
+
+def test_token_parsing_details() -> None:
+    """B-L4: split on ASCII comma, trim ASCII whitespace, ignore empty tokens,
+    case-sensitive exact registered codes, duplicates collapsed."""
+    from hyphaweave_verify.errors import CheckSkipper, UsageError
+
+    skipper = CheckSkipper.from_env(
+        True,
+        {"WEAVE_VERIFY_SKIP_CHECKS": " E_SIG_INVALID ,, \tE_KEY_UNKNOWN\r\n,E_SIG_INVALID,"},
+    )
+    assert skipper.tokens == ("E_KEY_UNKNOWN", "E_SIG_INVALID")
+    with pytest.raises(UsageError):
+        CheckSkipper.from_env(True, {"WEAVE_VERIFY_SKIP_CHECKS": "e_sig_invalid"})
+    with pytest.raises(UsageError):
+        CheckSkipper.from_env(True, {"WEAVE_VERIFY_SKIP_CHECKS": "N_KEY_TOFU"})
+    # Disabled hook ignores the variable entirely, including unknown tokens.
+    assert CheckSkipper.from_env(False, {"WEAVE_VERIFY_SKIP_CHECKS": "bogus"}).tokens == ()

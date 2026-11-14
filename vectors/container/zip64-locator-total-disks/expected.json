@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip64-locator-total-disks","input":"container.zip","notes":"U9/§11.9 rule 3: the ZIP64 EOCD locator's \"total number of disks\" field is 2 (a single-volume archive must have 1), so the archive is E_CONTAINER_ZIP.","records":[],"target":"container","verdict":"invalid"}

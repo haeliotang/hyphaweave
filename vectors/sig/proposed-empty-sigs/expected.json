@@ -1,0 +1,1 @@
+{"category":"sig","errors":[],"id":"sig/proposed-empty-sigs","input":"record.json","notes":"S7(1): a `proposed` ordinary record is not required to be signed, so an explicit empty `sigs` array is valid (no error).","target":"record","verdict":"valid"}

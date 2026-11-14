@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_MANIFEST_SCHEMA"],"id":"container/attestation-unknown-member","input":"container","notes":"F2/S8(6): the attestation file is a closed object owned by §11.3; an unknown member is E_MANIFEST_SCHEMA.","records":[],"target":"container","verdict":"invalid"}

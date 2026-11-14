@@ -412,23 +412,23 @@ def _signature_geometry_problems(entries: list[Any], what: str) -> list[str]:
         ):
             continue
         if alg == "ed25519":
-            if not ED25519_KEY_RE.match(key):
+            if not ED25519_KEY_RE.fullmatch(key):
                 problems.append(
                     f"{what}[{index}].key is not an ed25519 key id although "
                     "alg is ed25519"
                 )
-            if not ED25519_VALUE_RE.match(value):
+            if not ED25519_VALUE_RE.fullmatch(value):
                 problems.append(
                     f"{what}[{index}].value is not a strict 64-byte unpadded "
                     "base64url value although alg is ed25519"
                 )
         else:
-            if not GENERIC_KEY_RE.match(key):
+            if not GENERIC_KEY_RE.fullmatch(key):
                 problems.append(
                     f"{what}[{index}].key does not match the generic key id "
                     f"shape (algorithm token + 1-128 lowercase hex) for alg {alg!r}"
                 )
-            if not any(rx.match(value) for rx in GENERIC_VALUE_RES):
+            if not any(rx.fullmatch(value) for rx in GENERIC_VALUE_RES):
                 problems.append(
                     f"{what}[{index}].value is not strict unpadded base64url of "
                     f"1-2048 bytes for alg {alg!r}"
@@ -436,10 +436,98 @@ def _signature_geometry_problems(entries: list[Any], what: str) -> list[str]:
     return problems
 
 
+#: spec §13/S3: parenthesis nesting depth of an SPDX licence expression.
+MAX_LICENCE_NESTING = 16
+_LICENCE_IDENTIFIER_FIRST = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+_LICENCE_IDENTIFIER_REST = _LICENCE_IDENTIFIER_FIRST | set(".+-")
+_LICENCE_OPERATORS = ("AND", "OR", "WITH")
+
+
+def _licence_tokens(value: str) -> list[str] | None:
+    """Tokenise an SPDX licence expression (spec §8.7); ``None`` on a bad character."""
+    tokens: list[str] = []
+    index = 0
+    length = len(value)
+    while index < length:
+        character = value[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character in "()":
+            tokens.append(character)
+            index += 1
+            continue
+        start = index
+        while index < length and not value[index].isspace() and value[index] not in "()":
+            index += 1
+        token = value[start:index]
+        if not token or token[0] not in _LICENCE_IDENTIFIER_FIRST:
+            return None
+        if any(character not in _LICENCE_IDENTIFIER_REST for character in token):
+            return None
+        tokens.append(token)
+    return tokens
+
+
+def _licence_simple(tokens: list[str], index: int, depth: int) -> int:
+    if depth > MAX_LICENCE_NESTING:
+        raise ValueError("licence nesting exceeds MAX_LICENCE_NESTING")
+    token = tokens[index]
+    if token == "(":
+        index = _licence_or(tokens, index + 1, depth + 1)
+        if index >= len(tokens) or tokens[index] != ")":
+            raise ValueError("unbalanced parentheses")
+        return index + 1
+    if token in _LICENCE_OPERATORS:
+        raise ValueError("expected an identifier")
+    index += 1
+    if index < len(tokens) and tokens[index] == "WITH":
+        if index + 1 >= len(tokens) or tokens[index + 1] in _LICENCE_OPERATORS:
+            raise ValueError("WITH must be followed by an exception identifier")
+        index += 2
+    return index
+
+
+def _licence_and(tokens: list[str], index: int, depth: int) -> int:
+    index = _licence_simple(tokens, index, depth)
+    while index < len(tokens) and tokens[index] == "AND":
+        index = _licence_simple(tokens, index + 1, depth)
+    return index
+
+
+def _licence_or(tokens: list[str], index: int, depth: int) -> int:
+    index = _licence_and(tokens, index, depth)
+    while index < len(tokens) and tokens[index] == "OR":
+        index = _licence_and(tokens, index + 1, depth)
+    return index
+
+
+def licence_expression_problems(value: Any) -> list[str]:
+    """§8.7 syntax predicate that JSON Schema cannot express (S8.6/S3)."""
+    if not isinstance(value, str):
+        return []  # the schema layer owns the JSON-type error
+    tokens = _licence_tokens(value)
+    if tokens is None:
+        return ["labels.licence contains a character outside the SPDX token grammar"]
+    if not tokens:
+        return ["labels.licence is empty"]
+    try:
+        index = _licence_or(tokens, 0, 0)
+    except (ValueError, IndexError):
+        return ["labels.licence does not match the §8.7 SPDX expression grammar"]
+    if index != len(tokens):
+        return ["labels.licence is not fully consumed by the §8.7 grammar"]
+    return []
+
+
 def envelope_supplement(doc: Any) -> list[str]:
     problems: list[str] = []
     if not isinstance(doc, dict):
         return problems
+
+    labels = doc.get("labels")
+    if isinstance(labels, dict) and "licence" in labels:
+        problems.extend(licence_expression_problems(labels["licence"]))
 
     refs = doc.get("refs")
     if isinstance(refs, list):
@@ -787,7 +875,7 @@ def kind_body_supplement(document: Any) -> list[str]:
         _unique_problems(keys, "weave.grant.grant.revocation", "key")
     )
     for index, key in enumerate(keys):
-        if not ED25519_KEY_RE.match(key):
+        if not ED25519_KEY_RE.fullmatch(key):
             problems.append(
                 f"weave.grant.grant.revocation[{index}] is not an ed25519 key id"
             )
@@ -975,7 +1063,7 @@ class VectorChecks:
             duplicates: list[str] = []
             seen: set[str] = set()
             for value in values:
-                if not isinstance(value, str) or not CODE_RE.match(value):
+                if not isinstance(value, str) or not CODE_RE.fullmatch(value):
                     problems.append(
                         f"expected.json {field!r} contains an invalid code {value!r}"
                     )
@@ -1016,7 +1104,7 @@ class VectorChecks:
         expected_digest = expected.get("expected_digest")
         if expected_digest is not None and (
             not isinstance(expected_digest, str)
-            or not DIGEST_RE.match(expected_digest)
+            or not DIGEST_RE.fullmatch(expected_digest)
         ):
             problems.append(
                 "expected.json member 'expected_digest' must be a sha256:<64 hex> string"
@@ -1039,6 +1127,69 @@ class VectorChecks:
                 "expected.json member 'expected_container' must be a JSON object"
             )
 
+        expected_input = expected.get("expected_input")
+        if expected_input is not None:
+            if not isinstance(expected_input, dict):
+                problems.append(
+                    "expected.json member 'expected_input' must be a JSON object"
+                )
+            else:
+                for member in expected_input:
+                    if member not in ("sha256", "size"):
+                        problems.append(
+                            f"expected.json 'expected_input' has an unknown member "
+                            f"{member!r}"
+                        )
+                if "sha256" in expected_input and not (
+                    expected_input["sha256"] is None
+                    or (
+                        isinstance(expected_input["sha256"], str)
+                        and DIGEST_RE.fullmatch(expected_input["sha256"])
+                    )
+                ):
+                    problems.append(
+                        "expected.json 'expected_input.sha256' must be a "
+                        "sha256:<64 hex> string or null"
+                    )
+                if "size" in expected_input and not (
+                    expected_input["size"] is None
+                    or (
+                        isinstance(expected_input["size"], int)
+                        and not isinstance(expected_input["size"], bool)
+                        and expected_input["size"] >= 0
+                    )
+                ):
+                    problems.append(
+                        "expected.json 'expected_input.size' must be a "
+                        "non-negative integer or null"
+                    )
+
+        limitations = expected.get("limitations")
+        if limitations is not None:
+            if not isinstance(limitations, list) or not all(
+                isinstance(identifier, str) and identifier.startswith("L_")
+                for identifier in limitations
+            ):
+                problems.append(
+                    "expected.json member 'limitations' must be an array of L_* "
+                    "limitation identifiers"
+                )
+            elif limitations != sorted(set(limitations)):
+                problems.append(
+                    "expected.json member 'limitations' must be sorted and unique"
+                )
+
+        notices_absent = expected.get("notices_absent")
+        if notices_absent is not None:
+            if not isinstance(notices_absent, list) or not all(
+                isinstance(code, str) and CODE_RE.fullmatch(code) and code.startswith("N_")
+                for code in notices_absent
+            ):
+                problems.append(
+                    "expected.json member 'notices_absent' must be an array of N_* "
+                    "notice codes"
+                )
+
         records = expected.get("records")
         if records is not None:
             if not isinstance(records, list):
@@ -1052,29 +1203,35 @@ class VectorChecks:
                             f"expected.json records[{index}] must be an object"
                         )
                         continue
-                    if not isinstance(record.get("id"), str):
+                    if "id" in record and not (
+                        isinstance(record["id"], str) or record["id"] is None
+                    ):
                         problems.append(
-                            f"expected.json records[{index}].id must be a string"
+                            f"expected.json records[{index}].id must be a string or "
+                            "null"
                         )
-                    # records[] entries are per-record report subsets: only the ids
-                    # are required, and verdict/kind_known/errors are optional.
+                    # records[] entries are per-record report subsets (F17): the
+                    # id is optional (null matches an undetermined id) and any
+                    # other report member may be asserted as a recursive subset;
+                    # verdict/errors keep their exact comparison semantics.
                     if "verdict" in record and record["verdict"] not in VERDICTS:
                         problems.append(
                             f"expected.json records[{index}].verdict must be one of "
                             f"{VERDICTS}"
                         )
-                    if "kind_known" in record and not isinstance(
-                        record["kind_known"], bool
+                    if "kind_known" in record and not (
+                        isinstance(record["kind_known"], bool)
+                        or record["kind_known"] is None
                     ):
                         problems.append(
                             f"expected.json records[{index}].kind_known must be a "
-                            "boolean"
+                            "boolean or null"
                         )
                     record_errors = record.get("errors")
                     if record_errors is not None and (
                         not isinstance(record_errors, list)
                         or not all(
-                            isinstance(code, str) and CODE_RE.match(code)
+                            isinstance(code, str) and CODE_RE.fullmatch(code)
                             for code in record_errors
                         )
                     ):
@@ -1392,21 +1549,32 @@ class VectorChecks:
                 manifest, read_problems = read_container_json(
                     container, "manifest.json"
                 )
-                if manifest is None:
-                    # A missing/unparseable manifest is itself a failure of the
-                    # schema layer; the verifier must report the expected code.
-                    pass
-                else:
-                    failures = (
+                failures: list[str] = list(read_problems)
+                if manifest is not None:
+                    failures.extend(
                         self.schemas.violations(manifest, self.schemas.manifest)
                         + manifest_supplement(manifest)
                         + manifest_record_identity_problems(container, manifest)
                     )
-                    if not failures:
-                        problems.append(
-                            "expected manifest structural error(s) "
-                            f"{codes} but manifest.json satisfies the schema layer"
+                # The manifest attestation file is a closed object of the same
+                # family (spec §11.3); a structural defect can live there too.
+                attestation, attestation_problems = read_container_json(
+                    container, "signatures/manifest.sig.json"
+                )
+                failures.extend(attestation_problems)
+                if attestation is not None:
+                    failures.extend(
+                        self.schemas.violations(
+                            attestation, self.schemas.attestation
                         )
+                        + attestation_supplement(attestation)
+                    )
+                if not failures:
+                    problems.append(
+                        "expected manifest structural error(s) "
+                        f"{codes} but manifest.json and its attestation file satisfy "
+                        "the schema layer"
+                    )
             if "record" in families:
                 record_names = container.record_names()
                 if not record_names:

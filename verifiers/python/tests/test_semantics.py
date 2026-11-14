@@ -21,7 +21,6 @@ from hyphaweave_verify import (
     canonical,
     container as container_module,
     encoding,
-    envelope,
     keys as keys_module,
     verifier,
 )

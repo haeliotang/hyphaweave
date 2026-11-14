@@ -1,0 +1,1 @@
+{"category":"labels","errors":["E_ENV_LICENCE"],"id":"labels/licence-nesting-plus-one","input":"record.json","notes":"S3/§13: one parenthesis level beyond MAX_LICENCE_NESTING is an SPDX syntax violation, E_ENV_LICENCE.","target":"record","verdict":"invalid"}

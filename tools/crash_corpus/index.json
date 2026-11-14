@@ -1,0 +1,1752 @@
+{
+  "case_count": 146,
+  "cases": [
+    {
+      "base_case": "container/previous-zip-valid",
+      "category": "previous",
+      "deleted": [],
+      "desc": "DEFLATE-PREV:container/previous-zip-valid | deflate-payload set@170",
+      "file_id": "previous-00082",
+      "index": 82,
+      "overlay": [
+        "previous-container.zip"
+      ]
+    },
+    {
+      "base_case": "container/previous-zip-valid",
+      "category": "previous",
+      "deleted": [],
+      "desc": "DEFLATE-PREV:container/previous-zip-valid | set@56",
+      "file_id": "previous-00141",
+      "index": 141,
+      "overlay": [
+        "previous-container.zip"
+      ]
+    },
+    {
+      "base_case": "container/previous-zip-valid",
+      "category": "previous",
+      "deleted": [],
+      "desc": "DEFLATE-PREV:container/previous-zip-valid | flip@118",
+      "file_id": "previous-00176",
+      "index": 176,
+      "overlay": [
+        "previous-container.zip"
+      ]
+    },
+    {
+      "base_case": "container/previous-zip-valid",
+      "category": "previous",
+      "deleted": [],
+      "desc": "DEFLATE-PREV:container/previous-zip-valid | deflate-payload multi3",
+      "file_id": "previous-00298",
+      "index": 298,
+      "overlay": [
+        "previous-container.zip"
+      ]
+    },
+    {
+      "base_case": "container/previous-zip-valid",
+      "category": "previous",
+      "deleted": [],
+      "desc": "DEFLATE-PREV:container/previous-zip-valid | deflate-payload multi7",
+      "file_id": "previous-00310",
+      "index": 310,
+      "overlay": [
+        "previous-container.zip"
+      ]
+    },
+    {
+      "base_case": "container/previous-zip-valid",
+      "category": "previous",
+      "deleted": [],
+      "desc": "DEFLATE-PREV:container/previous-zip-valid | deflate-payload set@55",
+      "file_id": "previous-00326",
+      "index": 326,
+      "overlay": [
+        "previous-container.zip"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-indef@660 +redigest",
+      "file_id": "tsa-00000",
+      "index": 0,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len@179 +redigest",
+      "file_id": "tsa-00003",
+      "index": 3,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len@650 +redigest",
+      "file_id": "tsa-00006",
+      "index": 6,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@203 +redigest",
+      "file_id": "tsa-00007",
+      "index": 7,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-indef@1109 +redigest",
+      "file_id": "tsa-00008",
+      "index": 8,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len-huge@196 +redigest",
+      "file_id": "tsa-00010",
+      "index": 10,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-len@1215 +redigest",
+      "file_id": "tsa-00011",
+      "index": 11,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr multi4 +redigest",
+      "file_id": "tsa-00017",
+      "index": 17,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-len@243 +redigest",
+      "file_id": "tsa-00025",
+      "index": 25,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-tag@1201 +redigest",
+      "file_id": "tsa-00026",
+      "index": 26,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr dup@1074 +redigest",
+      "file_id": "tsa-00029",
+      "index": 29,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@657 +redigest",
+      "file_id": "tsa-00031",
+      "index": 31,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len-huge@154 +redigest",
+      "file_id": "tsa-00032",
+      "index": 32,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-len@657 +redigest",
+      "file_id": "tsa-00033",
+      "index": 33,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@192 +redigest",
+      "file_id": "tsa-00034",
+      "index": 34,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len@1213 +redigest",
+      "file_id": "tsa-00035",
+      "index": 35,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@1162 +redigest",
+      "file_id": "tsa-00038",
+      "index": 38,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-indef@258 +redigest",
+      "file_id": "tsa-00043",
+      "index": 43,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr insert@1161 +redigest",
+      "file_id": "tsa-00044",
+      "index": 44,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-content@144 +redigest",
+      "file_id": "tsa-00047",
+      "index": 47,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-tag@1065 +redigest",
+      "file_id": "tsa-00048",
+      "index": 48,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len@1166 +redigest",
+      "file_id": "tsa-00050",
+      "index": 50,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@664 +redigest",
+      "file_id": "tsa-00052",
+      "index": 52,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-indef@687 +redigest",
+      "file_id": "tsa-00054",
+      "index": 54,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr insert@1194 +redigest",
+      "file_id": "tsa-00055",
+      "index": 55,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-tag@99 +redigest",
+      "file_id": "tsa-00057",
+      "index": 57,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr dup@916 +redigest",
+      "file_id": "tsa-00071",
+      "index": 71,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-indef@664 +redigest",
+      "file_id": "tsa-00075",
+      "index": 75,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len@1202 +redigest",
+      "file_id": "tsa-00076",
+      "index": 76,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr dup@492 +redigest",
+      "file_id": "tsa-00081",
+      "index": 81,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-len@1094 +redigest",
+      "file_id": "tsa-00083",
+      "index": 83,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len-huge@1177 +redigest",
+      "file_id": "tsa-00087",
+      "index": 87,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr dup@130 +redigest",
+      "file_id": "tsa-00090",
+      "index": 90,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-tag@626 +redigest",
+      "file_id": "tsa-00093",
+      "index": 93,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-len@1213 +redigest",
+      "file_id": "tsa-00095",
+      "index": 95,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr insert@374 +redigest",
+      "file_id": "tsa-00097",
+      "index": 97,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr multi5 +redigest",
+      "file_id": "tsa-00098",
+      "index": 98,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr dup@878 +redigest",
+      "file_id": "tsa-00103",
+      "index": 103,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-tag@1157 +redigest",
+      "file_id": "tsa-00105",
+      "index": 105,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-tag@278 +redigest",
+      "file_id": "tsa-00107",
+      "index": 107,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-indef@1036 +redigest",
+      "file_id": "tsa-00109",
+      "index": 109,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@350 +redigest",
+      "file_id": "tsa-00112",
+      "index": 112,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-indef@1158 +redigest",
+      "file_id": "tsa-00119",
+      "index": 119,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-len@286 +redigest",
+      "file_id": "tsa-00120",
+      "index": 120,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr dup@504 +redigest",
+      "file_id": "tsa-00123",
+      "index": 123,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-content@256 +redigest",
+      "file_id": "tsa-00126",
+      "index": 126,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr multi5 +redigest",
+      "file_id": "tsa-00130",
+      "index": 130,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-content@255 +redigest",
+      "file_id": "tsa-00131",
+      "index": 131,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-content@153 +redigest",
+      "file_id": "tsa-00132",
+      "index": 132,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-indef@279 +redigest",
+      "file_id": "tsa-00134",
+      "index": 134,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len@243 +redigest",
+      "file_id": "tsa-00138",
+      "index": 138,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len@961 +redigest",
+      "file_id": "tsa-00139",
+      "index": 139,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len-huge@661 +redigest",
+      "file_id": "tsa-00143",
+      "index": 143,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-len@961 +redigest",
+      "file_id": "tsa-00144",
+      "index": 144,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr insert@1035 +redigest",
+      "file_id": "tsa-00145",
+      "index": 145,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-tag@674 +redigest",
+      "file_id": "tsa-00146",
+      "index": 146,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len-huge@1094 +redigest",
+      "file_id": "tsa-00150",
+      "index": 150,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len-huge@963 +redigest",
+      "file_id": "tsa-00151",
+      "index": 151,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@85 +redigest",
+      "file_id": "tsa-00156",
+      "index": 156,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len@1160 +redigest",
+      "file_id": "tsa-00157",
+      "index": 157,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr multi6 +redigest",
+      "file_id": "tsa-00158",
+      "index": 158,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len@1064 +redigest",
+      "file_id": "tsa-00160",
+      "index": 160,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len-huge@40 +redigest",
+      "file_id": "tsa-00161",
+      "index": 161,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-content@631 +redigest",
+      "file_id": "tsa-00163",
+      "index": 163,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr dup@301 +redigest",
+      "file_id": "tsa-00166",
+      "index": 166,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-tag@296 +redigest",
+      "file_id": "tsa-00179",
+      "index": 179,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr insert@174 +redigest",
+      "file_id": "tsa-00183",
+      "index": 183,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr dup@732 +redigest",
+      "file_id": "tsa-00185",
+      "index": 185,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len@622 +redigest",
+      "file_id": "tsa-00189",
+      "index": 189,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-tag@1017 +redigest",
+      "file_id": "tsa-00190",
+      "index": 190,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-len-huge@179 +redigest",
+      "file_id": "tsa-00191",
+      "index": 191,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len@179 +redigest",
+      "file_id": "tsa-00193",
+      "index": 193,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-tag@629 +redigest",
+      "file_id": "tsa-00195",
+      "index": 195,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@618 +redigest",
+      "file_id": "tsa-00200",
+      "index": 200,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@685 +redigest",
+      "file_id": "tsa-00202",
+      "index": 202,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len-huge@70 +redigest",
+      "file_id": "tsa-00203",
+      "index": 203,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-content@145 +redigest",
+      "file_id": "tsa-00209",
+      "index": 209,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len@1066 +redigest",
+      "file_id": "tsa-00211",
+      "index": 211,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr dup@999 +redigest",
+      "file_id": "tsa-00212",
+      "index": 212,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr insert@52 +redigest",
+      "file_id": "tsa-00214",
+      "index": 214,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@1105 +redigest",
+      "file_id": "tsa-00217",
+      "index": 217,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-indef@1164 +redigest",
+      "file_id": "tsa-00221",
+      "index": 221,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len@53 +redigest",
+      "file_id": "tsa-00223",
+      "index": 223,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-indef@676 +redigest",
+      "file_id": "tsa-00225",
+      "index": 225,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr dup@569 +redigest",
+      "file_id": "tsa-00229",
+      "index": 229,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr dup@1019 +redigest",
+      "file_id": "tsa-00234",
+      "index": 234,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr set@149 +redigest",
+      "file_id": "tsa-00237",
+      "index": 237,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len-huge@25 +redigest",
+      "file_id": "tsa-00247",
+      "index": 247,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-content@1089 +redigest",
+      "file_id": "tsa-00258",
+      "index": 258,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr insert@102 +redigest",
+      "file_id": "tsa-00259",
+      "index": 259,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-tag@1165 +redigest",
+      "file_id": "tsa-00261",
+      "index": 261,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len@664 +redigest",
+      "file_id": "tsa-00264",
+      "index": 264,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-content@167 +redigest",
+      "file_id": "tsa-00268",
+      "index": 268,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-tag@651 +redigest",
+      "file_id": "tsa-00273",
+      "index": 273,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr set@1143 +redigest",
+      "file_id": "tsa-00275",
+      "index": 275,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-content@627 +redigest",
+      "file_id": "tsa-00278",
+      "index": 278,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@1062 +redigest",
+      "file_id": "tsa-00280",
+      "index": 280,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len@674 +redigest",
+      "file_id": "tsa-00281",
+      "index": 281,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len-huge@203 +redigest",
+      "file_id": "tsa-00282",
+      "index": 282,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@1120 +redigest",
+      "file_id": "tsa-00283",
+      "index": 283,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr flip@347 +redigest",
+      "file_id": "tsa-00286",
+      "index": 286,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len@1033 +redigest",
+      "file_id": "tsa-00288",
+      "index": 288,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@290 +redigest",
+      "file_id": "tsa-00293",
+      "index": 293,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len-huge@341 +redigest",
+      "file_id": "tsa-00294",
+      "index": 294,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-tag@257 +redigest",
+      "file_id": "tsa-00296",
+      "index": 296,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-content@140 +redigest",
+      "file_id": "tsa-00303",
+      "index": 303,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-indef@1018 +redigest",
+      "file_id": "tsa-00310",
+      "index": 310,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len@1158 +redigest",
+      "file_id": "tsa-00313",
+      "index": 313,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr insert@753 +redigest",
+      "file_id": "tsa-00319",
+      "index": 319,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len@1171 +redigest",
+      "file_id": "tsa-00321",
+      "index": 321,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@1105 +redigest",
+      "file_id": "tsa-00323",
+      "index": 323,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-tag@656 +redigest",
+      "file_id": "tsa-00324",
+      "index": 324,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len@661 +redigest",
+      "file_id": "tsa-00326",
+      "index": 326,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr multi3 +redigest",
+      "file_id": "tsa-00327",
+      "index": 327,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr dup@948 +redigest",
+      "file_id": "tsa-00336",
+      "index": 336,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len-huge@647 +redigest",
+      "file_id": "tsa-00339",
+      "index": 339,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-tag@321 +redigest",
+      "file_id": "tsa-00340",
+      "index": 340,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-len@1051 +redigest",
+      "file_id": "tsa-00341",
+      "index": 341,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-len@961 +redigest",
+      "file_id": "tsa-00346",
+      "index": 346,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-len-huge@68 +redigest",
+      "file_id": "tsa-00348",
+      "index": 348,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@179 +redigest",
+      "file_id": "tsa-00351",
+      "index": 351,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@171 +redigest",
+      "file_id": "tsa-00352",
+      "index": 352,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-indef@1079 +redigest",
+      "file_id": "tsa-00356",
+      "index": 356,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-tag@253 +redigest",
+      "file_id": "tsa-00357",
+      "index": 357,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-len-huge@77 +redigest",
+      "file_id": "tsa-00358",
+      "index": 358,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-len-huge@1038 +redigest",
+      "file_id": "tsa-00360",
+      "index": 360,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/mixed-revocation-compromise-then-retired",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/mixed-revocation-compromise-then-retired | timestamp-1.tsr der-len@168 +redigest",
+      "file_id": "tsa-00361",
+      "index": 361,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-tag@191 +redigest",
+      "file_id": "tsa-00362",
+      "index": 362,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-2.tsr der-len@1202 +redigest",
+      "file_id": "tsa-00366",
+      "index": 366,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-2.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-tag@204 +redigest",
+      "file_id": "tsa-00374",
+      "index": 374,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len-huge@1160 +redigest",
+      "file_id": "tsa-00380",
+      "index": 380,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr der-tag@338 +redigest",
+      "file_id": "tsa-00383",
+      "index": 383,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-indef@1066 +redigest",
+      "file_id": "tsa-00386",
+      "index": 386,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr insert@901 +redigest",
+      "file_id": "tsa-00388",
+      "index": 388,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "key-lifecycle/compromise-rescued-by-timestamp | timestamp-1.tsr insert@943 +redigest",
+      "file_id": "tsa-00390",
+      "index": 390,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-tag@964 +redigest",
+      "file_id": "tsa-00397",
+      "index": 397,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-submillisecond-rescue",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-submillisecond-rescue | timestamp-1.tsr der-indef@14 +redigest",
+      "file_id": "tsa-00398",
+      "index": 398,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-valid | timestamp-1.tsr der-indef@70 +redigest",
+      "file_id": "tsa-00393",
+      "index": 393,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "integrity-levels/l2-renewal-chain-valid",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "integrity-levels/l2-renewal-chain-valid | timestamp-1.tsr der-len@279 +redigest",
+      "file_id": "tsa-00394",
+      "index": 394,
+      "overlay": [
+        "container/signatures/manifest.sig.json",
+        "container/signatures/timestamp-1.tsr"
+      ]
+    },
+    {
+      "base_case": "key-lifecycle/compromise-rescued-by-timestamp",
+      "category": "tsa",
+      "deleted": [],
+      "desc": "S1-FIX3 recheck crash_fuzz --seed 777 tsa-00048: pem:der-content@12 (a --tsa-trust certificate whose version field is out of range; cryptography InvalidVersion). S1-FIX4 W4: a usage error, exit 2",
+      "file_id": "tsa-s777-00048",
+      "index": 48,
+      "overlay": [
+        "tsa.crt.pem"
+      ]
+    }
+  ],
+  "corpus_version": 1,
+  "seed": 20261111
+}

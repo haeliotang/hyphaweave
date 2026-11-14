@@ -34,6 +34,12 @@ from .errors import CheckSkipper, NO_SKIP, WeaveError
 #: Largest integer magnitude representable exactly as an IEEE-754 double.
 MAX_SAFE_INTEGER = 2**53 - 1
 
+#: §13/S3: maximum JSON container nesting depth on the root-to-leaf path, the
+#: top-level value counting as depth 1. Exceeding it is ``E_JSON_SIZE``. The
+#: parser is depth-bounded (and the serializer guarded) so a deeply nested input
+#: can never raise ``RecursionError``/overflow the process stack.
+MAX_JSON_DEPTH = 32
+
 #: The ECMAScript ``JSON.stringify`` short escapes.
 _ESCAPES = {
     '"': '\\"',
@@ -170,13 +176,14 @@ class _Parser:
     surrogate escapes get their own registry codes.
     """
 
-    __slots__ = ("text", "length", "pos", "skipper")
+    __slots__ = ("text", "length", "pos", "skipper", "depth")
 
     def __init__(self, text: str, skipper: CheckSkipper) -> None:
         self.text = text
         self.length = len(text)
         self.pos = 0
         self.skipper = skipper
+        self.depth = 0
 
     # -- helpers ----------------------------------------------------------
 
@@ -214,30 +221,39 @@ class _Parser:
     # -- values -----------------------------------------------------------
 
     def _parse_value(self) -> Any:
+        self.depth += 1
+        if self.depth > MAX_JSON_DEPTH:
+            # S3/§13: depth is enforced before recursing, so the nesting depth of
+            # the recursion is bounded (no stack overflow on hostile inputs).
+            self._fail("E_JSON_SIZE", "JSON nesting exceeds MAX_JSON_DEPTH")
         if self.pos >= self.length:
             self._fail("E_JSON_INVALID", "unexpected end of input")
         character = self.text[self.pos]
         if character == "{":
-            return self._parse_object()
-        if character == "[":
-            return self._parse_array()
-        if character == '"':
-            return self._parse_string()
-        if character == "t":
+            value = self._parse_object()
+        elif character == "[":
+            value = self._parse_array()
+        elif character == '"':
+            value = self._parse_string()
+        elif character == "t":
             self._parse_literal("true")
-            return True
-        if character == "f":
+            value = True
+        elif character == "f":
             self._parse_literal("false")
-            return False
-        if character == "n":
+            value = False
+        elif character == "n":
             self._parse_literal("null")
-            return None
-        if character == "-" or "0" <= character <= "9":
-            return self._parse_number()
-        # RFC 8259 has no leading '+', no bare '.5' and no leading zero: these are
-        # JSON syntax errors (E_JSON_INVALID), not number-profile violations (M-14).
-        self._fail("E_JSON_INVALID", "unexpected character %r" % character)
-        raise AssertionError("unreachable")  # pragma: no cover
+            value = None
+        elif character == "-" or "0" <= character <= "9":
+            value = self._parse_number()
+        else:
+            # RFC 8259 has no leading '+', no bare '.5' and no leading zero: these
+            # are JSON syntax errors (E_JSON_INVALID), not number-profile
+            # violations (M-14).
+            self._fail("E_JSON_INVALID", "unexpected character %r" % character)
+            raise AssertionError("unreachable")  # pragma: no cover
+        self.depth -= 1
+        return value
 
     def _parse_literal(self, literal: str) -> None:
         end = self.pos + len(literal)

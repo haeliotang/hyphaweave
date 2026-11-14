@@ -35,6 +35,8 @@ Public API used by external cross-check tooling:
 
 from __future__ import annotations
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import hashlib
 
 from .errors import WeaveError
@@ -307,10 +309,11 @@ def verify_signature(public_key: bytes, message: bytes, signature: bytes) -> Non
 
     # Step 8: cofactorless equation, delegated to the library after the pre-checks.
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
         Ed25519PublicKey.from_public_bytes(public_key).verify(signature, message)
-    except Exception as error:
+    except (InvalidSignature, ValueError, TypeError) as error:
+        # U1 exception audit: the library call fails with InvalidSignature for a
+        # failing equation and ValueError/TypeError for unusable key material;
+        # no other exception class is expected here.
         raise WeaveError(
             "E_SIG_INVALID", "Ed25519 verification equation does not hold"
         ) from error

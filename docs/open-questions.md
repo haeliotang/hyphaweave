@@ -3,16 +3,23 @@
 
 # Decided questions and remaining provisional choices
 
-> **Status: DRAFT (revision 2).** This file records the questions that the
+> **Status: DRAFT (revision 3).** This file records the questions that the
 > `weave-record/1` decision draft v0.1 (with correction v0.1.1) left open and how
 > H0 resolved them.
 >
 > **Q1–Q32 are decided** by Inceptless decision **2026-11-10 #34**; **Q33 is
-> decided** by Inceptless decision **2026-11-10 #42**. Each entry in §1 carries its
-> decision status; its normative form is in [`../spec/`](../spec/), and this page
-> only records the question, the decision and the reasoning. A small number of
-> *implementation-shape* details were not decided by #34 or #42; they are listed as
-> `PROVISIONAL` in §3. P1 and P2 were resolved by #42 and are no longer listed.
+> decided** by Inceptless decision **2026-11-10 #42**. Revision 3 records the
+> rulings S1–S17 of Inceptless decision **2026-11-11 #2**: the ambiguity classes
+> that S8 left to the reviser are listed, with their readings and rationale, in
+> §6 under `decided by principle (Inceptless decision 2026-11-11 #2)`; §6
+> entries 15–19 record the five further principle decisions of decision 2026-11-11 #5;
+> entries 20–23 record the S1-FIX2/S1-FIX3 principle decisions (decisions 2026-11-11 #12
+> and #14). Each
+> entry in §1 carries its decision status; its normative form is in
+> [`../spec/`](../spec/), and this page only records the question, the decision
+> and the reasoning. A small number of *implementation-shape* details were not
+> decided by #34, #42 or #2; they are listed as `PROVISIONAL` in §3. P1 and P2
+> were resolved by #42, and P3/P10 by #2, and are no longer listed.
 >
 > Nothing in this file overrides the specification. Where this page and
 > [`../spec/weave-record-1.md`](../spec/weave-record-1.md) disagree, the
@@ -604,16 +611,17 @@ repository is public now), the CLA v1.0 review and signing channel (decisions
 Decision **2026-11-10 #42** resolved P1 and P2. Root selection no longer uses
 claimed time, so there is no deterministic root ordering to choose and no
 root tie-break; those entries were removed from the specification's Appendix A
-and are not listed below. The remaining implementation-shape choices keep the
-specification's identifiers **P3–P12**; they are marked `PROVISIONAL` and may
-change additively without changing the decided behaviours above.
+and are not listed below. Decision **2026-11-11 #2** resolved P3 (delegation-chain
+depth, now fixed by S10) and P10 (`N_NO_HUMAN_SIGNATURE` precedence, now fixed by
+F6/S8⑭), and narrowed P7. The remaining implementation-shape choices keep the
+specification's identifiers **P4–P6, P9, P11, P12**; they are marked
+`PROVISIONAL` and may change additively without changing the decided behaviours
+above.
 
-- **P3 — Delegation-chain depth.** The maximum grant delegation depth is 8. A
-  grant chain cannot contain a cycle: digest references form a DAG. The depth
-  bound applies to the delegation chain only.
-- **P4 — Revocation-authority walk depth.** Walking `weave.key.rotated` records
-  to find a grant granter's successor for revocation authority stops at depth 8;
-  the walk order is implementation shape.
+- **P4 — Revocation-authority walk order.** Walking `weave.key.rotated` records
+  to find a grant granter's successor for revocation authority is bounded at 8
+  rotation steps (fixed by S10); the walk order within that bound is
+  implementation shape.
 - **P5 — Grant-chain error-code precedence.** The delegation checks and the code
   each step reports are fixed, in this order:
   `E_GRANT_UNRESOLVED` → `E_GRANT_GRANTER` (parent not a grant) →
@@ -628,25 +636,14 @@ change additively without changing the decided behaviours above.
   `digest` and `renews`; entries are sorted by path; the first entry's imprint is
   the raw manifest digest, and each later entry's imprint is
   `SHA-256(previous .tsr file bytes || manifest digest raw bytes)`.
-- **P7 — Report field shapes.** `container.level_verified` is always `"L0"`,
-  `container.anchor_verified` is a boolean for L2, `timestamps[]` entries carry
-  `index`, `path`, `state` and `gen_time`, and the `vectors` target summary and
-  per-case layout are the shapes described in the specification.
-- **P8 — Compromise-revocation rescue comparison.** The S2 rescue requires an
-  external timestamp receipt whose `genTime + accuracy` is **strictly before** the
-  revocation's `effective_at` (a receipt without an `accuracy` field counts as
-  zero; comparison at microsecond precision, with `genTime` reduced to
-  milliseconds per the timestamp profile). The rescue exists if at least one
-  verified receipt satisfies that strict comparison; the qualifying receipt with
-  the smallest `genTime + accuracy` supplies the evidence. The mechanics of that
-  comparison are implementation shape.
+- **P7 — `vectors`-target report layout.** The record/container report field
+  shapes are now normative in specification §14.6. What remains implementation
+  shape is only the `vectors` target: its per-case result array layout and the
+  representation of the `input` identity are implementation-defined, deterministic
+  and path-free, and are not compared across implementations (F5/S8⑬).
 - **P9 — Scope subset comparison.** Delegation subset checks compare `scope` as
   sets of strings; `scope` does not participate in record-level machine checks
   beyond the subset relation.
-- **P10 — Human-signature notice and unverifiable-signature precedence.**
-  `N_NO_HUMAN_SIGNATURE` is reported when an `accepted` record has no valid
-  signature by a declared human key; its precedence relative to
-  `E_SIG_UNVERIFIABLE` is implementation shape.
 - **P11 — Specification-example classification markers.** The examples that
   `tools/check_spec_examples.py` validates are annotated as
   `standalone-record`, `container-context` or `illustrative`; the marking
@@ -657,6 +654,12 @@ change additively without changing the decided behaviours above.
   `actor.grant` on those actor types, so the parent grant cannot be expressed. The
   handling of that unreachable shape is an implementation-shape choice; the
   restriction itself follows from the envelope rules.
+
+Q27's report-shape part is updated by revision 3: the `vectors` target's
+`summary` is normative and conformance is `mismatched == 0`, while the per-case
+layout and the `vectors` input identity are explicitly implementation-defined
+(F5/S8⑬); the directory-container `input` rule is refined by S14 and decisions
+§4.7 (`null` when the manifest identity cannot be read within the limits).
 
 One further candidate implementation shape was resolved by decision #34 rather
 than left provisional: structural errors of the special `weave.erased` shape are
@@ -705,3 +708,381 @@ re-verification):
   acceptance.
 - §3 was added for the implementation-shape choices that decision #34 did not
   decide.
+
+## 6. What changed in revision 3 of this file
+
+Revision 3 implements Inceptless decision **2026-11-11 #2** and the H1/J1a review
+dispositions. Ruling S8 fixed four ambiguity classes outright (manifest multi-error
+reporting, missing attestation file, missing `body.public_key`, `-0` versus a later
+float) and left the rest to the reviser with the instruction to take the more
+conservative reading, pin it in the specification and record it here. Every entry in this
+section carries the status `decided by principle (Inceptless decision 2026-11-11 #2)`; each
+gives the two readings, the chosen one and why it is the conservative or the deterministic
+one. **The entry numbers 1–14 below are the numbers used by the specification's
+`[S8①]`–`[S8⑭]` labels**; entries 15–19 record five further principle decisions added
+in revision 1 of the S1-FIX1 round (T11), entry 20 records the S1-FIX2 (`decision
+2026-11-11 #12`) deterministic-order trade-off (U12/L8), and entries 21–23 record the
+S1-FIX3 (`decision 2026-11-11 #14`) principle decisions V3, V2 and V7/L5, and entries
+24–29 record the S1-FIX4 (`decision 2026-11-11 #16`) principle decisions W1, W5, W6,
+W10/L5, W10/L6 and W3. The S1-FIX5 round (`decision 2026-11-12 #1`) rewrote entries 24,
+26 and 29 and added entries 30–31 (principle decisions X1 and X3) and 32–33 (two
+questions left open for a later round); decisions 2026-11-12 #2 and #3 (X6, X7)
+amended entry 30 and added entry 34.
+
+1. **Several independent manifest defects (S8①).** Reading A: the one-error rule of
+   the old §14.5 applies to the whole container, so one code. Reading B: the one-error
+   rule is per record (and per container stage), and the §11.6 records-listing phase
+   reports every inconsistency it detects. **Chosen B** — the input is invalid either
+   way, but reporting the complete set hides no defect and matches the replacement stop
+   rule; the container carries all detected codes in `container.errors` with
+   `records: []`. More conservative: the receiver sees every problem rather than
+   whichever check happened to run first.
+2. **Missing `signatures/manifest.sig.json` (S8②).** Readings: `E_MANIFEST_SCHEMA`
+   (the file is part of the layout) or `E_MANIFEST_UNSIGNED` (no signature evidence).
+   **Chosen `E_MANIFEST_UNSIGNED`**: the registry assigns "no signatures" to that code
+   and the manifest is unsigned either way; naming the missing signature is the single
+   informative reading.
+3. **`weave.key.declared` without `body.public_key` (S8③).** Readings:
+   `E_KEY_UNKNOWN` (the key cannot be established) or `E_KEY_PUBLIC_KEY` (the body is
+   structurally wrong). **Chosen invalid `E_KEY_PUBLIC_KEY`**: a structure error
+   precedes the trust judgement, and invalid is more conservative than unverifiable.
+4. **`-0` versus a later float (S8④).** Readings: classify canonical-form deviations
+   only after the parse, or classify `-0` at its number token. **Chosen**: number
+   classes are examined in input byte order, so `-0` is classified at its token as
+   `E_JSON_NOT_CANONICAL`; `{"a":-0,"b":1.5}` yields `E_JSON_NOT_CANONICAL` and the
+   reverse order yields `E_JSON_NUMBER_NOT_INTEGER`. The general canonical byte
+   comparison still runs after a syntactically valid parse. More deterministic: one
+   input, one code, without a cross-class ordering promise implementations would have
+   to guess.
+5. **Envelope sub-order (F3).** Readings: required-member presence first, or
+   closedness first. **Chosen** presence → closedness → per-member grammar in table
+   order, repeated inside every closed nested object. **Deterministic** (not a
+   conservative-vs-permissive axis): it makes "one error per record" deterministic; the
+   alternative lets two conforming verifiers report different codes for one record.
+6. **Nested closed-object codes (F2).** Readings: the envelope-level codes cover every
+   closed object, or the object's owning section names the code. **Chosen** the owning
+   section's dedicated code; `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` are top-level
+   only. **Deterministic**: the more specific owning-section code is the only reading that
+   matches the explicit §4.5 and §11.2 statements that the envelope codes do not apply to
+   those objects.
+7. **Reference to an individually invalid record.** Readings: `found` because origin,
+   id and digest match, or `unverifiable`. **Chosen `unverifiable`**
+   (`N_REF_UNVERIFIABLE`), as §6.3 already states: a record that is not itself valid is
+   not evidence a reference can rely on. No text change was needed; the vector was
+   added.
+8. **Zip edge details (S5/S4/S8⑧).** Readings: tolerate a zip prefix, archive comment
+   or trailing bytes (common in self-extracting archives), or reject. **Chosen**
+   reject (`E_CONTAINER_ZIP`), with ZIP64 accepted and `readable/` never decompressed
+   or CRC-checked. More conservative: the container framing is part of the bytes the
+   verifier examined; accepting unexamined bytes weakens "the received bytes are the
+   evidence".
+9. **Keyset structural/semantic boundary (F10, S8⑨).** Readings: any keyset error is a
+   usage error (exit 2), or only structural failures are. **Chosen**: canonical form,
+   envelope structure, `sigs` presence/format and registered-kind body schema are usage
+   errors; kind-semantic, lifecycle, actor, authorisation and cryptographic failures
+   establish no trust and are not usage errors. More conservative: a malformed keyset
+   input fails closed as a usage error, while a merely untrusted record is ignored
+   instead of silently upgrading trust. The silently ignored keyset record is invisible to
+   the operator in the report; that is accepted because the alternative (a report warning)
+   would need a notice code and the file establishes nothing either way.
+10. **Report construction details (F12, S8⑩).** Readings: leave them
+    implementation-defined (byte comparisons then cannot be meaningful) or pin them.
+    **Chosen** pin them normatively in §14.6: `N_KEY_TOFU` placement, unknown-kind
+    notice only on a valid record, `sigs[].state`, partial `refs[]`,
+    `timestamps[].gen_time`, broken-renewal states, container defaults for undetermined
+    values, and the serializer micro-decisions (including `\u007f` escaping).
+    **Deterministic**: the report becomes reproducible and no implementation must copy
+    another implementation's output to conform.
+11. **Check-order precedence (S8⑪).** **Chosen** the §14.5 stage order: cryptographic
+    checks before lifecycle/semantic ones, and `E_TS_FILE` before `E_TS_RENEWAL`.
+    **Deterministic**: a single code per defect; the order is the logical one (a signature
+    can only be attributed to a key once it verifies), so no implementation needs another
+    implementation's behaviour to reach it.
+12. **`verifier` identity (F1, S8⑫).** **Chosen**: informational, excluded from
+    cross-implementation comparison; conformance is defined by §14.10. Avoids claiming
+    byte identity that cannot exist and fixes no false shared name.
+13. **`vectors` report layout (F5, S8⑬).** **Chosen**: `summary` is normative and
+    per-case layout and `vectors` input identity are implementation-defined,
+    deterministic and path-free. **Deterministic**: no implementer has to copy an
+    unobservable shape, and conformance is `mismatched == 0`.
+14. **`N_NO_HUMAN_SIGNATURE` precedence (F6, S8⑭).** Readings: the notice also appears
+    on the unverifiable signature branches, or only on a valid accepted record.
+    **Chosen** only on a `valid` accepted record: reporting a human-signature
+    conclusion on a record whose signatures could not be checked would state something
+    the verifier did not establish.
+
+Entries 15–19 record five further principle decisions added by revision 1 of the S1-FIX1
+round (T11); they carry the status
+`decided by principle (Inceptless decision 2026-11-11 #5; T11)`.
+
+15. **`stage` value semantics (§4.1.1).** Readings: the five stage words are opaque closed
+    values whose meaning is left to projects, or they have fixed envelope meanings. **Chosen**
+    fixed meanings: `proposed` = the actor asserts the claim without having adopted it (not
+    "awaiting receiver approval"), `accepted` = the actor adopts it as its current position,
+    and similarly `rejected`/`withdrawn`/`superseded`. Reason: a closed vocabulary with no
+    meaning cannot support the signer/authorisation rules that key off `accepted`, and the
+    alternative lets two implementations disagree on what a `proposed` record asserts. The
+    negative clarification ("not awaiting approval") prevents a receiver from reading the
+    stage as a workflow state the format does not define.
+16. **Registration does not retroactively abandon records (§7.6).** Readings: registering a
+    kind re-judges all older records of that kind against the new body rules, or the frozen
+    set pins old conclusions and a registration must accept previously exportable bodies.
+    **Chosen** the second: a kind page must accept the body shapes its project exported while
+    the kind was opaque, and a registration that cannot do so is a breaking change under
+    §0.3. Reason: §7.5's additive evolution exists precisely so a verifier never abandons
+    older records (K3); the frozen regression set makes the commitment checkable.
+17. **Manifest signing key need not be `manifest.origin.instance` (§11.3).** Readings: the
+    manifest signature must be by the key named in the manifest origin (publisher binding),
+    or the signature only proves which declared key signed the manifest bytes. **Chosen** the
+    second, as a documented limitation (T17/A-L8): the verifier checks the equation
+    against declared material, the report does not claim a publisher binding, and a consumer
+    that needs the binding must pin the key id out of band. Reason: H0 has no ruling that
+    establishes the binding, and inventing one would reject valid containers produced by
+    systems whose manifest signer is a delegated key. The limitation is stated in §15 so the
+    gap is not silent.
+18. **Oversized `.tsr` is a container-level `E_JSON_SIZE` (§13).** Readings: an oversized
+    timestamp receipt file is an invalid receipt (`E_TS_*` inside the timestamp phase) or a
+    container-level size-limit failure. **Chosen** container-level `E_JSON_SIZE`, reported by
+    the timestamp phase, with the record verdicts kept. Reason: every §13 limit maps to one
+    deterministic code (Q24); the size limit is checked before parsing the file, so calling it
+    a receipt format error would report a different check than the one that failed, and the
+    timestamp phase runs after the record phase so the already-processed records remain
+    reportable (T16).
+19. **Retention of `N_READABLE_PRESENT` / `N_PREVIOUS_SIG_UNVERIFIED` after an early
+    failure (§14.6).** Readings: notices are reported only from completed stages, or a
+    notice about a condition the verifier already observed is kept even if a later check
+    fails. **Chosen** the second, and the identical if-and-only-if rule for the limitation
+    identifiers. Reason: deterministic information-preserving reporting — the condition is a
+    fact of the input, not a passed check, so dropping it after a later failure would make
+    the report depend on check ordering and hide a condition the verifier did establish.
+    When the condition cannot be determined (for example entry enumeration fails before a
+    `readable/` entry is observed), it is not reported.
+
+20. **`(recorded_at, record digest)` order for revocation validity (§9.5, U12/L8).**
+    Readings: judge whether a revocation record is valid using revocations ordered by
+    `effective_at`, or by the record's own `(recorded_at, record digest)`. **Chosen** the
+    recorded order: when judging R, only a revocation ordered strictly before R by
+    `(recorded_at, record digest)` participates. Reason: mutual revocations need a
+    deterministic fixed point, and ordering by `effective_at` gives none (two revocations
+    effective in the same instant would each be invalidated by the other). The trade-off is
+    explicit: a revocation recorded later but effective earlier cannot invalidate an
+    earlier-recorded revocation. Marked `decided by principle (Inceptless decision
+    2026-11-11 #12; U12/L8)`; the specification and the verifier implement this order.
+
+21. **A supplied previous container links the chain only (V3).** Readings: parse the
+    supplied previous container exactly like a target container (full evidence), or read only
+    the manifest and its attestation file and verify the link. **Chosen** the second: the
+    chain needs only the manifest digest and its signature, and narrowing the checked
+    surface removes the places where two implementations could disagree; the report states
+    the narrowing explicitly with `L_PREVIOUS_CONTENT_UNVERIFIED`, and a party that wants
+    the previous container verified runs it as a target. Marked `decided by principle
+    (Inceptless decision 2026-11-11 #14; V3)`.
+22. **TSA receipts must be strict canonical DER (V2).** Readings: accept lenient/BER-ish
+    receipt encodings and only fail later checks, or require strict canonical DER at check
+    1. **Chosen** strict DER: exactly one `TimeStampResp` with no trailing data, canonical
+    minimal length forms, re-encoding equal to the input, and the fixed version values
+    (`SignedData.version` = 3, `SignerInfo.version` ∈ {1, 3}, `TSTInfo.version` = 1); any
+    DER decoding or structure failure anywhere in receipt processing is `E_TS_SCHEMA`.
+    Reason: the attestation digest of a `.tsr` is not covered by the manifest signature, so
+    receipts are attacker-supplied input; one strict profile gives a single deterministic
+    code and cannot depend on a parser's tolerance. Marked `decided by principle
+    (Inceptless decision 2026-11-11 #14; V2)`.
+23. **`record_count` keeps the manifest count (V7/L5).** Readings: reset `record_count` to
+    0 when a later container stage fails, or keep the manifest's record count once the
+    manifest has parsed and its structure checks have passed. **Chosen** keep it: the count
+    is a fact established at the manifest stage, resetting it loses information and made
+    implementations disagree on report shape for the same input. It stays 0 only for a
+    failure before the manifest structure stage. Marked `decided by principle (Inceptless
+    decision 2026-11-11 #14; V7/L5)`.
+24. **Which keys and which trust link a supplied previous container (W1).** The ruling
+    fixed the context (the target's keyset plus target records, never the previous
+    container's own declarations), the key material (the §11.3 required-key definition)
+    and the time rule (§9.4 at the previous `created_at`). Two details were left to
+    principle. *Trust:* reading A — any key that resolves in the target's final key state,
+    including key material that only a self-consistent rotation record supplies; reading B —
+    a key with a valid declaration in the target context, or the `old_key` of a valid
+    rotation whose `new_key` has a valid declaration. **Chosen B**: a rotation record is
+    valid without any trust, so under A two fresh keys could rotate into each other and
+    link any previous manifest; under B the successor key's own trusted declaration vouches
+    for the predecessor, which is exactly the rotated-key case the ruling names.
+    *Compromise:* reading A — judge a `key-compromise` revocation like a retired one,
+    against the previous `created_at`: `created_at` before the compromise time `T` links,
+    `created_at` at or after `T` is `E_MANIFEST_CHAIN`; reading B — apply §9.4 case 3 as
+    for a target manifest signature: a compromised key needs timestamp evidence, the
+    previous container's receipts are not read, so every such link breaks. S1-FIX4 chose B
+    by principle. **The founder decided A** (Inceptless decision 2026-11-12 #1, X2): the
+    previous manifest's digest is already pinned by the target's trusted signature
+    (`previous_manifest.digest`), so a key reported compromised later cannot be used to
+    substitute that history, while B made every honest exporter's chain break permanently
+    from the moment one of its device keys was reported compromised. §11.5 rule 3 now states
+    one comparison for every revocation reason, and the sentence that let a compromise
+    "always" break the link was removed. *Material:* §11.5 rule 1 also states that a
+    rotation record that is not valid supplies no key material for the link (as §5.3 says
+    for material in general; X5). The trust part remains `decided by principle (Inceptless
+    decision 2026-11-11 #16; W1)`; the compromise part is `decided (Inceptless decision
+    2026-11-12 #1; X2)`.
+25. **Order inside the previous-manifest-chain stage (W5).** Readings: check the embedded
+    previous manifest first and read the supplied previous only when the embedded one
+    passes (the limitation then depends on unrelated embedded defects), or read and verify
+    the supplied previous first whenever the stage runs. **Chosen** the second for the
+    limitation and the suppressed `*_PREVIOUS_SIG_UNVERIFIED` pair, so that
+    `L_PREVIOUS_CONTENT_UNVERIFIED` has one criterion; the reported code is still the first
+    failing check of a fixed order (embedded size, null-versus-present, embedded manifest,
+    supplied previous, digest comparison), which keeps the existing codes. Marked
+    `decided by principle (Inceptless decision 2026-11-11 #16; W5)`.
+26. **Renewal-chain shape before the per-receipt checks (W6).** The previous text said
+    checks 1–13 run before check 14 "over the receipts that passed them". Readings: decode
+    every receipt first, or decide the chain shape from the `renews` links first.
+    **Chosen** the chain shape first: the expected imprint of a renewal receipt (check 4)
+    is defined by its place in the chain, so per-receipt checks cannot be completed before
+    the chain is known; the chain shape is decided from the attestation array
+    alone. A broken chain therefore reports only `E_TS_RENEWAL`. This is a deterministic
+    choice, not a more conservative one (both readings make the container invalid). Marked
+    `decided by principle (Inceptless decision 2026-11-11 #16; W6)`. *Note (X5):* this
+    rewrote the wording "checks 1–13 run before check 14" that S8⑪ (entry 11) and T3 had
+    fixed; the behaviour did not change — the vector
+    `integrity-levels/l2-renewal-broken-with-schema-receipt` reported only `E_TS_RENEWAL`
+    under the earlier text as well, and no existing vector changed. The wording change is
+    kept and recorded here for the founder (Inceptless decision 2026-11-12 #1).
+27. **Several `ed25519` entries in one attestation file (W10/L5).** §11.3 said the
+    signature is unverifiable when "no entry is a verifiable signature by a declared
+    required key" and did not say what happens when one entry verifies and another does
+    not. Readings: one verifying entry suffices, or every `ed25519` entry must be by a
+    required key and verify. **Chosen** every entry: an extra entry by an undeclared key
+    keeps the manifest signature `unverifiable` (`E_KEY_UNKNOWN`), a failing entry is
+    `E_MANIFEST_SIG_INVALID`, and a supplied previous attestation follows the same rule
+    (`E_MANIFEST_CHAIN`). This is the more conservative reading and the one existing
+    verifiers already apply. Marked `decided by principle (Inceptless decision 2026-11-11
+    #16; W10/L5)`.
+28. **Keyset directory entries (W10/L6).** §14.1 said "the top-level `*.json` files".
+    Readings: skip hidden names and non-files silently, or treat every top-level name
+    ending in `.json` as a keyset file and reject one that is not a regular file.
+    **Chosen** the second: a keyset is the operator's trust statement, and a silently
+    skipped entry (a dangling link, a directory named `*.json`) would change which roots
+    exist without any signal. A hidden name is read like any other. Marked `decided by
+    principle (Inceptless decision 2026-11-11 #16; W10/L6)`.
+29. **DER of values whose type is unknown, and of OCTET STRING contents (W3).** Readings:
+    exempt values of unknown type from DER checking, or apply the universal DER rules to
+    them. **Chosen** apply them, and check a universal SET of unknown type as a SET OF
+    (every universal SET in the `TimeStampResp`, CMS and X.509 schemas is one; a SET with
+    mixed constructed/primitive context tags would be the only false rejection, and none
+    is defined there). The content octets of OCTET STRINGs and BIT STRINGs (certificate
+    extension values, signature values) are not re-decoded by check 1; the TSTInfo inside
+    `eContent` is checked on its own by check 2. Marked `decided by principle (Inceptless
+    decision 2026-11-11 #16; W3)`. *Amended by X1 (decision 2026-11-12 #1):* a value of
+    an open type is judged by its TLV framing only (1a) and is never handed to a type
+    decoder; its tag class does not matter (`80 01 01` and `5f 81 48 01 01` are valid
+    values of an unregistered attribute). See entry 30 for the list of open types.
+30. **Which types check 1c decodes (X1).** The ruling fixed that 1c's rules come from
+    X.690 and the module definitions only, that DEFAULT values are judged against the
+    module definitions, that open types are judged by their framing only and that time
+    values are compared raw. It did not list which `ANY DEFINED BY` values the profile
+    decodes. Readings: decode every attribute, algorithm-parameter and certificate type
+    some library knows (signingTime, counterSignature, RSASSA-PSS parameters, attribute
+    certificates…), or decode exactly the types the profile reads. **Chosen** the second:
+    the decoded attribute types are `id-contentType`, `id-messageDigest` and
+    `id-aa-signingCertificateV2`; `AlgorithmIdentifier.parameters` and every other
+    `ANY`/`ANY DEFINED BY` value, the non-`certificate` `CertificateChoices`
+    alternatives and the `x400Address` name form are open types (§12.2 1c lists them). A
+    list fixed by the specification is the only one two independent implementations can
+    agree on; "whatever my library knows" is exactly the dependency X1 removed, and every
+    extra decoded type is a further source of false rejections (for example the
+    RSASSA-PSS-params DEFAULTs). Marked `decided by principle (Inceptless decision
+    2026-11-12 #1; X1)`. *Follow-up, decided (Inceptless decision 2026-11-12 #2; X6):*
+    treated as an open type, the `parameters` of the signer's `digestAlgorithm` and
+    `signatureAlgorithm` were judged by their framing only, so a receipt whose
+    `rsaEncryption` parameters were not `NULL` would have been accepted. The more
+    conservative reading was taken: those parameters now have the form fixed per
+    algorithm (SHA-2 absent or `NULL`, RFC 5754 §2; `rsaEncryption` `NULL`, RFC 3370
+    §3.2; ECDSA absent, RFC 5758 §3.2), listed in §12.2 1c; any other form is
+    `E_TS_SCHEMA`. No byte-flip exemption is needed for them. *Corrected (Inceptless
+    decision 2026-11-12 #3; X7/M1):* X6 first required `NULL` for sha*WithRSAEncryption
+    as well, contrary to RFC 4055 §5 and RFC 5754 §3.2 ("MUST accept the parameters being
+    absent as well as present"); those rows are now "absent or `NULL`".
+34. **Known open type: `SignedData.digestAlgorithms` parameters (recheck5 L1).** The
+    parameters of the algorithm identifiers in `SignedData.digestAlgorithms` are outside
+    the signature and read by no check; under X1 they are an open type, judged by their
+    framing only, and the byte-flip gate exempts them (`tsr-digest-algorithms`). The
+    reason given for X6 (outside the signature, changeable by anyone) applies to them as
+    well, but they are deliberately **not** fixed: no check reads them, so two
+    implementations following the specification cannot disagree on a verdict. Recorded as
+    a known open type (Inceptless decision 2026-11-12 #3).
+35. **`SignerInfo.version` must match its `sid` (X7, found by the byte-flip gate).** The
+    profile accepted version 1 or 3 with either `sid` form. After X7 the gate found that
+    flipping version 1 to 3 in a receipt whose `sid` is `issuerAndSerialNumber` left the
+    receipt valid: the field is outside the signature and read only as "1 or 3". Readings:
+    exempt that octet in the byte-flip gate, or apply RFC 5652 §5.3 ("If the
+    SignerIdentifier is issuerAndSerialNumber, then the version MUST be 1 … if
+    subjectKeyIdentifier, then the version MUST be 3"). **Chosen** the second, the more
+    conservative reading (the precedent of X6, decision 2026-11-12 #2, which preferred a
+    fixed form to a byte-flip exemption): a mismatch is `E_TS_SCHEMA` (check 1d). Marked
+    `decided by principle (Inceptless decision 2026-11-12 #3; X7)`; the coordinator may
+    reverse it.
+31. **Symbolic links among operator paths (X3).** The ruling says the kind of each
+    operator path is established with `lstat` before opening. Readings: reject every
+    symbolic link (`lstat` alone), or resolve a link and judge its target the same way.
+    **Chosen** the second: operator paths are routinely links (a keyset directory kept
+    elsewhere), the hazard the ruling addresses is the blocking open of a FIFO or a device,
+    and a link to one is rejected as well; a dangling link is a usage error, as it already
+    was for keyset entries (entry 28). Marked `decided by principle (Inceptless decision
+    2026-11-12 #1; X3)`.
+32. **Open: the target manifest signature is judged more leniently than the previous one
+    (recheck4 L7).** Since W1 the previous manifest's signing key must be trusted in the
+    target's closure, while the target manifest signature itself only needs a required key
+    and records a TOFU limitation: a self-made rotation between two fresh keys can carry a
+    target manifest signature to `valid` with `L_KEY_TRUST_TOFU` only. Whether the target
+    signature should meet the same trust bar is **not decided**; it is left for a later
+    round (Inceptless decision 2026-11-12 #1).
+33. **Open: §9.4 last paragraph versus §11.3 (recheck4 L7).** §9.4 ends by saying that a
+    signature by a key whose declaration is untrusted is `E_KEY_UNKNOWN` and that "this
+    applies to manifest signatures as well", while §11.3 says that "a declared but
+    untrusted signing key … does not make the manifest signature unverifiable". The
+    current implementations follow §11.3. Which sentence governs is **not decided**; it is
+    left for a later round (Inceptless decision 2026-11-12 #1).
+
+Status updates in this revision:
+
+- **Q27** (report `input` identity) is refined by S14 and T16: a directory container's
+  `input` is the §2.4 manifest digest and byte size once the manifest has parsed and its
+  structure validated; before that (structurally invalid manifest or a stop before the
+  manifest structure stage) it is the raw `manifest.json` bytes' SHA-256 and size; it is
+  `null` for both when the manifest is absent, unreadable or above
+  `MAX_MANIFEST_BYTES`, and for a standalone record above `MAX_RECORD_BYTES` (the whole
+  file is never read). The `vectors` target report shape is implementation-defined
+  (F5/S8⑬).
+- **P3** (delegation-chain depth) and **P10** (human-signature notice precedence) are
+  resolved and removed from §3; **P7** is narrowed to the `vectors`-target layout
+  (F5).
+- **F4/F12** limitation prose is replaced by the closed identifier list of §14.9;
+  reports carry identifiers only.
+- **F13** is a property of the byte constructions (the bytes of `sigs[].alg` are not
+  covered by the record digest or signature), not an ambiguity; it is recorded as a
+  note in specification §4.3.
+- **F17** matcher semantics are stated normatively in specification §14.10 and in
+  `vectors/README.md` (the vectors area).
+
+### F1–F17 disposition (ruling S16)
+
+All seventeen findings are adopted; none is silently dropped. The normative locations
+are in the specification; the table records the disposition and, where a finding needed
+no text change, the reason (specification §14.10 and the kind pages carry the detail).
+
+| finding | disposition | normative location |
+|---|---|---|
+| F1 | adopted: `verifier` is an informational implementation identity, excluded from cross-implementation comparison | spec §0.2, §14.6 |
+| F2 | adopted (mandatory): registry rows shrink to envelope-level; closed nested objects use their owning section's code | spec §4, §4.2, registry `E_ENV_MISSING_FIELD`/`E_ENV_UNKNOWN_FIELD` |
+| F3 | adopted: envelope sub-order presence → closedness → grammar, repeated inside nested closed objects | spec §4, §14.5 |
+| F4 | adopted via S12: `limitations` is a closed identifier list, not prose | spec §14.6, §14.9, registry `L_*` |
+| F5 | adopted: `summary` normative, per-case layout and `vectors` input identity implementation-defined; P7 narrowed | spec §14.6, §14.10; this file §3 P7 |
+| F6 | adopted: `N_NO_HUMAN_SIGNATURE` only for a valid `accepted` record; P10 resolved | spec §4.4, §14.5, §14.6 |
+| F7 | adopted: a §14.4 blocking condition is terminal for the record, like an error | spec §14.4, §14.5 |
+| F8 | adopted: timestamp verification may run before the record stage; reporting/stopping order unchanged | spec §14.5 |
+| F9 | adopted: scalar/object fields `null`, list fields `[]`, conditional fields omitted | spec §14.6 |
+| F10 | adopted: explicit keyset structural/semantic boundary | spec §14.1 |
+| F11 | adopted via S14: `input` is `null` when the manifest identity cannot be read within the limits | spec §14.6 |
+| F12 | adopted: report-construction details pinned normatively (TOFU placement, unknown-kind notice, `sigs[].state`, partial `refs[]`, `gen_time`, container defaults, broken-renewal states, serializer micro-decisions) | spec §14.6 |
+| F13 | no format change: a property of the byte constructions (`sigs[].alg` bytes are outside the record digest and signature); recorded as a note | spec §4.3, Appendix A |
+| F14 | superseded by S13: unknown skip-token is a usage error, not silently ignored | spec §14.1, §14.7 |
+| F15 | adopted: `vectors --tsa-trust` default anchor; `--previous` accepts a directory or zip; `--keys`/`--previous` not accepted on `vectors` | spec §14.1 |
+| F16 | adopted: a container invalid error stops with `records: []`; manifest signature verification is the cryptographic equation only | spec §14.5, §11.3 |
+| F17 | adopted: exact matcher semantics stated normatively | spec §14.10 and `vectors/README.md` |

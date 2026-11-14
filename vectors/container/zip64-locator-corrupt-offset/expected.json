@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip64-locator-corrupt-offset","input":"container.zip","notes":"T6/§11.9 rule 3: the ZIP64 EOCD locator's offset must point at the ZIP64 EOCD record; a corrupted offset is E_CONTAINER_ZIP. This pins the version-independent (3.12/3.14) parsing required by T6.","records":[],"target":"container","verdict":"invalid"}

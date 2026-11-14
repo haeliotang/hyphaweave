@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import pathlib
 
 import pytest
@@ -89,9 +88,11 @@ def test_format_kind_origin_id() -> None:
     assert validate(changed(origin={"project": "Example", "instance": HUMAN_1})).code == (
         "E_ENV_ORIGIN"
     )
+    # F2/S8.6: a closed nested object reports the code of the section that owns
+    # it; the envelope-level E_ENV_UNKNOWN_FIELD is top-level only.
     assert validate(
         changed(origin={"project": "example", "instance": HUMAN_1, "other": 1})
-    ).code == "E_ENV_UNKNOWN_FIELD"
+    ).code == "E_ENV_ORIGIN"
     assert validate(changed(id="")).code == "E_ENV_ID"
     assert validate(changed(id=" leading")).code == "E_ENV_ID"
     assert validate(changed(id="trailing ")).code == "E_ENV_ID"
@@ -112,11 +113,13 @@ def test_stage_vocabulary_and_kind_constraints() -> None:
 
 def test_actor_rules() -> None:
     assert validate(changed(actor=[])).code == "E_ENV_ACTOR"
-    assert validate(changed(actor={"key": HUMAN_1})).code == "E_ENV_ACTOR"
+    # S8.6/F3: presence first, then closedness, then grammar; a missing nested
+    # member reports the object's dedicated code.
+    assert validate(changed(actor={"key": HUMAN_1})).code == "E_ENV_ACTOR_TYPE"
     assert validate(changed(actor={"type": "robot", "key": HUMAN_1})).code == (
         "E_ENV_ACTOR_TYPE"
     )
-    assert validate(changed(actor={"type": "human"})).code == "E_ENV_ACTOR"
+    assert validate(changed(actor={"type": "human"})).code == "E_ENV_ACTOR_KEY"
     assert validate(changed(actor={"type": "human", "key": "nope"})).code == (
         "E_ENV_ACTOR_KEY"
     )
@@ -251,7 +254,12 @@ def test_sigs_rules() -> None:
     assert len(parsed.sigs) == 1 and parsed.sigs[0].raw == bytes(64)
     # Shape problems are E_ENV_SIGS.
     assert validate(changed(sigs=sig())).code == "E_ENV_SIGS"
-    assert validate(changed(sigs=[])).code == "E_ENV_SIGS"
+    # S7.1/§4.3: the array bound is 0-16; an empty array is structurally valid
+    # (a must-sign record reports E_SIG_REQUIRED at the §4.4 precedence step).
+    empty = envelope.validate_envelope(changed(sigs=[]))
+    assert empty.sigs == ()
+    too_many = [sig() for _ in range(17)]
+    assert validate(changed(sigs=too_many)).code == "E_ENV_SIGS"
     without_value = sig()
     del without_value["value"]
     assert validate(changed(sigs=[without_value])).code == "E_ENV_SIGS"
@@ -301,3 +309,32 @@ def test_kind_names_require_a_project_segment() -> None:
     assert not kinds.is_kind_syntax("plain")
     assert not kinds.is_kind_syntax("Upper.case")
     assert not kinds.is_kind_syntax("a.b" * 100)
+
+
+# ---------------------------------------------------------------------------
+# S3: SPDX licence nesting bound (§8.7 / §13)
+# ---------------------------------------------------------------------------
+
+
+def test_licence_nesting_bound() -> None:
+    within = "(" * 16 + "MIT" + ")" * 16
+    assert envelope.validate_envelope(changed(labels={"licence": within})).licence == within
+    beyond = "(" * 17 + "MIT" + ")" * 17
+    assert validate(changed(labels={"licence": beyond})).code == "E_ENV_LICENCE"
+    # The parser is depth-bounded: a hostile depth is a syntax error, not a crash.
+    hostile = "(" * 5000 + "MIT" + ")" * 5000
+    assert validate(changed(labels={"licence": hostile})).code == "E_ENV_LICENCE"
+
+
+def test_licence_grammar_edges() -> None:
+    assert validate(changed(labels={"licence": "MIT OR"})).code == "E_ENV_LICENCE"
+    assert validate(changed(labels={"licence": " AND MIT"})).code == "E_ENV_LICENCE"
+    assert validate(changed(labels={"licence": "MIT and Apache-2.0"})).code == "E_ENV_LICENCE"
+    assert validate(changed(labels={"licence": "(MIT"})).code == "E_ENV_LICENCE"
+    assert validate(changed(labels={"licence": "MIT WITH"})).code == "E_ENV_LICENCE"
+    assert (
+        envelope.validate_envelope(
+            changed(labels={"licence": "(MIT OR Apache-2.0) AND GPL-2.0+ WITH Classpath-exception-2.0"})
+        ).licence
+        is not None
+    )

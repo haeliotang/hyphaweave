@@ -81,6 +81,7 @@ ERROR_CODES: dict[str, str] = {
     "E_JSON_NUMBER_NOT_INTEGER": EFFECT_INVALID,
     "E_JSON_NUMBER_RANGE": EFFECT_INVALID,
     "E_JSON_SIZE": EFFECT_INVALID,
+    "E_KEY_CLASS_CONFLICT": EFFECT_INVALID,
     "E_KEY_COMPROMISED": EFFECT_INVALID,
     "E_KEY_DECLARED_NOT_COSIGNED": EFFECT_INVALID,
     "E_KEY_DECLARED_NOT_SELF_SIGNED": EFFECT_INVALID,
@@ -202,7 +203,7 @@ def is_registered(code: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Test hook: WEAVE_VERIFY_SKIP_CHECKS (spec §14.7 / Q18)
+# Test hook: WEAVE_VERIFY_SKIP_CHECKS (spec §14.7 / S13)
 # ---------------------------------------------------------------------------
 
 ENV_SKIP_CHECKS = "WEAVE_VERIFY_SKIP_CHECKS"
@@ -213,12 +214,15 @@ class CheckSkipper:
 
     The hook exists solely so the repository's anti-verification gate can prove
     that each error-code family is actually exercised by the vectors. It is
-    documented in the verifier README as test-only.
+    available only through the explicit ``--test-hooks`` CLI parameter (S13):
+    the environment variable is read only when that parameter is present, and
+    without it the report carries no ``checks_disabled`` state and the exit code
+    is unchanged.
 
-    A token may be an exact code (``E_SIG_INVALID``), a family prefix
-    (``E_SIG``, matching every ``E_SIG_*`` code) or a wildcard form
-    (``E_SIG_*``). The raw tokens are echoed, sorted and unique, in the report
-    field ``checks_disabled`` so a report is never silently degraded.
+    A token is a registered ``E_*`` error code. Unknown tokens are a usage
+    error (the CLI exits 2 and names the sorted unknown tokens); no check is
+    silently dropped. The accepted tokens are echoed, sorted and unique, in the
+    report field ``checks_disabled``.
     """
 
     __slots__ = ("_tokens",)
@@ -229,50 +233,42 @@ class CheckSkipper:
             token = raw.strip()
             if not token:
                 continue
+            if token not in ERROR_CODES:
+                raise UsageError("unknown check-skip token: %s" % token)
             cleaned.add(token)
         self._tokens = tuple(sorted(cleaned))
 
     @classmethod
-    def from_env(cls, environ: dict[str, str] | None = None) -> "CheckSkipper":
+    def from_env(
+        cls,
+        enabled: bool,
+        environ: dict[str, str] | None = None,
+    ) -> "CheckSkipper":
+        """Read ``WEAVE_VERIFY_SKIP_CHECKS`` only when the hook was requested."""
         import os
 
+        if not enabled:
+            return cls()
         env = os.environ if environ is None else environ
         raw = env.get(ENV_SKIP_CHECKS, "")
-        return cls(raw.split(","))
+        tokens = [token.strip() for token in raw.split(",") if token.strip()]
+        unknown = sorted({token for token in tokens if token not in ERROR_CODES})
+        if unknown:
+            raise UsageError(
+                "unknown check-skip token(s): %s" % ", ".join(unknown)
+            )
+        return cls(tokens)
 
     @property
     def tokens(self) -> tuple[str, ...]:
-        """Sorted unique tokens as supplied by the environment."""
+        """Sorted unique registered error codes supplied for this run."""
         return self._tokens
 
-    def is_skipped(self, code: str) -> bool:
-        """Return whether ``code`` should be treated as passed."""
-        for token in self._tokens:
-            if token == code:
-                return True
-            if token.endswith("*") and code.startswith(token[:-1]):
-                return True
-            # Area family form: E_SIG matches E_SIG_INVALID but not E_SIGS.
-            if code.startswith(token + "_") and token.startswith(("E_", "N_")):
-                return True
-        return False
-
     def skip_error(self, code: str) -> bool:
-        """Return whether a failing check with ``code`` should be suppressed.
-
-        Only error codes can be skipped; a token naming an unknown code or a
-        notice never suppresses anything.
-        """
-        return code in ERROR_CODES and self.is_skipped(code)
+        """Return whether a failing check with ``code`` should be suppressed."""
+        return code in self._tokens
 
 
-#: The default (empty) skipper used when the environment variable is unset.
+#: The default (empty) skipper used when the test hook is not enabled.
 NO_SKIP = CheckSkipper()
 
-
-def skipped_code_allowed(code: str) -> bool:
-    """Validate a token supplied to :class:`CheckSkipper` (used by tests)."""
-    if code in ALL_CODES:
-        return True
-    family = code.rstrip("*")
-    return any(code_name.startswith(family + "_") for code_name in ERROR_CODES)

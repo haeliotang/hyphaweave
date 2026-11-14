@@ -1,0 +1,1 @@
+{"category":"container","errors":["E_CONTAINER_ZIP"],"id":"container/zip-disk-number-nonzero","input":"container.zip","notes":"U9/§11.9 rule 3: only single-volume archives are supported. The EOCD's \"number of this disk\" field is 1, not 0, so the archive is E_CONTAINER_ZIP.","records":[],"target":"container","verdict":"invalid"}

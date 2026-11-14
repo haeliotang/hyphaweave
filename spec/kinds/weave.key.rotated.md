@@ -43,7 +43,9 @@ remains usable for existing records and must be revoked separately (usually with
    exactly 32 bytes, and its key-id derivation MUST equal the corresponding id member. A
    malformed value or a contradiction is `E_KEY_ROTATION_KEYS` (invalid). This kind
    deliberately uses `E_KEY_ROTATION_KEYS`, not `E_KEY_PUBLIC_KEY` or
-   `E_KEY_ID_MISMATCH` [M-11] decided (Inceptless decision 2026-11-10 #34; M-11).
+   `E_KEY_ID_MISMATCH` [M-11] decided (Inceptless decision 2026-11-10 #34; M-11). The
+   encoding/length part of this check is **structural** (parent specification §14.1, V5),
+   and a `weave.key.rotated` record is never used to determine a governing class.
 3. **Both signatures.** At least one valid signature by `old_key` and at least one valid
    signature by `new_key` MUST be present (`E_KEY_ROTATION_SIGS`). The new-key signature is
    verified against `body.new_public_key`; the old-key signature is verified against

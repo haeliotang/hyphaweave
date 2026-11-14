@@ -5,8 +5,9 @@
 
 ## Status of this repository
 
-Hyphaweave is at milestone **H0 revision 2** (decisions 2026-11-10 #34 and
-#42): a draft specification (`weave-record/1` v0.1), JSON Schemas, conformance
+Hyphaweave is at milestone **H0 revision 3** (decisions 2026-11-10 #34,
+2026-11-10 #42 and 2026-11-11 #2): a draft specification
+(`weave-record/1` v0.1), JSON Schemas, conformance
 vectors and one Python reference verifier. The repository is **public**, but the
 format is **not stable** and the project is not yet accepted (J1/J2), and nothing
 here runs as a network service. There is no warranty (see `LICENSING.md`).

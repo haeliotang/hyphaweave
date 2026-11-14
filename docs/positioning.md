@@ -50,7 +50,7 @@ Two principles run through everything:
 
 | Part | Content | Status at H0 |
 | --- | --- | --- |
-| **Records** — `weave-record/1` | Specification and schemas for the envelope, references, containers, erasure and authorization; conformance vectors; offline manual verification steps; two independent reference verifiers (Python and Rust) | Draft v0.1 decided 2026-11-07; **Python reference verifier implemented in this repository; Rust is a later milestone; J1/J2 acceptance has not happened** |
+| **Records** — `weave-record/1` | Specification and schemas for the envelope, references, containers, erasure and authorization; conformance vectors; offline manual verification steps; two independent reference verifiers (Python and Rust) | Draft v0.1 decided 2026-11-07; **Python reference verifier implemented in this repository; a Rust verifier exists on a separate branch and has not yet caught up with the current revision; J1/J2 acceptance has not happened** |
 | **Keys and consent** | Record kinds `weave.key.declared / rotated / revoked`, `weave.consent.granted / revoked`, `weave.grant`; local trust rules (trust on first use, no central CA) | Kinds decided; the human-key foundation is still a dependency and is not provided by this repository |
 | **Offline transport** | A shared component (framing, fragment reassembly, deduplication, TTL relay queue, QR text packages) that carries arbitrary `weave-record/1` containers | **Not part of H0.** It is not extracted or shipped here yet |
 

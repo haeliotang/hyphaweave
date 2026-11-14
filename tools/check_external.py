@@ -398,7 +398,7 @@ def _hex_lines(lines: list[str]) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        if _HEX_LINE.match(stripped):
+        if _HEX_LINE.fullmatch(stripped):
             text.append(stripped)
         # Anything else is RFC page furniture (headers, footers, form feeds).
     return "".join(text).lower()

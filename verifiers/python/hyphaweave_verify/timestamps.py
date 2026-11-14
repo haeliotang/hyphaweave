@@ -43,7 +43,10 @@ from __future__ import annotations
 import calendar
 import datetime as _datetime
 import hashlib
+import re
+import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from asn1crypto import tsp
 from cryptography import x509 as cryptography_x509
@@ -51,9 +54,45 @@ from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
-from .errors import WeaveError
+from . import der_schema, operator_input
+from .errors import UsageError, WeaveError
 
 MAX_TIMESTAMP_BYTES = 1_048_576
+
+#: Internal strict-DER violation marker (check 1a scan and the 1b/1c walk).
+_DerViolation = der_schema.DerViolation
+
+#: U1 exception audit: asn1crypto DER parsing/access on untrusted bytes raises
+#: these built-in exception types only (no bare ``Exception`` catch remains).
+_DER_ACCESS_ERRORS = (
+    ValueError,
+    TypeError,
+    KeyError,
+    IndexError,
+    OverflowError,
+    UnicodeError,
+)
+
+#: V2/X2: the per-receipt boundary also catches the parsing-class exceptions the
+#: DER/X.509 libraries raise for structures that parse far enough to be handed to
+#: them (cryptography's InvalidVersion for a malformed certificate version), plus
+#: AttributeError from asn1crypto's lazy objects for an unexpected tag type. The
+#: specification says any DER decoding or receipt-structure failure, wherever
+#: discovered, is check 1's E_TS_SCHEMA.
+_RECEIPT_PARSE_ERRORS = _DER_ACCESS_ERRORS + (
+    cryptography_x509.InvalidVersion,
+    AttributeError,
+)
+
+#: S11/§13: total accuracy of one receipt, in seconds. A receipt whose
+#: normalised accuracy exceeds this (or whose conversion overflows a signed
+#: 64-bit microsecond value) is invalid with ``E_TS_SCHEMA`` and can never
+#: rescue a compromised-key signature.
+MAX_TS_ACCURACY_SECONDS = 86_400
+MAX_TS_ACCURACY_US = MAX_TS_ACCURACY_SECONDS * 1_000_000
+
+#: Signed 64-bit bound used by the rescue arithmetic (§9.4/S11).
+INT64_MAX = (1 << 63) - 1
 
 STATE_VERIFIED = "verified"
 STATE_PRESENT_UNVERIFIED = "present-unverified"
@@ -92,6 +131,11 @@ class TimestampResult:
     error: str | None
     gen_time_us: int | None = None
     accuracy_us: int = 0
+    #: T3: the receipt's accuracy is above MAX_TS_ACCURACY (or its conversion
+    #: overflows). It is *unusable evidence*, not a format error: the receipt is
+    #: present-unverified with E_TS_UNTRUSTED and can neither rescue a
+    #: compromised-key signature nor support an L2 claim.
+    unusable: bool = False
 
     def to_report(self, index: int) -> dict[str, object]:
         return {
@@ -125,20 +169,65 @@ class TimestampArchive:
         return [result for result in self.results if result.state == STATE_VERIFIED]
 
 
+#: W4/§14.1: the exception types the trust-anchor PEM loader can raise for a
+#: malformed operator file. ``load_pem_x509_certificates`` raises ``ValueError``
+#: for a missing/garbled PEM block or undecodable DER and
+#: ``cryptography.x509.InvalidVersion`` (not a ``ValueError``) for a certificate
+#: whose version field is out of range (recheck3 H4, crash_fuzz seed 777);
+#: ``UnsupportedAlgorithm`` and ``TypeError``/``OverflowError``/``UnicodeError``
+#: are the remaining parsing-class types of the cryptography API surface used
+#: here. Every one of them is a usage error (exit 2), never a crash.
+TRUST_ANCHOR_PARSE_ERRORS = (
+    ValueError,
+    TypeError,
+    OverflowError,
+    UnicodeError,
+    cryptography_x509.InvalidVersion,
+    UnsupportedAlgorithm,
+)
+
+
 def parse_trust_anchors(pem_bytes: bytes) -> frozenset[bytes]:
-    """Parse a PEM bundle of trust-anchor certificates into DER SHA-256 fingerprints."""
-    try:
-        certificates = cryptography_x509.load_pem_x509_certificates(pem_bytes)
-    except ValueError as error:
-        raise WeaveError(
-            "E_TS_UNTRUSTED", "TSA trust file is not a PEM certificate bundle"
-        ) from error
+    """Parse a PEM bundle of trust-anchor certificates into DER SHA-256 fingerprints.
+
+    W4/§14.1: ``--tsa-trust`` is operator input exactly like ``--keys``. A file
+    that is not a bundle of one or more well-formed PEM certificates is a usage
+    error (:class:`UsageError`, exit 2, no report); it is never silently treated
+    as an empty anchor set.
+    """
     from cryptography.hazmat.primitives.serialization import Encoding
 
-    return frozenset(
-        hashlib.sha256(certificate.public_bytes(Encoding.DER)).digest()
-        for certificate in certificates
-    )
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            certificates = cryptography_x509.load_pem_x509_certificates(pem_bytes)
+        fingerprints = frozenset(
+            hashlib.sha256(certificate.public_bytes(Encoding.DER)).digest()
+            for certificate in certificates
+        )
+    except TRUST_ANCHOR_PARSE_ERRORS as error:
+        raise UsageError(
+            "TSA trust file is not a bundle of well-formed PEM certificates (%s)"
+            % type(error).__name__
+        ) from error
+    if not fingerprints:
+        raise UsageError("TSA trust file contains no certificate")
+    return fingerprints
+
+
+def load_trust_anchor_file(path: Path) -> bytes:
+    """Read and validate a ``--tsa-trust`` file; usage error names the file (W4).
+
+    X3/§14.1: the path must be a regular file (``lstat`` before opening, so a
+    FIFO never blocks the verifier) and is read with the bound
+    ``MAX_TIMESTAMP_BYTES``; anything else is a usage error.
+    """
+    data = operator_input.read_bounded_file(path, "--tsa-trust", MAX_TIMESTAMP_BYTES)
+    try:
+        parse_trust_anchors(data)
+    except UsageError as error:
+        raise UsageError("--tsa-trust %s: %s" % (path, error)) from error
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +241,19 @@ def verify_timestamp_archive(
     files: dict[str, bytes],
     manifest_digest: str,
     trust_anchor_fingerprints: frozenset[bytes] | None,
+    oversized: frozenset[str] = frozenset(),
 ) -> TimestampArchive:
-    """Verify every listed TSR of a container, including the renewal chain."""
+    """Verify every listed TSR of a container.
+
+    Order (S8.11): the listed ``.tsr`` files are materialised and their listed
+    digests checked first (``E_TS_FILE``; an oversized file is ``E_JSON_SIZE``),
+    then the renewal-chain structure (``E_TS_RENEWAL``), then every token's
+    checks 1-13.
+
+    ``oversized`` names listed ``.tsr`` files whose byte size exceeded the
+    ``MAX_TIMESTAMP_BYTES`` class limit while reading (S4): they are invalid
+    with ``E_JSON_SIZE`` and cannot be parsed.
+    """
     archive = TimestampArchive()
     manifest_raw_digest = _parse_digest_bytes(manifest_digest)
     entries: dict[str, dict] = {}
@@ -161,6 +261,53 @@ def verify_timestamp_archive(
         entries[entry["path"]] = entry
     if not entries:
         return archive
+    # Phase 1: every listed TSR must exist, be within the class limit and hash
+    # to the digest the attestation lists (§11.3 file-level checks).
+    file_errors: list[str] = []
+    file_data: dict[str, bytes] = {}
+    for path in sorted(entries):
+        listed_digest = str(entries[path].get("digest", ""))
+        if path in oversized:
+            archive.results.append(
+                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_JSON_SIZE")
+            )
+            if "E_JSON_SIZE" not in file_errors:
+                file_errors.append("E_JSON_SIZE")
+            continue
+        data = files.get(path)
+        if data is None:
+            archive.results.append(
+                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
+            )
+            if "E_TS_FILE" not in file_errors:
+                file_errors.append("E_TS_FILE")
+            continue
+        if "sha256:" + hashlib.sha256(data).hexdigest() != listed_digest:
+            archive.results.append(
+                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
+            )
+            if "E_TS_FILE" not in file_errors:
+                file_errors.append("E_TS_FILE")
+            continue
+        file_data[path] = data
+    if file_errors:
+        # A broken file chain stops the archive check before the renewal
+        # structure is judged; every listed receipt is invalid.
+        archive.errors.extend(file_errors)
+        invalid_code = "E_JSON_SIZE" if "E_JSON_SIZE" in file_errors else "E_TS_FILE"
+        archive.results = [
+            TimestampResult(
+                path=path,
+                digest=str(entries[path].get("digest", "")),
+                state=STATE_INVALID,
+                gen_time=None,
+                gen_time_ms=None,
+                error=invalid_code,
+            )
+            for path in sorted(entries)
+        ]
+        return archive
+    # Phase 2: renewal-chain structure (§12.2 row 14).
     chain, structure_error = _build_renewal_chain(entries)
     if structure_error is not None:
         archive.errors.append("E_TS_RENEWAL")
@@ -179,23 +326,9 @@ def verify_timestamp_archive(
     archive.chain_paths = tuple(chain)
     previous_bytes: bytes | None = None
     for path in chain:
+        data = file_data[path]
         entry = entries[path]
         listed_digest = str(entry.get("digest", ""))
-        data = files.get(path)
-        if data is None or len(data) > MAX_TIMESTAMP_BYTES:
-            archive.results.append(
-                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
-            )
-            archive.errors.append("E_TS_FILE")
-            previous_bytes = None
-            continue
-        if "sha256:" + hashlib.sha256(data).hexdigest() != listed_digest:
-            archive.results.append(
-                TimestampResult(path, listed_digest, STATE_INVALID, None, None, "E_TS_FILE")
-            )
-            archive.errors.append("E_TS_FILE")
-            previous_bytes = data
-            continue
         expected_imprint = (
             manifest_raw_digest
             if previous_bytes is None
@@ -282,7 +415,38 @@ def verify_timestamp_token(
     path: str,
     trust_anchor_fingerprints: frozenset[bytes] | None,
 ) -> TimestampResult:
-    """Verify one TSR token; the first failing check decides the error code."""
+    """Verify one TSR token; the first failing check decides the error code.
+
+    V2/X2: one receipt's whole processing is wrapped in a boundary that catches
+    only parsing-class exceptions (asn1crypto lazy DER decode/access errors:
+    ``ValueError``/``TypeError``/``KeyError``/``IndexError``/``UnicodeError``
+    and friends). The specification says any DER decoding or receipt-structure
+    failure, wherever discovered, is check 1's ``E_TS_SCHEMA``; a malformed
+    receipt must never escape as a crash.
+    """
+    try:
+        return _verify_timestamp_token_checks(
+            tsr_bytes=tsr_bytes,
+            expected_imprint=expected_imprint,
+            listed_digest=listed_digest,
+            path=path,
+            trust_anchor_fingerprints=trust_anchor_fingerprints,
+        )
+    except _RECEIPT_PARSE_ERRORS:
+        return TimestampResult(
+            path, listed_digest, STATE_INVALID, None, None, "E_TS_SCHEMA"
+        )
+
+
+def _verify_timestamp_token_checks(
+    *,
+    tsr_bytes: bytes,
+    expected_imprint: bytes,
+    listed_digest: str,
+    path: str,
+    trust_anchor_fingerprints: frozenset[bytes] | None,
+) -> TimestampResult:
+
     state = STATE_INVALID
     gen_time: str | None = None
     gen_time_ms: int | None = None
@@ -294,7 +458,7 @@ def verify_timestamp_token(
         return TimestampResult(
             path, listed_digest, state, gen_time, gen_time_ms, error.code, gen_time_us, accuracy_us
         )
-    signed_data, tst_info, raw_content = parsed
+    signed_data, tst_info, raw_content, located_signer_certificate = parsed
     try:
         # Checks 3-4: hash algorithm and message imprint.
         imprint = tst_info["message_imprint"]
@@ -305,12 +469,30 @@ def verify_timestamp_token(
         gen_time_value = tst_info["gen_time"].native
         gen_time_ms = _gen_time_to_ms(gen_time_value)
         gen_time = _format_ms(gen_time_ms)
+        # Keep the token's microsecond genTime for reporting; the T3(4)
+        # rescue comparison truncates to milliseconds (VerifiedTimestamp).
         gen_time_us = _gen_time_to_us(gen_time_value)
-        accuracy_us = _accuracy_to_us(tst_info)
-
-        signer_info, signer_certificate_der = _verify_cms(signed_data, raw_content, gen_time_value)
+        # T3(3)/§12.2 first failing check: CMS and certificate checks (5-12) run
+        # before the accuracy checks (13).
+        signer_info, signer_certificate_der = _verify_cms(
+            signed_data, raw_content, gen_time_value, located_signer_certificate
+        )
         fingerprint = hashlib.sha256(signer_certificate_der).digest()
         _check_signer_certificate(signer_certificate_der, gen_time_value)
+        accuracy_value = _accuracy_to_us(tst_info)
+        if accuracy_value is None:
+            # T3(2): unusable evidence, not a format error. Present-unverified with
+            # E_TS_UNTRUSTED; never rescues, never supports L2, never invalid.
+            return TimestampResult(
+                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
+                "E_TS_UNTRUSTED", gen_time_us, 0, unusable=True,
+            )
+        accuracy_us = accuracy_value
+        if gen_time_us + accuracy_us > INT64_MAX:
+            return TimestampResult(
+                path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
+                "E_TS_UNTRUSTED", gen_time_us, accuracy_us, unusable=True,
+            )
         if trust_anchor_fingerprints is None or not trust_anchor_fingerprints:
             return TimestampResult(
                 path, listed_digest, STATE_PRESENT_UNVERIFIED, gen_time, gen_time_ms,
@@ -332,14 +514,43 @@ def verify_timestamp_token(
 
 
 def _parse_tst_info(tsr_bytes: bytes):
-    """Checks 1-2: DER TimeStampResp, granted status, TSTInfo version 1."""
+    """Checks 1-2 of §12.2, in the fixed W6 order.
+
+    Check 1 (``E_TS_SCHEMA``) decodes **everything** before any later check
+    runs, so a DER/structure failure anywhere in the receipt is never reported
+    as a later check's code (W6, recheck3 M2):
+
+    1a. the linear strict-DER scan of the whole file (exactly one TLV, no
+        trailing data, definite minimal lengths, minimal high tag numbers,
+        canonical universal primitives, sorted universal SET OF);
+    1b/1c. the walk of :mod:`.der_schema`: the whole file decodes against the
+        hand-written RFC 3161 / 5652 / 5280 / 5035 module definitions, and its
+        DER re-encoding (SET OF sorted, no DEFAULT encoded, typed primitives
+        rebuilt by X.690, open types re-emitted as decoded) equals the input;
+        no parsing library takes part in this judgement (S1-FIX5 X1);
+    1d. ``PKIStatusInfo.status`` is granted; the token is CMS ``SignedData``;
+        ``SignedData.version`` is 3; every ``SignerInfo.version`` is 1 or 3;
+    1e. every certificate carried in ``SignedData.certificates`` decodes as an
+        X.509 certificate, and every extension value in it is one TLV obeying the
+        universal DER rules of 1a.
+
+    Check 2: the encapsulated content type is ``id-ct-TSTInfo`` and the
+    TSTInfo bytes pass 1a-1c on their own with ``version == 1``.
+    """
+    # Check 1a.
+    _validate_strict_der(tsr_bytes)
+    # Checks 1b and 1c: schema decode and DER re-encoding (X1).
+    walk = _require_der_reencoding(der_schema.TIME_STAMP_RESP, tsr_bytes, "TimeStampResp")
+    # The values read by the later checks come from asn1crypto; it is only a
+    # reader here (the DER judgement above did not consult it).
     try:
-        response = tsp.TimeStampResp.load(tsr_bytes)
-    except Exception as error:
+        response = tsp.TimeStampResp.load(tsr_bytes, strict=True)
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "not a DER TimeStampResp") from error
+    # Check 1d.
     try:
         status = response["status"]["status"].native
-    except Exception as error:
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "TimeStampResp has no readable status") from error
     if status != "granted":
         raise WeaveError("E_TS_SCHEMA", "TimeStampResp status is not granted")
@@ -347,25 +558,297 @@ def _parse_tst_info(tsr_bytes: bytes):
     if token["content_type"].native != "signed_data":
         raise WeaveError("E_TS_SCHEMA", "timestamp token is not CMS signed data")
     signed_data = token["content"]
+    try:
+        signed_data_version = signed_data["version"].native
+    except _DER_ACCESS_ERRORS as error:
+        raise WeaveError("E_TS_SCHEMA", "SignedData has no readable version") from error
+    if signed_data_version != "v3":
+        raise WeaveError("E_TS_SCHEMA", "SignedData version is not 3")
+    # X7/M2 (RFC 3161 §2.4.2: no signature other than the TSA's): exactly one
+    # SignerInfo. Counted on the 1b/1c walk, not by a parsing library.
+    if len(walk.signer_identifiers) != 1:
+        raise WeaveError("E_TS_SCHEMA", "SignedData does not carry exactly one signerInfo")
+    for signer_info in signed_data["signer_infos"]:
+        try:
+            signer_info_version = signer_info["version"].native
+        except _DER_ACCESS_ERRORS as error:
+            raise WeaveError("E_TS_SCHEMA", "signerInfo has no readable version") from error
+        if signer_info_version not in ("v1", "v3"):
+            raise WeaveError("E_TS_SCHEMA", "signerInfo version is not 1 or 3")
+        # RFC 5652 §5.3: version 1 with issuerAndSerialNumber, 3 with
+        # subjectKeyIdentifier (the sid's first identifier octet decides).
+        expected_version = "v1" if walk.signer_identifiers[0][0] == 0x30 else "v3"
+        if signer_info_version != expected_version:
+            raise WeaveError("E_TS_SCHEMA", "signerInfo version does not match its sid")
+    # Check 1e (X7/M3): only the signer certificate is decoded. The other
+    # components of SignedData.certificates are open types (framing only, 1a).
+    # The signer certificate is located by its sid on the raw TLVs, walked with
+    # the RFC 5280 module definition (1b/1c rules), decoded as an X.509
+    # certificate, and its extension values obey the universal rules of 1a.
+    signer_certificate_der = der_schema.signer_certificate(walk)
+    if signer_certificate_der is not None:
+        certificate_walk = _require_der_reencoding(
+            der_schema.CERTIFICATE, signer_certificate_der, "signer certificate"
+        )
+        _load_der_certificate(signer_certificate_der)
+        for extension_value in certificate_walk.certificate_extension_values:
+            _validate_strict_der(extension_value)
+    # Check 2.
     encap = signed_data["encap_content_info"]
     if encap["content_type"].native != "tst_info":
         raise WeaveError("E_TS_SCHEMA", "timestamp token does not encapsulate TSTInfo")
     content = encap["content"]
     try:
         raw_content = content.contents
-        tst_info = tsp.TSTInfo.load(raw_content)
-    except Exception as error:
+        _validate_strict_der(raw_content)
+    except WeaveError:
+        raise
+    except _DER_ACCESS_ERRORS as error:
+        raise WeaveError("E_TS_SCHEMA", "malformed TSTInfo") from error
+    _require_der_reencoding(der_schema.TST_INFO, raw_content, "TSTInfo")
+    try:
+        tst_info = tsp.TSTInfo.load(raw_content, strict=True)
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "malformed TSTInfo") from error
     try:
         version = tst_info["version"].native
-    except Exception as error:
+    except _DER_ACCESS_ERRORS as error:
         raise WeaveError("E_TS_SCHEMA", "TSTInfo has no readable version") from error
     if version != "v1":
         raise WeaveError("E_TS_SCHEMA", "unsupported TSTInfo version")
-    return signed_data, tst_info, raw_content
+    return signed_data, tst_info, raw_content, signer_certificate_der
 
 
-def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
+def _load_der_certificate(der: bytes):
+    """Decode one X.509 certificate without writing library warnings to stderr.
+
+    §14.1: standard error carries usage and I/O errors only; cryptography emits
+    a deprecation warning for some decodable-but-unusual certificates (for
+    example a non-positive serial number), which must not reach the stream.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return cryptography_x509.load_der_x509_certificate(der)
+
+
+def _require_der_reencoding(schema, data: bytes, label: str) -> der_schema.WalkContext:
+    """§12.2 checks 1b/1c: decode against the module definitions, re-encode, compare.
+
+    The walk (:mod:`.der_schema`) uses only X.690 and the RFC 3161 / 5652 / 5280
+    / 5035 module definitions -- no parsing library: SET OF components are
+    re-emitted in DER order, a component equal to its DEFAULT (the encodings in
+    ``der_schema.DEFAULTS``) is a violation, typed primitives are rebuilt from
+    their content octets by the X.690 rules for their type, time values are
+    compared as their raw DER form, and open-type values are re-emitted as
+    decoded. Any difference from the input is check 1's ``E_TS_SCHEMA``.
+    """
+    try:
+        encoded, context = der_schema.reencode(schema, data)
+    except der_schema.DerViolation as error:
+        raise WeaveError(
+            "E_TS_SCHEMA", "%s is not DER: %s" % (label, error)
+        ) from error
+    if encoded != data:
+        raise WeaveError(
+            "E_TS_SCHEMA", "%s is not in DER canonical form (re-encoding differs)" % label
+        )
+    return context
+
+
+# ---------------------------------------------------------------------------
+# Strict DER enforcement (V2/M3, §12.2 check 1)
+# ---------------------------------------------------------------------------
+
+#: Universal tag numbers whose DER encoding is always primitive (SEQUENCE/SET and
+#: the rarely-used EXTERNAL/EMBEDDED PDV/CHARACTER STRING are constructed).
+_DER_PRIMITIVE_UNIVERSAL = frozenset(
+    {1, 2, 3, 4, 5, 6, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30}
+)
+_DER_GENERALIZED_TIME = re.compile(r"^(?:[0-9]{14}|[0-9]{14}\.[0-9]*[1-9])Z$")
+_DER_UTC_TIME = re.compile(r"^[0-9]{12}Z$")
+
+
+def _validate_strict_der(data: bytes) -> None:
+    """Check 1a: the schema-independent DER rules, as a linear scan (V2, W3).
+
+    This is the *first* half of check 1 only: it rejects trailing data,
+    indefinite and non-minimal lengths, non-minimal high tag numbers,
+    constructed encodings of primitive universal types, non-canonical BOOLEAN /
+    INTEGER / BIT STRING / NULL / OID / time encodings, and a universal SET
+    whose components are not in ascending DER order (every universal SET in the
+    TimeStampResp, CMS and X.509 schemas is a SET OF, X.690 §11.6). It is cheap,
+    so most malformed receipts stop here. It is **not** a substitute for the
+    re-encoding of check 1c (:func:`_require_der_reencoding`), which knows the
+    schema (implicitly tagged SET OF such as ``certificates``/``signedAttrs``,
+    DEFAULT values) and is always run afterwards.
+    """
+    try:
+        _scan_der(data, 0, len(data), 0)
+    except _DerViolation as error:
+        raise WeaveError("E_TS_SCHEMA", "receipt is not strict DER: %s" % error) from error
+    if not data:
+        raise WeaveError("E_TS_SCHEMA", "receipt is empty")
+    first_end = _scan_tlv_end(data, 0, len(data))
+    if first_end != len(data):
+        raise WeaveError("E_TS_SCHEMA", "receipt carries data after its TimeStampResp")
+
+
+def _scan_tlv_end(data: bytes, position: int, end: int) -> int:
+    """End offset of the (already validated) TLV at ``position``."""
+    try:
+        return _scan_tlv(data, position, end, 0)
+    except _DerViolation as error:  # pragma: no cover - validated just before
+        raise WeaveError("E_TS_SCHEMA", "receipt is not strict DER: %s" % error) from error
+
+
+
+def _scan_der(data: bytes, start: int, end: int, depth: int) -> None:
+    if depth > 64:
+        raise _DerViolation("nesting is too deep")
+    position = start
+    while position < end:
+        position = _scan_tlv(data, position, end, depth)
+
+
+def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
+    first = data[position]
+    position += 1
+    tag_class = first >> 6
+    constructed = bool(first & 0x20)
+    tag_number = first & 0x1F
+    if tag_number == 0x1F:
+        # X.690 §8.1.2.4: base 128, bit 8 set on every subsequent octet but the
+        # last, and bits 7-1 of the *first* subsequent octet not all zero. Only
+        # the first subsequent octet can make the form non-minimal; a zero group
+        # later on (5f 81 80 00 = 16384) is part of a minimal encoding.
+        tag_number = 0
+        count = 0
+        while True:
+            if position >= end:
+                raise _DerViolation("truncated high-tag-number form")
+            byte = data[position]
+            position += 1
+            count += 1
+            if count == 1 and byte == 0x80:
+                raise _DerViolation("non-minimal high-tag-number form")
+            if count <= 5:
+                # Bounded accumulation: only "below 31" and the universal type
+                # numbers matter here, and two or more octets are always >= 128.
+                tag_number = (tag_number << 7) | (byte & 0x7F)
+            if not byte & 0x80:
+                break
+        if tag_number < 0x1F:
+            # X.690 §8.1.2.2/8.1.2.4: tag numbers 0-30 use the single-octet form.
+            raise _DerViolation("high-tag-number form for a low tag")
+    if position >= end:
+        raise _DerViolation("missing length")
+    first_length = data[position]
+    position += 1
+    if first_length & 0x80:
+        length_octets = first_length & 0x7F
+        if length_octets == 0:
+            raise _DerViolation("indefinite length is not DER")
+        if length_octets > 4:
+            raise _DerViolation("length uses too many octets")
+        if position + length_octets > end:
+            raise _DerViolation("truncated length")
+        if data[position] == 0:
+            raise _DerViolation("length has a leading zero")
+        length = int.from_bytes(data[position : position + length_octets], "big")
+        if length < 0x80:
+            raise _DerViolation("non-minimal long-form length")
+        position += length_octets
+    else:
+        length = first_length
+    content_end = position + length
+    if content_end > end:
+        raise _DerViolation("content runs past its container")
+    if tag_class == 0:
+        if tag_number in (16, 17):
+            if not constructed:
+                raise _DerViolation("SEQUENCE/SET must be constructed")
+        elif constructed and tag_number in _DER_PRIMITIVE_UNIVERSAL:
+            raise _DerViolation("primitive universal type is constructed")
+        if tag_number == 1:
+            if length != 1 or data[position] not in (0x00, 0xFF):
+                raise _DerViolation("BOOLEAN is not canonical DER")
+        elif tag_number == 2:
+            _check_der_integer(data, position, content_end)
+        elif tag_number == 3:
+            if length < 1:
+                raise _DerViolation("BIT STRING has no unused-bits octet")
+            unused = data[position]
+            if unused > 7:
+                raise _DerViolation("BIT STRING unused-bit count is invalid")
+            if length == 1 and unused != 0:
+                raise _DerViolation("empty BIT STRING has unused bits")
+            if unused and (data[content_end - 1] & ((1 << unused) - 1)):
+                raise _DerViolation("BIT STRING has non-zero unused bits")
+        elif tag_number == 5 and length != 0:
+            raise _DerViolation("NULL is not empty")
+        elif tag_number == 6:
+            _check_der_oid(data, position, content_end)
+        elif tag_number in (23, 24):
+            text = data[position:content_end].decode("ascii", "replace")
+            pattern = _DER_UTC_TIME if tag_number == 23 else _DER_GENERALIZED_TIME
+            if not pattern.fullmatch(text):
+                raise _DerViolation("time value is not canonical DER")
+        elif tag_number == 12:
+            try:
+                data[position:content_end].decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise _DerViolation("UTF8String is not valid UTF-8") from error
+    if constructed:
+        if tag_class == 0 and tag_number == 17:
+            _scan_set_of(data, position, content_end, depth + 1)
+        else:
+            _scan_der(data, position, content_end, depth + 1)
+    return content_end
+
+
+def _scan_set_of(data: bytes, start: int, end: int, depth: int) -> None:
+    """A universal SET: components valid and in ascending DER order (X.690 §11.6)."""
+    if depth > 64:
+        raise _DerViolation("nesting is too deep")
+    previous: bytes | None = None
+    position = start
+    while position < end:
+        component_end = _scan_tlv(data, position, end, depth)
+        component = data[position:component_end]
+        if previous is not None and component < previous:
+            raise _DerViolation("SET OF components are not in DER order")
+        previous = component
+        position = component_end
+
+
+def _check_der_integer(data: bytes, start: int, end: int) -> None:
+    if end <= start:
+        raise _DerViolation("INTEGER is empty")
+    if end - start > 1:
+        if data[start] == 0x00 and data[start + 1] < 0x80:
+            raise _DerViolation("INTEGER has a redundant leading zero")
+        if data[start] == 0xFF and data[start + 1] >= 0x80:
+            raise _DerViolation("INTEGER has a redundant leading 0xFF")
+
+
+def _check_der_oid(data: bytes, start: int, end: int) -> None:
+    if end <= start:
+        raise _DerViolation("OBJECT IDENTIFIER is empty")
+    component_start = True
+    position = start
+    while position < end:
+        byte = data[position]
+        if component_start and byte == 0x80:
+            raise _DerViolation("OBJECT IDENTIFIER is not minimally encoded")
+        component_start = not byte & 0x80
+        if not component_start and position == end - 1:
+            raise _DerViolation("OBJECT IDENTIFIER is truncated")
+        position += 1
+
+
+def _verify_cms(
+    signed_data, raw_content: bytes, gen_time_value, signer_certificate_der: bytes | None
+):
     """Checks 5-10: CMS signature, ESS v2, messageDigest."""
     signer_infos = signed_data["signer_infos"]
     if len(signer_infos) < 1:
@@ -381,13 +864,14 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     signed_attrs = signer_info["signed_attrs"]
     if signed_attrs.native is None or len(signed_attrs) == 0:
         raise WeaveError("E_TS_CMS", "timestamp token has no signed attributes")
-    try:
-        signed_attrs_der = signed_attrs.untag().dump()
-    except Exception as error:
-        raise WeaveError("E_TS_CMS", "signed attributes cannot be encoded") from error
+    # Check 1 already proved the whole receipt is DER, so the stored signed
+    # attributes are their own DER encoding; the CMS signature input is that
+    # SET OF with the universal SET tag (RFC 5652 §5.4).
+    signed_attrs_der = signed_attrs.untag().dump()
     # Check 7: the signer certificate must be carried inside the token.
-    signer_certificate_der = _find_signer_certificate(signed_data, signer_info)
-    certificate = cryptography_x509.load_der_x509_certificate(signer_certificate_der)
+    if signer_certificate_der is None:
+        raise WeaveError("E_TS_CMS", "signer certificate not found in the token")
+    certificate = _load_der_certificate(signer_certificate_der)
 
     message_digest = hashlib.sha256(raw_content).digest()
     content_type_ok = False
@@ -424,48 +908,24 @@ def _verify_cms(signed_data, raw_content: bytes, gen_time_value):
     try:
         if signature_algorithm_oid in _RSA_PKCS1V15_OIDS:
             if not isinstance(public_key, rsa.RSAPublicKey):
-                raise WeaveError("E_TS_CERT", "signature algorithm does not match the key")
+                # W6: a key the allowlisted algorithm cannot use means the
+                # signature does not verify (check 10), not a check-6 failure.
+                raise WeaveError("E_TS_CMS", "signature algorithm does not match the key")
             digest_class = _RSA_PKCS1V15_OIDS[signature_algorithm_oid]
             public_key.verify(signature, signed_attrs_der, padding.PKCS1v15(), digest_class())
         else:
             if not isinstance(public_key, ec.EllipticCurvePublicKey):
-                raise WeaveError("E_TS_CERT", "signature algorithm does not match the key")
+                raise WeaveError("E_TS_CMS", "signature algorithm does not match the key")
             digest_class = _ECDSA_OIDS[signature_algorithm_oid]
             public_key.verify(signature, signed_attrs_der, ec.ECDSA(digest_class()))
     except WeaveError:
         raise
-    except (InvalidSignature, UnsupportedAlgorithm) as error:
-        raise WeaveError("E_TS_CMS", "CMS signature does not verify") from error
-    except Exception as error:  # pragma: no cover - defensive provider errors
+    except (InvalidSignature, UnsupportedAlgorithm, ValueError, TypeError) as error:
+        # U1 exception audit: cryptography's verify() raises InvalidSignature for
+        # a failing signature, UnsupportedAlgorithm for an unusable key/curve and
+        # ValueError/TypeError for malformed key material.
         raise WeaveError("E_TS_CMS", "CMS signature does not verify") from error
     return signer_info, signer_certificate_der
-
-
-def _find_signer_certificate(signed_data, signer_info) -> bytes:
-    certificates = signed_data["certificates"]
-    if certificates.native is None or len(certificates) == 0:
-        raise WeaveError("E_TS_CMS", "timestamp token carries no signer certificate")
-    sid = signer_info["sid"]
-    chosen = sid.chosen
-    for index in range(len(certificates)):
-        certificate_choice = certificates[index]
-        if certificate_choice.name != "certificate":
-            continue
-        certificate = certificate_choice.chosen
-        if sid.name == "issuer_and_serial_number":
-            if (
-                certificate.serial_number == chosen["serial_number"].native
-                and certificate.issuer.dump() == chosen["issuer"].dump()
-            ):
-                return certificate.dump()
-        elif sid.name == "subject_key_identifier":
-            try:
-                extension = certificate.key_identifier_value
-            except Exception:
-                extension = None
-            if extension is not None and extension == chosen.native:
-                return certificate.dump()
-    raise WeaveError("E_TS_CMS", "signer certificate not found in the token")
 
 
 def _check_ess_signing_certificate_v2(values, signer_certificate_der: bytes) -> None:
@@ -495,7 +955,7 @@ _HASH_OIDS = {
 
 def _check_signer_certificate(certificate_der: bytes, gen_time_value: object) -> None:
     """Checks 11-12: timestamping EKU / key usage / validity at genTime."""
-    certificate = cryptography_x509.load_der_x509_certificate(certificate_der)
+    certificate = _load_der_certificate(certificate_der)
     gen_time = _to_aware_datetime(gen_time_value)
     try:
         extended_key_usage = certificate.extensions.get_extension_for_class(
@@ -555,23 +1015,59 @@ def _gen_time_to_us(value: object) -> int:
     return calendar.timegm(utc.utctimetuple()) * 1_000_000 + utc.microsecond
 
 
-def _accuracy_to_us(tst_info) -> int:
-    """Normalise TSTInfo accuracy (seconds/millis/micros) to microseconds.
+def _accuracy_to_us(tst_info) -> int | None:
+    """Normalise TSTInfo accuracy (seconds/millis/micros) to microseconds (T3).
 
-    RFC 3161 ``Accuracy`` carries at most one of seconds, millis and micros; an
-    absent field counts as 0 (an absent accuracy is treated as exact).
+    Format errors raise ``E_TS_SCHEMA`` (invalid receipt): malformed/absent-type
+    components, negative or non-integer values, and a *present*
+    ``milliseconds``/``microseconds`` component outside 1–999 (an explicit 0 is
+    out of range too). An absent component counts as 0 and an absent accuracy
+    field is exact.
+
+    Returns ``None`` for **unusable evidence**, which is not a format error: the
+    converted total exceeds ``MAX_TS_ACCURACY`` or a signed 64-bit microsecond
+    value overflows. The receipt is then present-unverified with
+    ``E_TS_UNTRUSTED`` and can neither rescue nor support L2 (T3).
     """
     try:
         accuracy = tst_info["accuracy"]
-    except Exception:  # pragma: no cover - defensive
+    except (KeyError, ValueError, TypeError):
         return 0
     if accuracy is None or accuracy.native is None:
         return 0
     native = accuracy.native
-    seconds = native.get("seconds") or 0
-    millis = native.get("millis") or 0
-    micros = native.get("micros") or 0
-    return int(seconds) * 1_000_000 + int(millis) * 1000 + int(micros)
+    if not isinstance(native, dict):
+        raise WeaveError("E_TS_SCHEMA", "accuracy is not a sequence")
+    seconds = native.get("seconds")
+    millis = native.get("millis")
+    micros = native.get("micros")
+    for component in (seconds, millis, micros):
+        if component is not None and (
+            isinstance(component, bool) or not isinstance(component, int)
+        ):
+            raise WeaveError("E_TS_SCHEMA", "accuracy components are not integers")
+    if seconds is None:
+        seconds = 0
+    if millis is not None and not 1 <= millis <= 999:
+        raise WeaveError(
+            "E_TS_SCHEMA", "accuracy.milliseconds is outside 1-999"
+        )
+    if micros is not None and not 1 <= micros <= 999:
+        raise WeaveError(
+            "E_TS_SCHEMA", "accuracy.microseconds is outside 1-999"
+        )
+    if seconds < 0:
+        raise WeaveError("E_TS_SCHEMA", "accuracy components are negative")
+    total = (
+        seconds * 1_000_000
+        + (millis or 0) * 1000
+        + (micros or 0)
+    )
+    if total > INT64_MAX:
+        return None
+    if total > MAX_TS_ACCURACY_US:
+        return None
+    return total
 
 
 def _format_ms(epoch_ms: int) -> str:

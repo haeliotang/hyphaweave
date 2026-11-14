@@ -274,9 +274,12 @@ def check_grant_semantics(
     if envelope.actor_type in ("human", "organization"):
         return grant  # root grant
     # Delegated sub-grant: steps 1-8 at the sub-grant's recorded_at.
+    # T8/§5.5.2 step 7: the depth bound counts parent links from the cited grant
+    # to the root, so the grant record being verified is not itself a link of its
+    # own chain: the parent chain starts at depth 0.
     parent, _ = _resolve_grant(envelope.actor_grant, context)
     _check_delegation(grant, parent, context, envelope.recorded_at)
-    validate_grant_chain(parent, context, envelope.recorded_at, depth=1, seen=frozenset({digest}))
+    validate_grant_chain(parent, context, envelope.recorded_at, depth=0, seen=frozenset({digest}))
     return grant
 
 
