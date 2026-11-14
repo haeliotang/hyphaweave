@@ -6,6 +6,45 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1-FIX1 — 2026-11-14 — DRAFT, UNRELEASED
+
+Revision 1 of the Rust verifier (decision 2026-11-11 #2, rulings R1–R7, and the
+parts of S1–S16 that fall to Rust). It brings `verifiers/rust/` up to
+specification revision 3 and the S1 rounds that followed it (S1-FIX1 to
+S1-FIX5, X6, X7). The Rust verifier was still written from the specification
+and the vectors only; the Python verifier is run only as a black box.
+
+### Changed
+
+- **Specification revision 3 implemented**: governing key class and keyset
+  pins (`E_KEY_CLASS_CONFLICT`), order-independent revocations including keyset
+  records, revocation validity, grant own-window and depth rules, JSON and SPDX
+  nesting limits, the closed `L_*` limitation identifiers, the §14.6 report
+  byte rule and field shapes, the nullable input identity, the container stop
+  rules (W5), the `--previous` link verified in the target context, and the
+  timestamp check order (W6).
+- **RFC 3161 check 1** is a strict DER check written from X.690 and the module
+  definitions (`src/der.rs`, `src/timestamp.rs`); the `cms`, `x509-cert`,
+  `der`, `spki` and `const-oid` crates are no longer used.
+- **Zip form**: the archive structure is parsed in the §11.9 order, ZIP64 is
+  accepted, prefix/comment/trailing bytes are rejected, members are
+  decompressed lazily under a cap and `readable/` is never decompressed.
+- **Bounded reads**: directory files through probes bounded by their class
+  limit, blobs hashed while streaming, record targets read to at most
+  `MAX_RECORD_BYTES + 1` bytes; operator inputs are `lstat`-checked and bounded.
+- **Test hook** (R3, S13): `VerifyOptions::skip_checks` exists only with the
+  `test-hooks` cargo feature; the CLI reads the hook only behind `--test-hooks`
+  and exits 3 when checks were disabled.
+- **Dependencies** (R2): `rsa` 0.10, `p256`/`p384` 0.14, MSRV 1.87; `cargo audit`
+  and `cargo deny` run without ignored advisories.
+- **CI** (R1): `cargo fmt --manifest-path verifiers/rust/Cargo.toml --all
+  --check`; a standing Rust crash-fuzz step (`scripts/crash_fuzz.py`).
+- **Tests**: survivor probes in the default `cargo test` (R4), a 64 KiB-stack
+  nesting test (R6); `scripts/diff_fuzz.py` for differential fuzzing.
+- **Findings** (R7): `docs/h1-findings.md` records the status of F1–F17 after
+  revision 3, the review items missing from the H1 hand-off and the new
+  ambiguities found while implementing revision 3.
+
 ## H1 — 2026-11-11 — DRAFT, UNRELEASED
 
 Milestone H1 adds a **second, independent verifier** for `weave-record/1`,

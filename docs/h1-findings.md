@@ -1040,6 +1040,515 @@ where they concern specification text.
   micro-decisions (F12 item 9, including the latent DEL-escaping divergence), and
   the `vectors/README.md` matcher details (F17).
 
+## H1-FIX1 (2026-11-14): status of F1–F17 after specification revision 3
+
+Decision 2026-11-11 #2 (S16) adopted every finding F1–F17; the S1 rounds wrote
+the rulings into the specification, and H1-FIX1 implemented them in the Rust
+verifier. The **Python black-box agreement** column is the result of the
+H1-FIX1 gate-3 comparison (498 main + 202 frozen committed cases) and of the
+H1-FIX1 differential fuzzing (gate 4), recorded under
+[H1-FIX1 gate results](#h1-fix1-gate-results).
+
+| finding | specification now | Rust (H1-FIX1) | Python black-box agreement |
+|---|---|---|---|
+| F1 report identity | §0.2/§14.6: `verifier` is informational, outside comparison | unchanged (`hyphaweave-verify-rs`) | normalized away by gate 3, as §14.6 says |
+| F2 nested closed-object codes | §4, §4.2, registry rows rewritten (S8⑤⑥) | nested objects report their own code; an `actor` missing member reports its member code; a malformed `actor.grant` and a malformed `origin` inside a reference object are `E_ENV_REFS`; `labels.sensitivity` of a wrong JSON type is `E_ENV_SENSITIVITY` | **Corrected.** The H1 hand-off said "no difference"; review A's fuzzing showed the black box choosing the other reading on unpinned sub-cases (`E_ENV_ACTOR` vs `E_ENV_ACTOR_TYPE`, `E_ENV_SIGS` vs `E_ENV_SIG_KEY`, `E_ENV_LABELS` vs `E_ENV_SENSITIVITY`). After revision 3: gate 4 (4,063 mutants) has no conclusion difference attributable to a nested-object code. |
+| F3 envelope sub-order | §14.5 step (2): presence → closedness → grammar, nested objects alike | implemented for the envelope and inside `actor` (presence of the agent-only members first) | **Corrected.** The H1 hand-off said "not exercised"; review A observed the black box choosing a different order on multi-defect records. After revision 3: gate 4 (4,063 mutants) has one sub-order difference, an agent-only actor member against another member's grammar (F45, classified as a reference-verifier deviation). |
+| F4 limitations prose | closed `L_*` identifiers (S12) | identifiers from if-and-only-if facts (`src/limitations.rs`); no prose | conclusions agree on every committed case (gate 3) |
+| F5 `vectors` layout | implementation-defined (S8⑬) | unchanged | not compared, by design |
+| F6 `N_NO_HUMAN_SIGNATURE` | only on a `valid` record (S16/F6) | unchanged | conclusions agree on every committed case (gate 3) |
+| F7 §14.4 terminal | terminal like an error (S8⑪) | unchanged | conclusions agree on every committed case (gate 3) |
+| F8 timestamp order | computed early, reported at step (11) | reported only when the pipeline reaches (11) (W5) | conclusions agree on every committed case (gate 3) |
+| F9 undetermined fields | `null` / `[]`; `kind_known` `null` before parse | `kind_known` is now `null` for an unparsed record | conclusions agree on every committed case (gate 3) |
+| F10 keyset usage errors | structural group fixed (§14.1, V5) | only structural failures are usage errors; semantic failures establish no trust | usage errors are not representable as vectors |
+| F11 manifest-less identity | `null`/`null` (S14) | identity tiers (a)/(b)/(c) of §14.6 | the four former allow-list entries were removed; gate 3 now matches all four byte for byte. |
+| F12 report details | §14.6 byte rule, `kind_known`, TOFU, `sigs[].state`, `refs[]` prefix | implemented from the text (UTF-16 key order, U+007F as `\u007f`) | conclusions agree on every committed case (gate 3) |
+| F13 `sigs[].alg` not covered | stated in §4.3 (S16/F13) | unchanged | n/a |
+| F14 skip-hook tokens | §14.7 tokens, exit 3, `--test-hooks` (S13) | implemented; the library hook exists only with the `test-hooks` cargo feature (R3) | n/a (test hook) |
+| F15 command surface | §14.1 (`--previous <dir|zip>`, `vectors` defaults) | implemented | conclusions agree on every committed case (gate 3) |
+| F16 chain claim before signature | unchanged | unchanged | conclusions agree on every committed case (gate 3) |
+| F17 matcher details | §14.10 | the runner implements `expected_input`, `limitations`, `notices_absent`, an explicit empty `records`, and the position-map `expected_resolution` | n/a |
+
+## H1-FIX1 additions: review items missing from the H1 hand-off (R7)
+
+The H1 reviews listed ambiguities that the H1 hand-off did not record. Each is
+now decided by the specification; they are listed so the audit trail is
+complete.
+
+### F18 — Nesting depth of JSON values and of SPDX licence expressions (review B H1/H2, review A M-4)
+
+- **Where.** §1.9, §8.7, §13 (`MAX_JSON_DEPTH`, `MAX_LICENCE_NESTING`).
+- **Readings before revision 3.** Unbounded except by the record size, versus an
+  implementation-chosen bound. H1 had chosen 1,024 levels and `E_JSON_INVALID`;
+  its recursive parsers overflowed a 64–512 KiB stack (review A, review B).
+- **Now decided.** Depth above 32 is `E_JSON_SIZE`; licence nesting above 16 is
+  `E_ENV_LICENCE`; implementations MUST NOT crash (S3).
+- **Rust.** The parser checks the depth before descending (recursion is bounded
+  by 32); the SPDX parser checks its counter before descending; the DER walker of
+  §12.2 is iterative. `tests/small_stack.rs` verifies the limit, limit + 1, a
+  1,023-level and a 400,000-level JSON input and a 400,000-pair licence on a
+  64 KiB stack (R6).
+- **Vectors.** `jcs/depth-limit-32`, `jcs/depth-limit-plus-one`,
+  `labels/licence-nesting-limit-16`, `labels/licence-nesting-plus-one`.
+- **Python black-box agreement.** Conclusions agree on every committed case (gate 3). The 1,023-level replay input:
+  both report `invalid` `E_JSON_SIZE`, no crash (Rust peak RSS 2.3 MB; the 400,000-level input 3.2 MB).
+
+### F19 — Several revocations of one key, and revocations in the keyset (review B H3)
+
+- **Where.** §9.4, §9.5, §14.1.
+- **Readings before revision 3.** The first valid revocation in manifest order
+  (H1) versus every valid revocation (black box); keyset revocations ignored (H1)
+  versus effective (black box).
+- **Now decided.** Every valid revocation of the context counts, keyset
+  included; the retired/other and compromise families are independent, each with
+  its earliest `effective_at` (S2, T2); a revocation record is judged against the
+  valid revocations ordered strictly before it (T9, U3).
+- **Rust.** `context::World::key_revocation_state` with a
+  `(recorded_at, digest)` cutoff for revocation records.
+- **Vectors.** `key-lifecycle/multi-revocation-order-{a,b}`, `keyset-revocation`,
+  `mixed-revocation-*`, `mutual-revocation-order-{a,b}`,
+  `revocation-signed-by-retired-key`, `self-revocation-after-retirement`.
+- **Python black-box agreement.** Conclusions agree on every committed case (gate 3). Replay: `multi-revocation-order-a`/`-b` and `keyset-revocation` give `E_KEY_REVOKED` in both.
+
+### F20 — "Already in trusted": redeclaring a trusted key (review B H4)
+
+- **Where.** §5.3, §9.1 rule 4.
+- **Readings before revision 3.** Any trusted key (H1: an agent key could
+  redeclare itself `human` in a container and be accepted) versus a key trusted
+  as the same class (black box).
+- **Now decided.** The governing class is decided before and independently of
+  the trust closure; a declaration of a different class is
+  `E_KEY_CLASS_CONFLICT`; the keyset governs class and window; conflicting keyset
+  declarations are a usage error (S1, T4, U4, V5).
+- **Rust.** `context::World::build_trust` (structural candidates, keyset pins,
+  governing class, closure, governing window).
+- **Vectors.** `key-lifecycle/redeclare-class-conflict(-control)`,
+  `redeclare-window-attack`, `redeclare-window-control`,
+  `nonmonotonic-closure-class-conflict`, `equal-time-declaration-digest-order-*`,
+  `keyset-device-class-pins`, `bad-public-key-does-not-govern`.
+- **Python black-box agreement.** Conclusions agree on every committed case (gate 3). Replay: the review's human upgrade gives `E_ACTOR_KEY_TYPE_MISMATCH` and `E_KEY_CLASS_CONFLICT` in both.
+
+### F21 — A grant judged against its own window; grant-revocation validity; depth (review B M4/M5)
+
+- **Where.** §5.5.2 steps 6–7, §5.5.4, §9.6.
+- **Now decided.** A grant record is not judged against its own window or
+  revocation (S9); a grant revocation takes effect only when it is valid and
+  targets an authorising grant (S10, T17); the bounds are 8 links and 8 rotation
+  steps inclusive, and a grant record's own link is not counted (S10, T8).
+- **Rust.** `check_grant_record_chain` starts the window/revocation walk at the
+  parent; `grant_revoked_at` requires a valid revocation (keyset records
+  included); `authorised_revoker_keys` walks at most 8 steps through valid
+  rotation records only.
+- **Vectors.** `grant/backdated-grant-covers-record`, `grant/chain-depth-9-links`,
+  `grant/chain-depth-exceeded`.
+- **Python black-box agreement.** Conclusions agree on every committed case (gate 3). Replays: a pre-issued root grant and a root grant whose `valid_from` follows its own `recorded_at` are `valid` in both; a grant revocation by a successor 8 rotation steps away is `valid` and 9 steps away `E_GRANT_REVOKE_SIGNER` in both.
+
+### F22 — `-0` before a later float (review B L1)
+
+- **Now decided.** `-0` is classified at its number token (S8④). **Rust.**
+  `json.rs` reports `E_JSON_NOT_CANONICAL` at the `-0` token. **Vectors.**
+  `jcs/minus-zero-before-float`, `jcs/float-before-minus-zero`. **Python.**
+  Conclusions agree on every committed case (gate 3).
+
+### F23 — ZIP64, prefix and trailing bytes, `readable/` in the zip form, DOS directory entries (review A M-1, review B M3/L6)
+
+- **Now decided.** ZIP64 is accepted; prefix bytes, a comment and trailing bytes
+  are `E_CONTAINER_ZIP`; the structural rules and their order are normative (S5,
+  T6, U9, V6, W7); `readable/` entries are never decompressed or CRC-checked but
+  keep rule 1 and the entry checks (U12/L2).
+- **Rust.** `zip.rs` rewritten: the four W7 phases, ZIP64 records and extra
+  fields, lazy bounded decompression, `readable/` never decompressed.
+- **Vectors.** `container/zip64-valid`, `container/zip-prefix`,
+  `container/zip-trailing` and the other `container/zip*` cases.
+- **Python black-box agreement.** Conclusions agree on every committed case (gate 3). Replays: a plain zip `valid`, prefix and trailing bytes `E_CONTAINER_ZIP`, and a ZIP64 archive of 70,000 entries `valid` in both.
+
+### F24 — "Enforce the limits while reading" (review A M-3, review B M1)
+
+- **Now decided.** Per-class probes bounded by the class limit plus one byte, the
+  directory total accumulated while reading, the zip central directory checked
+  before decompression (S4, T15, U2).
+- **Rust.** `container.rs` reads every file through a bounded probe and hashes
+  blobs while streaming; the CLI reads a record target to at most
+  `MAX_RECORD_BYTES + 1` bytes (`operator::read_record_target`). Measured peak
+  RSS: a 300 MiB `manifest.json` 9.3 MB (`E_JSON_SIZE`), a 300 MiB unlisted file in `records/` 4.2 MB (directory) and 3.5 MB (zip), a 300 MiB `readable/` zip entry 3.5 MB (`valid`, never decompressed), a zip declaring 2 GiB 4.9 MB (`E_CONTAINER_SIZE`), a ZIP64 archive of 70,000 entries 29 MB; the reference verifier used 37–89 MB on the same inputs.
+
+### F25 — TSA accuracy overflow and bound (review B M2)
+
+- **Now decided.** Checked fixed-width arithmetic; a total above
+  `MAX_TS_ACCURACY` (86,400 s) or an overflow is unusable evidence,
+  `E_TS_UNTRUSTED` (S11, T3).
+- **Rust.** `timestamp::accuracy_micros`, `ChainEvidence::rescue`.
+- **Vectors.** `integrity-levels/l2-accuracy-*`. **Python.** Conclusions agree on every committed case (gate 3).
+
+### F26 — The differential-fuzz classes of review A M-2
+
+| class | decided by | Rust (H1-FIX1) |
+|---|---|---|
+| `sigs: []` on a record that must be signed | §4.3/§4.4 (S7①): `E_SIG_REQUIRED` | `E_SIG_REQUIRED`; `[]` is structurally valid otherwise |
+| unverifiable manifest signature followed by a listing error | §14.5 (S7②): processing continues | listing runs; the unverifiable code is kept |
+| unknown-algorithm self-signature entry plus a valid cosignature | §4.4/§9.1 rule 2 (S7④): `E_KEY_DECLARED_NOT_SELF_SIGNED` | unchanged |
+| several listing violations at once | §14.5 (S8①, U8): all reported | all reported |
+| missing `signatures/manifest.sig.json` | §11.1 (S8②): `E_MANIFEST_UNSIGNED` | changed from `E_MANIFEST_SCHEMA` |
+| `weave.key.declared` without `public_key` | §9.1 rule 1 (S8③, T1): `E_KEY_PUBLIC_KEY`, before any trust judgement | checked before key resolution |
+| grant `valid_from` after its own `recorded_at` | §5.5.2 (S9): valid | own window not judged |
+| zip prefix/trailing bytes | §11.9 (S5): `E_CONTAINER_ZIP` | unchanged |
+| manifest signer not bound to `origin.instance` | §11.3, §15 item 15 (T11): not required | unchanged |
+
+### F27 — Remaining low items (review A L-2/L-4, review B L2–L7)
+
+- ECDSA receipts (review A L-2): P-256 is pinned by the X6 vectors
+  `integrity-levels/l2-ts-signer-ecdsa-params-{absent,null,other}`; P-384 has no
+  committed receipt, so a unit test (`timestamp::tests::ecdsa_signer_signatures_p256_and_p384`)
+  checks both curves on fixed fixtures, with wrong-message, wrong-digest,
+  wrong-curve and flipped-signature negatives.
+- The manifest signer is not bound to `origin.instance` (review A L-4): §11.3
+  and §15 item 15 (T11) now say it is not required (F26 table); the code is
+  unchanged.
+- `E_ENV_SIG_ALG` (review B L2) is still never emitted (§3.6).
+- The `expect` in the context builder (review B L3) is gone, and the library has
+  `#![forbid(unsafe_code)]`.
+- Reference lookup by `(project, id)` (review B L4) is unchanged: the digest
+  binds `instance`, so resolution cannot match another instance.
+- Linear `Object::get` (review B L5) is unchanged; no measured bottleneck.
+- DEL escaping (review B L7) is normative in §14.6 (S8⑩/F12).
+
+## H1-FIX1: new findings from implementing revision 3
+
+### F28 — §4.5 names both `E_ENV_UNKNOWN_FIELD` and `E_KIND_BODY_SCHEMA` for an extra placeholder member
+
+- **Where.** §4.5, first and last paragraphs; the §4 introduction; the registry.
+- **Text.** §4.5 opens with "any extra member is `E_ENV_UNKNOWN_FIELD`; a missing
+  member is `E_ENV_MISSING_FIELD`", and closes with "every structural violation
+  of the placeholder is `E_KIND_BODY_SCHEMA` … `E_ENV_MISSING_FIELD` and
+  `E_ENV_UNKNOWN_FIELD` … are not used for `weave.erased`".
+- **Chosen reading.** `E_KIND_BODY_SCHEMA` (the later sentence, §4 and the
+  registry agree). **Proposed wording.** Delete the codes from the opening
+  sentence. **Python.** Same answer from the reference verifier on a black-box probe..
+
+### F29 — Decoding a zip entry name without general-purpose bit 11
+
+- **Where.** §11.9 check order, phase 2 ("a decodable name").
+- **Readings.** (a) UTF-8 only; (b) UTF-8 with bit 11, otherwise the APPNOTE
+  default code page, which always decodes.
+- **Chosen reading.** (b): a non-UTF-8 name with bit 11 set is phase-2
+  `E_CONTAINER_ZIP`; any other non-ASCII name decodes and then fails the layout
+  (`E_CONTAINER_ENTRY`) unless it is under `readable/`. **Proposed wording.** Name
+  the decoding rule in phase 2. **Python.** Same answer from the reference verifier on a black-box probe..
+
+### F30 — The stage of a member decompression failure in a target zip
+
+- **Where.** §11.9 ("decompression … reported as `E_CONTAINER_ZIP`"), §14.5.
+- **Readings.** (a) step (1): decompression follows the entry checks of §11.9;
+  (b) the stage that reads the member (step (7) for a record file).
+- **Chosen reading.** (a): every non-`readable/` member is decompressed at step
+  (1), after the entry checks, under its class cap; the report has `records: []`.
+  **Proposed wording.** State the stage. **Python.** Same answer from the reference verifier on a black-box probe..
+
+### F31 — Do `readable/` files count toward `MAX_CONTAINER_ENTRIES` in the directory form?
+
+- **Where.** §13 ("every file in the directory container, including
+  `manifest.json`") versus §11.8 ("in a directory container its bytes are never
+  read, stat-ed or counted toward the container total").
+- **Chosen reading.** Not counted: counting them needs an enumeration of the
+  directory that §11.8 says is never stat-ed. **Proposed wording.** Add
+  "excluding `readable/**`" to the directory-form entry count, or require the
+  enumeration explicitly. No committed vector reaches 200,000 files.
+
+### F32 — When is a `readable/` entry "observed" in a zip whose structure fails?
+
+- **Where.** §11.8, §14.6 (`N_READABLE_PRESENT`: "if entry enumeration itself
+  fails before a `readable/` entry is observed, the notice is not reported").
+- **Chosen reading.** The entries of a zip are enumerated once phases 1–4 pass; a
+  structural failure reports no `N_READABLE_PRESENT`; an entry-check failure
+  (`E_CONTAINER_ENTRY`) after the phases keeps it. **Python.** Same answer from the reference verifier on a black-box probe..
+
+### F33 — Is a container declaration's own self-signature "context-trusted"?
+
+- **Where.** §14.9 TOFU predicate, §14.6 `N_KEY_TOFU`.
+- **Readings.** (a) yes: the verifying material comes from a context
+  `weave.key.declared` (the record itself); (b) no: material that the record
+  under verification supplies for itself is not context material.
+- **Chosen reading.** (b). It is pinned by `container/manifest-context-trusted-tofu`
+  (`notices_absent: ["N_KEY_TOFU"]` on a container-declared device declaration);
+  H1-FIX1 first implemented (a) and that vector failed. **Proposed wording.** Say
+  that the record under verification does not count as context material for its
+  own signatures. **Python.** Same (pinned).
+
+### F34 — A file in `records/` whose name is not `<hex>.json`
+
+- **Where.** §11.1 ("an extra file in `records/` is `E_MANIFEST_RECORD_EXTRA`"),
+  §14.5 (records listing).
+- **Chosen reading.** Every file in `records/` that is not a listed record is an
+  extra file, reported by the records listing at step (7) together with the
+  other listing violations (U8), whatever its name; likewise an extra file in
+  `blobs/` is `E_MANIFEST_BLOB` at step (9). **Python.** Same answer from the reference verifier on a black-box probe..
+
+### F35 — A malformed `labels.consent`: `E_ENV_LABELS` (§8.1) or `E_ENV_REFS` (§4)?
+
+- **Where.** §8.1 ("malformed is `E_ENV_LABELS`") versus the §4 introduction
+  ("inside a reference object `E_ENV_REFS`").
+- **Chosen reading.** `E_ENV_LABELS`, the owning section's code. **Python.** Same answer from the reference verifier on a black-box probe..
+
+### F36 — Where "a member forbidden for the actor type" sits in the actor sub-order
+
+- **Where.** §4.2, §14.5 step (2).
+- **Chosen reading.** At that member's grammar position in the table order,
+  after `type` and `key`; so `type: "robot"` with a `model` member reports
+  `E_ENV_ACTOR_TYPE`. **Python.** Same answer from the reference verifier on a black-box probe..
+
+### F37 — Limitation facts about records that failed their own structure, or were not reported
+
+- **Where.** §14.9 (`L_LABELS_ARE_CLAIMS`, `L_ERASED_PLACEHOLDER`,
+  `L_ERASED_STANDALONE`).
+- **Chosen reading.** The facts concern the reported records: with
+  `records: []` none of the three is reported. `L_LABELS_ARE_CLAIMS` needs a
+  `labels` member in an envelope that passed its structure checks (a record that
+  is `E_ENV_LABELS` or `E_ENV_SENSITIVITY` does not "carry" labels);
+  `L_ERASED_*` count every `weave.erased` record, well formed or not.
+  H1-FIX1 first read "carries a `labels` member" literally; gate 3 showed the
+  reference reading on `labels/invalid-sensitivity` and seven other committed
+  cases, and H1-FIX1 follows it. **Proposed wording.** Say "a record whose
+  envelope passed with a `labels` member".
+
+### F38 — A declaration's own self-signature against its own validity window and revocations
+
+- **Where.** §9.1 rule 5 ("a signature made outside the declared window … is
+  `E_KEY_EXPIRED`"), §9.4, §9.5 (self-declaration bootstrap).
+- **Readings.** (a) every signature made by the key, the declaration's own
+  self-signature included, is judged against the window and the revocations;
+  (b) the declaration's self-signature only proves possession and is exempt, as
+  a grant is exempt from its own window (S9).
+- **Chosen reading.** (a), the literal text and the more conservative outcome: a
+  declaration recorded before its own `valid_from` is `E_KEY_EXPIRED`, and a
+  declaration of a compromised key without a rescuing receipt follows §9.4.
+- **Vectors.** `key-lifecycle/sign-before-valid-from` expects the aggregated
+  error set `{E_KEY_EXPIRED}`, which both readings produce.
+- **Python black-box agreement.** Different: the reference exempts the
+  self-signature (that committed case differs at record level and is
+  allow-listed as spec-ambiguous). **Proposed wording.** Say whether §9.1 rule 5
+  applies to the declaration's own self-signature.
+- **Minimal reproduction.** `scripts/diff_fuzz.py` mutant of
+  `key-lifecycle/sign-before-valid-from`, class `number`, seed
+  `2685454045068581988`: H1 `{E_ENV_SIGS, E_KEY_EXPIRED}`, the reference
+  `{E_ENV_SIGS}`.
+
+### F39 — `sigs[]` when `E_KEY_PUBLIC_KEY` precedes signature verification
+
+- **Where.** §14.5 (T1: decided before any key resolution), §14.6 (an
+  undetermined list field is `[]`; `sigs[].state`).
+- **Chosen reading.** The signature checks did not run, so `sigs` is `[]`.
+- **Python black-box agreement.** Different: the reference lists signature
+  states (5 committed cases, allow-listed as spec-ambiguous:
+  `key-lifecycle/bad-public-key-does-not-govern`, `declared-missing-public-key`,
+  `public-key-invalid`, the last two also in the frozen set). **Proposed
+  wording.** State whether `sigs[]` reports checks that were not reached.
+
+### F40 — Input identity of a zip target whose archive structure fails
+
+- **Where.** §14.6 (`input`: "for a zip container, the archive bytes").
+- **Chosen reading.** The archive bytes, always.
+- **Python black-box agreement.** Different, **Python suspected wrong**: the
+  reference reports `null`/`null` when the archive has prefix bytes
+  (`container/zip-prefix`, `container/zip-over-limit-and-prefix`). Minimal
+  reproduction: `hyphaweave-verify container vectors/container/zip-prefix/container.zip --keys vectors/keys/keyset`.
+
+### F41 — Which declarations supply key material for a manifest signature and for a cosignature
+
+- **Where.** §11.3 ("a required key … resolves … through a
+  `weave.key.declared` or `weave.key.rotated` record"), §4.4 step 5 ("declared").
+- **Readings.** (a) any `weave.key.declared` record carrying the material; (b)
+  only structurally valid declarations (as for the governing class); (c) a
+  declaration whose envelope and `sigs` format passed, whatever its body rules.
+- **Chosen reading.** (c), which is what the black box does; (b) was the first
+  H1-FIX1 reading and the differential fuzzing showed the difference
+  (`E_KEY_UNKNOWN` versus a verified or `E_MANIFEST_SIG_INVALID` signature).
+  **Proposed wording.** Define "resolves" for key material.
+
+### F42 — Does a failed signature equation count for the TOFU predicate?
+
+- **Where.** §14.6 (`N_KEY_TOFU`: "even if that signature or the record then
+  fails"), §11.5 ("when the material that verified the equation … came from the
+  context"), §14.9.
+- **Chosen reading.** For record signatures the context material counts even
+  when the equation fails (§14.6); for the manifest and previous signatures it
+  counts when it verified the equation (§11.5, "like a target manifest
+  signature").
+- **Python black-box agreement.** The reference does not count a failed record
+  equation either (fuzz: `N_KEY_TOFU` on a record whose context-declared key
+  failed the equation). **Spec-ambiguous.** Minimal reproduction: a
+  `key-lifecycle/declaration-duplicate-earliest` record whose signature value is
+  altered. **Proposed wording.** One sentence for both cases.
+
+### F43 — Placeholder `origin`/`id` defects
+
+- **Where.** §4.5 ("every structural violation of the placeholder is
+  `E_KIND_BODY_SCHEMA`"; "`origin` and `id` have the same grammar … as in a
+  normal envelope").
+- **Chosen reading.** `E_KIND_BODY_SCHEMA` for an `origin`/`id` defect inside a
+  placeholder (H1 had used `E_ENV_ORIGIN`/`E_ENV_ID`); `format` keeps
+  `E_ENV_FORMAT`. Matches the black box after the change.
+
+### F44 — A reference to a record that is present but structurally invalid: `missing` or `unverifiable`?
+
+- **Where.** §6.3 (`unverifiable` covers "target present but not valid").
+- **Chosen reading.** `unverifiable` (the record is present). The erasure
+  cross-checks of §10.3 then match the attestation by identity and digest.
+- **Python black-box agreement.** Different: the reference treats a record that
+  fails its envelope or `sigs` structure as absent (`N_REF_MISSING`, and
+  `E_ERASE_ATTESTATION` for a placeholder whose erasure record is malformed).
+  **Spec-ambiguous.** Minimal reproduction: `labels/downgrade` with an
+  `actor.key` removed from the target record.
+
+### F45 — Agent-only actor members: presence before the grammar of other members
+
+- **Where.** §4.2, §14.5 step (2) (presence → closedness → grammar).
+- **Chosen reading.** A missing `idempotency_key` (`E_ENV_ACTOR_IDEMPOTENCY_MISSING`)
+  wins over a malformed `on_behalf_of`. **Python suspected wrong**: the
+  reference reports `E_ENV_ACTOR_ON_BEHALF`. Minimal reproduction:
+  `actor/agent-bad-on-behalf` with `actor.idempotency_key` removed.
+
+### F46 — §4.4 step 5 for signer-constrained kinds whose only entry has an unknown algorithm
+
+- **Chosen reading.** §4.4 step 5 applies: no known-algorithm signature →
+  `E_SIG_UNVERIFIABLE` (or `E_KEY_UNKNOWN`), not the dedicated signer code.
+  **Python suspected wrong**: the reference reports
+  `E_KEY_DECLARED_NOT_SELF_SIGNED` / `E_GRANT_REVOKE_SIGNER`. Minimal
+  reproduction: `key-lifecycle/declared-valid` with the only `sigs[].alg`
+  changed to `ed25519-x`.
+
+### F47 — An erasure whose authorising grant cannot be established
+
+- **Where.** `spec/kinds/weave.erasure.md` (`E_GRANT_UNRESOLVED`/`E_GRANT_REVOKED`/
+  `E_GRANT_EXPIRED` are unverifiable "the authorising grant cannot be
+  established") versus "any other combination is `E_ERASE_ACTOR`".
+- **Chosen reading.** The grant codes. **Python suspected wrong**: the reference
+  reports `E_ERASE_ACTOR`. Minimal reproduction:
+  `erasure/actor-agent-with-grant-valid` with a required member removed from the
+  grant record.
+
+### F48 — §10.3 cross-checks when the erasure record and the placeholder do not pair
+
+- **Where.** §10.3 ("When both the placeholder and its erasure record are
+  present").
+- **Chosen reading.** Every rule is evaluated independently, so a container can
+  report `E_ERASE_DIGEST_MISMATCH`, `E_ERASE_ATTESTATION` and
+  `E_ERASE_CONTRADICTION` together. The reference reports a subset.
+  **Spec-ambiguous.**
+  Minimal reproduction: `scripts/diff_fuzz.py` mutant of
+  `erasure/valid-container`, class `base64`, seed `4271959529863204925`: H1
+  `{E_ERASE_ATTESTATION, E_ERASE_DIGEST_MISMATCH}`, the reference
+  `{E_ERASE_DIGEST_MISMATCH}`.
+
+### F49 — Entry checks before content CRC in a zip
+
+- **Chosen reading.** §11.9 (W7): entry paths, symbolic links and duplicates are
+  judged before any content is decompressed, so a `readable/../x` entry is
+  `E_CONTAINER_ENTRY` even if another member's data fails its CRC. **Python
+  suspected wrong**: `E_CONTAINER_ZIP`. Minimal reproduction:
+  `container/readable-dotdot-entry` with one byte of a record member's data
+  flipped.
+
+### F50 — A malformed `public_key` together with another body-schema defect
+
+- **Chosen reading.** §14.5: `E_KEY_PUBLIC_KEY` instead of `E_KIND_BODY_SCHEMA`.
+  **Python suspected wrong**: `E_KIND_BODY_SCHEMA`.
+  Minimal reproduction: `scripts/diff_fuzz.py` mutant of
+  `key-lifecycle/bad-public-key-does-not-govern`, class `number`, seed
+  `3843386067220390351`.
+
+### F51 — Reference verifier crashes
+
+- **Python bug.** The reference exits with a Python traceback (`KeyError: 'key'`)
+  when a `weave.key.declared` or `weave.key.revoked` record in a container lacks
+  `body.key`; §13/§15 require a report, never a crash. Minimal reproduction:
+  `container/l0-minimal` with `body.key` removed from its declaration (and the
+  manifest re-signed). The Rust verifier reports `E_KIND_BODY_SCHEMA`.
+
+### F52 — `sigs[].state` for a signature whose key state fails §9.4
+
+- **Where.** §14.6 (S8⑩): `unverified` when the key state fails (expired,
+  revoked, compromised).
+- **Python suspected wrong**: the reference reports `valid` (29 committed cases
+  differ only in this field; allow-listed).
+
+### F53 — The target of a grant revocation must "resolve"
+
+- **Where.** §5.5.4 ("The reference MUST resolve to a `weave.grant` record …").
+- **Chosen reading.** §6.3 resolution (`found`: present, matching digest,
+  valid); a revocation of an invalid or unverifiable grant record is
+  `E_GRANT_REVOKE_REF`. H1 had matched by identity and digest only; changed
+  after the differential fuzzing (the black box does the same).
+
+### F54 — Unlisted `.tsr` files, and which stage reports them
+
+- **Where.** §11.3 ("every `.tsr` file in `signatures/` MUST appear in
+  `timestamps`, … `E_TS_FILE`"), §12.2 W6 (file checks).
+- **Chosen reading.** An unlisted receipt file is a file-check failure of the
+  timestamp phase: `E_TS_FILE`, every listed receipt invalid, nothing below
+  runs (so §9.4 sees no usable receipt). **Python suspected wrong** for
+  ignoring an unlisted `.tsr` altogether. Minimal reproduction:
+  `labels/propagation-reshaped_from-downgrade` plus an empty
+  `signatures/timestamp-9.tsr`.
+
+### F55 — Order inside steps (7)–(9) that the vectors do not reach
+
+- The required-signer code versus the delegation checks of a sub-grant (H1:
+  `E_GRANT_GRANTER` first; the reference: `E_GRANT_DELEGATION_EXCEEDS`), the
+  actor-key class check versus agent grant coverage (H1:
+  `E_ACTOR_KEY_TYPE_MISMATCH`; the reference: `E_GRANT_UNRESOLVED`), the consent
+  checks versus label propagation inside step (9) (the reference reports
+  `N_LABEL_PROPAGATION_UNCHECKED` on a record that then fails its consent kind
+  check; H1 stops first). **Spec-ambiguous**; each needs one sentence in
+  §14.5.
+  Minimal reproductions (`scripts/diff_fuzz.py`): `actor/agent-with-human-key`,
+  class `sigs`, seed `860462574772497619` (H1 `E_ACTOR_KEY_TYPE_MISMATCH`, the
+  reference `E_GRANT_UNRESOLVED`); `labels/consent-kind-mismatch`, class
+  `refs`, seed `4136374855248767585` (same error, the reference adds
+  `N_LABEL_PROPAGATION_UNCHECKED`).
+- An unlisted file in `records/` above `MAX_RECORD_BYTES`. The gate-4 run and
+  the 300 MiB replays found H1 reporting only `E_MANIFEST_RECORD_EXTRA` and the
+  reference only `E_JSON_SIZE`. §14.5 lists `E_JSON_SIZE` "for record files
+  above `MAX_RECORD_BYTES`" among the independent violations of the
+  records-listing phase without restricting it to listed files, so H1 now
+  reports both (`tests/probes.rs`,
+  `unlisted_oversize_record_file_reports_both_listing_violations`). The
+  committed `oversize-record-*` vectors only have listed oversize files.
+  Minimal reproduction: `scripts/diff_fuzz.py` mutant of
+  `container/oversize-record-with-missing`, class `container`, seed
+  `617063513226618884` (the oversize file renamed): H1 now
+  `{E_JSON_SIZE, E_MANIFEST_RECORD_EXTRA, E_MANIFEST_RECORD_MISSING}`, the
+  reference `{E_JSON_SIZE, E_MANIFEST_RECORD_MISSING}`.
+  **Proposed wording.** Say whether an unlisted oversize file is one violation
+  or two.
+
+### F56 — Timestamps listed under L0/L1
+
+- **Where.** §11.3 ("It is empty for L0/L1 (`E_MANIFEST_LEVEL` otherwise)").
+- **Rust.** `E_MANIFEST_LEVEL` at step (6). **Python suspected wrong**: the
+  reference accepts an L1 manifest whose attestation lists receipts and reports
+  later-stage codes. Minimal reproduction: `integrity-levels/l2-valid` with the
+  manifest level changed to `L1` and the manifest re-signed.
+
+## H1-FIX1 gate results
+
+Recorded 2026-11-14 on branch `h1/rust-verifier` (after merging `origin/main`
+`5474cf7`: specification revision 3 with S1-FIX1 to S1-FIX5, X6 and X7; 498 main
+cases and 202 frozen cases). The Python reference verifier was run only as a
+black box, installed non-editable from `git archive origin/main`.
+
+| gate | result |
+|---|---|
+| 1. CI rust job, verbatim from the repository root | every step exit 0: `cargo fmt … --all --check`; `cargo clippy … --all-targets -- -D warnings`; `cargo clippy … -p hyphaweave-verify --lib -- -D warnings` (default features, no `test-hooks`); `cargo test … --workspace` 85 passed, 0 failed, 3 ignored (the gate runs); the two `vectors` runs; `cargo deny check`; `cargo audit` (67 dependencies, no vulnerability); the crash-fuzz step (2,000 mutants, 0 failures, seed 20261114); the gate-3 comparison (PASS) |
+| 2. vectors | 498/498 main and 202/202 frozen cases match `expected.json` (0 mismatches) |
+| 3. two-implementation comparison | 700 cases; 663 byte-identical reports after removing only the `verifier` object; the 37 others have identical conclusions (verdict, errors, notices, limitations) and differ in report detail. Classified in `verifiers/rust/scripts/gate3_known_differences.json`: 29 `sigs[].state` (F52) and 2 zip-prefix input identities (F40) as reference-verifier deviations from a unique answer in §14.6; 5 `sigs[]` lists after `E_KEY_PUBLIC_KEY` (F39) and 1 self-signature window (F38) as spec-ambiguous. The four manifest-less cases of F11 are now identical. |
+| 4. differential fuzzing | 4,063 mutants (bit flips 439, member deletion 398, member duplication 396, numbers 394, base64 403, times 402, `refs` 408, `sigs` order 397, container edits 386, zip variants 440); 3,647 byte-identical reports; 98 conclusion differences: **Rust wrong 0**, reference suspected wrong 73 (F46 28, F51 crash 24, F47 8, F54 6, F56 3, F49 2, F45 1, F50 1), spec-ambiguous 25 (F44 8, F38 6, F42 3, F48 3, F55 5). Each class has a minimal reproduction above (`scripts/diff_fuzz.py`, rebuilt from case, class and seed). Rust exit codes only 0 and 1, no panic, no timeout. One Rust defect found by an earlier exploratory run (an empty `blobs/` directory accepted, §11.7) was fixed before this run and has a regression test; the F55 oversize-unlisted reading was changed after it (see F55). |
+| 5. review reproduction inputs | every input of reviews A and B was re-run on both CLIs; the conclusions are listed in F18–F25 above. Both agree on all of them except the 300 MiB unlisted `records/` file (F55: H1 `E_JSON_SIZE` + `E_MANIFEST_RECORD_EXTRA`, the reference `E_JSON_SIZE`). No crash. |
+| 6. 64 KiB stack (R6) | `tests/small_stack.rs` passes (depth 32/33, 1,023 and 400,000 JSON levels; licence nesting 16/17 and 400,000 pairs) |
+| 7. resources (`/usr/bin/time -l`, peak RSS of the Rust CLI) | see F24: 2.3–9.3 MB for the 300 MiB, 2 GiB-declared and deep inputs, 29 MB for 70,000 ZIP64 entries |
+| 8. ablation (`cargo test --release -p hyphaweave-verify --test gates ablation_every_code_turns_corpus_red -- --include-ignored`) | 114 registered error codes; 112 killed by the committed corpus; 2 survivors: `E_GRANT_SCHEMA`, pinned by `tests/probes.rs` (default `cargo test`, R4), and `E_ENV_SIG_ALG`, never emitted (§3.6, Q13). The probes for `E_JSON_SIZE`, `E_MANIFEST_SCHEMA`, `E_CONTAINER_ZIP` and `E_CONTAINER_SIZE` stay in the default run although the larger corpus now kills those codes too. Run on commit `217d641` (849 s); the later F55 change adds no code. |
+| 9. supply chain | `cargo deny check`: advisories ok, bans ok, licenses ok, sources ok; `cargo audit`: no vulnerabilities, no `--ignore`; `cargo check -p hyphaweave-verify --target aarch64-linux-android`: exit 0, no warnings; `reuse lint`: compliant |
+| 10. other workstreams untouched | `git diff --stat origin/main..h1/rust-verifier -- spec schemas vectors verifiers/python tools` is empty |
+
 ## Change log of this document
 
 - **2026-11-11** — initial version for the H1 hand-off: purpose, collection
@@ -1059,3 +1568,9 @@ where they concern specification text.
   (`vectors/README.md` matcher details); extended F5 with the CLI workstream's
   discovery/input-identity notes; recorded the local gate environment (Homebrew
   Rust toolchain because the rustup toolchains here lack clippy/rustfmt).
+- **2026-11-14 (H1-FIX1)** — recorded the status of F1–F17 after specification
+  revision 3 with the Python black-box agreement of each (F2 and F3 corrected);
+  added F18–F27, the review items missing from the H1 hand-off (R7), and
+  F28–F56, the ambiguities and reference-verifier deviations found while
+  implementing revision 3 and by the H1-FIX1 differential fuzzing, each with a
+  minimal reproduction; added the H1-FIX1 gate results.
