@@ -342,25 +342,29 @@ def report_matches_expected(expected: dict, report: dict) -> tuple[bool, list[st
                 f"got {records[0].get('digest')!r}"
             )
     if "expected_resolution" in expected:
+        # A position map over the reported references (§14.10): records[0]
+        # for a record target, the manifest-ordered concatenation otherwise.
         expected_resolution = expected["expected_resolution"]
-        if not isinstance(expected_resolution, dict):
-            problems.append("expected_resolution: case expectation is not an object")
+        states: list = []
+        for record in records if isinstance(records, list) else []:
+            if isinstance(record, dict) and isinstance(record.get("refs"), list):
+                states.extend(ref.get("state") for ref in record["refs"] if isinstance(ref, dict))
+        if not isinstance(expected_resolution, list):
+            problems.append("expected_resolution: case expectation is not an array")
         else:
-            refs: list = []
-            if isinstance(records, list) and records and isinstance(records[0], dict):
-                candidate_refs = records[0].get("refs")
-                if isinstance(candidate_refs, list):
-                    refs = candidate_refs
-            actual_resolution: dict[str, str] = {}
-            for ref in refs:
-                if isinstance(ref, dict) and "index" in ref:
-                    actual_resolution[str(ref["index"])] = ref.get("state")
-            for index, state in expected_resolution.items():
-                if actual_resolution.get(str(index)) != state:
-                    problems.append(
-                        f"refs[{index}]: expected {state!r}, "
-                        f"got {actual_resolution.get(str(index))!r}"
-                    )
+            for index, state in enumerate(expected_resolution):
+                actual = states[index] if index < len(states) else None
+                if actual != state:
+                    problems.append(f"refs[{index}]: expected {state!r}, got {actual!r}")
+    if "limitations" in expected and report.get("limitations") != expected["limitations"]:
+        problems.append(
+            f"limitations: expected {expected['limitations']!r}, got {report.get('limitations')!r}"
+        )
+    present_absent = set(_as_str_list(expected.get("notices_absent"))) & _report_notices(report)
+    if present_absent:
+        problems.append(f"notices_absent: present {sorted(present_absent)!r}")
+    if "expected_input" in expected:
+        problems.extend(_subset_mismatches(expected["expected_input"], report.get("input"), "input"))
     if "expected_container" in expected:
         problems.extend(
             _subset_mismatches(expected["expected_container"], report.get("container"), "container")
@@ -369,6 +373,9 @@ def report_matches_expected(expected: dict, report: dict) -> tuple[bool, list[st
         expected_records = expected["records"]
         if not isinstance(expected_records, list):
             problems.append("records: case expectation is not an array")
+        elif not expected_records:
+            if records:
+                problems.append("records: expected [] (pre-record failure)")
         else:
             actual_records = records if isinstance(records, list) else []
             by_id = {

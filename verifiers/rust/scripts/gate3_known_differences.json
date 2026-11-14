@@ -4,28 +4,194 @@
     "Each entry must name the exact case id, say why the difference is not a defect,",
     "and classify it as spec-ambiguous or spec-unique-answer-{Rust,Python}-bug.",
     "The file starts empty on purpose: the first gate 3 run must fail until every",
-    "difference is understood. A stale entry (its case now matches) also fails the gate."
+    "difference is understood. A stale entry (its case now matches) also fails the gate.",
+    "H1-FIX1 (2026-11-14): the four F11 entries were removed; S14 fixed the input identity of a container without a manifest (both members null), so those reports are compared byte for byte again."
   ],
   "allowed_differences": [
     {
-      "case": "container/manifest-missing",
-      "classification": "spec-ambiguous",
-      "reason": "F11: Q27 fixes a directory container's input identity as the manifest digest and byte size; manifest.json is absent, so the reference directory-snapshot fallback hash is undocumented and not a conformance requirement."
+      "case": "container/zip-over-limit-and-prefix",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6: a zip container's input identity is the archive bytes; the reference reports null when the archive structure fails (prefix bytes). Conclusions match. docs/h1-findings.md F40."
     },
     {
-      "case": "container/unknown-top-level-entry",
-      "classification": "spec-ambiguous",
-      "reason": "F11: same undocumented directory-snapshot fallback used by the reference verifier for a manifest-less container; conclusions match and only input.sha256/size differ."
+      "case": "container/zip-prefix",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6: a zip container's input identity is the archive bytes; the reference reports null when the archive structure fails (prefix bytes). Conclusions match. docs/h1-findings.md F40."
     },
     {
-      "case": "v0.1-candidate/container/manifest-missing",
-      "classification": "spec-ambiguous",
-      "reason": "F11: Q27 fixes a directory container's input identity as the manifest digest and byte size; manifest.json is absent, so the reference directory-snapshot fallback hash is undocumented and not a conformance requirement. (frozen copy of the same case.)"
+      "case": "key-lifecycle/backdated-self-compromise-ineffective",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
     {
-      "case": "v0.1-candidate/container/unknown-top-level-entry",
+      "case": "key-lifecycle/bad-public-key-does-not-govern",
       "classification": "spec-ambiguous",
-      "reason": "F11: same undocumented directory-snapshot fallback used by the reference verifier for a manifest-less container; conclusions match and only input.sha256/size differ. (frozen copy of the same case.)"
+      "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
+    },
+    {
+      "case": "key-lifecycle/compromise-accuracy-crossing",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/compromise-accuracy-equality",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/compromise-backdated-forgery",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/compromise-earliest-revocation-a",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/compromise-earliest-revocation-b",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/compromise-retroactive",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/compromise-untrusted-timestamp",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/declaration-duplicate-earliest",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/declared-missing-public-key",
+      "classification": "spec-ambiguous",
+      "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
+    },
+    {
+      "case": "key-lifecycle/key-expired",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/keyset-revocation",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/mixed-revocation-compromise-then-retired-no-anchor",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/mixed-revocation-rescue-but-retired",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/mixed-revocation-rescue-but-retired-no-anchor",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/mixed-revocation-retired-then-compromise",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/mixed-revocation-retired-then-compromise-no-anchor",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/multi-revocation-order-a",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/multi-revocation-order-b",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/mutual-revocation-order-a",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/mutual-revocation-order-b",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/public-key-invalid",
+      "classification": "spec-ambiguous",
+      "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
+    },
+    {
+      "case": "key-lifecycle/redeclare-window-attack",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/retired-boundary-equal",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/retired-then-signed-after",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/revocation-signed-by-retired-key",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/self-revocation-after-retirement",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "key-lifecycle/sign-before-valid-from",
+      "classification": "spec-ambiguous",
+      "reason": "§9.1 rule 5/§9.4 apply to every signature by the key; H1 also judges a declaration's own self-signature against the declared window (the declaration recorded before its valid_from is E_KEY_EXPIRED), the reference exempts it. Aggregated conclusion matches. docs/h1-findings.md F38."
+    },
+    {
+      "case": "v0.1-candidate/key-lifecycle/compromise-accuracy-crossing",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "v0.1-candidate/key-lifecycle/declaration-duplicate-earliest",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "v0.1-candidate/key-lifecycle/declared-missing-public-key",
+      "classification": "spec-ambiguous",
+      "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
+    },
+    {
+      "case": "v0.1-candidate/key-lifecycle/keyset-revocation",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
+    },
+    {
+      "case": "v0.1-candidate/key-lifecycle/public-key-invalid",
+      "classification": "spec-ambiguous",
+      "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
+    },
+    {
+      "case": "v0.1-candidate/key-lifecycle/retired-boundary-equal",
+      "classification": "spec-unique-answer-Python-bug",
+      "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     }
   ]
 }

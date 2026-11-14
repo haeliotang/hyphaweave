@@ -97,7 +97,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Rust formatting
-        run: cargo fmt --manifest-path verifiers/rust/Cargo.toml --check
+        # `--all`: verifiers/rust/Cargo.toml is a virtual workspace, and
+        # `cargo fmt --manifest-path` without it finds no target (H1-FIX1 R1).
+        run: cargo fmt --manifest-path verifiers/rust/Cargo.toml --all --check
 
       - name: Rust lints (clippy, warnings are errors)
         run: cargo clippy --manifest-path verifiers/rust/Cargo.toml --all-targets -- -D warnings
@@ -121,11 +123,13 @@ jobs:
 
       - name: RustSec advisory audit
         working-directory: verifiers/rust
-        # The two ignored advisories are timing-side-channel issues in secret-key
-        # operations; this verifier only performs public-key signature verification
-        # and handles no secret key material. The same reasons are recorded in
-        # verifiers/rust/deny.toml and verifiers/rust/README.md.
-        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387
+        # No ignored advisories (H1-FIX1 R2: rsa 0.10, p256/p384 0.14).
+        run: cargo audit
+
+      - name: Rust crash-fuzz gate (deterministic mutants, no panic, no timeout, exit codes 0-3)
+        run: |
+          cargo build --release --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify-rs
+          python3 verifiers/rust/scripts/crash_fuzz.py --binary verifiers/rust/target/release/hyphaweave-verify-rs --count 2000 --jobs 2
 
       - name: Set up Python for the reference verifier (gate 3 black box)
         uses: actions/setup-python@v5
