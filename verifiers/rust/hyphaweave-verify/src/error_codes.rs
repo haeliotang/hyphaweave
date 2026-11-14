@@ -67,6 +67,7 @@ pub mod e {
     pub const KIND_BODY_SCHEMA: Code = "E_KIND_BODY_SCHEMA";
     pub const KEY_PUBLIC_KEY: Code = "E_KEY_PUBLIC_KEY";
     pub const KEY_ID_MISMATCH: Code = "E_KEY_ID_MISMATCH";
+    pub const KEY_CLASS_CONFLICT: Code = "E_KEY_CLASS_CONFLICT";
     pub const KEY_DECLARED_NOT_SELF_SIGNED: Code = "E_KEY_DECLARED_NOT_SELF_SIGNED";
     pub const KEY_OWNER_MISSING: Code = "E_KEY_OWNER_MISSING";
     pub const KEY_DECLARED_NOT_COSIGNED: Code = "E_KEY_DECLARED_NOT_COSIGNED";
@@ -205,6 +206,7 @@ pub const ALL_ERROR_CODES: &[Code] = &[
     "E_KIND_BODY_SCHEMA",
     "E_KEY_PUBLIC_KEY",
     "E_KEY_ID_MISMATCH",
+    "E_KEY_CLASS_CONFLICT",
     "E_KEY_DECLARED_NOT_SELF_SIGNED",
     "E_KEY_OWNER_MISSING",
     "E_KEY_DECLARED_NOT_COSIGNED",
@@ -286,6 +288,38 @@ pub const ALL_NOTICES: &[Code] = &[
     "N_PREVIOUS_SIG_UNVERIFIED",
     "N_IDEMPOTENCY_DUPLICATE",
     "N_READABLE_PRESENT",
+];
+
+/// The closed limitation-identifier list (§14.6, §14.9, S12).
+pub mod l {
+    use super::Code;
+
+    pub const OFFLINE_CONTEXT: Code = "L_OFFLINE_CONTEXT";
+    pub const CHAIN_CLAIM_UNVERIFIED: Code = "L_CHAIN_CLAIM_UNVERIFIED";
+    pub const KEY_TRUST_TOFU: Code = "L_KEY_TRUST_TOFU";
+    pub const PREVIOUS_CONTENT_UNVERIFIED: Code = "L_PREVIOUS_CONTENT_UNVERIFIED";
+    pub const PREVIOUS_SIG_UNVERIFIED: Code = "L_PREVIOUS_SIG_UNVERIFIED";
+    pub const TSA_TRUST_UNVERIFIED: Code = "L_TSA_TRUST_UNVERIFIED";
+    pub const ERASED_PLACEHOLDER: Code = "L_ERASED_PLACEHOLDER";
+    pub const ERASED_STANDALONE: Code = "L_ERASED_STANDALONE";
+    pub const LABELS_ARE_CLAIMS: Code = "L_LABELS_ARE_CLAIMS";
+    pub const UNKNOWN_KIND_OPAQUE: Code = "L_UNKNOWN_KIND_OPAQUE";
+    pub const LABEL_PROPAGATION_UNCHECKED: Code = "L_LABEL_PROPAGATION_UNCHECKED";
+}
+
+/// Every limitation identifier in the closed list (§14.9), in registry order.
+pub const ALL_LIMITATIONS: &[Code] = &[
+    l::OFFLINE_CONTEXT,
+    l::CHAIN_CLAIM_UNVERIFIED,
+    l::KEY_TRUST_TOFU,
+    l::PREVIOUS_CONTENT_UNVERIFIED,
+    l::PREVIOUS_SIG_UNVERIFIED,
+    l::TSA_TRUST_UNVERIFIED,
+    l::ERASED_PLACEHOLDER,
+    l::ERASED_STANDALONE,
+    l::LABELS_ARE_CLAIMS,
+    l::UNKNOWN_KIND_OPAQUE,
+    l::LABEL_PROPAGATION_UNCHECKED,
 ];
 
 /// True when `code` is a registered error code.

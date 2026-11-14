@@ -3,26 +3,22 @@
 
 //! Report serialization (§14.6).
 //!
-//! The report bytes are fixed: one JSON object on standard output, UTF-8,
-//! **sorted keys**, **two spaces of indentation**, **ASCII-only output**
-//! (`ensure_ascii`, so every non-ASCII scalar is a `\uXXXX` escape including
-//! surrogate pairs) and exactly **one trailing LF**. No absolute paths,
-//! usernames, hostnames, current times, randomness or environment values.
+//! The report bytes follow the exact byte rule of §14.6 (S8⑩, S16/F12): one
+//! JSON object on standard output, UTF-8, member names sorted by UTF-16
+//! code-unit order, two spaces of indentation, ASCII-only output and exactly
+//! one trailing LF. No absolute paths, usernames, hostnames, current times,
+//! randomness or environment values.
 //!
-//! [`to_bytes`] reproduces Python's
-//! `json.dumps(report, sort_keys=True, indent=2, ensure_ascii=True) + "\n"`
-//! (the comparison form used by the H0 gate) from the [`Report`] data model:
+//! [`to_bytes`] implements that rule from the [`Report`] data model:
 //!
-//! - object keys are sorted by Unicode code point (the report's keys are
-//!   ASCII, where code-point order equals UTF-16 and byte order);
+//! - object member names are sorted ascending by UTF-16 code-unit order;
 //! - each member/item is on its own line with two spaces per nesting level,
 //!   `": "` after a member name and `","` before the next member;
 //! - an empty array is `[]` and an empty object is `{}` on one line;
 //! - `"` and `\` are escaped, the five short control escapes `\b \t \n \f \r`
-//!   are used, any other control character below U+0020 is `\u00XX`, DEL
-//!   (U+007F) is `\u007F`, every scalar at or above U+0080 is `\uXXXX`
-//!   (lowercase hex; surrogate pairs for
-//!   supplementary code points) and `/` is never escaped.
+//!   are used, every other C0 control, U+007F and every non-ASCII code point
+//!   is a lowercase `\uXXXX` escape (surrogate pairs for supplementary code
+//!   points), and `/` is never escaped.
 //!
 //! The report's field set follows §14.6: `container` is present only for a
 //! container target, `cases` only for the `vectors` target, and `attestation`
@@ -168,8 +164,14 @@ pub(crate) fn record_value(record: &RecordReport) -> Value {
 
 fn input_value(report: &Report) -> Value {
     let mut object = Object::new();
-    object.insert("sha256", Value::Str(report.input.sha256.clone()));
-    object.insert("size", Value::Int(count_i64(report.input.size)));
+    object.insert("sha256", optional_string(&report.input.sha256));
+    object.insert(
+        "size",
+        report
+            .input
+            .size
+            .map_or(Value::Null, |size| Value::Int(count_i64(size))),
+    );
     Value::Object(object)
 }
 
@@ -299,10 +301,9 @@ fn write_object(out: &mut Vec<u8>, object: &Object, depth: usize) {
         out.extend_from_slice(b"{}");
         return;
     }
-    // Python's `sort_keys=True` sorts by Unicode code point; the report's
-    // member names are ASCII, so Rust's `str` ordering is identical.
+    // §14.6: member names sorted ascending by UTF-16 code-unit order.
     let mut members: Vec<(&str, &Value)> = object.iter().collect();
-    members.sort_by(|left, right| left.0.cmp(right.0));
+    members.sort_by(|left, right| crate::json::utf16_cmp(left.0, right.0));
     out.push(b'{');
     for (index, (name, value)) in members.iter().enumerate() {
         if index > 0 {
@@ -337,12 +338,12 @@ fn write_string(out: &mut Vec<u8>, text: &str) {
             '\u{000C}' => out.extend_from_slice(b"\\f"),
             '\u{000D}' => out.extend_from_slice(b"\\r"),
             control if (control as u32) < 0x20 => write_u_escape(out, control as u32),
-            // Python's `ensure_ascii` also escapes DEL (U+007F).
+            // §14.6: U+007F is escaped like the non-ASCII code points.
             '\u{007F}' => write_u_escape(out, 0x7F),
             ascii if (ascii as u32) < 0x80 => out.push(ascii as u8),
             bmp if (bmp as u32) <= 0xFFFF => write_u_escape(out, bmp as u32),
             supplementary => {
-                // Python's ensure_ascii emits a UTF-16 surrogate pair.
+                // §14.6: a supplementary code point is a surrogate pair.
                 let offset = supplementary as u32 - 0x1_0000;
                 write_u_escape(out, 0xD800 + (offset >> 10));
                 write_u_escape(out, 0xDC00 + (offset & 0x3FF));

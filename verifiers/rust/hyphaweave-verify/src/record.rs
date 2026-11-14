@@ -42,20 +42,25 @@ pub fn verify_record_target(bytes: &[u8], options: &VerifyOptions) -> Result<Rep
         report.verdict = Verdict::Invalid;
         report
     });
-    let limitations = world.limitations(None);
     let records = vec![record];
+    let limitations = crate::limitations::compute(&records, None, world.limitation_facts(true));
     let verdict = records[0].verdict;
     let summary = count_verdicts(&records);
+    // §14.6 (T16): an oversize record target has no input identity; the
+    // caller reads at most MAX_RECORD_BYTES + 1 bytes and never hashes the
+    // whole file.
+    let input = if bytes.len() > crate::limits::MAX_RECORD_BYTES {
+        InputIdentity::unknown()
+    } else {
+        InputIdentity::of_bytes(bytes)
+    };
     Ok(Report {
-        checks_disabled: sorted_codes(&options.skip_checks),
+        checks_disabled: options.checks_disabled(),
         report_version: crate::REPORT_VERSION.to_owned(),
         spec: crate::SPEC.to_owned(),
         target: Target::Record,
         verdict,
-        input: InputIdentity {
-            sha256: digest::sha256_digest_string(bytes),
-            size: bytes.len() as u64,
-        },
+        input,
         records,
         container: None,
         summary: Summary::Verdicts(summary),
@@ -66,25 +71,6 @@ pub fn verify_record_target(bytes: &[u8], options: &VerifyOptions) -> Result<Rep
             version: crate::VERIFIER_VERSION.to_owned(),
         },
     })
-}
-
-fn sorted_codes(codes: &std::collections::BTreeSet<String>) -> Vec<Code> {
-    let mut out: Vec<Code> = codes
-        .iter()
-        .filter(|code| crate::error_codes::is_error_code(code))
-        .map(|code| -> &'static str {
-            // The skip list is data, not a code we emit; only registered error
-            // codes are echoed (§14.7). Leak-free: map through the registry.
-            crate::error_codes::ALL_ERROR_CODES
-                .iter()
-                .copied()
-                .find(|known| known == &code.as_str())
-                .unwrap_or(e::JSON_INVALID)
-        })
-        .collect();
-    out.sort_unstable();
-    out.dedup();
-    out
 }
 
 /// Counts record verdicts.
@@ -186,13 +172,6 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
     }
 
     if let ParsedRecord::Erased(placeholder) = &record.parsed {
-        world.note_limitation("erased");
-        // The reference report adds the labels/consent/erasure-claims
-        // limitation for a placeholder in a container context, but not for a
-        // standalone placeholder record target.
-        if world.container_context {
-            world.note_limitation("labels");
-        }
         let mut notices: Vec<Code> = Vec::new();
         let resolution = world.resolve(&placeholder.attestation);
         report.attestation = Some(AttestationReport {
@@ -226,11 +205,6 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
             .as_array()
             .is_some_and(<[crate::value::Value]>::is_empty),
     };
-    if absent_or_empty && !envelope::is_registered_kind(&envelope.kind) {
-        // The reference report adds the opaque-kind limitation for records whose
-        // signature structure pass trivially succeeded (absent/empty `sigs` too).
-        world.note_limitation("unreg");
-    }
     if signature_required && absent_or_empty && !world.options.skipped(e::SIG_REQUIRED) {
         return finish(
             world,
@@ -260,18 +234,29 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
             }
         }
     };
-    if !envelope::is_registered_kind(&envelope.kind) {
-        // §7.3 transport of an unregistered kind: the body is never interpreted.
-        // The reference report adds this limitation once the `sigs` structure
-        // pass succeeded (not for envelope/signature-format failures).
-        world.note_limitation("unreg");
+    // §14.5 ordering exceptions (T1, T13): the key-material structure of a
+    // key declaration or rotation is decided before any key resolution,
+    // signature verification or trust judgement.
+    if let Some(code) = crate::kinds::key_material_structural_error(&envelope) {
+        if !world.options.skipped(code) {
+            return finish(
+                world,
+                report,
+                index,
+                Some(code),
+                notices,
+                Vec::new(),
+                Vec::new(),
+            );
+        }
     }
 
     // (4)/(5) key resolution, Ed25519 verification, key lifecycle.
-    let facts = collect_signatures(world, &record, &envelope, &sigs);
+    let facts = collect_signatures(world, index, &record, &envelope, &sigs);
     if facts.tofu {
+        // §14.6/§14.9 (T10, U6): at least one of this record's signature
+        // checks was context-trusted, even if the record then fails.
         notices.push(n::KEY_TOFU);
-        world.note_limitation("keytrust");
     }
 
     if !facts.unknown_keys.is_empty() && !world.options.skipped(e::KEY_UNKNOWN) {
@@ -336,11 +321,6 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
     }
 
     // (6) kind body schema.
-
-    // §14.9 label claims are checked for consistency only.
-    if envelope.labels.is_some() {
-        world.note_limitation("labels");
-    }
     let body = match world.body_of(index).cloned() {
         Some(body) => body,
         None => {
@@ -438,8 +418,15 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
         }
     }
 
-    // §4.4 human-signature notice.
-    if envelope.stage == "accepted" && !facts.any_valid_of_class(&["human"]) {
+    // §4.4 human-signature notice: no valid signature by a key *declared*
+    // `human` in the verification context (its governing class, §5.3);
+    // explicit rotation material is not a declaration.
+    if envelope.stage == "accepted"
+        && !facts
+            .valid_keys
+            .keys()
+            .any(|key| world.governing_class_of(key) == Some("human"))
+    {
         notices.push(n::NO_HUMAN_SIGNATURE);
     }
     // §7.3 opaque-kind notice (the report marks an opaque kind on an otherwise
@@ -479,6 +466,7 @@ fn finish(
 /// verifies the signature and applies the §9.4 key-lifecycle effects.
 fn collect_signatures(
     world: &mut World,
+    index: usize,
     record: &RecordFile,
     envelope: &Envelope,
     sigs: &[envelope::SigEntry],
@@ -493,7 +481,13 @@ fn collect_signatures(
         first_unverifiable: None,
         tofu: false,
     };
-    let revocation_self_key = revocation_self_key(record);
+    // §9.5 (T9/U3): a key-revocation record is judged against the key state
+    // of the valid revocations ordered strictly before it.
+    let cutoff = if envelope.kind == "weave.key.revoked" {
+        world.order_key(index)
+    } else {
+        None
+    };
     for entry in sigs {
         if !entry.known_algorithm {
             facts.states.push(SigReportEntry {
@@ -504,25 +498,21 @@ fn collect_signatures(
         }
         facts.known_count += 1;
         let self_material = self_material_for(record, &entry.key);
-        let ignore_revocation = revocation_self_key
-            .as_deref()
-            .filter(|key| *key == entry.key);
-        let owner_cosignature = envelope.kind == "weave.key.declared"
-            && record
-                .object
-                .get_object("body")
-                .and_then(|body| body.get_str("owner"))
-                .is_some_and(|owner| owner == entry.key);
-        let resolution = world.check_signature(
-            &entry.key,
-            &entry.decoded_value,
-            &message,
-            envelope.recorded_at,
-            self_material.as_deref(),
-            false,
-            ignore_revocation,
-            owner_cosignature,
-        );
+        // A declaration's cosignatures may be made by keys that are declared
+        // but not (yet) trusted: §4.4 reserves E_KEY_UNKNOWN for undeclared
+        // keys, and the declaration's own trust outcome is decided by §9.1
+        // rule 4 (pinned by key-lifecycle/nonmonotonic-closure-class-conflict).
+        let owner_cosignature = envelope.kind == "weave.key.declared";
+        let resolution = world.check_signature(&crate::context::SigCheck {
+            key_id: &entry.key,
+            signature: &entry.decoded_value,
+            message: &message,
+            claimed_at: envelope.recorded_at,
+            self_material: self_material.as_deref(),
+            manifest: false,
+            revocation_cutoff: cutoff.as_ref(),
+            allow_untrusted_declaration: owner_cosignature,
+        });
         if resolution.material_from_context
             && (entry.key == envelope.actor.key
                 || !matches!(
@@ -577,19 +567,6 @@ fn collect_signatures(
         }
     }
     facts
-}
-
-/// For a key-revocation record, the key it revokes: the record is
-/// self-evidencing, so its own revocation must not invalidate it (§9.5).
-fn revocation_self_key(record: &RecordFile) -> Option<String> {
-    if record.kind() != "weave.key.revoked" {
-        return None;
-    }
-    record
-        .object
-        .get_object("body")
-        .and_then(|body| body.get_str("key"))
-        .map(str::to_owned)
 }
 
 /// Key material supplied by the record under verification (§9.5, §9.2 rule 5).
@@ -678,11 +655,12 @@ fn check_kind_semantics(
             match world.decl_issue(index) {
                 DeclIssue::None => Ok(()),
                 DeclIssue::SelfSignature => Err(e::KEY_DECLARED_NOT_SELF_SIGNED),
-                DeclIssue::Validity | DeclIssue::BodyInvalid => Err(e::KEY_VALIDITY),
+                DeclIssue::BodyInvalid => Err(e::KEY_VALIDITY),
                 DeclIssue::OwnerMissing => Err(e::KEY_OWNER_MISSING),
                 DeclIssue::OwnerUnknown => Err(e::KEY_UNKNOWN),
                 DeclIssue::OwnerUntrusted => Err(e::KEY_UNTRUSTED),
                 DeclIssue::NotCosigned => Err(e::KEY_DECLARED_NOT_COSIGNED),
+                DeclIssue::ClassConflict => Err(e::KEY_CLASS_CONFLICT),
                 DeclIssue::UntrustedSelfAttested => {
                     if facts.only_self_signature(&declared.key) {
                         notices.push(n::SELF_ATTESTED_ROOT_KEY);

@@ -222,14 +222,38 @@ pub struct VectorCaseReport {
     pub actual: String,
 }
 
-/// An input identity (`input.sha256` / `input.size`).
+/// An input identity (`input.sha256` / `input.size`, §14.6, S14/T16).
+///
+/// Both members are `None` (JSON `null`) when the identity is not determined:
+/// an oversize record target, or a directory container whose `manifest.json`
+/// is absent, unreadable or above its size limit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputIdentity {
-    /// `sha256:<hex>` of the target bytes (see §14.6 for directory containers:
-    /// the manifest digest and manifest byte size).
-    pub sha256: String,
+    /// `sha256:<hex>` of the identified input bytes, or the §2.4 manifest
+    /// digest for a directory container whose manifest structure passed.
+    pub sha256: Option<String>,
     /// Byte size of the identified input.
-    pub size: u64,
+    pub size: Option<u64>,
+}
+
+impl InputIdentity {
+    /// The identity of a byte string: its SHA-256 digest string and size.
+    #[must_use]
+    pub fn of_bytes(bytes: &[u8]) -> Self {
+        Self {
+            sha256: Some(crate::digest::sha256_digest_string(bytes)),
+            size: Some(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
+        }
+    }
+
+    /// The undetermined identity (`null`, `null`).
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            sha256: None,
+            size: None,
+        }
+    }
 }
 
 /// The verifier identity block of a report.
@@ -244,7 +268,7 @@ pub struct VerifierInfo {
 /// A complete verifier report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
-    /// Test-only skipped-check codes echoed from `WEAVE_VERIFY_SKIP_CHECKS`.
+    /// Test-only skipped-check codes (§14.7); empty unless the hook is active.
     pub checks_disabled: Vec<Code>,
     /// Report version, `"1"`.
     pub report_version: String,
@@ -262,7 +286,7 @@ pub struct Report {
     pub container: Option<ContainerReport>,
     /// Summary counts.
     pub summary: Summary,
-    /// What was not verified (§14.9); each entry is prose, never a passed check.
+    /// What was not verified (§14.9): sorted, unique closed `L_*` identifiers.
     pub limitations: Vec<String>,
     /// Per-case results; only for the `vectors` target.
     pub cases: Vec<VectorCaseReport>,
