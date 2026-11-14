@@ -295,6 +295,9 @@ def check_level_completeness(manifest: Manifest, timestamps_listed: int) -> None
                 "every L1/L2 record entry requires a unique chain_index",
             )
         seen.add(entry.chain_index)
+    if manifest.level == "L1" and timestamps_listed:
+        # §11.3: ``timestamps`` is empty for L0/L1 (S2/F56).
+        _fail("E_MANIFEST_LEVEL", "an L1 manifest must not list timestamps")
     if manifest.level == "L2" and timestamps_listed == 0:
         _fail("E_MANIFEST_L2_NO_TIMESTAMP", "an L2 manifest must list a timestamp")
 

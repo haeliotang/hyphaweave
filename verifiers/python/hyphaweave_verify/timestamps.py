@@ -51,7 +51,7 @@ from pathlib import Path
 from asn1crypto import tsp
 from cryptography import x509 as cryptography_x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
 from . import der_schema, operator_input
@@ -187,6 +187,12 @@ TRUST_ANCHOR_PARSE_ERRORS = (
 )
 
 
+_PEM_BLOCK = re.compile(
+    rb"-----BEGIN CERTIFICATE-----\r?\n(.*?)-----END CERTIFICATE-----", re.DOTALL
+)
+_PEM_BASE64_LINE = re.compile(rb"^[A-Za-z0-9+/]*={0,2}$")
+
+
 def parse_trust_anchors(pem_bytes: bytes) -> frozenset[bytes]:
     """Parse a PEM bundle of trust-anchor certificates into DER SHA-256 fingerprints.
 
@@ -194,25 +200,37 @@ def parse_trust_anchors(pem_bytes: bytes) -> frozenset[bytes]:
     that is not a bundle of one or more well-formed PEM certificates is a usage
     error (:class:`UsageError`, exit 2, no report); it is never silently treated
     as an empty anchor set.
-    """
-    from cryptography.hazmat.primitives.serialization import Encoding
 
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            certificates = cryptography_x509.load_pem_x509_certificates(pem_bytes)
-        fingerprints = frozenset(
-            hashlib.sha256(certificate.public_bytes(Encoding.DER)).digest()
-            for certificate in certificates
-        )
-    except TRUST_ANCHOR_PARSE_ERRORS as error:
-        raise UsageError(
-            "TSA trust file is not a bundle of well-formed PEM certificates (%s)"
-            % type(error).__name__
-        ) from error
+    S2/F62/F63 (§14.1): each certificate "decodes as an X.509 certificate"
+    under the rules of §12.2 1e -- the RFC 5280 module walk with the 1b/1c
+    rules, the version constraints and the 1a rules for every extension value
+    -- and under no parsing library's habits.
+    """
+    import base64
+    import binascii
+
+    blocks = _PEM_BLOCK.findall(pem_bytes)
+    if b"-----BEGIN" in _PEM_BLOCK.sub(b"", pem_bytes):
+        raise UsageError("TSA trust file has a PEM block that is not a certificate")
+    fingerprints: set[bytes] = set()
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines or any(not _PEM_BASE64_LINE.fullmatch(line) for line in lines):
+            raise UsageError("TSA trust file has a malformed PEM certificate block")
+        try:
+            der = base64.b64decode(b"".join(lines), validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise UsageError("TSA trust file has a malformed PEM certificate block") from error
+        try:
+            check_certificate_1e(der, "trust anchor")
+        except WeaveError as error:
+            raise UsageError(
+                "TSA trust file holds a certificate that does not decode under §12.2 1e"
+            ) from error
+        fingerprints.add(hashlib.sha256(der).digest())
     if not fingerprints:
         raise UsageError("TSA trust file contains no certificate")
-    return fingerprints
+    return frozenset(fingerprints)
 
 
 def load_trust_anchor_file(path: Path) -> bytes:
@@ -242,6 +260,7 @@ def verify_timestamp_archive(
     manifest_digest: str,
     trust_anchor_fingerprints: frozenset[bytes] | None,
     oversized: frozenset[str] = frozenset(),
+    present: frozenset[str] = frozenset(),
 ) -> TimestampArchive:
     """Verify every listed TSR of a container.
 
@@ -259,12 +278,17 @@ def verify_timestamp_archive(
     entries: dict[str, dict] = {}
     for entry in listed:
         entries[entry["path"]] = entry
-    if not entries:
-        return archive
     # Phase 1: every listed TSR must exist, be within the class limit and hash
-    # to the digest the attestation lists (§11.3 file-level checks).
+    # to the digest the attestation lists (§11.3 file-level checks), and every
+    # ``.tsr`` file present in ``signatures/`` must be listed (S2/F54: an
+    # unlisted receipt file is a file-check failure, ``E_TS_FILE``, whatever
+    # the claimed level; every listed receipt is then invalid).
     file_errors: list[str] = []
     file_data: dict[str, bytes] = {}
+    if any(path not in entries for path in present):
+        file_errors.append("E_TS_FILE")
+    if not entries and not file_errors:
+        return archive
     for path in sorted(entries):
         listed_digest = str(entries[path].get("digest", ""))
         if path in oversized:
@@ -587,12 +611,7 @@ def _parse_tst_info(tsr_bytes: bytes):
     # certificate, and its extension values obey the universal rules of 1a.
     signer_certificate_der = der_schema.signer_certificate(walk)
     if signer_certificate_der is not None:
-        certificate_walk = _require_der_reencoding(
-            der_schema.CERTIFICATE, signer_certificate_der, "signer certificate"
-        )
-        _load_der_certificate(signer_certificate_der)
-        for extension_value in certificate_walk.certificate_extension_values:
-            _validate_strict_der(extension_value)
+        check_certificate_1e(signer_certificate_der, "signer certificate")
     # Check 2.
     encap = signed_data["encap_content_info"]
     if encap["content_type"].native != "tst_info":
@@ -617,6 +636,26 @@ def _parse_tst_info(tsr_bytes: bytes):
     if version != "v1":
         raise WeaveError("E_TS_SCHEMA", "unsupported TSTInfo version")
     return signed_data, tst_info, raw_content, signer_certificate_der
+
+
+def check_certificate_1e(certificate_der: bytes, label: str) -> der_schema.CertificateFacts:
+    """§12.2 1e for one certificate: walk, re-encode, version rules, extension values.
+
+    S2/F62/F63: the certificate is judged by the RFC 5280 module definition and
+    X.690 only (1b/1c rules, the version constraints of the module, every
+    ``extnValue`` one TLV under 1a); no parsing library decides whether it
+    "decodes as an X.509 certificate". ``--tsa-trust`` anchors are judged by
+    the same function (§14.1).
+    """
+    certificate_walk = _require_der_reencoding(der_schema.CERTIFICATE, certificate_der, label)
+    try:
+        facts = der_schema.certificate_facts(certificate_der)
+        der_schema.check_certificate_version(facts)
+    except (der_schema.DerViolation, IndexError) as error:
+        raise WeaveError("E_TS_SCHEMA", "%s: %s" % (label, error)) from error
+    for extension_value in certificate_walk.certificate_extension_values:
+        _validate_strict_der(extension_value)
+    return facts
 
 
 def _load_der_certificate(der: bytes):
@@ -664,6 +703,10 @@ def _require_der_reencoding(schema, data: bytes, label: str) -> der_schema.WalkC
 _DER_PRIMITIVE_UNIVERSAL = frozenset(
     {1, 2, 3, 4, 5, 6, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30}
 )
+#: S2/F66: EXTERNAL (8, X.690 §8.18), EMBEDDED PDV (11, §8.19) and the
+#: unrestricted CHARACTER STRING (29, §8.21) are SEQUENCE-based and always use
+#: the constructed form; their primitive form is a 1a violation.
+_DER_CONSTRUCTED_ONLY_UNIVERSAL = frozenset({8, 11, 29})
 _DER_GENERALIZED_TIME = re.compile(r"^(?:[0-9]{14}|[0-9]{14}\.[0-9]*[1-9])Z$")
 _DER_UTC_TIME = re.compile(r"^[0-9]{12}Z$")
 
@@ -764,15 +807,21 @@ def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
     if content_end > end:
         raise _DerViolation("content runs past its container")
     if tag_class == 0:
-        if tag_number in (16, 17):
+        if tag_number == 0:
+            # S2/F57 (X.690 §8.1.5, §8.3): universal tag number 0 is reserved
+            # for the end-of-contents octets of the indefinite form, which DER
+            # forbids; it never occurs, whatever its length.
+            raise _DerViolation("universal tag number 0")
+        if tag_number in (16, 17) or tag_number in _DER_CONSTRUCTED_ONLY_UNIVERSAL:
             if not constructed:
-                raise _DerViolation("SEQUENCE/SET must be constructed")
+                raise _DerViolation("constructed-only universal type is primitive")
         elif constructed and tag_number in _DER_PRIMITIVE_UNIVERSAL:
             raise _DerViolation("primitive universal type is constructed")
         if tag_number == 1:
             if length != 1 or data[position] not in (0x00, 0xFF):
                 raise _DerViolation("BOOLEAN is not canonical DER")
-        elif tag_number == 2:
+        elif tag_number in (2, 10):
+            # S2/F57: ENUMERATED is encoded as an INTEGER (X.690 §8.4).
             _check_der_integer(data, position, content_end)
         elif tag_number == 3:
             if length < 1:
@@ -871,7 +920,7 @@ def _verify_cms(
     # Check 7: the signer certificate must be carried inside the token.
     if signer_certificate_der is None:
         raise WeaveError("E_TS_CMS", "signer certificate not found in the token")
-    certificate = _load_der_certificate(signer_certificate_der)
+    certificate_facts = der_schema.certificate_facts(signer_certificate_der)
 
     message_digest = hashlib.sha256(raw_content).digest()
     content_type_ok = False
@@ -904,8 +953,12 @@ def _verify_cms(
 
     # Check 10: the CMS signature over DER(SET OF signedAttrs).
     signature = signer_info["signature"].native
-    public_key = certificate.public_key()
     try:
+        # Check 10 is the only place a library reads the certificate: the
+        # subjectPublicKeyInfo is handed to the key loader (F64).
+        public_key = serialization.load_der_public_key(
+            certificate_facts.subject_public_key_info
+        )
         if signature_algorithm_oid in _RSA_PKCS1V15_OIDS:
             if not isinstance(public_key, rsa.RSAPublicKey):
                 # W6: a key the allowlisted algorithm cannot use means the
@@ -954,27 +1007,75 @@ _HASH_OIDS = {
 
 
 def _check_signer_certificate(certificate_der: bytes, gen_time_value: object) -> None:
-    """Checks 11-12: timestamping EKU / key usage / validity at genTime."""
-    certificate = _load_der_certificate(certificate_der)
+    """Checks 11-12: timestamping EKU / key usage / validity at genTime.
+
+    Read from the certificate walked by 1e (:func:`der_schema.certificate_facts`),
+    not through a parsing library (S2/F63).
+    """
+    facts = der_schema.certificate_facts(certificate_der)
     gen_time = _to_aware_datetime(gen_time_value)
-    try:
-        extended_key_usage = certificate.extensions.get_extension_for_class(
-            cryptography_x509.ExtendedKeyUsage
-        ).value
-    except cryptography_x509.ExtensionNotFound:
+    extensions = {oid: value for oid, _critical, value in reversed(facts.extensions)}
+    extended_key_usage = extensions.get(_ID_CE_EXT_KEY_USAGE)
+    if extended_key_usage is None:
         raise WeaveError("E_TS_CERT", "signer certificate has no timeStamping EKU")
-    if cryptography_x509.oid.ExtendedKeyUsageOID.TIME_STAMPING not in extended_key_usage:
-        raise WeaveError("E_TS_CERT", "signer certificate is not a timestamping certificate")
     try:
-        key_usage = certificate.extensions.get_extension_for_class(
-            cryptography_x509.KeyUsage
-        ).value
-    except cryptography_x509.ExtensionNotFound:
-        key_usage = None
-    if key_usage is not None and not key_usage.digital_signature:
-        raise WeaveError("E_TS_CERT", "signer certificate key usage lacks digitalSignature")
-    if certificate.not_valid_before_utc > gen_time or certificate.not_valid_after_utc < gen_time:
+        purposes = der_schema.sequence_of_oids(extended_key_usage)
+    except der_schema.DerViolation as error:
+        raise WeaveError("E_TS_CERT", "signer certificate EKU is malformed") from error
+    if _ID_KP_TIME_STAMPING not in purposes:
+        raise WeaveError("E_TS_CERT", "signer certificate is not a timestamping certificate")
+    key_usage = extensions.get(_ID_CE_KEY_USAGE)
+    if key_usage is not None:
+        try:
+            bits = der_schema.bit_string_content(key_usage)
+        except der_schema.DerViolation as error:
+            raise WeaveError("E_TS_CERT", "signer certificate key usage is malformed") from error
+        # digitalSignature is bit 0: the most significant bit of the first
+        # content octet after the unused-bits octet.
+        if len(bits) < 2 or not bits[1] & 0x80:
+            raise WeaveError("E_TS_CERT", "signer certificate key usage lacks digitalSignature")
+    not_before = _certificate_time(facts.not_before)
+    not_after = _certificate_time(facts.not_after)
+    if not_before > gen_time or not_after < gen_time:
         raise WeaveError("E_TS_CERT", "signer certificate is not valid at genTime")
+
+
+_ID_CE_EXT_KEY_USAGE = der_schema.oid_content("2.5.29.37")
+_ID_CE_KEY_USAGE = der_schema.oid_content("2.5.29.15")
+_ID_KP_TIME_STAMPING = der_schema.oid_content("1.3.6.1.5.5.7.3.8")
+
+
+def _certificate_time(value: tuple[int, bytes]) -> _datetime.datetime:
+    """A certificate validity time (RFC 5280 §4.1.2.5) as an aware datetime.
+
+    UTCTime ``YYMMDDHHMMSSZ`` (YY >= 50 is 19YY, otherwise 20YY) or
+    GeneralizedTime ``YYYYMMDDHHMMSS[.f]Z``; 1a already fixed the DER form.
+    """
+    tag, content = value
+    text = content.decode("ascii")
+    try:
+        if tag == 23:
+            year = int(text[0:2])
+            year += 1900 if year >= 50 else 2000
+            rest = text[2:12]
+            fraction = ""
+        else:
+            year = int(text[0:4])
+            rest = text[4:14]
+            fraction = text[15:-1] if "." in text else ""
+        result = _datetime.datetime(
+            year,
+            int(rest[0:2]),
+            int(rest[2:4]),
+            int(rest[4:6]),
+            int(rest[6:8]),
+            int(rest[8:10]),
+            int((fraction + "000000")[:6]) if fraction else 0,
+            tzinfo=_datetime.timezone.utc,
+        )
+    except ValueError as error:
+        raise WeaveError("E_TS_CERT", "signer certificate validity is not a valid time") from error
+    return result
 
 
 # ---------------------------------------------------------------------------

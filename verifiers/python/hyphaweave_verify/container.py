@@ -175,6 +175,22 @@ def read_container(path: Path) -> ContainerInput:
         return ContainerInput(files={}, error="E_CONTAINER_ZIP")
     if is_zip:
         return _read_zip_container(path)
+    # S2/F40 (§14.6): a file target is a zip container whatever its first
+    # bytes; its input identity is the archive bytes, even when the archive
+    # does not start with a zip signature (prefix bytes, §11.9 phase 1).
+    try:
+        if path.is_file():
+            with path.open("rb") as handle:
+                sha_hex, archive_size, _truncated = _stream_sha256(handle)
+            return ContainerInput(
+                files={},
+                error="E_CONTAINER_ZIP",
+                input_sha256="sha256:" + sha_hex,
+                input_size=archive_size,
+                is_zip=True,
+            )
+    except OSError:
+        pass
     return ContainerInput(files={}, error="E_CONTAINER_ZIP")
 
 
@@ -366,6 +382,33 @@ def _read_zip_container(path: Path) -> ContainerInput:
                 max_entries=MAX_CONTAINER_ENTRIES,
                 max_declared_total=MAX_CONTAINER_UNCOMPRESSED_BYTES,
             )
+            # S2/F49 (§11.9 W7): entry paths, symbolic links and duplicate
+            # names are judged for *every* entry before any member content is
+            # decompressed or CRC-checked, so an entry-check failure is reported
+            # as E_CONTAINER_ENTRY even when another member's data is damaged.
+            entry_error: str | None = None
+            precheck_names: set[str] = set()
+            for entry in archive.entries:
+                if entry.is_directory:
+                    continue
+                if (
+                    stat.S_ISLNK(entry.unix_mode)
+                    or not _is_safe_relative_path(entry.name)
+                    or entry.name in precheck_names
+                ):
+                    entry_error = "E_CONTAINER_ENTRY"
+                precheck_names.add(entry.name)
+                if entry.name == "readable" or entry.name.startswith("readable/"):
+                    readable_present = True
+            if entry_error is not None:
+                return ContainerInput(
+                    files={},
+                    error=entry_error,
+                    input_sha256=input_sha,
+                    input_size=archive_size,
+                    is_zip=True,
+                    readable_present=readable_present,
+                )
             for entry in archive.entries:
                 name = entry.name
                 if entry.is_directory:
@@ -807,6 +850,11 @@ def verify_container(
             for path in container_input.oversized
             if _TIMESTAMP_FILE.fullmatch(path)
         ),
+        present=frozenset(
+            path
+            for path in (*container_input.files, *container_input.oversized)
+            if _TIMESTAMP_FILE.fullmatch(path)
+        ),
     )
     # Rescue evidence keeps every verified receipt together with its
     # accuracy; the compromise rule is genTime + accuracy < effective_at (strict).
@@ -1227,6 +1275,19 @@ def _candidate_key_state(
             envelope = verifier.envelope_module.validate_envelope(value)
         except WeaveError:
             continue
+        if envelope.kind in (kinds.KIND_DECLARED, kinds.KIND_REVOKED):
+            # F51/F61-2/F67 (§13, §15: a report, never a crash): a lifecycle
+            # record whose body fails its kind schema (a missing ``key``,
+            # ``key_type`` or ``effective_at``, or a malformed TS literal)
+            # supplies no candidate state; its own verdict reports the error.
+            # ``public_key`` is excluded here: §9.1 rule 1 owns that member.
+            body_for_schema = dict(envelope.body)
+            if envelope.kind == kinds.KIND_DECLARED:
+                body_for_schema.setdefault("public_key", "")
+            try:
+                kinds.validate_body_schema(envelope.kind, body_for_schema)
+            except WeaveError:
+                continue
         if envelope.kind == kinds.KIND_DECLARED:
             try:
                 public_key = verifier.decode_public_key_material(
@@ -1363,6 +1424,15 @@ def _check_records_listing(
             continue
         if record_entry.id != value.get("id") or record_entry.kind != value.get("kind"):
             errors.add("E_MANIFEST_RECORDS")
+    for relative_path in sorted(container_input.oversized):
+        # S2/F55 (§11.6 item 5, §13, §14.5 U8): a records/ file is subject to
+        # MAX_RECORD_BYTES whether or not it is listed; an unlisted or misnamed
+        # oversize file reports E_MANIFEST_RECORD_EXTRA as well as E_JSON_SIZE.
+        if not relative_path.startswith("records/"):
+            continue
+        match = _RECORDS_FILE.fullmatch(relative_path)
+        if match is None or match.group(1) not in listed_hex:
+            errors.add("E_MANIFEST_RECORD_EXTRA")
     for entry in manifest.records:
         expected_path = "records/%s.json" % entry.digest.partition(":")[2]
         if expected_path in listing.by_path:

@@ -400,7 +400,9 @@ def test_oversized_record_file_is_json_size(tmp_path) -> None:
     result = verify(container)
     report = result.report
     assert report["verdict"] == "invalid"
-    assert report["container"]["errors"] == ["E_JSON_SIZE"]
+    # S2/F55: the oversize file is not listed, so the records-listing phase also
+    # reports it as an extra file (§11.6 item 5, §13, §14.5 U8).
+    assert report["container"]["errors"] == ["E_JSON_SIZE", "E_MANIFEST_RECORD_EXTRA"]
     assert report["records"] == []
     # T16: the manifest-derived container fields stay filled and the report shape
     # is the records-listing failure shape.

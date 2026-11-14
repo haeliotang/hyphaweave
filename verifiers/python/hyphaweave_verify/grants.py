@@ -26,7 +26,7 @@ Revision-1 rules (decision #34):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from . import kinds, refs
 from .envelope import Envelope
@@ -257,13 +257,14 @@ def check_grant_semantics(
     digest: str,
     context: GrantContext,
     verified_signature_keys: frozenset[str] = frozenset(),
+    signer_error: Callable[[str], WeaveError] | None = None,
 ) -> GrantRecord | GrantRevocationRecord:
     """Cross-record semantic checks for a ``weave.grant`` record."""
     body = envelope.body
     action = body["action"]
     if action == "revoke":
         return _check_grant_revocation(
-            envelope, digest, context, verified_signature_keys
+            envelope, digest, context, verified_signature_keys, signer_error
         )
     grant = grant_record_from_envelope(envelope, digest)
     valid_until = grant.valid_until
@@ -288,6 +289,7 @@ def _check_grant_revocation(
     digest: str,
     context: GrantContext,
     verified_signature_keys: frozenset[str],
+    signer_error: Callable[[str], WeaveError] | None = None,
 ) -> GrantRevocationRecord:
     """Semantic checks for a grant-revocation record."""
     revoke = envelope.body["revoke"]
@@ -307,6 +309,9 @@ def _check_grant_revocation(
     allowed = _allowed_revocation_keys(target_grant, context)
     signature_keys = frozenset(signature.key for signature in envelope.sigs)
     if not allowed & verified_signature_keys:
+        if signer_error is not None:
+            # §4.4 steps 4-5 (S2/F46).
+            raise signer_error("E_GRANT_REVOKE_SIGNER")
         candidate_unknown = any(
             key in allowed
             and any(

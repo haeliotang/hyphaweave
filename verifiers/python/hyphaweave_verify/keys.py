@@ -27,7 +27,7 @@ Implements the key-lifecycle rules (decisions #34 and #42):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from . import encoding
 from .errors import WeaveError
@@ -359,6 +359,7 @@ def check_declared_semantics(
     record_digest: str,
     context: DeclarationContext,
     source: str,
+    signer_error: "Callable[[str], WeaveError] | None" = None,
 ) -> KeyDeclaration:
     """Semantic checks for ``weave.key.declared`` (S4-style cosign, R2/R5).
 
@@ -399,8 +400,11 @@ def check_declared_semantics(
     if declared_key not in verified_signature_keys:
         # §4.4 rule 4 / S7.4: unknown-algorithm entries are ignored (Q13), so an
         # unknown-algorithm self-signature leaves the declared key without a
-        # valid self-signature. The dedicated kind code wins over a trust
-        # outcome (invalid is more conservative than unverifiable).
+        # valid self-signature. The dedicated kind code applies when some
+        # known-algorithm declared-key signature verified (step 4); with none at
+        # all, step 5 applies (S2/F46).
+        if signer_error is not None:
+            raise signer_error("E_KEY_DECLARED_NOT_SELF_SIGNED")
         raise WeaveError(
             "E_KEY_DECLARED_NOT_SELF_SIGNED",
             "no valid signature by the declared key",
@@ -480,6 +484,15 @@ def check_rotated_material(body: dict) -> tuple[bytes, bytes | None]:
     ``E_KEY_ROTATION_KEYS``; curve-point decoding happens later, inside the §3.4
     signature check, and keeps its ``E_SIG_*`` code.
     """
+    # S2/F61-3: ``new_key`` and ``old_key`` are key ids of the body table; a
+    # missing or malformed key id is a body-schema defect (E_KIND_BODY_SCHEMA),
+    # decided before the key-material rule of §9.2 rule 2, which presupposes a
+    # well-formed key id to compare against.
+    for member in ("new_key", "old_key"):
+        if member not in body or not encoding.is_key_id(body[member]):
+            raise WeaveError(
+                "E_KIND_BODY_SCHEMA", "%s is missing or not a key id" % member
+            )
     new_key = body.get("new_key")
     try:
         new_public_key = encoding.decode_base64url(body["new_public_key"], 32)
@@ -549,6 +562,7 @@ def check_revoked_semantics(
     recorded_at: str,
     record_digest: str,
     verification_context: RevocationContext,
+    signer_error: "Callable[[str], WeaveError] | None" = None,
 ) -> KeyRevocation:
     """Semantic checks for ``weave.key.revoked``."""
     effective_at = body["effective_at"]
@@ -568,6 +582,11 @@ def check_revoked_semantics(
     if reason != "key-compromise":
         allowed.add(revoked_key)
     if not (allowed & verified_keys):
+        if signer_error is not None:
+            # §4.4 steps 4-5 (S2/F46): the dedicated code needs some verified
+            # known-algorithm signature; with none at all the record is
+            # unverifiable.
+            raise signer_error("E_KEY_REVOKE_SIGNER")
         # Q13: when the only present entries by an allowed signer use unknown
         # algorithms, the signer cannot be checked at all.
         unverifiable_candidate = any(
