@@ -11,9 +11,9 @@
 # instead of disabling the licence check.
 
 [graph]
-# Check the default targets of the host platform. The verifier has no platform
-# specific requirements of its own, but `getrandom`/`wasi` appear in the locked
-# graph for non-host targets; their licences are covered by the allow list.
+# The verifier has no platform-specific requirements of its own. Optional and
+# target-specific crates in the locked graph (fiat-crypto, the serde and syn
+# families) are checked as well; their licences are covered by the allow list.
 all-features = true
 
 [advisories]
@@ -29,11 +29,11 @@ ignore = []
 [licenses]
 # Every licence that is *required* by at least one crate in the locked tree:
 #   Apache-2.0    - most of the RustCrypto crates, miniz_oxide, ...
-#   MIT           - generic-array, libm, spin, ...
+#   MIT           - generic-array, ...
 #   BSD-3-Clause  - curve25519-dalek, subtle (required, not an OR alternative)
 #   Unicode-3.0   - unicode-ident: "(MIT OR Apache-2.0) AND Unicode-3.0"
 # Alternatives inside OR expressions (0BSD in adler2, BSD-1-Clause in
-# fiat-crypto, BSD-2-Clause in zerocopy, Zlib in miniz_oxide) are resolved by
+# fiat-crypto, Zlib in miniz_oxide) are resolved by
 # the allowed branch and are therefore not allow-listed on their own. Add an
 # identifier here with a comment only when a crate requires it (a crate whose
 # only licence is that identifier, or an ANDed term).
