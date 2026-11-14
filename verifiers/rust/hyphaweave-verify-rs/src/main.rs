@@ -2,52 +2,53 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `hyphaweave-verify-rs`: command-line front end for the independent
-//! `weave-record/1` verifier (§14.1, §14.8).
+//! `weave-record/1` verifier (§14.1, §14.7, §14.8).
 //!
-//! The binary is deliberately small: it parses the command surface, performs
-//! the I/O the library does not do (file and directory reads, the test-only
-//! `WEAVE_VERIFY_SKIP_CHECKS` hook), prints exactly one report on standard
-//! output and maps the report verdict to the §14.8 exit codes. Usage and I/O
-//! errors go to standard error with exit code 2 and print no report.
+//! The binary parses the command surface, reads the operator inputs through
+//! the library's bounded, `lstat`-first readers (§14.1, W4, X3), prints
+//! exactly one report on standard output and maps it to the §14.8 exit codes.
+//! Usage and I/O errors go to standard error with exit code 2 and print no
+//! report. The test-only check-skip hook (§14.7) is reachable only through the
+//! explicit global `--test-hooks` switch: `WEAVE_VERIFY_SKIP_CHECKS` is read
+//! only when that switch is present.
 
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
-use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
+use hyphaweave_verify::error_codes::is_error_code;
 use hyphaweave_verify::{
-    report_json, verify_container, verify_record, verify_vectors, ContainerInput, Report,
-    UsageError, VerifyOptions, VERIFIER_VERSION,
+    operator, report_json, verify_container, verify_record, verify_vectors, Report, UsageError,
+    VerifyOptions, VERIFIER_VERSION,
 };
 
 const USAGE: &str = "\
 hyphaweave-verify-rs -- independent verifier for weave-record/1
 
 Usage:
-  hyphaweave-verify-rs record <file> [--keys <dir>] [--json]
-  hyphaweave-verify-rs container <dir|zip> [--keys <dir>] [--tsa-trust <pem>] [--previous <dir>] [--json]
-  hyphaweave-verify-rs vectors <dir> [--tsa-trust <pem>] [--json]
+  hyphaweave-verify-rs [--test-hooks] record <file> [--keys <dir>] [--json]
+  hyphaweave-verify-rs [--test-hooks] container <dir|zip> [--keys <dir>] [--tsa-trust <pem>] [--previous <dir|zip>] [--json]
+  hyphaweave-verify-rs [--test-hooks] vectors <dir> [--tsa-trust <pem>] [--json]
   hyphaweave-verify-rs --help | --version
 
 Options:
-  --keys <dir>        local trust input: top-level *.json key-declaration records
-  --tsa-trust <pem>   L2 RFC 3161 trust anchors (PEM certificates); for the
-                      vectors command these are defaults for every case and a
-                      case's own --tsa-trust argument overrides them
-  --previous <dir>    additionally require the previous container's manifest digest
-  --json              accepted for compatibility; JSON is the default and only output
-
-Environment:
-  WEAVE_VERIFY_SKIP_CHECKS   test-only, comma-separated error codes whose checks
-                             are treated as passed; echoed in the report
+  --test-hooks          enable the test-only check-skip hook (reads
+                        WEAVE_VERIFY_SKIP_CHECKS); never a production setting
+  --keys <dir>          local trust input: top-level *.json records
+  --tsa-trust <pem>     L2 RFC 3161 trust anchors (PEM certificates); for the
+                        vectors command a default for cases without their own
+  --previous <dir|zip>  the previous container in the chain (only its manifest
+                        and attestation are read)
+  --json                accepted for compatibility; JSON is the only output
 
 Exit codes:
   0  valid (or erased for a placeholder record), or every vector case matched
   1  invalid, unverifiable, or at least one vector case mismatched
   2  usage or I/O error (no report on standard output)
+  3  a report was produced but the test hook disabled at least one check
 ";
 
 const SKIP_CHECKS_ENV: &str = "WEAVE_VERIFY_SKIP_CHECKS";
@@ -69,8 +70,13 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode, UsageError> {
-    let mut argv = env::args_os().skip(1);
-    let Some(first) = argv.next() else {
+    let mut argv: Vec<OsString> = env::args_os().skip(1).collect();
+    // `--test-hooks` is a global option that precedes the subcommand (§14.1).
+    let test_hooks = argv.first().is_some_and(|first| first == "--test-hooks");
+    if test_hooks {
+        argv.remove(0);
+    }
+    let Some(first) = argv.first().cloned() else {
         return Err(UsageError("missing command (try --help)".to_owned()));
     };
     if first == "--help" || first == "-h" {
@@ -83,12 +89,13 @@ fn run() -> Result<ExitCode, UsageError> {
     }
     let command_name = first
         .to_str()
-        .ok_or_else(|| UsageError("command name is not valid UTF-8".to_owned()))?;
+        .ok_or_else(|| UsageError("command name is not valid UTF-8".to_owned()))?
+        .to_owned();
     let mut positionals: Vec<PathBuf> = Vec::new();
     let mut keys: Option<PathBuf> = None;
     let mut tsa_trust: Option<PathBuf> = None;
     let mut previous: Option<PathBuf> = None;
-    let tokens: Vec<OsString> = argv.collect();
+    let tokens = &argv[1..];
     let mut index = 0;
     while index < tokens.len() {
         let token = tokens[index]
@@ -100,12 +107,15 @@ fn run() -> Result<ExitCode, UsageError> {
                 let value = tokens
                     .get(index + 1)
                     .ok_or_else(|| UsageError(format!("{token} requires a value")))?;
-                let value = PathBuf::from(value);
-                match token {
-                    "--keys" => keys = Some(value),
-                    "--tsa-trust" => tsa_trust = Some(value),
-                    _ => previous = Some(value),
+                let slot = match token {
+                    "--keys" => &mut keys,
+                    "--tsa-trust" => &mut tsa_trust,
+                    _ => &mut previous,
+                };
+                if slot.is_some() {
+                    return Err(UsageError(format!("{token} given more than once")));
                 }
+                *slot = Some(PathBuf::from(value));
                 index += 2;
             }
             other if other.starts_with('-') => {
@@ -117,7 +127,7 @@ fn run() -> Result<ExitCode, UsageError> {
             }
         }
     }
-    let command = match command_name {
+    let command = match command_name.as_str() {
         "record" => {
             reject_options(
                 "record",
@@ -132,45 +142,41 @@ fn run() -> Result<ExitCode, UsageError> {
         }
         other => return Err(UsageError(format!("unknown command {other} (try --help)"))),
     };
-    let mut options = VerifyOptions {
-        skip_checks: skip_checks()?,
-        ..VerifyOptions::new()
-    };
+    let mut options = VerifyOptions::new();
+    if test_hooks {
+        options.skip_checks = skip_checks()?;
+    }
+    // §14.1 (W4): operator inputs are read and checked before verification.
+    if let Some(directory) = &keys {
+        options.keyset = operator::load_keyset(directory)?;
+    }
+    if let Some(anchors) = &tsa_trust {
+        options.tsa_trust = vec![operator::read_tsa_trust(anchors)?];
+    }
+    if let Some(previous) = &previous {
+        options.previous = Some(operator::open_previous(previous)?);
+    }
     let report = match command {
         Command::Record(file) => {
-            if let Some(directory) = &keys {
-                options.keyset = load_keyset(directory)?;
-            }
-            let bytes = read_bytes(&file)?;
+            let bytes = operator::read_record_target(&file)?;
             verify_record(&bytes, &options)?
         }
         Command::Container(target) => {
-            if let Some(directory) = &keys {
-                options.keyset = load_keyset(directory)?;
-            }
-            if let Some(anchors) = &tsa_trust {
-                options.tsa_trust = vec![read_bytes(anchors)?];
-            }
-            if let Some(previous) = &previous {
-                options.previous = Some(container_input(previous)?);
-            }
-            verify_container(container_input(&target)?, &options)?
+            let input = operator::open_container(&target)?;
+            verify_container(input, &options)?
         }
-        Command::Vectors(directory) => {
-            if let Some(anchors) = &tsa_trust {
-                options.tsa_trust = vec![read_bytes(anchors)?];
-            }
-            verify_vectors(&directory, &options)?
-        }
+        Command::Vectors(directory) => verify_vectors(&directory, &options)?,
     };
     print_stdout(&report_json::to_bytes(&report))?;
     Ok(exit_code(&report))
 }
 
-/// §14.8: `valid` and `erased` are success; everything else is failure. For the
-/// `vectors` target the top-level verdict is `valid` exactly when every case
-/// matched.
+/// §14.8: `3` when the test hook disabled a check (above `0`/`1`, below `2`);
+/// otherwise `valid`/`erased` is `0` and everything else `1`.
 fn exit_code(report: &Report) -> ExitCode {
+    if !report.checks_disabled.is_empty() {
+        return ExitCode::from(3);
+    }
     match report.verdict.as_str() {
         "valid" | "erased" => ExitCode::SUCCESS,
         _ => ExitCode::from(1),
@@ -194,57 +200,37 @@ fn reject_options(command: &str, options: &[(&str, &Option<PathBuf>)]) -> Result
     Ok(())
 }
 
-/// True when the path is a container directory; any other path is read as zip
-/// bytes (§14.1 `container <dir|zip>`).
-fn container_input(path: &Path) -> Result<ContainerInput, UsageError> {
-    if path.is_dir() {
-        Ok(ContainerInput::Directory(path.to_path_buf()))
-    } else {
-        Ok(ContainerInput::Zip(read_bytes(path)?))
-    }
-}
-
-fn read_bytes(path: &Path) -> Result<Vec<u8>, UsageError> {
-    fs::read(path).map_err(|error| UsageError(format!("{}: {error}", path.display())))
-}
-
-/// Loads the top-level `*.json` files of `directory` in sorted file-name order
-/// (§14.1 local trust input).
-fn load_keyset(directory: &Path) -> Result<Vec<Vec<u8>>, UsageError> {
-    let entries = fs::read_dir(directory)
-        .map_err(|error| UsageError(format!("{}: {error}", directory.display())))?;
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry =
-            entry.map_err(|error| UsageError(format!("{}: {error}", directory.display())))?;
-        let path = entry.path();
-        if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("json")) {
-            files.push(path);
-        }
-    }
-    files.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
-    let mut records = Vec::with_capacity(files.len());
-    for path in files {
-        records.push(read_bytes(&path)?);
-    }
-    Ok(records)
-}
-
-/// Reads the test-only §14.7 skip hook. Unset or empty means normal operation;
-/// tokens are trimmed and empty tokens are ignored.
+/// §14.7 token parsing: split on ASCII commas, trim ASCII whitespace, ignore
+/// empty tokens, match registered `E_*` codes exactly, collapse duplicates. An
+/// unregistered token is a usage error naming the sorted unknown tokens.
 fn skip_checks() -> Result<BTreeSet<String>, UsageError> {
-    match env::var(SKIP_CHECKS_ENV) {
-        Ok(value) => Ok(value
-            .split(',')
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-            .map(ToOwned::to_owned)
-            .collect()),
-        Err(env::VarError::NotPresent) => Ok(BTreeSet::new()),
-        Err(env::VarError::NotUnicode(_)) => Err(UsageError(format!(
-            "{SKIP_CHECKS_ENV} is not valid Unicode"
-        ))),
+    let value = match env::var(SKIP_CHECKS_ENV) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(BTreeSet::new()),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(UsageError(format!(
+                "{SKIP_CHECKS_ENV} is not valid Unicode"
+            )))
+        }
+    };
+    let tokens: BTreeSet<String> = value
+        .split(',')
+        .map(|token| token.trim_matches(|character: char| character.is_ascii_whitespace()))
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    let unknown: Vec<&str> = tokens
+        .iter()
+        .map(String::as_str)
+        .filter(|token| !(token.starts_with("E_") && is_error_code(token)))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(UsageError(format!(
+            "{SKIP_CHECKS_ENV}: unknown check codes: {}",
+            unknown.join(", ")
+        )));
     }
+    Ok(tokens)
 }
 
 fn print_stdout(bytes: &[u8]) -> Result<(), UsageError> {

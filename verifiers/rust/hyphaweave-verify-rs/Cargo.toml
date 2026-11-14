@@ -12,4 +12,4 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-hyphaweave-verify = { path = "../hyphaweave-verify" }
+hyphaweave-verify = { path = "../hyphaweave-verify", features = ["test-hooks"] }

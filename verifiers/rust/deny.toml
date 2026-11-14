@@ -19,26 +19,12 @@ all-features = true
 [advisories]
 # Keep the RustSec advisory check active. The defaults (database fetched from
 # the official RustSec advisory-database, yanked crates reported as warnings)
-# are used deliberately. Ignored advisories must name the advisory and the
-# reason, and must be revisited when the dependency changes:
-#
-#   RUSTSEC-2023-0071 (rsa 0.9.x "Marvin Attack": timing side channel in
-#   private-key operations). The verifier only performs RSA signature
-#   *verification* with public keys (RFC 3161 CMS / X.509 profile, §12.2); the
-#   private-key operations the advisory concerns (signing/decryption) are never
-#   performed, and no private key material is present. Remove this ignore as
-#   soon as `rsa` 0.10 or later enters the tree.
-#
-#   RUSTSEC-2026-0387 (crypto-bigint 0.5.x: secret-dependent branches in
-#   constant-time primitives). It reaches the tree only through
-#   elliptic-curve/ecdsa/p256/p384, which the verifier uses exclusively to
-#   *verify* ECDSA signatures (RFC 3161 CMS profile). Signature verification
-#   operates on public values (signature, public key, digest); no secret scalar
-#   is handled, so the leaking operations described by the advisory are not on
-#   an attack surface here. Remove this ignore when the elliptic-curve family is
-#   upgraded to a crypto-bigint >= 0.7.6 line.
+# are used deliberately. No advisory is ignored: H1-FIX1 (R2) moved to
+# rsa 0.10 and p256/p384 0.14, which removed RUSTSEC-2023-0071 (rsa 0.9) and
+# RUSTSEC-2026-0387 (crypto-bigint 0.5) from the tree. Any new ignore must name
+# the advisory and the reason and be revisited when the dependency changes.
 version = 2
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0387"]
+ignore = []
 
 [licenses]
 # Every licence that is *required* by at least one crate in the locked tree:

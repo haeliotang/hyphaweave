@@ -15,12 +15,17 @@ license.workspace = true
 sha2.workspace = true
 curve25519-dalek.workspace = true
 miniz_oxide.workspace = true
-der.workspace = true
-cms.workspace = true
-x509-cert.workspace = true
-spki.workspace = true
-const-oid.workspace = true
 rsa.workspace = true
 p256.workspace = true
 p384.workspace = true
 signature.workspace = true
+
+[features]
+# The §14.7 test-only check-skip hook (R3). Off by default: a default build
+# has no `VerifyOptions::skip_checks` field. The CLI enables it and still reads
+# the hook only behind the explicit `--test-hooks` switch.
+test-hooks = []
+
+[dev-dependencies]
+# Tests exercise the §14.7 hook (ablation probes, R4).
+hyphaweave-verify = { path = ".", features = ["test-hooks"] }

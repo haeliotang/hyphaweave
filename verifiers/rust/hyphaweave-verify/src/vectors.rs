@@ -11,9 +11,13 @@
 //! - `errors` as a set over the container's top-level and per-record errors;
 //! - `notices` as a subset of the reported notices over the same union;
 //! - `expected_digest` against `records[0].digest` for record targets;
-//! - `expected_resolution` against `records[0].refs[]` states;
-//! - `expected_container` as a recursive subset match of the container object;
-//! - `records` as per-id subset matches of record reports.
+//! - `expected_resolution` as a position map over the reported references
+//!   (`records[0].refs` for a record target, the concatenation over the
+//!   manifest-ordered records for a container);
+//! - `expected_container` / `expected_input` as recursive subset matches;
+//! - `limitations` exact, `notices_absent` absent from the aggregated report;
+//! - `records` per id: `verdict` and `errors` exact, other members recursive
+//!   subsets; an explicit empty `records` array asserts `records: []`.
 //!
 //! Argument tokens in `expected.json`: `@keyset` -> the `keys/keyset` directory
 //! of the enclosing vectors corpus (found by walking up from the vectors
@@ -36,21 +40,18 @@
 //! set is a separate run, never a nested part of the main run.
 //!
 //! The returned report is path-free and deterministic. Its `input` identity
-//! (PROVISIONAL, Appendix A P7) is the SHA-256 and byte size of the sorted
+//! (implementation-defined, §14.6/§14.10) is the SHA-256 and byte size of the sorted
 //! case-id list joined with a single `\n` and no trailing newline; per-case
 //! results are sorted by case id. The case-id list is the `id` member of each
 //! case's `expected.json`.
 
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Error;
 use std::path::{Path, PathBuf};
 
-use crate::digest;
-use crate::error_codes::{self, Code};
 use crate::json;
-use crate::options::{ContainerInput, UsageError, VerifyOptions};
+use crate::options::{UsageError, VerifyOptions};
 use crate::report::{
     ContainerReport, InputIdentity, RecordReport, Report, Summary, Target, VectorCaseReport,
     VectorCounts, Verdict, VerifierInfo,
@@ -104,15 +105,12 @@ pub fn verify_vectors(directory: &Path, options: &VerifyOptions) -> Result<Repor
         Verdict::Invalid
     };
     Ok(Report {
-        checks_disabled: checks_disabled(options),
+        checks_disabled: options.checks_disabled(),
         report_version: REPORT_VERSION.to_owned(),
         spec: SPEC.to_owned(),
         target: Target::Vectors,
         verdict,
-        input: InputIdentity {
-            sha256: digest::sha256_digest_string(identity_bytes),
-            size: u64::try_from(identity_bytes.len()).unwrap_or(u64::MAX),
-        },
+        input: InputIdentity::of_bytes(identity_bytes),
         records: Vec::new(),
         container: None,
         summary: Summary::Vectors(VectorCounts {
@@ -146,7 +144,11 @@ struct CaseExpectation {
     expected_digest: Option<String>,
     expected_resolution: Option<Vec<String>>,
     expected_container: Option<Value>,
-    records: Vec<Object>,
+    expected_input: Option<Value>,
+    limitations: Option<Vec<String>>,
+    notices_absent: Vec<String>,
+    /// `None` when absent; `Some(vec![])` asserts `records: []`.
+    records: Option<Vec<Object>>,
 }
 
 impl CaseExpectation {
@@ -162,8 +164,12 @@ impl CaseExpectation {
         let expected_digest = optional_string(directory, expected, "expected_digest")?;
         let expected_resolution = optional_string_list(directory, expected, "expected_resolution")?;
         let expected_container = expected.get("expected_container").cloned();
+        let expected_input = expected.get("expected_input").cloned();
+        let limitations = optional_string_list(directory, expected, "limitations")?;
+        let notices_absent =
+            optional_string_list(directory, expected, "notices_absent")?.unwrap_or_default();
         let records = match expected.get("records") {
-            None => Vec::new(),
+            None => None,
             Some(Value::Array(items)) => {
                 let mut records = Vec::with_capacity(items.len());
                 for item in items {
@@ -172,7 +178,7 @@ impl CaseExpectation {
                     })?;
                     records.push(object.clone());
                 }
-                records
+                Some(records)
             }
             Some(_) => {
                 return Err(expectation_error(directory, "\"records\" must be an array"));
@@ -188,6 +194,9 @@ impl CaseExpectation {
             expected_digest,
             expected_resolution,
             expected_container,
+            expected_input,
+            limitations,
+            notices_absent,
             records,
         })
     }
@@ -237,16 +246,11 @@ fn verify_case(
     let input_path = directory.join(&expectation.input);
     match expectation.target.as_str() {
         "record" => {
-            let bytes = fs::read(&input_path).map_err(|error| io_error(&input_path, &error))?;
+            let bytes = crate::operator::read_record_target(&input_path)?;
             crate::verify_record(&bytes, options)
         }
         "container" => {
-            let input = if input_path.is_dir() {
-                ContainerInput::Directory(input_path)
-            } else {
-                let bytes = fs::read(&input_path).map_err(|error| io_error(&input_path, &error))?;
-                ContainerInput::Zip(bytes)
-            };
+            let input = crate::operator::open_container(&input_path)?;
             crate::verify_container(input, options)
         }
         other => Err(expectation_error(
@@ -285,12 +289,11 @@ fn case_options(
                     .ok_or_else(|| expectation_error(directory, format!("{arg} needs a value")))?;
                 let path = resolve_token(directory, vectors_directory, token, keyset_cache)?;
                 match arg {
-                    "--keys" => options.keyset = load_keyset(&path)?,
+                    "--keys" => options.keyset = crate::operator::load_keyset(&path)?,
                     "--tsa-trust" => {
-                        let bytes = fs::read(&path).map_err(|error| io_error(&path, &error))?;
-                        options.tsa_trust = vec![bytes];
+                        options.tsa_trust = vec![crate::operator::read_tsa_trust(&path)?];
                     }
-                    _ => options.previous = Some(previous_input(&path)?),
+                    _ => options.previous = Some(crate::operator::open_previous(&path)?),
                 }
                 index += 2;
             }
@@ -341,50 +344,6 @@ fn resolve_keyset(vectors_directory: &Path) -> Result<PathBuf, UsageError> {
         "cannot resolve @keyset: no keys/keyset directory above {}",
         vectors_directory.display()
     )))
-}
-
-fn previous_input(path: &Path) -> Result<ContainerInput, UsageError> {
-    if path.is_dir() {
-        Ok(ContainerInput::Directory(path.to_path_buf()))
-    } else {
-        let bytes = fs::read(path).map_err(|error| io_error(path, &error))?;
-        Ok(ContainerInput::Zip(bytes))
-    }
-}
-
-/// Loads the top-level `*.json` files of a keyset directory, sorted by file name
-/// (§14.1).
-fn load_keyset(directory: &Path) -> Result<Vec<Vec<u8>>, UsageError> {
-    let entries = fs::read_dir(directory).map_err(|error| io_error(directory, &error))?;
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| io_error(directory, &error))?;
-        let path = entry.path();
-        if path.is_file() && path.extension() == Some(OsStr::new("json")) {
-            files.push(path);
-        }
-    }
-    files.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
-    let mut records = Vec::with_capacity(files.len());
-    for path in files {
-        let bytes = fs::read(&path).map_err(|error| io_error(&path, &error))?;
-        records.push(bytes);
-    }
-    Ok(records)
-}
-
-/// The sorted skip list echoed in `checks_disabled` (§14.7).
-fn checks_disabled(options: &VerifyOptions) -> Vec<Code> {
-    options
-        .skip_checks
-        .iter()
-        .filter_map(|skip| {
-            error_codes::ALL_ERROR_CODES
-                .iter()
-                .copied()
-                .find(|code| code == &skip.as_str())
-        })
-        .collect()
 }
 
 fn expectation_error(directory: &Path, message: impl AsRef<str>) -> UsageError {
@@ -462,27 +421,36 @@ fn optional_string_list(
 }
 
 fn case_matches(expectation: &CaseExpectation, report: &Report) -> bool {
-    // §14.3: the verdict is exact.
+    // §14.10: the verdict is exact.
     if report.target.as_str() != expectation.target
         || report.verdict.as_str() != expectation.verdict
     {
         return false;
     }
-    // The expected error set is a set over `container.errors` and every
-    // `records[].errors` (§14.6).
+    // `errors` is a set over `container.errors` and every `records[].errors`.
     let reported_errors = reported_error_set(report);
     let expected_errors: BTreeSet<&str> = expectation.errors.iter().map(String::as_str).collect();
     if reported_errors != expected_errors {
         return false;
     }
-    // Notices are a subset of the reported notice set.
+    // `notices` is a subset of the aggregated notices; `notices_absent` must
+    // not appear anywhere.
     let reported_notices = reported_notice_set(report);
     if !expectation
         .notices
         .iter()
         .all(|notice| reported_notices.contains(notice.as_str()))
+        || expectation
+            .notices_absent
+            .iter()
+            .any(|notice| reported_notices.contains(notice.as_str()))
     {
         return false;
+    }
+    if let Some(limitations) = &expectation.limitations {
+        if *limitations != report.limitations {
+            return false;
+        }
     }
     if let Some(expected_digest) = &expectation.expected_digest {
         if report
@@ -495,16 +463,20 @@ fn case_matches(expectation: &CaseExpectation, report: &Report) -> bool {
         }
     }
     if let Some(expected_resolution) = &expectation.expected_resolution {
-        let Some(record) = report.records.first() else {
+        // A position map over the reported references: records[0] for a
+        // record target, the manifest-ordered concatenation for a container.
+        let states: Vec<&str> = report
+            .records
+            .iter()
+            .flat_map(|record| record.refs.iter().map(|reference| reference.state.as_str()))
+            .collect();
+        if expected_resolution.len() > states.len()
+            || expected_resolution
+                .iter()
+                .zip(states.iter())
+                .any(|(expected, actual)| expected != actual)
+        {
             return false;
-        };
-        if expected_resolution.len() > record.refs.len() {
-            return false;
-        }
-        for (state, reference) in expected_resolution.iter().zip(record.refs.iter()) {
-            if reference.state != *state {
-                return false;
-            }
         }
     }
     if let Some(expected_container) = &expectation.expected_container {
@@ -515,7 +487,22 @@ fn case_matches(expectation: &CaseExpectation, report: &Report) -> bool {
             return false;
         }
     }
-    records_expectations_match(&expectation.records, report)
+    if let Some(expected_input) = &expectation.expected_input {
+        let input = crate::report_json::report_value(report);
+        let actual = input
+            .as_object()
+            .and_then(|object| object.get("input"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if !subset_match(expected_input, &actual) {
+            return false;
+        }
+    }
+    match &expectation.records {
+        None => true,
+        Some(expected) if expected.is_empty() => report.records.is_empty(),
+        Some(expected) => records_expectations_match(expected, report),
+    }
 }
 
 fn reported_error_set(report: &Report) -> BTreeSet<&str> {
@@ -564,30 +551,33 @@ fn subset_match(expected: &Value, actual: &Value) -> bool {
 
 fn records_expectations_match(expected_records: &[Object], report: &Report) -> bool {
     expected_records.iter().all(|expected| {
-        let Some(id) = expected.get_str("id") else {
-            return false;
+        // The `id` is the match key; a `null` id matches a record whose id
+        // could not be determined (§14.6 F9).
+        let id = match expected.get("id") {
+            Some(Value::Str(id)) => Some(id.as_str()),
+            Some(Value::Null) => None,
+            _ => return false,
         };
         report.records.iter().any(|actual| {
-            actual.id.as_deref() == Some(id) && record_expectation_matches(expected, actual)
+            actual.id.as_deref() == id && record_expectation_matches(expected, actual)
         })
     })
 }
 
 fn record_expectation_matches(expected: &Object, actual: &RecordReport) -> bool {
     expected.iter().all(|(name, value)| match name {
-        "id" => value.as_str() == actual.id.as_deref(),
+        "id" => true,
         "verdict" => value.as_str() == Some(actual.verdict.as_str()),
-        "kind_known" => value.as_bool() == actual.kind_known,
         "errors" => {
             let reported: BTreeSet<&str> = actual.errors.iter().copied().collect();
             expected_string_set(value).is_some_and(|expected_codes| expected_codes == reported)
         }
-        "notices" => {
-            let reported: BTreeSet<&str> = actual.notices.iter().copied().collect();
-            expected_string_set(value)
-                .is_some_and(|expected_notices| expected_notices.is_subset(&reported))
-        }
-        _ => subset_match(value, &record_report_value(actual)),
+        // Every other listed member is a recursive subset match of the
+        // record's report projection (§14.10).
+        other => record_report_value(actual)
+            .as_object()
+            .and_then(|object| object.get(other))
+            .is_some_and(|actual_value| subset_match(value, actual_value)),
     })
 }
 
@@ -613,7 +603,7 @@ fn record_report_value(record: &RecordReport) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error_codes::{e, n};
+    use crate::error_codes::{e, n, Code};
     use crate::report::{ChainReport, ContainerReport, RefReport, VerdictCounts};
 
     fn expectation(target: &str, verdict: &str) -> CaseExpectation {
@@ -627,7 +617,10 @@ mod tests {
             expected_digest: None,
             expected_resolution: None,
             expected_container: None,
-            records: Vec::new(),
+            expected_input: None,
+            limitations: None,
+            notices_absent: Vec::new(),
+            records: None,
         }
     }
 
@@ -679,8 +672,8 @@ mod tests {
             target,
             verdict,
             input: InputIdentity {
-                sha256: "sha256:2222".to_owned(),
-                size: 2,
+                sha256: Some("sha256:2222".to_owned()),
+                size: Some(2),
             },
             records,
             container,
@@ -838,7 +831,7 @@ mod tests {
         expected_record.insert("kind_known", Value::Bool(false));
         expected_record.insert("verdict", Value::Str("valid".to_owned()));
         mock_errors(&mut expected_record, &[]);
-        expectation.records = vec![expected_record];
+        expectation.records = Some(vec![expected_record]);
         let mut actual = record("a", Verdict::Valid, vec![]);
         actual.kind_known = Some(false);
         let matched = report(Target::Record, Verdict::Valid, vec![actual.clone()], None);
@@ -868,11 +861,21 @@ mod tests {
     #[test]
     fn discovers_the_committed_corpus_and_resolves_the_keyset() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../vectors");
+        // The expected counts come from the corpus's own inventory files, so
+        // a grown corpus does not need a code change here.
+        let index = json::parse_object(&fs::read(root.join("index.json")).expect("index.json"))
+            .expect("index.json parses");
+        let indexed = index.get_i64("case_count").expect("case_count");
         let cases = discover_cases(&root).expect("main corpus discovery");
-        assert_eq!(cases.len(), 294);
+        assert_eq!(cases.len() as i64, indexed);
         let frozen = root.join("frozen/v0.1-candidate");
+        let frozen_count: usize = fs::read_to_string(frozen.join("FROZEN_CASE_COUNT"))
+            .expect("FROZEN_CASE_COUNT")
+            .trim()
+            .parse()
+            .expect("frozen count");
         let frozen_cases = discover_cases(&frozen).expect("frozen corpus discovery");
-        assert_eq!(frozen_cases.len(), 179);
+        assert_eq!(frozen_cases.len(), frozen_count);
         let keyset = resolve_keyset(&root).expect("main corpus keyset");
         assert!(keyset.is_dir());
         assert_eq!(

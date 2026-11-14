@@ -23,9 +23,12 @@
 //! let output = report_json::to_bytes(&report);
 //! ```
 
+#![forbid(unsafe_code)]
+
 pub mod b64;
 pub mod container;
 pub mod context;
+pub mod der;
 pub mod digest;
 pub mod ed25519;
 pub mod envelope;
@@ -33,7 +36,9 @@ pub mod error_codes;
 pub mod json;
 pub mod kinds;
 pub mod labels;
+pub mod limitations;
 pub mod limits;
+pub mod operator;
 pub mod options;
 pub mod patterns;
 pub mod record;
