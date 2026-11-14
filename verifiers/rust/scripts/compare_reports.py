@@ -23,6 +23,22 @@ Rules this script implements (H1 workstream contract):
 * A difference may only be accepted through an explicit entry in
   ``gate3_known_differences.json`` (checked into this directory). The script
   exits 0 only when every difference is listed and no listed entry is stale.
+* An entry accepts named fields, not a whole case (H1-FIX2 Y10). Its
+  ``fields`` array lists the report paths that differ, written with ``[*]``
+  for array positions (``records[*].sigs[*].state``); ``<exit-code>``,
+  ``<report>`` (no parseable report on one side) and ``<report-bytes>`` (equal
+  parsed values, different bytes) name the differences outside the JSON tree.
+  The paths the script computes for the case must equal the listed ones
+  exactly: a further field difference, or a listed field that no longer
+  differs, fails the gate.
+* An entry's ``vector_basis`` must equal the script's own reading of the
+  case's ``expected.json`` (which report matches the vector conclusions), and
+  its ``classification`` must be consistent with that basis: a Rust bug is
+  never allow-listed; when only the Rust report matches ``expected.json`` the
+  vector itself decides (``spec-unique-answer-Python-bug``); when both match,
+  the difference is outside the vector conclusions and the entry's reason
+  cites the specification for ``spec-unique-answer-Python-bug`` or records
+  ``spec-ambiguous``.
 
 Case reproduction follows ``vectors/README.md``: ``expected.json`` carries
 ``target`` (``record`` or ``container``), ``input`` (relative to the case
@@ -55,6 +71,24 @@ CLASSIFICATIONS = (
     "spec-unique-answer-Python-bug",
     "spec-ambiguous",
 )
+# The script's own reading of a byte difference against the case's
+# expected.json conclusions (vectors/README.md matching rules).
+VECTOR_BASES = (
+    "python-only-matches-expected",
+    "rust-only-matches-expected",
+    "both-match-expected",
+    "neither-matches-expected",
+)
+# Classifications an allow-list entry may carry for each vector basis.
+CONSISTENT_CLASSIFICATIONS = {
+    "python-only-matches-expected": (),
+    "rust-only-matches-expected": ("spec-unique-answer-Python-bug",),
+    "both-match-expected": ("spec-unique-answer-Python-bug", "spec-ambiguous"),
+    "neither-matches-expected": ("spec-ambiguous",),
+}
+EXIT_FIELD = "<exit-code>"
+REPORT_FIELD = "<report>"
+BYTES_FIELD = "<report-bytes>"
 NORMALIZED_LITERAL = '"normalized"'
 FLAGS_WITH_PATH_VALUE = ("--keys", "--tsa-trust", "--previous")
 _WS = " \t\r\n"
@@ -398,6 +432,64 @@ def report_matches_expected(expected: dict, report: dict) -> tuple[bool, list[st
     return not problems, problems
 
 
+def _diff_paths(left: object, right: object, path: str, out: set[str]) -> None:
+    """Collects the JSON paths where two parsed reports differ.
+
+    Array positions are written ``[*]``; an array whose length differs, a
+    member present on one side only, or a value of a different type or value
+    is reported at its own path.
+    """
+    if isinstance(left, dict) and isinstance(right, dict):
+        for key in sorted(set(left) | set(right)):
+            child = f"{path}.{key}" if path else key
+            if key not in left or key not in right:
+                out.add(child)
+            else:
+                _diff_paths(left[key], right[key], child, out)
+    elif isinstance(left, list) and isinstance(right, list):
+        if len(left) != len(right):
+            out.add(path or "$")
+        else:
+            for left_item, right_item in zip(left, right):
+                _diff_paths(left_item, right_item, f"{path}[*]", out)
+    elif type(left) is not type(right) or left != right:
+        out.add(path or "$")
+
+
+def difference_fields(
+    python_normalized: bytes | None,
+    rust_normalized: bytes | None,
+    python_exit: int,
+    rust_exit: int,
+) -> list[str]:
+    """The sorted field paths in which two normalized reports differ."""
+    fields: set[str] = set()
+    if python_exit != rust_exit:
+        fields.add(EXIT_FIELD)
+    python_report = _parse_report(python_normalized) if python_normalized is not None else None
+    rust_report = _parse_report(rust_normalized) if rust_normalized is not None else None
+    if python_report is None or rust_report is None:
+        if python_normalized is None or rust_normalized is None or python_normalized != rust_normalized:
+            fields.add(REPORT_FIELD)
+        return sorted(fields)
+    tree: set[str] = set()
+    _diff_paths(python_report, rust_report, "", tree)
+    fields |= tree
+    if not tree and python_normalized != rust_normalized:
+        fields.add(BYTES_FIELD)
+    return sorted(fields)
+
+
+def vector_basis(python_matches: bool, rust_matches: bool) -> str:
+    if python_matches and not rust_matches:
+        return "python-only-matches-expected"
+    if rust_matches and not python_matches:
+        return "rust-only-matches-expected"
+    if python_matches and rust_matches:
+        return "both-match-expected"
+    return "neither-matches-expected"
+
+
 def _parse_report(raw: bytes) -> dict | None:
     try:
         value = json.loads(raw.decode("utf-8"))
@@ -629,10 +721,33 @@ def load_allow_list(path: Path) -> list[dict]:
         if not isinstance(reason, str) or not reason.strip():
             raise GateError(f"{path}: allow-list entry for {case_id} has no 'reason'")
         classification = entry.get("classification")
-        if classification is not None and classification not in CLASSIFICATIONS:
+        if classification not in CLASSIFICATIONS:
             raise GateError(
                 f"{path}: allow-list entry for {case_id} has unknown classification "
                 f"{classification!r}; expected one of {list(CLASSIFICATIONS)}"
+            )
+        basis = entry.get("vector_basis")
+        if basis not in VECTOR_BASES:
+            raise GateError(
+                f"{path}: allow-list entry for {case_id} has unknown vector_basis "
+                f"{basis!r}; expected one of {list(VECTOR_BASES)}"
+            )
+        if classification not in CONSISTENT_CLASSIFICATIONS[basis]:
+            raise GateError(
+                f"{path}: allow-list entry for {case_id}: classification "
+                f"{classification!r} is not consistent with vector_basis {basis!r} "
+                f"(allowed: {list(CONSISTENT_CLASSIFICATIONS[basis])})"
+            )
+        fields = entry.get("fields")
+        if (
+            not isinstance(fields, list)
+            or not fields
+            or not all(isinstance(field, str) and field for field in fields)
+            or fields != sorted(set(fields))
+        ):
+            raise GateError(
+                f"{path}: allow-list entry for {case_id} needs a non-empty, sorted, "
+                f"duplicate-free 'fields' array of report paths"
             )
         if case_id in seen:
             raise GateError(f"{path}: duplicate allow-list entry for {case_id}")
@@ -839,7 +954,11 @@ def main(argv: list[str] | None = None) -> int:
 
     identical = 0
     differences: list[tuple[Case, list[str], str]] = []
-    classification_counts = {name: 0 for name in CLASSIFICATIONS}
+    basis_counts = {name: 0 for name in VECTOR_BASES}
+    listed_counts = {name: 0 for name in CLASSIFICATIONS}
+    allow_by_case = {entry["case"]: entry for entry in allow_entries}
+    entry_problems: list[str] = []
+    accepted_fields: list[tuple[str, list[str]]] = []
     for case in cases:
         case_argv = reproduce_argv(case)
         python_result = run_process(python_command + case_argv, arguments.timeout)
@@ -868,22 +987,40 @@ def main(argv: list[str] | None = None) -> int:
             python_problems = ["no parseable report"]
             rust_problems = ["no parseable report"]
         if python_matches and not rust_matches:
-            classification = "spec-unique-answer-Rust-bug"
             detail = "; ".join(rust_problems[:3])
         elif rust_matches and not python_matches:
-            classification = "spec-unique-answer-Python-bug"
             detail = "; ".join(python_problems[:3])
         elif python_matches and rust_matches:
-            classification = "spec-ambiguous"
             detail = "both reports match expected.json; difference is outside the vector conclusions"
         else:
-            classification = "spec-ambiguous"
             detail = (
                 "neither report matches expected.json "
                 f"(python: {'; '.join(python_problems[:2]) or 'no parseable report'}; "
                 f"rust: {'; '.join(rust_problems[:2]) or 'no parseable report'})"
             )
-        classification_counts[classification] += 1
+        basis = vector_basis(python_matches, rust_matches)
+        basis_counts[basis] += 1
+        fields = difference_fields(
+            python_normalized, rust_normalized, python_result.returncode, rust_result.returncode
+        )
+        entry = allow_by_case.get(case.gate_id)
+        if entry is not None:
+            if fields != entry["fields"]:
+                unlisted_fields = sorted(set(fields) - set(entry["fields"]))
+                stale_fields = sorted(set(entry["fields"]) - set(fields))
+                entry_problems.append(
+                    f"{case.gate_id}: differing fields {fields} do not equal the allow-listed "
+                    f"fields {entry['fields']}"
+                    + (f"; not allow-listed: {unlisted_fields}" if unlisted_fields else "")
+                    + (f"; listed but no longer differing: {stale_fields}" if stale_fields else "")
+                )
+            if basis != entry["vector_basis"]:
+                entry_problems.append(
+                    f"{case.gate_id}: the script reads vector_basis {basis!r} but the allow "
+                    f"list records {entry['vector_basis']!r}"
+                )
+            accepted_fields.append((case.gate_id, fields))
+            listed_counts[entry["classification"]] += 1
         notes: list[str] = []
         if python_normalized is None:
             notes.append(f"python: {python_problem} ({describe_abnormal(python_result)})")
@@ -899,8 +1036,10 @@ def main(argv: list[str] | None = None) -> int:
                 "  " + line
                 for line in render_diff(python_normalized, rust_normalized, arguments.max_diff_lines)
             )
-        differences.append((case, notes, classification))
-        print(f"DIFFERENT {case.gate_id} [{classification}] {detail}")
+        listed = entry["classification"] if entry is not None else "not allow-listed"
+        differences.append((case, notes, listed))
+        print(f"DIFFERENT {case.gate_id} [{basis}; {listed}] {detail}")
+        print(f"    fields: {', '.join(fields)}")
         for note in notes:
             print(f"    {note}")
 
@@ -922,6 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
             f"allow-list entr(y/ies) are stale (case reports now identical): "
             f"{', '.join(stale_allowed)}"
         )
+    gate_problems.extend(entry_problems)
     if identical != len(cases) - len(allow_cases & discovered_ids):
         gate_problems.append(
             "identical count does not match total-minus-allowlisted: "
@@ -929,10 +1069,14 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     print("")
-    if classification_counts:
+    if differences:
         print(
-            "  Differences by classification: "
-            + ", ".join(f"{name}={count}" for name, count in classification_counts.items())
+            "  Differences by vector basis: "
+            + ", ".join(f"{name}={count}" for name, count in basis_counts.items())
+        )
+        print(
+            "  Allow-listed classifications: "
+            + ", ".join(f"{name}={count}" for name, count in listed_counts.items())
         )
     print(
         f"Gate 3 summary: total={len(cases)} identical={identical} "
@@ -944,9 +1088,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {problem}")
         return 1
     if differences:
+        field_counts: dict[str, int] = {}
+        for _, fields in accepted_fields:
+            key = ", ".join(fields)
+            field_counts[key] = field_counts.get(key, 0) + 1
+        print("  Allow-listed field differences (cases per field set):")
+        for key, count in sorted(field_counts.items()):
+            print(f"    {count:3d}  {key}")
         print(
-            "Gate 3 result: PASS (all differing cases are allow-listed; "
-            "every other report is byte-identical after verifier normalization)"
+            "Gate 3 result: PASS (all differing cases are allow-listed with exactly "
+            "their listed fields and a reconciled vector basis; every other report is "
+            "byte-identical after verifier normalization)"
         )
     else:
         print("Gate 3 result: PASS (every report byte-identical after verifier normalization)")

@@ -56,14 +56,18 @@ Useful options: `--vectors DIR` (repeatable; default `vectors/`), `--case ID`
 set name (`v0.1-candidate/sig/unknown-alg`) so allow-list entries and `--case`
 selections are unambiguous. `--case` accepts either spelling.
 
-Each difference is printed as a classification line plus a short diff:
+Each difference is printed with the script's vector basis (which report
+matches the case's `expected.json`), the allow-list classification (or
+`not allow-listed`), the differing `fields`, and a short diff. The
+classifications an allow-list entry may carry are:
 
 - `spec-unique-answer-Rust-bug` — the spec/vector pins one answer, the Rust
-  report does not match it and Python does;
-- `spec-unique-answer-Python-bug` — the reverse;
-- `spec-ambiguous` — both reports satisfy the committed vector conclusions but
-  differ outside them (for example §14.9 `limitations` prose or a PROVISIONAL
-  report field shape), or neither matches the expected conclusions.
+  report does not match it and Python does (never allow-listed: fix Rust);
+- `spec-unique-answer-Python-bug` — the reverse, or the specification text
+  (cited in the entry's `reason`) pins an answer outside the vector
+  conclusions that the Rust report follows;
+- `spec-ambiguous` — the specification does not give one answer for the
+  differing fields (for example a PROVISIONAL report field shape).
 
 Exit code `0` means every report byte was identical after the identity
 normalization, or every difference is listed in
@@ -82,3 +86,23 @@ Never add an entry to paper over a difference where the specification and the
 vectors give a unique answer — that is a defect in one of the implementations.
 Removing or fixing the underlying issue must also remove the entry, because a
 stale entry fails the gate.
+
+Since H1-FIX2 (Y10) an entry accepts named fields, not a whole case:
+
+- `fields` — the sorted report paths that differ, with `[*]` for array
+  positions (`records[*].sigs[*].state`, `input.sha256`); `<exit-code>`,
+  `<report>` (no parseable report on one side) and `<report-bytes>` (equal
+  parsed values, different bytes) name differences outside the JSON tree. The
+  script prints the computed `fields` of every differing case; they must equal
+  the listed ones exactly, so a further field difference in an allow-listed
+  case, or a listed field that no longer differs, fails the gate.
+- `vector_basis` — the script's own reading of the case's `expected.json`:
+  `rust-only-matches-expected`, `both-match-expected`,
+  `python-only-matches-expected` or `neither-matches-expected`. It must equal
+  what the script computes. The `classification` must be consistent with it:
+  `rust-only-matches-expected` requires `spec-unique-answer-Python-bug`;
+  `both-match-expected` (the difference is outside the vector conclusions)
+  allows `spec-unique-answer-Python-bug`, with the specification text cited in
+  `reason`, or `spec-ambiguous`; `neither-matches-expected` allows only
+  `spec-ambiguous`; `python-only-matches-expected` is a Rust defect and can
+  never be listed.
