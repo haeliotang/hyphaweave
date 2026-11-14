@@ -236,3 +236,38 @@ fn probe_container_size_directory_entry_count() {
         .expect("container");
     assert_ne!(conclusion(&plain), conclusion(&skipped));
 }
+
+/// Regression (H1-FIX1 differential fuzzing): §11.7 requires a non-empty
+/// `manifest.blobs` whenever a `blobs/` directory is present, even an empty
+/// one. Built from `container/l0-minimal` plus an empty `blobs/sha256/`.
+#[test]
+fn empty_blobs_directory_without_listing_is_manifest_blob() {
+    let source = vectors_root().join("container/l0-minimal/container");
+    let target =
+        std::env::temp_dir().join(format!("h1-empty-blobs-{}-{}", std::process::id(), line!()));
+    let copy = |from: &std::path::Path, to: &std::path::Path| {
+        fn walk(from: &std::path::Path, to: &std::path::Path) {
+            fs::create_dir_all(to).expect("mkdir");
+            for entry in fs::read_dir(from).expect("read_dir") {
+                let entry = entry.expect("entry");
+                let destination = to.join(entry.file_name());
+                if entry.path().is_dir() {
+                    walk(&entry.path(), &destination);
+                } else {
+                    fs::copy(entry.path(), &destination).expect("copy");
+                }
+            }
+        }
+        walk(from, to);
+    };
+    copy(&source, &target);
+    let plain = verify_container(ContainerInput::Directory(target.clone()), &keyset_options())
+        .expect("container");
+    fs::create_dir_all(target.join("blobs/sha256")).expect("blobs dir");
+    let with_empty_blobs =
+        verify_container(ContainerInput::Directory(target.clone()), &keyset_options())
+            .expect("container");
+    fs::remove_dir_all(&target).expect("cleanup");
+    assert_eq!(errors(&plain), Vec::<&str>::new());
+    assert_eq!(errors(&with_empty_blobs), vec![e::MANIFEST_BLOB]);
+}
