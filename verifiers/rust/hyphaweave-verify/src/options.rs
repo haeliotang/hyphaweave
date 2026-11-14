@@ -13,7 +13,9 @@
 //! `test-hooks` cargo feature (R3): a default build has no `skip_checks` field
 //! at all, so an embedder cannot disable a check by accident.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(feature = "test-hooks")]
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::PathBuf;
 

@@ -104,6 +104,9 @@ jobs:
       - name: Rust lints (clippy, warnings are errors)
         run: cargo clippy --manifest-path verifiers/rust/Cargo.toml --all-targets -- -D warnings
 
+      - name: Rust library without the test-hooks feature (lints, warnings are errors)
+        run: cargo clippy --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify --lib -- -D warnings
+
       - name: Rust unit and integration tests
         run: cargo test --manifest-path verifiers/rust/Cargo.toml --workspace
 
