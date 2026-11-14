@@ -1556,6 +1556,14 @@ complete.
   `617063513226618884` (the oversize file renamed): H1 now
   `{E_JSON_SIZE, E_MANIFEST_RECORD_EXTRA, E_MANIFEST_RECORD_MISSING}`, the
   reference `{E_JSON_SIZE, E_MANIFEST_RECORD_MISSING}`.
+  **Correction (H1-FIX2).** The sentence above was not true on the H1-FIX1
+  head: that mutant renames the file to an upper-case, hence misnamed, name,
+  and the H1-FIX1 change only measured unlisted files with a `<hex>.json`
+  name, so H1 reported `{E_MANIFEST_RECORD_EXTRA, E_MANIFEST_RECORD_MISSING}`
+  (no `E_JSON_SIZE`). The H1-FIX2 gate-5 rerun of seed 20261114 found it;
+  commit `17e78a1` measures misnamed `records/` files too, and the sentence
+  now holds (probe
+  `misnamed_oversize_record_file_reports_both_listing_violations`).
   **Classification (H1-FIX2 Y9, review B): Python suspected wrong** (H1-FIX1
   had "spec-ambiguous"). §11.6 item 5 reports an unlisted file as
   `E_MANIFEST_RECORD_EXTRA` without condition; §13 names "an oversized
@@ -1813,6 +1821,100 @@ Reported by review A from its re-signed probes; not rebuilt in H1-FIX2.
   STRING use the constructed form only (X.690 §8.18, §8.19, §8.21)", and a
   vector pair.
 
+### F67 — More reference-verifier deviations from the H1-FIX2 fuzzing
+
+- **A `sigs` entry member of the wrong JSON type.** §4.3: "Structural errors
+  of the array or of an entry's closed shape are `E_ENV_SIGS`, including a
+  member of an entry that is present with the wrong JSON type"; the
+  per-member codes apply "when the member is a string". An `ed25519` entry
+  whose `value` is the number `2`: H1 `E_ENV_SIGS`, the reference
+  `E_ENV_SIG_VALUE`. Reproduction: `scripts/diff_fuzz.py`,
+  `key-lifecycle/context-trusted-tofu-limitations`, class `number`, seed
+  `1615007253324860239`. **Python suspected wrong.**
+- **More crash sites** (besides F51 and F61-2). Inputs on which the
+  reference exits with a Python traceback instead of a report (§13/§15):
+  a declaration without `body.key_type` (`KeyError: 'key_type'`), a
+  revocation without `body.effective_at` (`KeyError: 'effective_at'`), a
+  timestamp without fractional seconds (`2026-11-01T00:00:00Z`), or with
+  day 31 of a 30-day month or second 60 (`ValueError`). H1 reports a §14.5
+  code for each (mostly `E_KIND_BODY_SCHEMA`). **Python bug.** Counts in
+  "H1-FIX2 gate results".
+- **Agent presence before grammar, two more shapes** (F45 family):
+  `actor/agent-missing-grant` with `on_behalf_of` a number (H1
+  `E_ENV_ACTOR_GRANT_MISSING`, the reference `E_ENV_ACTOR_ON_BEHALF`) and
+  `actor/agent-missing-on-behalf` with `actor.key` a number (H1
+  `E_ENV_ACTOR_ON_BEHALF_MISSING`, the reference `E_ENV_ACTOR_KEY`). §14.5
+  step (2): presence, then closedness, then grammar. **Python suspected
+  wrong.**
+
+### F68 — §5.5.2: chain validity (step 6) before the depth bound (step 7) — Rust changed
+
+- **Where.** §5.5.2: "The parent chain is evaluated in the following order,
+  and the first failing check determines the error"; Appendix A P5 marks the
+  precedence among the chain codes as a PROVISIONAL shape that "a verifier
+  MUST follow".
+- **Rust change.** H1-FIX1 checked the step-7 depth bound during the
+  structural walk (steps 1–5) and the step-6 window and revocation state
+  afterwards. A note citing `grant/chain-depth-9-links`' depth-9 grant, with
+  its `recorded_at` after every grant's window, was therefore
+  `E_GRANT_UNRESOLVED` (H1) against `E_GRANT_EXPIRED` (the reference). The
+  stated order gives `E_GRANT_EXPIRED`, so H1 was wrong. Found by the H1-FIX2
+  gate-5 run of seed 151115 (`grant/chain-depth-9-links`, class `time`, seed
+  `1563098227896494338`); fixed in commit `f7e3df9`, pinned by
+  `tests/precedence.rs`. Both verdicts were `unverifiable`.
+- **Open point.** Steps 1–5 on links beyond the depth bound are not walked
+  (the walk stops at the bound); whether a step-2 to step-5 failure on a 10th
+  link should outrank step 7 is not said. **Request to S2:** a vector for the
+  expired-and-too-deep case.
+
+### F69 — Order questions inside steps (7) and (8) found by the H1-FIX2 fuzzing
+
+All four are **spec-ambiguous**; in each, H1 and the reference pick different
+first failures and the text does not order them. Reproductions are
+`scripts/diff_fuzz.py` mutants (case, class, seed).
+
+1. **Where the §4.4 step-5 outcome sits for the signer-constrained kinds.**
+   §14.5 says the dedicated signer code is "emitted at step (7)" and, "when
+   there is no known-algorithm declared-key signature at all", the record is
+   `E_KEY_UNKNOWN` or `E_SIG_UNVERIFIABLE`, without a step. H1 decides it with
+   the signer obligation, after the kind's body (including the consent window
+   rule) and before the grant-chain checks; the reference reports grant-chain
+   codes first and the signature outcome before the consent window. Examples:
+   `grant/parent-expired`, `sigs`, `3154292035054101878` (H1
+   `E_SIG_UNVERIFIABLE`, the reference `E_GRANT_EXPIRED`);
+   `grant/sub-grant-expands-kinds`, `sigs`, `4136488168248786250` (H1
+   `E_SIG_UNVERIFIABLE`, the reference `E_GRANT_DELEGATION_EXCEEDS`);
+   `grant/parent-not-authorising`, `sigs`, `755171691454986662` (H1
+   `E_SIG_UNVERIFIABLE`, the reference `E_GRANT_GRANTER`);
+   `labels/consent-validity`, `sigs`, `2929257818963171381` (H1
+   `E_CONSENT_VALIDITY`, the reference `E_SIG_UNVERIFIABLE`).
+2. **Consent window versus the consent signer rule**, both step (7):
+   `labels/consent-validity`, `sigs`, `1740247710176792193` (H1
+   `E_CONSENT_VALIDITY`, the reference `E_ACTOR_KEY_TYPE_MISMATCH`).
+3. **§5.4 bullet order**, grantee versus window: `grant/grantee-mismatch`,
+   `time`, `4197516580675169878` (H1 `E_GRANT_EXPIRED`, the reference
+   `E_GRANT_GRANTEE_MISMATCH`). §5.4 lists the grantee rule before the window
+   rule but does not say the list is an order.
+4. **Is a key named only by the rotation itself "declared" for §4.4 step 4?**
+   `container/previous-rotation-material-untrusted`, `sigs`,
+   `3286669199506339158`: the new key's entry gets an unknown `alg`, the old
+   key's entry verifies with the rotation's `old_public_key`, and neither key
+   has a declaration. H1 treats the old key as a required, resolvable key
+   (§11.3's "resolves … through a `weave.key.declared` or `weave.key.rotated`
+   record") and reports `E_KEY_ROTATION_SIGS` (step 4); the reference reports
+   `E_KEY_UNKNOWN` (step 5). Same family as F41.
+
+**Proposed wording.** One sentence each in §14.5 (where the step-5 outcome
+sits), the consent kind page, §5.4 ("in this order") and §4.4 (whether a
+rotation's own key material counts as declared).
+
+- **F48, one more shape.** A structurally invalid placeholder (`refs` added,
+  `E_KIND_BODY_SCHEMA`) as the target of an erasure record: H1 reports
+  `E_ERASE_DIGEST_MISMATCH` (no usable placeholder), the reference no
+  container error. `erasure/actor-program-basis-lacks-erase`, `refs`,
+  `4170755898233117835`. Spec-ambiguous (whether a malformed placeholder is
+  "present" for §10.3).
+
 ### Not changed in H1-FIX2
 
 - **The CLI always carries the test hooks** (review A L-5). The
@@ -1820,6 +1922,29 @@ Reported by review A from its re-signed probes; not rebuilt in H1-FIX2.
   hook is read only behind the explicit `--test-hooks` switch and then exits 3,
   as §14.7 and ruling R3 require. Review A's runs confirm the hook is inert
   without the switch.
+
+## H1-FIX2 gate results
+
+Recorded 2026-11-15 on branch `h1/rust-verifier`, head `f7e3df9` for the code
+(the documentation commit that adds this section changes no code). The
+reference verifier ran only as a black box (installed non-editable from
+`git archive origin/main`, `5474cf7`).
+
+| gate | result |
+|---|---|
+| 1. CI rust job, verbatim from the repository root | every step exit 0 (`CARGO_TARGET_DIR` outside the repository, so the crash-fuzz `--binary` follows it and gate 3 gets `--rust-binary`/`--python-cli`): `cargo fmt … --all --check`; `cargo clippy … --all-targets -- -D warnings`; `cargo clippy … -p hyphaweave-verify --lib -- -D warnings`; `cargo test … --workspace` 96 passed, 0 failed, 3 ignored (the gate runs); the two `vectors` runs; `cargo deny check`; `cargo audit` (67 dependencies); the crash-fuzz step (2,000 mutants, 0 failures, exit codes 0–2 only); gate 3 PASS. fmt and both clippy steps also exit 0 under rustup stable 1.99.1 |
+| 2. vectors | 498/498 main and 202/202 frozen cases match `expected.json` |
+| 3. two-implementation comparison | 700 cases, 663 byte-identical, 37 allow-listed with exactly their listed fields and vector basis (29 `records[*].sigs[*].state`, 5 `records[*].sigs`, 2 `input.sha256`+`input.size`, 1 F38 set); vector basis `both-match-expected` for all 37; classifications 31 `spec-unique-answer-Python-bug`, 6 `spec-ambiguous`. Red checks: one more field difference injected into an allow-listed case, a wrong basis, and a listed field that no longer differs each fail the gate (exit 1); a `spec-unique-answer-Rust-bug` entry is a gate error (exit 2) |
+| 4. red checks for Y1, Y2, Y4 | each change reverted on the final head turns its tests red: Y1 (identity key without the instance) 3 of 3; Y2 `critical` DEFAULT row and chain-head `renews` 1 each; Y4 three variants |
+| 5. differential fuzzing | `scripts/diff_fuzz.py`, 10 classes × 400. A first pass on the Y1–Y10 head found two Rust defects (F55 misnamed oversize file, F68 grant-chain order), fixed in `17e78a1` and `f7e3df9`. Final pass on `f7e3df9`: seed **151115** (review A's): 3,695 mutants, 3,296 byte-identical, 89 conclusion differences — **Rust wrong 0**, reference suspected wrong 68, F44 8, spec-ambiguous 13; seed **20261114** (H1-FIX1's): 3,696 mutants, 3,299 byte-identical, 114 conclusion differences — **Rust wrong 0**, reference suspected wrong 86, F44 6, spec-ambiguous 22. Rust: 0 panics, 0 timeouts, exit codes 0 and 1 only. Of the 14 F44 rows, 10 keep the target's `origin` and `id` (tier a, reference suspected wrong), 1 deletes the target's `id` (tier b, ambiguous), 3 were not attributed |
+| 6. other workstreams untouched | `git diff --stat origin/main..h1/rust-verifier -- spec schemas vectors verifiers/python tools` is empty |
+
+The reference-verifier classes in gate 5: F46 54, Python crashes 47 (F51
+`KeyError: 'key'` 23, and the F67 crash sites: `key_type` 15, `second must
+be in 0..59` 3, `day is out of range` 4, `effective_at` 1, time without
+fraction 1), F54 16, F56 11, F42 (record part) 9, F61-1 6, F49 3, F45 3, F50
+2, F55 (oversize) 2, F67 (`sigs` member type) 1. Spec-ambiguous: F47 8, F38 6,
+F48 7, F69 9, F55 (orders) 5.
 
 ## H1-FIX1 gate results
 
@@ -1866,3 +1991,7 @@ black box, installed non-editable from `git archive origin/main`.
   F28–F56, the ambiguities and reference-verifier deviations found while
   implementing revision 3 and by the H1-FIX1 differential fuzzing, each with a
   minimal reproduction; added the H1-FIX1 gate results.
+- **2026-11-15 (H1-FIX2)** — added F57–F69 (the two re-reviews of H1-FIX1
+  and the H1-FIX2 differential fuzzing), reclassified F42, F44, F47 and F55,
+  made F50's reproduction explicit, corrected F55's H1-FIX1 reproduction
+  claim, recorded the Y1 change in F27, and added the H1-FIX2 gate results.

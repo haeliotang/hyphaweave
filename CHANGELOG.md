@@ -23,6 +23,10 @@ after the two re-reviews of H1-FIX1.
   check-1 violation.
 - **Signer certificate version** (Y5): v1 (absent), v2 and v3 per the RFC 5280
   module; extensions require v3 and unique identifiers v2 or v3.
+- **Fixes from the H1-FIX2 differential fuzzing**: a misnamed `records/`
+  file above `MAX_RECORD_BYTES` now reports `E_JSON_SIZE` with
+  `E_MANIFEST_RECORD_EXTRA` (F55); a delegated grant chain is judged for
+  validity (§5.5.2 step 6) before its depth bound (step 7) (F68).
 - **Crash-fuzz gate** (Y6): `scripts/crash_fuzz.py` never enables the test
   hooks, so only exit codes 0–2 pass; an exit 3 now fails the gate.
 - **Gate 3** (Y10): each known-difference entry names the report fields that
@@ -31,9 +35,10 @@ after the two re-reviews of H1-FIX1.
   differs, a different basis, or a classification inconsistent with the basis
   fails the gate.
 - **Tests** (Y1, Y2): `tests/identity.rs` (three identity cases through
-  `verify_container`) and `tests/l2_probes.rs` (the `Extension.critical`
-  DEFAULT row and the chain-head `renews` rule, with a re-signed receipt).
-- **Findings** (Y3, Y8, Y9): `docs/h1-findings.md` F57–F66 and the
+  `verify_container`), `tests/l2_probes.rs` (the `Extension.critical`
+  DEFAULT row and the chain-head `renews` rule, with a re-signed receipt) and
+  `tests/precedence.rs` (F68).
+- **Findings** (Y3, Y8, Y9): `docs/h1-findings.md` F57–F69 and the
   reclassification of F42, F44, F47 and F55.
 
 ## H1-FIX1 — 2026-11-14 — DRAFT, UNRELEASED

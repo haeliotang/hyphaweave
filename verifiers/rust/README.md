@@ -318,7 +318,8 @@ The test suite has three layers:
    probes that pin the checks the vectors do not reach (`tests/probes.rs`, R4;
    `tests/identity.rs`, the full record identity of §6.3/§10.3; and
    `tests/l2_probes.rs`, the `Extension.critical` DEFAULT row and the
-   chain-head `renews` rule on a re-signed receipt, H1-FIX2) and the 64
+   chain-head `renews` rule on a re-signed receipt; `tests/precedence.rs`,
+   a §5.5.2 check-order case, H1-FIX2) and the 64
    KiB-stack nesting test (`tests/small_stack.rs`, R6). The slow
    corpus-wide ablation and byte-flip gates in `tests/gates.rs` are `#[ignore]`d
    and run with `--release --include-ignored`.
