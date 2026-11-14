@@ -6,6 +6,36 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1-FIX2 — 2026-11-15 — DRAFT, UNRELEASED
+
+Revision 2 of the Rust verifier (decision 2026-11-15 #3, rulings Y1–Y10),
+after the two re-reviews of H1-FIX1.
+
+### Changed
+
+- **Record identity** (Y1): references, erasure placeholders and the §10.3
+  cross-checks are matched by the full `(origin.project, origin.instance, id)`
+  identity. A cross-instance reference is now `missing` (§6.3), a placeholder
+  of another instance no longer satisfies §10.3 rule 1, and placeholders of two
+  instances no longer contradict each other.
+- **Strict DER** (Y4): EXTERNAL, EMBEDDED PDV and CHARACTER STRING are
+  constructed-only (X.690 §8.18, §8.19, §8.21.1); their primitive form is a
+  check-1 violation.
+- **Signer certificate version** (Y5): v1 (absent), v2 and v3 per the RFC 5280
+  module; extensions require v3 and unique identifiers v2 or v3.
+- **Crash-fuzz gate** (Y6): `scripts/crash_fuzz.py` never enables the test
+  hooks, so only exit codes 0–2 pass; an exit 3 now fails the gate.
+- **Gate 3** (Y10): each known-difference entry names the report fields that
+  may differ and the comparison script's own reading of `expected.json`
+  (`vector_basis`); a further field difference, a listed field that no longer
+  differs, a different basis, or a classification inconsistent with the basis
+  fails the gate.
+- **Tests** (Y1, Y2): `tests/identity.rs` (three identity cases through
+  `verify_container`) and `tests/l2_probes.rs` (the `Extension.critical`
+  DEFAULT row and the chain-head `renews` rule, with a re-signed receipt).
+- **Findings** (Y3, Y8, Y9): `docs/h1-findings.md` F57–F66 and the
+  reclassification of F42, F44, F47 and F55.
+
 ## H1-FIX1 — 2026-11-14 — DRAFT, UNRELEASED
 
 Revision 1 of the Rust verifier (decision 2026-11-11 #2, rulings R1–R7, and the
@@ -25,7 +55,10 @@ and the vectors only; the Python verifier is run only as a black box.
   timestamp check order (W6).
 - **RFC 3161 check 1** is a strict DER check written from X.690 and the module
   definitions (`src/der.rs`, `src/timestamp.rs`); the `cms`, `x509-cert`,
-  `der`, `spki` and `const-oid` crates are no longer used.
+  `der`, `spki` and `const-oid` crates are no longer direct dependencies.
+  `der`, `spki` and `const-oid` are still used transitively through `rsa` and
+  `ecdsa`, in check 10 only (decoding the signer's public key and an ECDSA
+  signature value); no check-1 decision depends on them.
 - **Zip form**: the archive structure is parsed in the §11.9 order, ZIP64 is
   accepted, prefix/comment/trailing bytes are rejected, members are
   decompressed lazily under a cap and `readable/` is never decompressed.

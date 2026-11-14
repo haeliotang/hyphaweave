@@ -315,8 +315,11 @@ The test suite has three layers:
 2. **Integration tests** in `hyphaweave-verify/tests/`: the RFC 8032 and
    Wycheproof Ed25519 vectors, the RFC 8785-derived canonical-JSON material,
    the report byte format, the committed L2 timestamp cases, the targeted
-   probes that pin the checks the vectors do not reach (`tests/probes.rs`, R4)
-   and the 64 KiB-stack nesting test (`tests/small_stack.rs`, R6). The slow
+   probes that pin the checks the vectors do not reach (`tests/probes.rs`, R4;
+   `tests/identity.rs`, the full record identity of §6.3/§10.3; and
+   `tests/l2_probes.rs`, the `Extension.critical` DEFAULT row and the
+   chain-head `renews` rule on a re-signed receipt, H1-FIX2) and the 64
+   KiB-stack nesting test (`tests/small_stack.rs`, R6). The slow
    corpus-wide ablation and byte-flip gates in `tests/gates.rs` are `#[ignore]`d
    and run with `--release --include-ignored`.
 3. **The conformance runner** (`vectors <dir>`) over every case in `vectors/`

@@ -1207,8 +1207,12 @@ complete.
 - `E_ENV_SIG_ALG` (review B L2) is still never emitted (§3.6).
 - The `expect` in the context builder (review B L3) is gone, and the library has
   `#![forbid(unsafe_code)]`.
-- Reference lookup by `(project, id)` (review B L4) is unchanged: the digest
-  binds `instance`, so resolution cannot match another instance.
+- Reference lookup by `(project, id)` (review B L4): **changed in H1-FIX2
+  (Y1, commit `ce3e75e`)**. The H1-FIX1 reason given here ("the digest binds
+  `instance`") was wrong: it only holds for a live record whose digest matches;
+  a placeholder's own `origin` is not covered by the digest it carries, and a
+  record of another instance with a different digest turned `missing` into
+  `unverifiable`. See F58.
 - Linear `Object::get` (review B L5) is unchanged; no measured bottleneck.
 - DEL escaping (review B L7) is normative in §14.6 (S8⑩/F12).
 
@@ -1374,10 +1378,18 @@ complete.
   counts when it verified the equation (§11.5, "like a target manifest
   signature").
 - **Python black-box agreement.** The reference does not count a failed record
-  equation either (fuzz: `N_KEY_TOFU` on a record whose context-declared key
-  failed the equation). **Spec-ambiguous.** Minimal reproduction: a
+  equation (fuzz: no `N_KEY_TOFU` on a record whose context-declared key failed
+  the equation; H1 reports it). Minimal reproduction: a
   `key-lifecycle/declaration-duplicate-earliest` record whose signature value is
-  altered. **Proposed wording.** One sentence for both cases.
+  altered.
+- **Classification (H1-FIX2 Y9, review B).** Two parts. **Record signatures:
+  Python suspected wrong** — §14.6 gives a unique answer, `N_KEY_TOFU` is
+  reported when a check was context-trusted "even if that signature or the
+  record then fails". **Manifest and previous-manifest signatures:
+  spec-ambiguous** — §11.5 counts the material "that verified the equation",
+  and whether a failed manifest equation contributes `L_KEY_TRUST_TOFU` is not
+  said. **Proposed wording.** One sentence in §11.5 stating whether a failed
+  manifest or previous-manifest equation counts.
 
 ### F43 — Placeholder `origin`/`id` defects
 
@@ -1396,8 +1408,15 @@ complete.
 - **Python black-box agreement.** Different: the reference treats a record that
   fails its envelope or `sigs` structure as absent (`N_REF_MISSING`, and
   `E_ERASE_ATTESTATION` for a placeholder whose erasure record is malformed).
-  **Spec-ambiguous.** Minimal reproduction: `labels/downgrade` with an
-  `actor.key` removed from the target record.
+  Minimal reproduction: `labels/downgrade` with an `actor.key` removed from the
+  target record.
+- **Classification (H1-FIX2 Y9, review B), in two tiers.** (a) The target's
+  `origin` and `id` are intact (as in the reproduction): §6.3 gives a unique
+  answer — `unverifiable` is "a record with that `origin` and `id` is present
+  but … it is itself not valid" — so this tier is **Python suspected wrong**.
+  (b) The target's `origin` or `id` is itself malformed, so its identity cannot
+  be established: **spec-ambiguous** (absent, or present-but-invalid).
+  **Proposed wording.** One sentence in §6.3 for tier (b).
 
 ### F45 — Agent-only actor members: presence before the grammar of other members
 
@@ -1421,10 +1440,18 @@ complete.
 - **Where.** `spec/kinds/weave.erasure.md` (`E_GRANT_UNRESOLVED`/`E_GRANT_REVOKED`/
   `E_GRANT_EXPIRED` are unverifiable "the authorising grant cannot be
   established") versus "any other combination is `E_ERASE_ACTOR`".
-- **Chosen reading.** The grant codes. **Python suspected wrong**: the reference
-  reports `E_ERASE_ACTOR`. Minimal reproduction:
-  `erasure/actor-agent-with-grant-valid` with a required member removed from the
-  grant record.
+- **Chosen reading.** The grant codes; the reference reports `E_ERASE_ACTOR`.
+  Minimal reproduction: `erasure/actor-agent-with-grant-valid` with a required
+  member removed from the grant record.
+- **Classification (H1-FIX2 Y9, review B): spec-ambiguous** (H1-FIX1 had
+  "Python suspected wrong"). The grant record is present but invalid, and both
+  sentences of the kind page apply: the agent's `actor.grant` "MUST resolve to a
+  valid `weave.grant`", otherwise "any other combination is `E_ERASE_ACTOR`"
+  (invalid), versus the error table's "the authorising grant cannot be
+  established" (`E_GRANT_UNRESOLVED`, unverifiable). The more conservative
+  answer is the reference's `E_ERASE_ACTOR` (invalid rather than
+  unverifiable). **Proposed wording.** State which code applies when the
+  authorising grant is present but invalid.
 
 ### F48 — §10.3 cross-checks when the erasure record and the placeholder do not pair
 
@@ -1455,6 +1482,17 @@ complete.
   Minimal reproduction: `scripts/diff_fuzz.py` mutant of
   `key-lifecycle/bad-public-key-does-not-govern`, class `number`, seed
   `3843386067220390351`.
+- **Reproduction made explicit (H1-FIX2 Y9).** Review A tried three other
+  second defects (an extra body member, `algorithm` `rsa`, a missing
+  `key_type`) and both verifiers agreed on all three. The seed above rebuilds,
+  and still diverges on the H1-FIX2 head: in that case's declaration
+  `org1-bad-pk-human-T0` (whose `public_key` is the malformed `"AAAA"`),
+  `body.key` is replaced by the integer `9007199254740991`, the record is
+  re-signed with `human-1` and the container rewritten (file name, manifest
+  entry, manifest signature). H1: `E_KEY_PUBLIC_KEY` on that record; the
+  reference: `E_KIND_BODY_SCHEMA` (and lists the record's signatures). So the
+  divergence is specific to a second defect in `body.key` itself, the member
+  that names the key whose material is malformed.
 
 ### F51 — Reference verifier crashes
 
@@ -1518,8 +1556,19 @@ complete.
   `617063513226618884` (the oversize file renamed): H1 now
   `{E_JSON_SIZE, E_MANIFEST_RECORD_EXTRA, E_MANIFEST_RECORD_MISSING}`, the
   reference `{E_JSON_SIZE, E_MANIFEST_RECORD_MISSING}`.
-  **Proposed wording.** Say whether an unlisted oversize file is one violation
-  or two.
+  **Classification (H1-FIX2 Y9, review B): Python suspected wrong** (H1-FIX1
+  had "spec-ambiguous"). §11.6 item 5 reports an unlisted file as
+  `E_MANIFEST_RECORD_EXTRA` without condition; §13 names "an oversized
+  `records/` file" without restricting it to listed files and reads each file
+  through a probe bounded by its class limit; §14.5 has the records-listing
+  phase report "every independent violation it detects together", naming both
+  codes. The only gap is the word "detects". **Proposed wording** (after §11.6
+  item 5, or after the U8 sentence of §14.5): "A file in `records/` is subject
+  to `MAX_RECORD_BYTES` whether or not it is listed; an unlisted or misnamed
+  file above that limit reports both `E_MANIFEST_RECORD_EXTRA` and
+  `E_JSON_SIZE`."
+- The first part of this finding (the order inside steps (7)–(9)) stays
+  **spec-ambiguous**.
 
 ### F56 — Timestamps listed under L0/L1
 
@@ -1528,6 +1577,249 @@ complete.
   reference accepts an L1 manifest whose attestation lists receipts and reports
   later-stage codes. Minimal reproduction: `integrity-levels/l2-valid` with the
   manifest level changed to `L1` and the manifest re-signed.
+
+## H1-FIX2 (2026-11-15): findings from the two re-reviews
+
+Recorded for decision 2026-11-15 #3 (rulings Y1–Y10). Each item below either
+records a Rust change made in this revision or a question for the
+specification and the reference verifier. "Both CLIs" means the H1-FIX2 Rust
+binary and the reference verifier installed non-editable from
+`git archive origin/main` (`5474cf7`), run as black boxes.
+
+### F57 — §12.2 1a: universal tag 0 and a non-minimal ENUMERATED inside an open type
+
+- **Where.** §12.2 check 1, sub-step 1a (the universal DER rules applied to
+  every TLV) and 1c (an open type: "only its framing … is judged").
+- **Possible readings.** (a) 1a means **all of X.690 (DER)** for every
+  universal TLV: universal tag number 0 is reserved for the encoding rules
+  (end-of-contents only occurs in the indefinite form, which DER forbids), and
+  ENUMERATED is encoded as an INTEGER (X.690 §8.4), so it must be minimal. (b)
+  1a is the **list it enumerates**: "tag numbers 0–30 use the single-octet
+  identifier" admits tag 0 as an identifier, and the type rules name INTEGER but
+  not ENUMERATED, so neither is a violation inside an open type.
+- **Chosen reading.** (a), X.690 throughout; the Rust code is unchanged (Y3).
+- **Python black-box agreement.** Different — a judgement-level split (one
+  side `valid`, the other `invalid`). Minimal reproduction (review A,
+  reproduced on the H1-FIX2 head): `integrity-levels/l2-valid` whose receipt
+  gains one unknown unsigned attribute (outside the signature) whose value is
+  the open-type TLV below, the receipt digest in the attestation file updated:
+
+  | attribute value | H1 | reference |
+  |---|---|---|
+  | `00 00` (universal 0, definite length) | `invalid` `E_TS_SCHEMA` | `valid` |
+  | `30 02 00 00` | `invalid` `E_TS_SCHEMA` | `valid` |
+  | `00 01 00` | `invalid` `E_TS_SCHEMA` | `valid` |
+  | `0a 02 00 01` (ENUMERATED, non-minimal) | `invalid` `E_TS_SCHEMA` | `valid` |
+
+  A minimal ENUMERATED (`0a 01 01`) is `valid` on both. Review A also saw
+  the split with `00 00` as a non-signer certificate, and its fuzzing hit it
+  three times naturally (a signer certificate overwritten with zero bytes: H1
+  `E_TS_SCHEMA`, the reference `E_TS_CMS`).
+- **Vector pinning.** None.
+- **Proposed wording** (§12.2 1a, one sentence): "Universal tag number 0 never
+  occurs, and ENUMERATED follows the INTEGER rules (X.690 §8.4)" — or, if
+  reading (b) is intended, "1a lists all universal rules; any other universal
+  tag is judged on its framing only". Either way, a vector pair (`00 00` and
+  `0a 02 00 01` as an unsigned attribute value) should pin it.
+
+### F58 — Record identity is `(origin.project, origin.instance, id)` (Y1)
+
+- **Where.** §4.1 (`origin` is `{project, instance}`), §6.3 (resolution by
+  "that `origin` and `id`"), §10.3 rules 1 and 3.
+- **Rust change.** H1-FIX1 indexed the context by `(project, id)` (review B
+  L4, kept in F27 with a wrong reason). H1-FIX2 keys references, the §10.3
+  placeholder match and the contradiction count by the full identity (commit
+  `ce3e75e`). Three cases, each a `verify_container` test in
+  `verifiers/rust/hyphaweave-verify/tests/identity.rs`; reverting the key to
+  `(project, id)` turns all three red:
+  1. A reference to `(example, human-1, ref-target, D)` where the context only
+     has `(example, human-2, ref-target)` with another digest: **`missing`**
+     (§6.3: "no record with that `origin` and `id`"), not `unverifiable`.
+  2. `erasure/valid-container` with the placeholder's `origin.instance` changed
+     to `human-2` (its `digest` still the erased digest):
+     **`E_ERASE_DIGEST_MISMATCH`**, container invalid (§10.3 rule 1: "an
+     `origin`/`id` mismatch"). The old key accepted it as valid: a placeholder's
+     own `origin` is not covered by the digest it carries.
+  3. Two placeholders with the same project and `id` but instances `human-1`
+     and `human-2`, each with its own signed erasure record: **valid**, no
+     `E_ERASE_CONTRADICTION` (rule 3: "two placeholders for the same target").
+- **Python black-box agreement.** Same as the new H1 on all three (built as
+  directory containers, both CLIs): `missing` + `N_REF_MISSING`;
+  `E_ERASE_DIGEST_MISMATCH`; valid.
+- **Vector pinning.** None. **Request to the specification side (S2):** add
+  the three cases as vectors; both implementations already agree.
+
+### F59 — Two L2 checks that no vector reaches (Y2)
+
+- **Where.** §12.2 1c DEFAULT table, row `Extension.critical` ("certificate,
+  CRL, CRL-entry and TSTInfo extensions", `01 01 00`); §11.3/§12.4 ("`renews` is
+  `null` for the first receipt of the timestamp chain").
+- **Finding (review A M-2).** Disabling either check left all 700 vectors and
+  the whole `cargo test` green; a single-receipt `l2-valid` whose `renews`
+  names itself then verified `valid`.
+- **Rust change.** Tests only (commit `dc1e902`,
+  `tests/l2_probes.rs`): a TSTInfo extension with `critical` explicitly FALSE
+  (receipt rebuilt, `messageDigest` recomputed, SignerInfo re-signed with the
+  test TSA key) is `E_TS_SCHEMA`, while the twins with `critical` absent or
+  TRUE are valid; `renews` set to the receipt's own path or to an unlisted path
+  is `E_TS_RENEWAL`. Disabling either check turns its test red (the defective
+  container then verifies valid).
+- **Python black-box agreement.** Same on all five inputs (critical
+  absent/TRUE valid, FALSE `E_TS_SCHEMA`; both `renews` variants
+  `E_TS_RENEWAL`).
+- **Request to S2.** Vectors for the explicit `critical FALSE` (TSTInfo, and
+  preferably also a signer-certificate and a CRL extension) and for a non-null
+  chain-head `renews`.
+
+### F60 — Nesting above `MAX_JSON_DEPTH` inside a container record (review A L-1)
+
+- **Where.** §1.9 ("A depth above `MAX_JSON_DEPTH` is `E_JSON_SIZE` and, like
+  any size violation …"); §14.5 records-listing phase ("`E_JSON_SIZE` for record
+  files above `MAX_RECORD_BYTES`"); §11.6 item 2 (no dedicated code for a record
+  file whose digest cannot be computed).
+- **Possible readings.** (a) A too-deep record file is a size violation of the
+  listing phase: container-level `E_JSON_SIZE` (H1). (b) The record file cannot
+  be parsed, so its listed digest cannot be confirmed:
+  `E_MANIFEST_RECORD_DIGEST` (the reference).
+- **Python black-box agreement.** Different. Minimal reproduction (re-run on
+  the H1-FIX2 head): `container/l0-minimal` whose record gains a top-level
+  member holding 32 nested arrays (depth 33, the record object counting as 1),
+  re-signed, container rewritten: H1 `invalid`, container `[E_JSON_SIZE]`, no
+  record reported; the reference `invalid`, container
+  `[E_MANIFEST_RECORD_DIGEST]`. At depth 32 both report the record's own
+  `E_ENV_UNKNOWN_FIELD`. Review A: a truncated record or a duplicate key is
+  `E_MANIFEST_RECORD_DIGEST` on both; 35 fuzz mutants hit this split.
+  **Spec-ambiguous.**
+- **Proposed wording.** §14.5: state that a record file deeper than
+  `MAX_JSON_DEPTH` is reported in the listing phase as `E_JSON_SIZE` (or as
+  `E_MANIFEST_RECORD_DIGEST`).
+
+### F61 — Reference-verifier deviations found by review A's fuzzing (review A L-2)
+
+Reported by review A on the H1-FIX1 head (seed 151115); not rebuilt one by one
+in H1-FIX2 (the H1-FIX2 gate-5 rerun of the same seed is summarised under
+"H1-FIX2 gate results").
+
+1. **A compromised key rescued by an invalid receipt** (security relevant).
+   When the container's receipt fails check 1 or the CMS checks
+   (`E_TS_SCHEMA`/`E_TS_CMS`), a record signed with a key that was later
+   reported compromised can only be rescued by that receipt. §9.4 case 2:
+   "receipts are present, but none of them is verified … `E_TS_UNTRUSTED`". H1
+   reports the record `unverifiable` `E_TS_UNTRUSTED`; the reference reports
+   the record **`valid`**. The container verdict is `invalid` on both (the
+   receipt error). Base case: `container/previous-signing-key-compromised-after-previous`
+   with its receipt damaged (23 mutants). **Python suspected wrong.**
+2. **A crash.** `weave.key.revoked` with `effective_at` written with a space
+   instead of `T` (`2026-11-01 00:00:00.000Z`): the reference exits with a
+   Python traceback (`ValueError: time data … does not match format`); H1
+   reports `E_KIND_BODY_SCHEMA`. §13/§15 require a report. A different crash
+   site from F51. **Python bug.**
+3. **Key-id syntax in `weave.key.rotated`.** `old_key`/`new_key` malformed or
+   of another type: H1 `E_KIND_BODY_SCHEMA` (the key-id grammar of the body
+   table, §14.5 step 6), the reference `E_KEY_ROTATION_KEYS` or
+   `E_KEY_UNKNOWN`. `E_KEY_ROTATION_KEYS` covers the public-key structure and
+   contradictions of a rotation, not the key-id syntax. Same family as F50.
+   **Python suspected wrong**; one sentence in the kind page would remove the
+   doubt.
+
+### F62 — Signer certificate `version` (Y5, review B L-4)
+
+- **Where.** §12.2 1e ("decodes as an X.509 certificate"), 1c DEFAULT table
+  (`TBSCertificate.version`, `a0 03 02 01 00`); RFC 5280 §4.1: `version [0]
+  EXPLICIT Version DEFAULT v1`, `Version ::= INTEGER { v1(0), v2(1), v3(2) }`,
+  and the module comments "If present, version MUST be v2 or v3" (unique
+  identifiers) and "If present, version MUST be v3" (extensions).
+- **Reading (Y5).** The specification adds no version rule, so the RFC 5280
+  module is the criterion: v1 is the absent field (an explicit v1 is a DEFAULT
+  value encoded, already rejected by the DEFAULT row), v2 and v3 are encoded;
+  a version outside v1..v3 is rejected; extensions require v3 and unique
+  identifiers v2 or v3. H1-FIX1 accepted only explicit v2/v3 (or the absent
+  field) and did not enforce the two module constraints; H1-FIX2 adds them
+  (commit `ae3ab58`, unit test `timestamp::tests::certificate_versions`).
+  The same walk decodes `--tsa-trust` anchors.
+- **Open point.** RFC 5280 also says implementations "SHOULD be prepared to
+  accept any version certificate"; the named-number list is not a value
+  constraint in ASN.1. Whether a version above v3 is "decodes as an X.509
+  certificate" is not said. **Proposed wording** (§12.2 1e): "The signer
+  certificate's `version` is v1 (absent), v2 or v3, with the RFC 5280 module
+  constraints on `extensions` and the unique identifiers."
+- **Python black-box agreement.** Not exercised by the committed cases.
+
+### F63 — Open types inside the signer certificate; `--tsa-trust` strictness (review A L-3)
+
+Reported by review A from its re-signed probes; not rebuilt in H1-FIX2.
+
+- **Signer-certificate open types: Python suspected wrong.** §12.2 1c lists
+  `AlgorithmIdentifier.parameters` (other than the signer's own digest and
+  signature algorithms) and `AttributeTypeAndValue.value` as open types. A
+  signer certificate whose subject CN is a PrintableString with `@` or `*`, or
+  whose TBS or outer `signatureAlgorithm` parameters are `04 00`: H1 passes
+  check 1 (and verifies when that certificate is the anchor); the reference
+  reports `E_TS_SCHEMA`, or exits 2 when the same certificate is given as
+  `--tsa-trust`. Review A: 4 of its 161 unique-answer probes, and 6 replays of
+  S1's `string-printable-bad-charset`.
+- **`--tsa-trust` decoding strictness: spec-ambiguous.** §14.1 makes a trust
+  file that "does not decode as an X.509 certificate" a usage error, without
+  saying how strict the decoding is. A certificate whose `extnValue` holds a
+  non-minimal length or trailing bytes: H1 rejects it as an anchor (exit 2,
+  same strict walk as 1e); the reference accepts it. **Proposed wording.**
+  "decodes under the rules of §12.2 1e" (or name the looser rule).
+
+### F64 — Check 10 results that the cryptographic libraries decide (Y8, review B L-2)
+
+- **Where.** §12.2 check 10 (the CMS signature verifies with the signer
+  certificate's public key); the specification has no key-size, exponent or
+  signature-encoding rule.
+- **What decides today.** Check 1 never uses a parsing library. Check 10 does:
+  - RSA: `rsa` 0.10 `PublicKey` (`src/public_key.rs`) accepts a modulus of
+    1,024 to 8,192 bits and a public exponent from 2 to 2^33 − 1; any other key
+    makes H1's check 10 fail (`E_TS_CMS`).
+  - ECDSA: the strictness of the DER `Ecdsa-Sig-Value` decoding is that of
+    `ecdsa` 0.17 `Signature::from_der` (P-256/P-384).
+- **Severity.** Low: the receipt bytes are fixed by the attestation digest, so
+  signature malleability has no security consequence; but this is the "a
+  library's habit as a criterion" that X1 excluded for check 1.
+- **Request to S2.** Either write the bounds into §12.2 check 10 (for example
+  "RSA moduli of 2,048 to 8,192 bits, public exponent 3 to 2^33 − 1;
+  `Ecdsa-Sig-Value` in DER") or declare them implementation-defined.
+
+### F65 — P-384 has no committed vector (review A L-6)
+
+- Review A ran a new P-384 key and self-signed certificate end to end: SHA-384
+  with parameters absent `valid`, with `NULL` `E_TS_SCHEMA`, P-384 with SHA-256
+  `valid`, a wrong signature `E_TS_CMS`, an EC key with an RSA algorithm
+  `E_TS_CMS`. Both verifiers agreed on all of them; H1 also has the unit test of
+  F27. **Request to S2:** turn these five into vectors.
+
+### F66 — EXTERNAL, EMBEDDED PDV and CHARACTER STRING are constructed-only (Y4, review B L-3)
+
+- **Where.** §12.2 1a ("the string … types" are primitive-only) and X.690
+  §8.18 (EXTERNAL, 8), §8.19 (EMBEDDED PDV, 11), §8.21.1 (CHARACTER STRING, the
+  unrestricted character string type, 29).
+- **Rust change.** H1-FIX1 listed 29 as primitive-only and let the primitive
+  form of 8, 11 and 29 pass. H1-FIX2 (commit `152e597`) follows X.690: their
+  constructed form passes framing, their primitive form is a 1a violation.
+- **Python black-box agreement.** Different for the primitive form. A valid
+  receipt with one unknown unsigned attribute (outside the signature) whose
+  value is the TLV below, attestation digest updated:
+
+  | value | H1 | reference |
+  |---|---|---|
+  | `08 01 00`, `0b 01 00`, `1d 01 00` (primitive) | `invalid` `E_TS_SCHEMA` | `valid` |
+  | `28 03 02 01 01`, `2b 03 02 01 01`, `3d 03 02 01 01` (constructed) | `valid` | `valid` |
+
+  Same family as F57 (whether 1a is X.690 in full or the list it names).
+- **Proposed wording.** Add to 1a: "EXTERNAL, EMBEDDED PDV and CHARACTER
+  STRING use the constructed form only (X.690 §8.18, §8.19, §8.21)", and a
+  vector pair.
+
+### Not changed in H1-FIX2
+
+- **The CLI always carries the test hooks** (review A L-5). The
+  `hyphaweave-verify-rs` crate enables the library's `test-hooks` feature; the
+  hook is read only behind the explicit `--test-hooks` switch and then exits 3,
+  as §14.7 and ruling R3 require. Review A's runs confirm the hook is inert
+  without the switch.
 
 ## H1-FIX1 gate results
 
