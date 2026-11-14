@@ -129,7 +129,7 @@ jobs:
         # No ignored advisories (H1-FIX1 R2: rsa 0.10, p256/p384 0.14).
         run: cargo audit
 
-      - name: Rust crash-fuzz gate (deterministic mutants, no panic, no timeout, exit codes 0-3)
+      - name: Rust crash-fuzz gate (deterministic mutants, no panic, no timeout, exit codes 0-2)
         run: |
           cargo build --release --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify-rs
           python3 verifiers/rust/scripts/crash_fuzz.py --binary verifiers/rust/target/release/hyphaweave-verify-rs --count 2000 --jobs 2

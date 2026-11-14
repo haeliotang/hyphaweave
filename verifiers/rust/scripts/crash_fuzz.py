@@ -8,10 +8,12 @@ vectors (record files, container directories, zip containers and RFC 3161
 receipts), runs the Rust CLI on each one with the case's own arguments, and
 fails when any run
 
-* is killed by a signal or exits with a code outside {0, 1, 2, 3} (§14.8),
+* is killed by a signal or exits with a code outside {0, 1, 2} (§14.8;
+  exit 3 exists only with the §14.7 test hooks, which this gate never
+  enables, so an exit 3 here means the hook leaked into a normal run),
 * prints a Rust panic or a stack-overflow message,
 * exceeds the per-run timeout, or
-* exits 0, 1 or 3 without exactly one JSON object on standard output.
+* exits 0 or 1 without exactly one JSON object on standard output.
 
 The verdicts themselves are not judged here (the vectors and the differential
 comparison do that). The mutator is seeded and never grows its inputs
@@ -38,7 +40,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 VECTORS = REPO / "vectors"
 DEFAULT_BINARY = REPO / "verifiers" / "rust" / "target" / "release" / "hyphaweave-verify-rs"
-ALLOWED_EXIT = {0, 1, 2, 3}
+# No `--test-hooks` is ever passed, so exit 3 (§14.7) is a failure (H1-FIX2 Y6).
+ALLOWED_EXIT = {0, 1, 2}
 CRASH_MARKERS = ("panicked at", "stack overflow", "RUST_BACKTRACE", "fatal runtime error")
 MAX_EDITS = 4
 
@@ -146,7 +149,7 @@ def run_one(binary: Path, case: dict, seed: int, timeout: float) -> tuple[bool, 
             return False, f"EXIT {completed.returncode} seed={seed} {description}: {stderr[:200]}"
         if any(marker in stderr for marker in CRASH_MARKERS):
             return False, f"PANIC seed={seed} {description}: {stderr[:200]}"
-        if completed.returncode in (0, 1, 3):
+        if completed.returncode in (0, 1):
             try:
                 report = json.loads(completed.stdout)
             except ValueError:
