@@ -24,8 +24,10 @@ Rules this script implements (H1 workstream contract):
   ``gate3_known_differences.json`` (checked into this directory). The script
   exits 0 only when every difference is listed and no listed entry is stale.
 * An entry accepts named fields, not a whole case (H1-FIX2 Y10). Its
-  ``fields`` array lists the report paths that differ, written with ``[*]``
-  for array positions (``records[*].sigs[*].state``); ``<exit-code>``,
+  ``fields`` array lists the report paths that differ, with the array index
+  kept at every position (``records[3].sigs[0].state``; H1-FIX2B Z3), so a
+  further difference in another element of the same array is a new path;
+  ``<exit-code>``,
   ``<report>`` (no parseable report on one side) and ``<report-bytes>`` (equal
   parsed values, different bytes) name the differences outside the JSON tree.
   The paths the script computes for the case must equal the listed ones
@@ -435,8 +437,12 @@ def report_matches_expected(expected: dict, report: dict) -> tuple[bool, list[st
 def _diff_paths(left: object, right: object, path: str, out: set[str]) -> None:
     """Collects the JSON paths where two parsed reports differ.
 
-    Array positions are written ``[*]``; an array whose length differs, a
-    member present on one side only, or a value of a different type or value
+    Array positions keep their index (``records[3].sigs[0].state``): folding
+    them into ``[*]`` would let a regression in another element of an
+    allow-listed array pass (H1-FIX2B Z3). Arrays of different lengths are
+    still compared element by element over the common prefix, and every
+    element present on one side only is reported at its own indexed path; a
+    member present on one side only, or a value of a different type or value,
     is reported at its own path.
     """
     if isinstance(left, dict) and isinstance(right, dict):
@@ -447,11 +453,12 @@ def _diff_paths(left: object, right: object, path: str, out: set[str]) -> None:
             else:
                 _diff_paths(left[key], right[key], child, out)
     elif isinstance(left, list) and isinstance(right, list):
-        if len(left) != len(right):
-            out.add(path or "$")
-        else:
-            for left_item, right_item in zip(left, right):
-                _diff_paths(left_item, right_item, f"{path}[*]", out)
+        for index in range(max(len(left), len(right))):
+            child = f"{path}[{index}]"
+            if index >= len(left) or index >= len(right):
+                out.add(child)
+            else:
+                _diff_paths(left[index], right[index], child, out)
     elif type(left) is not type(right) or left != right:
         out.add(path or "$")
 

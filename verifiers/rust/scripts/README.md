@@ -89,8 +89,12 @@ stale entry fails the gate.
 
 Since H1-FIX2 (Y10) an entry accepts named fields, not a whole case:
 
-- `fields` — the sorted report paths that differ, with `[*]` for array
-  positions (`records[*].sigs[*].state`, `input.sha256`); `<exit-code>`,
+- `fields` — the sorted report paths that differ, with the index kept at
+  every array position (`records[3].sigs[0].state`, `input.sha256`; H1-FIX2B
+  Z3: folding positions into `[*]` let a regression in another element of the
+  same array pass). Arrays of different lengths are compared element by
+  element up to the longer one; an element on one side only is reported at
+  its own indexed path (`records[2].sigs[1]`). `<exit-code>`,
   `<report>` (no parseable report on one side) and `<report-bytes>` (equal
   parsed values, different bytes) name differences outside the JSON tree. The
   script prints the computed `fields` of every differing case; they must equal

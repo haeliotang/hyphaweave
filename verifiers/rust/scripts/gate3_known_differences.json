@@ -6,7 +6,8 @@
     "The file starts empty on purpose: the first gate 3 run must fail until every",
     "difference is understood. A stale entry (its case now matches) also fails the gate.",
     "H1-FIX1 (2026-11-14): the four F11 entries were removed; S14 fixed the input identity of a container without a manifest (both members null), so those reports are compared byte for byte again.",
-    "H1-FIX2 (2026-11-15, Y10): every entry names the report fields that may differ ('fields', paths with [*] for array positions; <exit-code>, <report>, <report-bytes> outside the JSON tree) and the script's reading of expected.json ('vector_basis'). The fields the script computes must equal the listed ones exactly, the basis must match, and the classification must be consistent with the basis (a Rust bug is never listed; rust-only-matches-expected requires spec-unique-answer-Python-bug; both-match-expected allows spec-unique-answer-Python-bug, citing the specification in 'reason', or spec-ambiguous)."
+    "H1-FIX2 (2026-11-15, Y10): every entry names the report fields that may differ ('fields', paths with [*] for array positions; <exit-code>, <report>, <report-bytes> outside the JSON tree) and the script's reading of expected.json ('vector_basis'). The fields the script computes must equal the listed ones exactly, the basis must match, and the classification must be consistent with the basis (a Rust bug is never listed; rust-only-matches-expected requires spec-unique-answer-Python-bug; both-match-expected allows spec-unique-answer-Python-bug, citing the specification in 'reason', or spec-ambiguous).",
+    "H1-FIX2B (2026-11-15, Z3): field paths keep their array indices (records[3].sigs[0].state) instead of [*], and arrays of different lengths are compared element by element (an element on one side only is its own indexed path), so a regression in another element of an allow-listed array is a new path and fails the gate."
   ],
   "allowed_differences": [
     {
@@ -34,7 +35,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -43,7 +44,8 @@
       "classification": "spec-ambiguous",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs"
+        "records[0].sigs[0]",
+        "records[0].sigs[1]"
       ],
       "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
     },
@@ -52,7 +54,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -61,7 +63,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -70,7 +72,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -79,7 +81,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -88,7 +90,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -97,7 +99,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -106,7 +108,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -115,7 +117,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[2].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -124,7 +126,7 @@
       "classification": "spec-ambiguous",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs"
+        "records[0].sigs[0]"
       ],
       "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
     },
@@ -133,7 +135,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -142,7 +144,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -151,7 +153,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -160,7 +162,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -169,7 +171,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -178,7 +180,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -187,7 +189,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -196,7 +198,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -205,7 +207,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -214,7 +216,8 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state",
+        "records[3].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -223,7 +226,8 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state",
+        "records[3].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -232,7 +236,7 @@
       "classification": "spec-ambiguous",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs"
+        "records[0].sigs[0]"
       ],
       "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
     },
@@ -241,7 +245,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -250,7 +254,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -259,7 +263,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -268,7 +272,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -277,7 +281,8 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state",
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -286,9 +291,10 @@
       "classification": "spec-ambiguous",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].errors",
-        "records[*].sigs[*].state",
-        "records[*].verdict",
+        "records[0].errors[0]",
+        "records[0].sigs[1].state",
+        "records[0].verdict",
+        "records[1].sigs[0].state",
         "summary.invalid",
         "summary.valid"
       ],
@@ -299,7 +305,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -308,7 +314,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[2].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -317,7 +323,7 @@
       "classification": "spec-ambiguous",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs"
+        "records[0].sigs[0]"
       ],
       "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
     },
@@ -326,7 +332,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[0].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     },
@@ -335,7 +341,7 @@
       "classification": "spec-ambiguous",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs"
+        "records[0].sigs[0]"
       ],
       "reason": "E_KEY_PUBLIC_KEY is decided before signature verification (§14.5 T1); H1 reports sigs: [] because the signature checks did not run (§14.6 undetermined list = []), the reference lists signature states. Conclusions match. docs/h1-findings.md F39."
     },
@@ -344,7 +350,7 @@
       "classification": "spec-unique-answer-Python-bug",
       "vector_basis": "both-match-expected",
       "fields": [
-        "records[*].sigs[*].state"
+        "records[1].sigs[0].state"
       ],
       "reason": "§14.6 (S8⑩): sigs[].state is 'unverified' when the key state fails a §9.4 rule (expired, revoked, compromised); the reference reports 'valid' for such signatures. Conclusions match. docs/h1-findings.md F52."
     }
