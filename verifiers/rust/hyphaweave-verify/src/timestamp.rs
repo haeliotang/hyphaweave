@@ -1038,16 +1038,24 @@ fn certificate<'a>(tlv: &Tlv<'a>) -> DerResult<Certificate<'a>> {
     universal_primitive(&seq.next()?, universal::BIT_STRING)?;
     seq.finish()?;
     let mut tbs = Seq::new(&tbs)?;
+    // RFC 5280 §4.1: `version [0] EXPLICIT Version DEFAULT v1` with
+    // `Version ::= INTEGER { v1(0), v2(1), v3(2) }`. v1 is the absent field
+    // (an explicit v1 is a DEFAULT value encoded, §12.2 1c); v2 and v3 are
+    // encoded. The specification adds no version rule, so the module's
+    // version set is the criterion (H1-FIX2 Y5, docs/h1-findings.md F62).
+    let mut version_number = 0u8;
     if let Some(version) = tbs.optional(|tlv| tlv.is_context(0)) {
-        // `version [0] EXPLICIT Version DEFAULT v1`: v1 is never encoded, and
-        // a decodable certificate is otherwise v2 or v3.
         if version.raw == [0xa0, 0x03, 0x02, 0x01, 0x00] {
             return Err(DerError("TBSCertificate.version DEFAULT encoded"));
         }
-        let value = integer_value(&explicit_single(&version)?)?;
-        if value != [0x01] && value != [0x02] {
-            return Err(DerError("unsupported certificate version"));
-        }
+        version_number = match integer_value(&explicit_single(&version)?)? {
+            // Only reachable without the DEFAULT check above; kept so that
+            // check alone decides an explicit v1.
+            [0x00] => 0,
+            [0x01] => 1,
+            [0x02] => 2,
+            _ => return Err(DerError("certificate version outside v1..v3")),
+        };
     }
     let serial = integer_value(&tbs.next()?)?;
     algorithm_identifier(&tbs.next()?)?;
@@ -1066,11 +1074,19 @@ fn certificate<'a>(tlv: &Tlv<'a>) -> DerResult<Certificate<'a>> {
     spki_seq.finish()?;
     for unique in [1u64, 2] {
         if let Some(identifier) = tbs.optional(|tlv| tlv.is_context(unique)) {
+            // RFC 5280 module: "If present, version MUST be v2 or v3".
+            if version_number < 1 {
+                return Err(DerError("unique identifier in a v1 certificate"));
+            }
             implicit_primitive(&identifier, universal::BIT_STRING)?;
         }
     }
     let mut certificate_extensions = Vec::new();
     if let Some(extension_tlv) = tbs.optional(|tlv| tlv.is_context(3)) {
+        // RFC 5280 module: "If present, version MUST be v3".
+        if version_number != 2 {
+            return Err(DerError("extensions in a certificate below v3"));
+        }
         certificate_extensions = extensions(&explicit_single(&extension_tlv)?)?;
         for (_, value) in &certificate_extensions {
             der::check_universal_rules(value)?;
@@ -1766,6 +1782,125 @@ mod tests {
         assert_eq!(time.to_ts_string(), "2026-11-01T12:00:00.123Z");
         assert!(parse_generalized_time(b"20261301120000Z").is_none());
         assert!(parse_generalized_time(b"20261101120000.120Z").is_none());
+    }
+
+    /// A minimal certificate: optional explicit `version` content, optional
+    /// `issuerUniqueID [1]`, optional extensions (basicConstraints).
+    fn test_certificate(version: Option<&[u8]>, unique: bool, with_extensions: bool) -> Vec<u8> {
+        let algorithm = der::encode(
+            0x30,
+            &[
+                der::encode(0x06, &der::oid(SHA256_WITH_RSA)),
+                vec![0x05, 0x00],
+            ]
+            .concat(),
+        );
+        let name = der::encode(
+            0x30,
+            &der::encode(
+                0x31,
+                &der::encode(
+                    0x30,
+                    &[
+                        der::encode(0x06, &der::oid("2.5.4.3")),
+                        der::encode(0x0c, b"a"),
+                    ]
+                    .concat(),
+                ),
+            ),
+        );
+        let validity = der::encode(
+            0x30,
+            &[
+                der::encode(0x17, b"260101000000Z"),
+                der::encode(0x17, b"270101000000Z"),
+            ]
+            .concat(),
+        );
+        let spki = der::encode(
+            0x30,
+            &[
+                der::encode(
+                    0x30,
+                    &[
+                        der::encode(0x06, &der::oid(RSA_ENCRYPTION)),
+                        vec![0x05, 0x00],
+                    ]
+                    .concat(),
+                ),
+                der::encode(0x03, &[0x00, 0x01]),
+            ]
+            .concat(),
+        );
+        let mut tbs = Vec::new();
+        if let Some(version) = version {
+            tbs.extend(der::encode(0xa0, &der::encode(0x02, version)));
+        }
+        tbs.extend(der::encode(0x02, &[0x01]));
+        tbs.extend(&algorithm);
+        tbs.extend(&name);
+        tbs.extend(validity);
+        tbs.extend(&name);
+        tbs.extend(spki);
+        if unique {
+            tbs.extend(der::encode(0x81, &[0x00, 0x01]));
+        }
+        if with_extensions {
+            let basic_constraints = [
+                der::encode(0x06, &der::oid("2.5.29.19")),
+                der::encode(0x01, &[0xff]),
+                der::encode(0x04, &der::encode(0x30, &[])),
+            ]
+            .concat();
+            tbs.extend(der::encode(
+                0xa3,
+                &der::encode(0x30, &der::encode(0x30, &basic_constraints)),
+            ));
+        }
+        der::encode(
+            0x30,
+            &[
+                der::encode(0x30, &tbs),
+                algorithm,
+                der::encode(0x03, &[0x00, 0x01]),
+            ]
+            .concat(),
+        )
+    }
+
+    fn decodes(bytes: &[u8]) -> bool {
+        certificate(&der::read_single(bytes).expect("one TLV")).is_ok()
+    }
+
+    /// RFC 5280 `Version` (H1-FIX2 Y5): v1 is the absent field, v2 and v3 are
+    /// encoded; an explicit v1 is a DEFAULT value encoded (§12.2 1c);
+    /// extensions need v3 and unique identifiers need v2 or v3 (module
+    /// comments); values outside v1..v3 are rejected.
+    #[test]
+    fn certificate_versions() {
+        // v1 (absent).
+        assert!(decodes(&test_certificate(None, false, false)));
+        assert!(!decodes(&test_certificate(None, true, false)));
+        assert!(!decodes(&test_certificate(None, false, true)));
+        // Explicit v1: DEFAULT encoded, with or without other members.
+        assert!(!decodes(&test_certificate(Some(&[0x00]), false, false)));
+        assert!(!decodes(&test_certificate(Some(&[0x00]), false, true)));
+        // v2.
+        assert!(decodes(&test_certificate(Some(&[0x01]), false, false)));
+        assert!(decodes(&test_certificate(Some(&[0x01]), true, false)));
+        assert!(!decodes(&test_certificate(Some(&[0x01]), false, true)));
+        // v3.
+        assert!(decodes(&test_certificate(Some(&[0x02]), false, false)));
+        assert!(decodes(&test_certificate(Some(&[0x02]), true, true)));
+        assert!(decodes(&test_certificate(Some(&[0x02]), false, true)));
+        // Outside the module's version set, and a non-minimal INTEGER.
+        assert!(!decodes(&test_certificate(Some(&[0x03]), false, false)));
+        assert!(!decodes(&test_certificate(Some(&[0xff]), false, false)));
+        assert!(!decodes(&test_certificate(
+            Some(&[0x00, 0x02]),
+            false,
+            true
+        )));
     }
 
     #[test]
