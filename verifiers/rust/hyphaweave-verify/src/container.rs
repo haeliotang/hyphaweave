@@ -325,7 +325,18 @@ fn enumerate_directory(root: &Path) -> Result<Result<Content, EnumerationFailure
                 }
                 PathClass::RecordsExtra => {
                     content.records_extra = true;
-                    if metadata.len() > record_limit() {
+                    // §13: "MUST NOT rely on filesystem-reported sizes"; the
+                    // file is read through a probe bounded by its class limit
+                    // plus one byte (the bytes read count toward the container
+                    // total like every other read), and only the size is kept
+                    // (H1-FIX2B Z2, docs/h1-findings.md F55). Skipped once the
+                    // enumeration has failed, as for the other classes.
+                    if codes.is_empty()
+                        && matches!(
+                            read_bounded(&path, record_limit(), &mut budget)?,
+                            FileData::Oversize
+                        )
+                    {
                         content.records_extra_oversize = true;
                     }
                 }

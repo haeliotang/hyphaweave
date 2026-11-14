@@ -341,3 +341,113 @@ fn misnamed_oversize_record_file_reports_both_listing_violations() {
     fs::remove_dir_all(&target).expect("cleanup");
     assert_eq!(errors(&small), vec![e::MANIFEST_RECORD_EXTRA]);
 }
+
+/// A stored (method 0) zip of `members` in the given order, with the header
+/// fields of `container/zip-valid` (version 2.0, no flags, 2026-11-10 00:00,
+/// mode 0644, no extra fields), so §11.9's structural rules hold.
+fn stored_zip(members: &[(String, Vec<u8>)]) -> Vec<u8> {
+    const DOS_TIME: u16 = 0;
+    const DOS_DATE: u16 = ((2026 - 1980) << 9) | (11 << 5) | 10;
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in members {
+        let offset = u32::try_from(out.len()).expect("offset");
+        let crc = hyphaweave_verify::zip::crc32(data);
+        let size = u32::try_from(data.len()).expect("size");
+        let name_len = u16::try_from(name.len()).expect("name");
+        out.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&DOS_TIME.to_le_bytes());
+        out.extend_from_slice(&DOS_DATE.to_le_bytes());
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&name_len.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        central.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&DOS_TIME.to_le_bytes());
+        central.extend_from_slice(&DOS_DATE.to_le_bytes());
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&name_len.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes());
+        central.extend_from_slice(&0o644_0000u32.to_le_bytes());
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+    }
+    let central_offset = u32::try_from(out.len()).expect("offset");
+    let count = u16::try_from(members.len()).expect("count");
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(
+        &u32::try_from(central.len())
+            .expect("central size")
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(&central_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+/// The members of `container/zip-valid`, plus `extra` (name, bytes), sorted.
+fn zip_valid_with(extra: Option<(String, Vec<u8>)>) -> Vec<u8> {
+    let bytes = fs::read(vectors_root().join("container/zip-valid/container.zip")).expect("zip");
+    let archive = hyphaweave_verify::zip::open(&bytes).expect("zip parses");
+    let mut members: Vec<(String, Vec<u8>)> = archive
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.name.clone(),
+                archive.read(entry, 1 << 20).expect("member"),
+            )
+        })
+        .collect();
+    members.extend(extra);
+    members.sort_by(|left, right| left.0.cmp(&right.0));
+    stored_zip(&members)
+}
+
+/// The zip form of `misnamed_oversize_record_file_reports_both_listing_violations`
+/// (H1-FIX2B Z2): a misnamed `records/` member above `MAX_RECORD_BYTES` reports
+/// `E_JSON_SIZE` beside `E_MANIFEST_RECORD_EXTRA`, judged on the central
+/// directory's declared size (§13: "the zip central directory is inspected
+/// before any entry is decompressed"); within the limit it is only extra.
+#[test]
+fn misnamed_oversize_record_member_in_zip_reports_both_listing_violations() {
+    let name = format!("records/{}.JSON", "D".repeat(64));
+    let control = verify_container(ContainerInput::Zip(zip_valid_with(None)), &keyset_options())
+        .expect("container");
+    assert_eq!(errors(&control), Vec::<&str>::new());
+    let oversize = verify_container(
+        ContainerInput::Zip(zip_valid_with(Some((name.clone(), vec![b' '; 1_048_577])))),
+        &keyset_options(),
+    )
+    .expect("container");
+    assert_eq!(
+        errors(&oversize),
+        vec![e::JSON_SIZE, e::MANIFEST_RECORD_EXTRA]
+    );
+    let small = verify_container(
+        ContainerInput::Zip(zip_valid_with(Some((name, b"{}".to_vec())))),
+        &keyset_options(),
+    )
+    .expect("container");
+    assert_eq!(errors(&small), vec![e::MANIFEST_RECORD_EXTRA]);
+}
