@@ -1488,11 +1488,17 @@ complete.
   and still diverges on the H1-FIX2 head: in that case's declaration
   `org1-bad-pk-human-T0` (whose `public_key` is the malformed `"AAAA"`),
   `body.key` is replaced by the integer `9007199254740991`, the record is
-  re-signed with `human-1` and the container rewritten (file name, manifest
-  entry, manifest signature). H1: `E_KEY_PUBLIC_KEY` on that record; the
-  reference: `E_KIND_BODY_SCHEMA` (and lists the record's signatures). So the
-  divergence is specific to a second defect in `body.key` itself, the member
-  that names the key whose material is malformed.
+  re-signed with both of its signers (`human-1` and `org-1`) and the
+  container rewritten (file name, manifest entry, manifest signature). H1:
+  `E_KEY_PUBLIC_KEY` on that record; the reference: `E_KIND_BODY_SCHEMA` (and
+  lists the record's signatures, both `valid`). So the divergence is specific
+  to a second defect in `body.key` itself, the member that names the key
+  whose material is malformed.
+- **Correction (H1-FIX2B Z4, narrow re-check low-4).** The H1-FIX2 text said
+  "re-signed with `human-1`" only. Re-signed that way, the `org-1` signature
+  keeps its old value and the reference reports `E_SIG_INVALID` instead of
+  `E_KIND_BODY_SCHEMA` (H1 still `E_KEY_PUBLIC_KEY`); the divergence above
+  needs both signatures re-signed.
 
 ### F51 — Reference verifier crashes
 
@@ -1564,6 +1570,15 @@ complete.
   commit `17e78a1` measures misnamed `records/` files too, and the sentence
   now holds (probe
   `misnamed_oversize_record_file_reports_both_listing_violations`).
+  **How it is measured (H1-FIX2B Z2, narrow re-check low-1).** `17e78a1`
+  took the directory form's size from the filesystem
+  (`symlink_metadata().len()`), against §13's "MUST NOT rely on
+  filesystem-reported sizes"; the directory form now reads such a file
+  through a probe bounded by `MAX_RECORD_BYTES` plus one byte (counted toward
+  the container total, as every read is) and keeps only the size. The zip
+  form keeps the central directory's declared size (the member is not
+  decompressed); a zip-form test now covers it
+  (`misnamed_oversize_record_member_in_zip_reports_both_listing_violations`).
   **Classification (H1-FIX2 Y9, review B): Python suspected wrong** (H1-FIX1
   had "spec-ambiguous"). §11.6 item 5 reports an unlisted file as
   `E_MANIFEST_RECORD_EXTRA` without condition; §13 names "an oversized
@@ -1752,6 +1767,27 @@ in H1-FIX2 (the H1-FIX2 gate-5 rerun of the same seed is summarised under
   certificate's `version` is v1 (absent), v2 or v3, with the RFC 5280 module
   constraints on `extensions` and the unique identifiers."
 - **Python black-box agreement.** Not exercised by the committed cases.
+  The H1-FIX2 narrow re-check (low-3) exercised it as a `--tsa-trust` anchor
+  (the same certificate walk as 1e), with `container/l2-valid`'s
+  `tsa.crt.pem` rebuilt in six version shapes. Three of them diverge:
+
+  | anchor | H1 | reference |
+  |---|---|---|
+  | v3 rebuilt unchanged | exit 0, `valid` | exit 0, `valid` |
+  | v1 (version absent) + `extensions` | **exit 2** (anchor rejected) | exit 1, `E_TS_UNTRUSTED` (accepted as an anchor) |
+  | v2 + `extensions` | exit 2 | exit 2 |
+  | v4 + `extensions` | exit 2 | exit 2 |
+  | v1 + `issuerUniqueID` | **exit 2** | exit 1 (accepted) |
+  | v2 + `issuerUniqueID` | exit 1 (accepted) | **exit 2** (appears to reject every v2) |
+
+  H1 follows the RFC 5280 text (§4.1.2.1 "When extensions are used … version
+  MUST be 3", §4.1.2.8 unique identifiers "MUST only appear if the version
+  is 2 or 3", §4.1.2.9 extensions "MUST only appear if the version is 3");
+  the reference looks like it accepts v1 and v3 only and does not check the
+  two module constraints. **Python suspected wrong** on all three rows.
+  **Request to S2:** vectors for v1 + `extensions`, v1 + `issuerUniqueID` and
+  v2 + `issuerUniqueID`, as the signer certificate (1e) and as a
+  `--tsa-trust` anchor, together with the proposed wording above.
 
 ### F63 — Open types inside the signer certificate; `--tsa-trust` strictness (review A L-3)
 
@@ -1862,10 +1898,28 @@ Reported by review A from its re-signed probes; not rebuilt in H1-FIX2.
   gate-5 run of seed 151115 (`grant/chain-depth-9-links`, class `time`, seed
   `1563098227896494338`); fixed in commit `f7e3df9`, pinned by
   `tests/precedence.rs`. Both verdicts were `unverifiable`.
+- **Completed (H1-FIX2B Z1, narrow re-check medium-1).** `f7e3df9` moved
+  step 7 after step 6 but the step-6 walk itself still stopped at the depth
+  bound, so a failure on a link beyond the bound was not seen: with
+  `grant-depth-root` (the tenth grant walked for the note) revoked by
+  `human-1` before the note's `recorded_at`, H1 still reported
+  `E_GRANT_UNRESOLVED` and the reference `E_GRANT_REVOKED`. Step 6 now walks
+  the entire chain ("the cited grant and every ancestor"), stopped only by a
+  cycle; step 7 is decided afterwards. Both call sites (a cited grant, and a
+  `weave.grant` record whose own ancestors are judged at its `recorded_at`)
+  share that walk and are pinned by `tests/precedence.rs`:
+  `grant_chain_validity_covers_links_past_the_depth_bound` (root revoked →
+  `E_GRANT_REVOKED`) and `grant_record_chain_validity_is_judged_before_depth`
+  (a `grant-depth-10` record: alone `E_GRANT_UNRESOLVED`, recorded after
+  every window `E_GRANT_EXPIRED`, root revoked `E_GRANT_REVOKED`). Reverting
+  either call site to the old order, or restoring the bound in the walk,
+  turns them red.
 - **Open point.** Steps 1–5 on links beyond the depth bound are not walked
-  (the walk stops at the bound); whether a step-2 to step-5 failure on a 10th
-  link should outrank step 7 is not said. **Request to S2:** a vector for the
-  expired-and-too-deep case.
+  (the structural walk stops at the bound; step 6 now covers them); whether a
+  step-2 to step-5 failure on a 10th link should outrank step 7 is not said.
+  **Request to S2:** vectors for the expired-and-too-deep case and for a
+  revoked root beyond the bound (the note of `grant/chain-depth-9-links` plus
+  a revocation of `grant-depth-root`), both call sites.
 
 ### F69 — Order questions inside steps (7) and (8) found by the H1-FIX2 fuzzing
 
@@ -1922,6 +1976,22 @@ rotation's own key material counts as declared).
   hook is read only behind the explicit `--test-hooks` switch and then exits 3,
   as §14.7 and ruling R3 require. Review A's runs confirm the hook is inert
   without the switch.
+
+## H1-FIX2B gate results
+
+Recorded 2026-11-15 on branch `h1/rust-verifier`, code at `97f56df`
+(rulings Z1–Z3; the documentation commit that adds this section changes no
+code). The reference verifier ran only as a black box (installed
+non-editable from `git archive origin/main`, `5474cf7`).
+
+| gate | result |
+|---|---|
+| 1. CI rust job, verbatim from the repository root | every step exit 0 (`CARGO_TARGET_DIR` outside the repository, so the crash-fuzz `--binary` follows it and gate 3 gets `--rust-binary`/`--python-cli`): fmt; clippy all-targets; clippy library without test hooks; `cargo test … --workspace` 99 passed, 0 failed, 3 ignored; the two `vectors` runs; `cargo deny check`; `cargo audit` (67 dependencies); crash fuzz 2,000 mutants, 0 failures; gate 3 PASS |
+| 2. vectors | 498/498 main and 202/202 frozen cases match `expected.json` |
+| 3. two-implementation comparison | 700 cases, 663 byte-identical, 37 allow-listed with exactly their (now indexed) fields and vector basis. Red checks: the narrow re-check's probe (the first signature of `key-declared-valid-from` in `key-lifecycle/sign-before-valid-from` turned `invalid` in the Rust report) fails the gate with `not allow-listed: ['records[0].sigs[0].state']`, exit 1, where the H1-FIX2 script passed it; an extra top-level member fails it too |
+| 4. Z1 and Z2 red checks | reverting the cited-grant call site to "depth before validity", the grant-record call site likewise, or restoring the depth bound in the step-6 walk each turns `tests/precedence.rs` red; disabling the zip-form or the directory-form size check turns its probe red |
+| 5. differential fuzzing | `scripts/diff_fuzz.py`, 10 classes × 400, with the d0af4f4 Rust binary run beside the new one on every mutant: seed **151115** 3,695 mutants, 3,296 byte-identical, 89 conclusion differences; seed **20261114** 3,696 mutants, 3,299 byte-identical, 114 conclusion differences. The new Rust report equals the d0af4f4 report, byte for byte and in exit code, on all 7,391 mutants, so the H1-FIX2 classification of every difference carries over: **Rust wrong 0**. Rust: 0 panics, 0 timeouts, exit codes 0 and 1 only. Neither seed builds the Z1 shape (it needs an added record) |
+| 6. other workstreams untouched | `git diff --stat origin/main..h1/rust-verifier -- spec schemas vectors verifiers/python tools` is empty |
 
 ## H1-FIX2 gate results
 
@@ -1995,3 +2065,8 @@ black box, installed non-editable from `git archive origin/main`.
   and the H1-FIX2 differential fuzzing), reclassified F42, F44, F47 and F55,
   made F50's reproduction explicit, corrected F55's H1-FIX1 reproduction
   claim, recorded the Y1 change in F27, and added the H1-FIX2 gate results.
+- **2026-11-15 (H1-FIX2B)** — completed F68 (step 6 walks the whole chain,
+  past the depth bound), recorded how F55's misnamed file is measured,
+  added the three diverging certificate-version shapes to F62, corrected
+  F50's reproduction (both signers re-sign), and added the H1-FIX2B gate
+  results.

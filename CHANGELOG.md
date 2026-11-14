@@ -6,6 +6,29 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1-FIX2B — 2026-11-15 — DRAFT, UNRELEASED
+
+Supplement to revision 2 (decision 2026-11-15 #6, rulings Z1–Z4), after the
+narrow re-check of H1-FIX2.
+
+### Changed
+
+- **Grant chain** (Z1): §5.5.2 step 6 judges the whole chain, including the
+  links beyond the step-7 depth bound (only a cycle stops the walk), for a
+  cited grant and for a `weave.grant` record's own ancestors alike; step 7 is
+  decided afterwards. A revoked or expired root beyond the bound now reports
+  `E_GRANT_REVOKED` or `E_GRANT_EXPIRED` instead of `E_GRANT_UNRESOLVED`
+  (F68).
+- **Bounded reads** (Z2): a misnamed `records/` file of a directory container
+  is sized through a read bounded by `MAX_RECORD_BYTES + 1`, not by the
+  filesystem-reported size (§13); a zip-form test covers the same case.
+- **Gate 3** (Z3): allow-listed field paths keep their array indices
+  (`records[3].sigs[0].state`), and arrays of different lengths are compared
+  element by element, so a regression in another element of an allow-listed
+  array fails the gate.
+- **Findings** (Z4): F62 records the three signer-certificate version shapes
+  on which the two verifiers diverge; F50's reproduction names both signers.
+
 ## H1-FIX2 — 2026-11-15 — DRAFT, UNRELEASED
 
 Revision 2 of the Rust verifier (decision 2026-11-15 #3, rulings Y1–Y10),
