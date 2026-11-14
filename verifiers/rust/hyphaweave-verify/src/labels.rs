@@ -14,6 +14,11 @@
 //! identifier := [A-Za-z0-9][A-Za-z0-9.+-]*
 //! ```
 //!
+//! Parenthesis nesting is bounded by `MAX_LICENCE_NESTING` (§8.7, §13, S3);
+//! the bound is checked before the parser descends, so recursion depth is at
+//! most `MAX_LICENCE_NESTING` levels and a hostile expression cannot overflow
+//! the stack.
+//!
 //! Operators are the uppercase words `AND`, `OR`, `WITH`; identifiers may
 //! contain letters, digits, `.`, `+` and `-` (a trailing `+` is part of the
 //! identifier).
@@ -78,6 +83,7 @@ pub fn is_valid_licence_expression(text: &str) -> bool {
     let mut parser = Parser {
         tokens: &tokens,
         index: 0,
+        depth: 0,
     };
     if parser.parse_or().is_none() {
         return false;
@@ -88,6 +94,8 @@ pub fn is_valid_licence_expression(text: &str) -> bool {
 struct Parser<'a> {
     tokens: &'a [Token<'a>],
     index: usize,
+    /// Number of `(` tokens on the current path.
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -116,8 +124,13 @@ impl Parser<'_> {
     fn parse_simple(&mut self) -> Option<()> {
         match self.peek()? {
             Token::LeftParen => {
+                if self.depth >= crate::limits::MAX_LICENCE_NESTING {
+                    return None;
+                }
                 self.index += 1;
+                self.depth += 1;
                 self.parse_or()?;
+                self.depth -= 1;
                 if self.peek()? != Token::RightParen {
                     return None;
                 }

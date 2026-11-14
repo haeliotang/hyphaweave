@@ -10,9 +10,14 @@
 //! A general-purpose JSON library cannot provide that classification, so this
 //! module implements the parser and the writer itself.
 //!
-//! Byte-level reading of strings is done without a full-input UTF-8
-//! pre-validation so that an earlier duplicate-member violation still wins over
-//! a later invalid UTF-8 sequence, as §1.9 requires.
+//! UTF-8 validity is a whole-input precondition (§1.9): an input that is not
+//! valid UTF-8 is `E_JSON_INVALID` before any per-position classification.
+//!
+//! Nesting depth is bounded by `MAX_JSON_DEPTH` (§13): the depth of every value
+//! is checked before the parser descends into it, so recursion never exceeds
+//! `MAX_JSON_DEPTH` frames and a hostile input cannot overflow the stack (S3).
+//! The writer and `Drop` of [`Value`] only ever see parsed values, so their
+//! recursion is bounded by the same limit.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -37,30 +42,42 @@ impl JsonError {
     }
 }
 
-/// Maximum nesting depth accepted by the parser. WR-CJ bounds document size but
-/// not nesting; this bound keeps the recursive parser from overflowing the
-/// stack on hostile input (a crash is a defect, error code is `E_JSON_INVALID`).
-const MAX_DEPTH: usize = 1024;
+/// `MAX_JSON_DEPTH` (§13): the top-level value is depth 1, every member value
+/// and array element is one level deeper than its container, and a scalar is a
+/// leaf at its own depth. A deeper value is `E_JSON_SIZE` (§1.9, S3).
+const MAX_DEPTH: usize = crate::limits::MAX_JSON_DEPTH;
+
+/// §1.9 preconditions shared by every entry point: the input must be UTF-8
+/// (whole-input precondition, T17/A-L6) and must not start with a BOM.
+fn check_preconditions(bytes: &[u8]) -> Result<(), JsonError> {
+    if let Err(error) = std::str::from_utf8(bytes) {
+        return Err(JsonError::at(e::JSON_INVALID, error.valid_up_to()));
+    }
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        // A byte-order mark is not part of WR-CJ input (§1.2).
+        return Err(JsonError::at(e::JSON_INVALID, 0));
+    }
+    Ok(())
+}
 
 /// Parses a WR-CJ document and requires its top-level value to be an object.
 ///
 /// This is the syntax pass only; canonical byte form is checked by
 /// [`parse_canonical_object`]. Returns the first violation in input byte order.
 pub fn parse_object(bytes: &[u8]) -> Result<Object, JsonError> {
+    check_preconditions(bytes)?;
     let mut parser = Parser {
         bytes,
         pos: 0,
         depth: 0,
     };
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        // A byte-order mark is not part of WR-CJ input (§1.2).
-        return Err(JsonError::at(e::JSON_INVALID, 0));
-    }
     parser.skip_whitespace();
     if parser.peek() != Some(b'{') {
         return Err(JsonError::at(e::JSON_INVALID, parser.pos));
     }
-    let object = parser.parse_object()?;
+    let Value::Object(object) = parser.parse_value()? else {
+        return Err(JsonError::at(e::JSON_INVALID, 0));
+    };
     parser.skip_whitespace();
     if parser.pos != bytes.len() {
         // Trailing non-whitespace content (a second value, a comment, junk).
@@ -74,9 +91,7 @@ pub fn parse_object(bytes: &[u8]) -> Result<Object, JsonError> {
 /// every `weave-record/1` target requires an object and uses
 /// [`parse_object`]/[`parse_canonical_object`].
 pub fn parse_value(bytes: &[u8]) -> Result<Value, JsonError> {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        return Err(JsonError::at(e::JSON_INVALID, 0));
-    }
+    check_preconditions(bytes)?;
     let mut parser = Parser {
         bytes,
         pos: 0,
@@ -246,10 +261,6 @@ impl Parser<'_> {
     }
 
     fn parse_object(&mut self) -> Result<Object, JsonError> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            return Err(self.error(e::JSON_INVALID));
-        }
         debug_assert_eq!(self.peek(), Some(b'{'));
         self.pos += 1;
         let mut object = Object::new();
@@ -257,7 +268,6 @@ impl Parser<'_> {
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            self.depth -= 1;
             return Ok(object);
         }
         loop {
@@ -289,7 +299,6 @@ impl Parser<'_> {
                 }
                 Some(b'}') => {
                     self.pos += 1;
-                    self.depth -= 1;
                     return Ok(object);
                 }
                 _ => return Err(self.error(e::JSON_INVALID)),
@@ -297,14 +306,28 @@ impl Parser<'_> {
         }
     }
 
+    /// Parses one value at depth `self.depth + 1`. The depth bound is checked
+    /// before descending, so recursion is bounded by `MAX_JSON_DEPTH` (S3).
     fn parse_value(&mut self) -> Result<Value, JsonError> {
-        if self.depth >= MAX_DEPTH {
-            return Err(self.error(e::JSON_INVALID));
+        if self.depth + 1 > MAX_DEPTH {
+            // §1.9: a depth violation is `E_JSON_SIZE`, at the position of the
+            // first value that is too deep (scalars included).
+            return Err(self.error(e::JSON_SIZE));
         }
         match self.peek() {
             None => Err(self.error(e::JSON_INVALID)),
-            Some(b'{') => Ok(Value::Object(self.parse_object()?)),
-            Some(b'[') => self.parse_array(),
+            Some(b'{') => {
+                self.depth += 1;
+                let object = self.parse_object();
+                self.depth -= 1;
+                Ok(Value::Object(object?))
+            }
+            Some(b'[') => {
+                self.depth += 1;
+                let array = self.parse_array();
+                self.depth -= 1;
+                array
+            }
             Some(b'"') => Ok(Value::Str(self.parse_string()?)),
             Some(b't') => self.parse_literal(b"true", Value::Bool(true)),
             Some(b'f') => self.parse_literal(b"false", Value::Bool(false)),
@@ -315,17 +338,12 @@ impl Parser<'_> {
     }
 
     fn parse_array(&mut self) -> Result<Value, JsonError> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            return Err(self.error(e::JSON_INVALID));
-        }
         debug_assert_eq!(self.peek(), Some(b'['));
         self.pos += 1;
         let mut items = Vec::new();
         self.skip_whitespace();
         if self.peek() == Some(b']') {
             self.pos += 1;
-            self.depth -= 1;
             return Ok(Value::Array(items));
         }
         loop {
@@ -338,7 +356,6 @@ impl Parser<'_> {
                 }
                 Some(b']') => {
                     self.pos += 1;
-                    self.depth -= 1;
                     return Ok(Value::Array(items));
                 }
                 _ => return Err(self.error(e::JSON_INVALID)),
@@ -405,6 +422,11 @@ impl Parser<'_> {
         }
         let token = std::str::from_utf8(&self.bytes[start..self.pos])
             .map_err(|_| JsonError::at(e::JSON_INVALID, start))?;
+        if token == "-0" {
+            // §1.6/§1.9 (S8④): `-0` is a canonical-form deviation classified at
+            // its number token during the syntax/number pass.
+            return Err(JsonError::at(e::JSON_NOT_CANONICAL, start));
+        }
         // Integer syntax was validated above, so a parse failure can only be
         // overflow: a syntactically valid integer outside the representable
         // range, which is `E_JSON_NUMBER_RANGE`.

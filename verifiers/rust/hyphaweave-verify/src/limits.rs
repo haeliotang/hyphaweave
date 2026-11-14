@@ -15,7 +15,8 @@ pub const MAX_SIGFILE_BYTES: usize = 1_048_576;
 pub const MAX_TIMESTAMP_BYTES: usize = 1_048_576;
 /// `MAX_RECORDS`: `manifest.records` entries.
 pub const MAX_RECORDS: usize = 100_000;
-/// `MAX_CONTAINER_ENTRIES`: all zip entries, or all files in a directory.
+/// `MAX_CONTAINER_ENTRIES`: all zip entries (`readable/**` included), or every
+/// file of a directory container (`manifest.json` included).
 pub const MAX_CONTAINER_ENTRIES: usize = 200_000;
 /// `MAX_CONTAINER_UNCOMPRESSED_BYTES`: total uncompressed bytes (1 GiB).
 pub const MAX_CONTAINER_UNCOMPRESSED_BYTES: u64 = 1_073_741_824;
@@ -31,5 +32,12 @@ pub const MAX_SIGS: usize = 16;
 pub const MAX_HINTS: usize = 8;
 /// `MAX_SIG_VALUE_BYTES`: decoded bytes of a non-ed25519 signature value.
 pub const MAX_SIG_VALUE_BYTES: usize = 2_048;
-/// `MAX_GRANT_CHAIN`: delegated grant chain depth.
+/// `MAX_GRANT_CHAIN`: grant-chain links (§5.5.2) and rotation steps of the
+/// revocation-authority walk (§5.5.4); the bound is inclusive (S10).
 pub const MAX_GRANT_CHAIN: usize = 8;
+/// `MAX_JSON_DEPTH`: JSON value nesting depth (§1.9, §13, S3).
+pub const MAX_JSON_DEPTH: usize = 32;
+/// `MAX_LICENCE_NESTING`: parenthesis nesting of an SPDX expression (§8.7, S3).
+pub const MAX_LICENCE_NESTING: usize = 16;
+/// `MAX_TS_ACCURACY`: total RFC 3161 accuracy in seconds (§12.2 check 13, §13).
+pub const MAX_TS_ACCURACY_SECONDS: i64 = 86_400;
