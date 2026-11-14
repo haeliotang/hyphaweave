@@ -70,8 +70,12 @@ pub mod universal {
     pub const NULL: u64 = 5;
     /// OBJECT IDENTIFIER.
     pub const OID: u64 = 6;
+    /// EXTERNAL (constructed form only, X.690 §8.18).
+    pub const EXTERNAL: u64 = 8;
     /// ENUMERATED.
     pub const ENUMERATED: u64 = 10;
+    /// EMBEDDED PDV (constructed form only, X.690 §8.19).
+    pub const EMBEDDED_PDV: u64 = 11;
     /// UTF8String.
     pub const UTF8_STRING: u64 = 12;
     /// SEQUENCE / SEQUENCE OF.
@@ -82,6 +86,9 @@ pub mod universal {
     pub const UTC_TIME: u64 = 23;
     /// GeneralizedTime.
     pub const GENERALIZED_TIME: u64 = 24;
+    /// CHARACTER STRING, the unrestricted character string type
+    /// (constructed form only, X.690 §8.21.1).
+    pub const CHARACTER_STRING: u64 = 29;
 }
 
 impl Tlv<'_> {
@@ -276,11 +283,14 @@ pub fn check_universal_rules(input: &[u8]) -> Result<(), DerError> {
 }
 
 /// The universal primitive types that DER encodes in the primitive form only.
+/// EXTERNAL (8), EMBEDDED PDV (11) and CHARACTER STRING (29) are the
+/// opposite: X.690 §8.18, §8.19 and §8.21.1 define them as constructed
+/// encodings, so `check_primitive_content` rejects their primitive form.
 fn is_primitive_only(number: u64) -> bool {
     matches!(
         number,
-        1..=6 | 9 | 10 | 12 | 13 | 14 | 18..=30 | 31..=36
-    ) || number == 7
+        1..=7 | 9 | 10 | 12 | 13 | 14 | 18..=28 | 30..=36
+    )
 }
 
 fn check_universal_tlv(tlv: &Tlv<'_>) -> Result<(), DerError> {
@@ -310,6 +320,11 @@ fn check_universal_tlv(tlv: &Tlv<'_>) -> Result<(), DerError> {
 pub fn check_primitive_content(number: u64, content: &[u8]) -> Result<(), DerError> {
     match number {
         0 => Err(DerError("universal tag 0")),
+        // X.690 §8.18.1, §8.19.1, §8.21.1: these types are encoded as the
+        // constructed encoding of their associated SEQUENCE type.
+        universal::EXTERNAL | universal::EMBEDDED_PDV | universal::CHARACTER_STRING => {
+            Err(DerError("primitive form of a constructed-only type"))
+        }
         universal::BOOLEAN => {
             if content == [0x00] || content == [0xFF] {
                 Ok(())
@@ -522,6 +537,38 @@ mod tests {
         // SET OF in DER order.
         assert!(check_universal_rules(&[0x31, 0x06, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01]).is_err());
         assert!(check_universal_rules(&[0x31, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02]).is_ok());
+    }
+
+    /// X.690 §8.18, §8.19, §8.21.1: EXTERNAL (8), EMBEDDED PDV (11) and
+    /// CHARACTER STRING (29) only have a constructed encoding (H1-FIX2 Y4).
+    #[test]
+    fn constructed_only_universal_types() {
+        // Constructed form, holding one INTEGER: framing only, accepted.
+        for tag in [0x28, 0x2B, 0x3D] {
+            assert!(
+                check_universal_rules(&[tag, 0x03, 0x02, 0x01, 0x01]).is_ok(),
+                "constructed {tag:#04x}"
+            );
+        }
+        // Primitive form: a DER violation.
+        for tag in [0x08, 0x0B, 0x1D] {
+            assert!(
+                check_universal_rules(&[tag, 0x01, 0x00]).is_err(),
+                "primitive {tag:#04x}"
+            );
+            assert!(
+                check_universal_rules(&[tag, 0x00]).is_err(),
+                "empty primitive {tag:#04x}"
+            );
+        }
+        // Inside an open-type position (a SEQUENCE component), same answer.
+        assert!(check_universal_rules(&[0x30, 0x05, 0x3D, 0x03, 0x02, 0x01, 0x01]).is_ok());
+        assert!(check_universal_rules(&[0x30, 0x03, 0x1D, 0x01, 0x00]).is_err());
+        // The neighbouring restricted string types stay primitive-only.
+        assert!(check_universal_rules(&[0x1E, 0x02, 0x00, 0x41]).is_ok());
+        assert!(check_universal_rules(&[0x3E, 0x04, 0x1E, 0x02, 0x00, 0x41]).is_err());
+        assert!(check_universal_rules(&[0x1C, 0x04, 0x00, 0x00, 0x00, 0x41]).is_ok());
+        assert!(check_universal_rules(&[0x3C, 0x00]).is_err());
     }
 
     #[test]
