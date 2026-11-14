@@ -584,10 +584,25 @@ where
 // `weave.key.declared` — §9.1, kind page.
 // ---------------------------------------------------------------------------
 
-fn parse_key_declared(envelope: &Envelope) -> Result<KeyDeclaredBody, Code> {
+/// The schema (structural) part of a `weave.key.declared` body (§9.1 member
+/// table, kind page): member presence and grammar only. `public_key` presence
+/// and encoding is checked first and reports `E_KEY_PUBLIC_KEY` (T1, V5).
+///
+/// A declaration that passes this function is *structurally valid* in the
+/// sense of §5.3/§14.1 (given a valid envelope and `sigs`): it takes part in
+/// governing-class determination even when a semantic rule then fails.
+///
+/// # Errors
+/// `E_KEY_PUBLIC_KEY` or `E_KIND_BODY_SCHEMA`.
+pub fn parse_key_declared_schema(envelope: &Envelope) -> Result<KeyDeclaredBody, Code> {
     const CODE: Code = e::KIND_BODY_SCHEMA;
     let body = &envelope.body;
-    // Body member table (§9.1): known-member grammar is check (6).
+    // §9.1 rule 1 / §14.5 exception (S8③, T1): a missing or malformed
+    // `public_key` is decided before the generic body-schema code.
+    let public_key = match body.get("public_key") {
+        Some(value) => decode_public_key(value).map_err(|()| e::KEY_PUBLIC_KEY)?,
+        None => return Err(e::KEY_PUBLIC_KEY),
+    };
     let algorithm = string_member(body, "algorithm", CODE)?;
     if algorithm != "ed25519" {
         return Err(CODE);
@@ -597,36 +612,10 @@ fn parse_key_declared(envelope: &Envelope) -> Result<KeyDeclaredBody, Code> {
     if !KEY_TYPES.contains(&key_type.as_str()) {
         return Err(CODE);
     }
-    let public_key =
-        decode_public_key(required(body, "public_key", CODE)?).map_err(|()| e::KEY_PUBLIC_KEY)?;
     let owner = optional_key_id(body, "owner", CODE)?.map(str::to_owned);
     let valid_from = optional_timestamp(body, "valid_from", CODE)?;
     let valid_until = optional_timestamp(body, "valid_until", CODE)?;
     optional_string(body, "note", CODE)?;
-    // §9.1 rule 1: `body.key` must be the §2.5 derivation of `public_key`.
-    if digest::derive_key_id(&public_key) != key {
-        return Err(e::KEY_ID_MISMATCH);
-    }
-    // §9.1 rule 3, presence part: automated classes need an owner. Resolving
-    // the owner's declaration and its class needs the context (§5.3).
-    if is_automated_class(&key_type) && owner.is_none() {
-        return Err(e::KEY_OWNER_MISSING);
-    }
-    // §9.1 rule 5: a claimed window must not be inverted.
-    if valid_from
-        .zip(valid_until)
-        .is_some_and(|(from, until)| from > until)
-    {
-        return Err(e::KEY_VALIDITY);
-    }
-    // Kind page envelope requirements: a key self-description must describe
-    // its own actor key and class.
-    if envelope.actor.key != key {
-        return Err(e::ENV_ACTOR);
-    }
-    if envelope.actor.actor_type != key_type {
-        return Err(e::ACTOR_KEY_TYPE_MISMATCH);
-    }
     Ok(KeyDeclaredBody {
         key,
         key_type,
@@ -635,6 +624,77 @@ fn parse_key_declared(envelope: &Envelope) -> Result<KeyDeclaredBody, Code> {
         valid_from,
         valid_until,
     })
+}
+
+fn parse_key_declared(envelope: &Envelope) -> Result<KeyDeclaredBody, Code> {
+    let declared = parse_key_declared_schema(envelope)?;
+    // §9.1 rule 1: `body.key` must be the §2.5 derivation of `public_key`.
+    if digest::derive_key_id(&declared.public_key) != declared.key {
+        return Err(e::KEY_ID_MISMATCH);
+    }
+    // §9.1 rule 3, presence part: automated classes need an owner. Resolving
+    // the owner's declaration and its class needs the context (§5.3).
+    if is_automated_class(&declared.key_type) && declared.owner.is_none() {
+        return Err(e::KEY_OWNER_MISSING);
+    }
+    // §9.1 rule 5: a claimed window must not be inverted.
+    if declared
+        .valid_from
+        .zip(declared.valid_until)
+        .is_some_and(|(from, until)| from > until)
+    {
+        return Err(e::KEY_VALIDITY);
+    }
+    // Kind page envelope requirements: a key self-description must describe
+    // its own actor key and class.
+    if envelope.actor.key != declared.key {
+        return Err(e::ENV_ACTOR);
+    }
+    if envelope.actor.actor_type != declared.key_type {
+        return Err(e::ACTOR_KEY_TYPE_MISMATCH);
+    }
+    Ok(declared)
+}
+
+/// The key-material checks that §14.5 places **before** signature
+/// verification (the two documented ordering exceptions):
+///
+/// - `weave.key.declared`: a missing or malformed `body.public_key` is
+///   `E_KEY_PUBLIC_KEY`, decided before `E_KIND_BODY_SCHEMA` and before any
+///   trust judgement (§9.1 rule 1, T1);
+/// - `weave.key.rotated`: the structural validation of `old_public_key` /
+///   `new_public_key` — strict base64url of exactly 32 bytes, and a present key
+///   matching its key id — is `E_KEY_ROTATION_KEYS` and wins over an `E_SIG_*`
+///   outcome (§9.2 rule 2, T13). A *missing* `new_public_key` is a body-schema
+///   defect reported at check (6).
+#[must_use]
+pub fn key_material_structural_error(envelope: &Envelope) -> Option<Code> {
+    let body = &envelope.body;
+    match envelope.kind.as_str() {
+        "weave.key.declared" => match body.get("public_key") {
+            Some(value) => decode_public_key(value).err().map(|()| e::KEY_PUBLIC_KEY),
+            None => Some(e::KEY_PUBLIC_KEY),
+        },
+        "weave.key.rotated" => {
+            for (id_member, key_member) in
+                [("new_key", "new_public_key"), ("old_key", "old_public_key")]
+            {
+                let Some(value) = body.get(key_member) else {
+                    continue;
+                };
+                let Ok(bytes) = decode_public_key(value) else {
+                    return Some(e::KEY_ROTATION_KEYS);
+                };
+                if let Some(id) = body.get_str(id_member) {
+                    if digest::is_valid_key_id(id) && digest::derive_key_id(&bytes) != id {
+                        return Some(e::KEY_ROTATION_KEYS);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

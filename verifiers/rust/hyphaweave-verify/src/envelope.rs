@@ -538,10 +538,10 @@ fn parse_origin(value: &Value) -> Result<Origin, Code> {
 }
 
 fn parse_actor(value: &Value, key_lifecycle_exempt: bool) -> Result<Actor, Code> {
+    // §4 / §4.2 (S8⑥, F2/F3): inside the closed actor object the order is
+    // required members, then closedness, then per-member grammar in the §4.2
+    // table order; a missing required member reports its member code.
     let object = value.as_object().ok_or(e::ENV_ACTOR)?;
-    // The actor object is closed. An undefined member is E_ENV_ACTOR (the
-    // actor-specific "structurally invalid" code), while a defined member that
-    // is forbidden for this actor type is also E_ENV_ACTOR (§4.2).
     const MEMBERS: [&str; 6] = [
         "type",
         "key",
@@ -550,9 +550,34 @@ fn parse_actor(value: &Value, key_lifecycle_exempt: bool) -> Result<Actor, Code>
         "grant",
         "idempotency_key",
     ];
+    // (1) Presence. `type` and `key` are always required; the four agent-only
+    // members are required iff `type == "agent"` (outside the key-lifecycle
+    // exception).
+    if !object.contains("type") {
+        return Err(e::ENV_ACTOR_TYPE);
+    }
+    if !object.contains("key") {
+        return Err(e::ENV_ACTOR_KEY);
+    }
+    let is_agent = object.get_str("type") == Some("agent");
+    if is_agent && !key_lifecycle_exempt {
+        for (member, code) in [
+            ("model", e::ENV_ACTOR_MODEL_MISSING),
+            ("on_behalf_of", e::ENV_ACTOR_ON_BEHALF_MISSING),
+            ("grant", e::ENV_ACTOR_GRANT_MISSING),
+            ("idempotency_key", e::ENV_ACTOR_IDEMPOTENCY_MISSING),
+        ] {
+            if !object.contains(member) {
+                return Err(code);
+            }
+        }
+    }
+    // (2) Closedness: an undefined member is E_ENV_ACTOR.
     if object.first_unknown(MEMBERS).is_some() {
         return Err(e::ENV_ACTOR);
     }
+    // (3) Grammar in table order. A defined member that is forbidden for the
+    // actor type is judged at its own table position (E_ENV_ACTOR).
     let actor_type = object.get_str("type").ok_or(e::ENV_ACTOR_TYPE)?;
     if !matches!(
         actor_type,
@@ -563,15 +588,6 @@ fn parse_actor(value: &Value, key_lifecycle_exempt: bool) -> Result<Actor, Code>
     let key = object.get_str("key").ok_or(e::ENV_ACTOR_KEY)?;
     if !digest::is_valid_key_id(key) {
         return Err(e::ENV_ACTOR_KEY);
-    }
-    let is_agent = actor_type == "agent";
-    if !is_agent {
-        // §4.2: the four agent-only members MUST be absent for non-agent actors.
-        for forbidden in ["model", "on_behalf_of", "grant", "idempotency_key"] {
-            if object.contains(forbidden) {
-                return Err(e::ENV_ACTOR);
-            }
-        }
     }
     let model = match object.get("model") {
         Some(value) => {
@@ -604,6 +620,7 @@ fn parse_actor(value: &Value, key_lifecycle_exempt: bool) -> Result<Actor, Code>
             if !is_agent {
                 return Err(e::ENV_ACTOR);
             }
+            // §4.2: the reference grammar is owned by §6.1 (E_ENV_REFS).
             Some(parse_ref_object(value).map_err(|_| e::ENV_REFS)?)
         }
         None => None,
@@ -621,20 +638,6 @@ fn parse_actor(value: &Value, key_lifecycle_exempt: bool) -> Result<Actor, Code>
         }
         None => None,
     };
-    if is_agent && !key_lifecycle_exempt {
-        if model.is_none() {
-            return Err(e::ENV_ACTOR_MODEL_MISSING);
-        }
-        if on_behalf_of.is_none() {
-            return Err(e::ENV_ACTOR_ON_BEHALF_MISSING);
-        }
-        if grant.is_none() {
-            return Err(e::ENV_ACTOR_GRANT_MISSING);
-        }
-        if idempotency_key.is_none() {
-            return Err(e::ENV_ACTOR_IDEMPOTENCY_MISSING);
-        }
-    }
     Ok(Actor {
         actor_type: actor_type.to_owned(),
         key: key.to_owned(),
@@ -712,7 +715,9 @@ pub fn parse_ref_object(value: &Value) -> Result<RefObject, Code> {
     if object.first_unknown(MEMBERS).is_some() {
         return Err(e::ENV_REFS);
     }
-    let origin = parse_origin(object.get("origin").ok_or(e::ENV_REFS)?)?;
+    // §4 (F2): a defect anywhere inside a reference object, its nested
+    // `origin` included, is the reference code.
+    let origin = parse_origin(object.get("origin").ok_or(e::ENV_REFS)?).map_err(|_| e::ENV_REFS)?;
     let id = object.get_str("id").ok_or(e::ENV_REFS)?;
     if id.chars().count() > ID_SCALAR_LIMIT || !patterns::is_envelope_id(id) {
         return Err(e::ENV_REFS);
@@ -766,7 +771,9 @@ fn parse_labels(value: &Value) -> Result<Labels, Code> {
     }
     let sensitivity = match object.get("sensitivity") {
         Some(value) => {
-            let text = value.as_str().ok_or(e::ENV_LABELS)?;
+            // §8.1: any value other than the four ranks (a wrong JSON type
+            // included) is E_ENV_SENSITIVITY.
+            let text = value.as_str().ok_or(e::ENV_SENSITIVITY)?;
             if !matches!(text, "public" | "internal" | "personal" | "local-only") {
                 return Err(e::ENV_SENSITIVITY);
             }
@@ -815,14 +822,16 @@ pub struct SigEntry {
 ///
 /// Returns the parsed entries, or `Ok(None)` when the member is absent. The
 /// per-record signing obligation itself is a later check (§4.4) and is
-/// evaluated by the record pipeline. The array, when present, must contain 1–16
+/// evaluated by the record pipeline. The array, when present, must contain 0–16
 /// entries sorted strictly ascending by key.
 pub fn parse_sigs(object: &Object) -> Result<Option<Vec<SigEntry>>, Code> {
     let Some(value) = object.get("sigs") else {
         return Ok(None);
     };
     let array = value.as_array().ok_or(e::ENV_SIGS)?;
-    if array.is_empty() || array.len() > limits::MAX_SIGS {
+    // §4.3 (S7①, T5): 0–16 entries; an empty array is structurally valid and
+    // the signing obligation is §4.4's (E_SIG_REQUIRED).
+    if array.len() > limits::MAX_SIGS {
         return Err(e::ENV_SIGS);
     }
     let mut entries: Vec<SigEntry> = Vec::with_capacity(array.len());
