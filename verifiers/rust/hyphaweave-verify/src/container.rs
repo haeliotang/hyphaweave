@@ -90,6 +90,9 @@ struct Content {
     /// A file in `blobs/` outside `blobs/sha256/<64 hex>` (§11.1: reported by
     /// the blob stage, step (9)).
     blobs_extra: bool,
+    /// A `blobs/` directory is present (§11.7: it requires a non-empty
+    /// `manifest.blobs`), even when it holds no file.
+    blobs_dir_present: bool,
     readable_present: bool,
 }
 
@@ -289,6 +292,9 @@ fn enumerate_directory(root: &Path) -> Result<Result<Content, EnumerationFailure
                     ("", "signatures" | "previous" | "records" | "blobs") | ("blobs", "sha256")
                 );
                 if allowed {
+                    if relative == "blobs" {
+                        content.blobs_dir_present = true;
+                    }
                     subdirectories.push((path, relative));
                 } else {
                     codes.insert(e::CONTAINER_ENTRY);
@@ -414,6 +420,9 @@ fn enumerate_files(files: &BTreeMap<String, Vec<u8>>) -> Result<Content, Enumera
             continue;
         }
         entries += 1;
+        if path.starts_with("blobs/") {
+            content.blobs_dir_present = true;
+        }
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         match class {
             PathClass::Unknown => {
@@ -500,6 +509,9 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
         });
     }
     for entry in &archive.entries {
+        if entry.name.starts_with("blobs/") {
+            content.blobs_dir_present = true;
+        }
         if entry.is_directory {
             continue;
         }
@@ -739,7 +751,7 @@ pub fn verify_container(
     }
 
     // (6) Level and chain completeness.
-    match check_level_and_chain(&manifest) {
+    match check_level_and_chain(&manifest, &attestation.timestamps) {
         Ok(()) => {
             run.container.chain = Some(ChainReport {
                 status: match manifest.level {
@@ -804,6 +816,7 @@ pub fn verify_container(
         manifest.blobs.as_deref(),
         &content.blobs,
         content.blobs_extra,
+        content.blobs_dir_present,
     );
     let blob_errors: Vec<Code> = blob_errors
         .into_iter()
@@ -1588,19 +1601,9 @@ fn parse_attestation(
         }
     };
 
-    // Level-specific completeness (§11.3, §12.5).
-    match manifest.level {
-        Level::L0 | Level::L1 => {
-            if !timestamps.is_empty() && !options.skipped(e::MANIFEST_LEVEL) {
-                return Err(e::MANIFEST_LEVEL);
-            }
-        }
-        Level::L2 => {
-            if timestamps.is_empty() && !options.skipped(e::MANIFEST_L2_NO_TIMESTAMP) {
-                return Err(e::MANIFEST_L2_NO_TIMESTAMP);
-            }
-        }
-    }
+    // The level-specific timestamp completeness rules belong to step (6)
+    // (`check_level_and_chain`).
+    let _ = manifest;
 
     // The receipt-file inventory checks (§11.3: every listed `.tsr` exists and
     // hashes to its listed digest; every `.tsr` file is listed) belong to the
@@ -1677,7 +1680,10 @@ fn parse_timestamp_entry(value: &Value) -> Option<AttestationTimestamp> {
 // ---------------------------------------------------------------------------
 
 /// §14.5 (6): level/chain structure completeness.
-fn check_level_and_chain(manifest: &Manifest) -> Result<(), Code> {
+fn check_level_and_chain(
+    manifest: &Manifest,
+    timestamps: &[AttestationTimestamp],
+) -> Result<(), Code> {
     match manifest.level {
         Level::L0 => {
             // L0 is the level without an internal chain claim (§11.2).
@@ -1699,7 +1705,12 @@ fn check_level_and_chain(manifest: &Manifest) -> Result<(), Code> {
             }
         }
     }
-    Ok(())
+    // §11.3, §12.5: `timestamps` is empty for L0/L1 and non-empty for L2.
+    match manifest.level {
+        Level::L0 | Level::L1 if !timestamps.is_empty() => Err(e::MANIFEST_LEVEL),
+        Level::L2 if timestamps.is_empty() => Err(e::MANIFEST_L2_NO_TIMESTAMP),
+        _ => Ok(()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1823,9 +1834,14 @@ fn check_blobs(
     listed: Option<&[BlobEntry]>,
     files: &BTreeMap<String, BlobData>,
     extra: bool,
+    directory_present: bool,
 ) -> Vec<Code> {
     let mut errors = Vec::new();
     if extra {
+        errors.push(e::MANIFEST_BLOB);
+    }
+    // §11.7: a present `blobs/` directory requires a non-empty listing.
+    if directory_present && listed.is_none_or(<[BlobEntry]>::is_empty) {
         errors.push(e::MANIFEST_BLOB);
     }
     match listed {

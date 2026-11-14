@@ -588,7 +588,8 @@ impl World {
             {
                 facts.labels_present = true;
             }
-            if record.erased().is_some() {
+            // A `weave.erased` record, well formed or not (F37).
+            if record.kind() == "weave.erased" {
                 facts.placeholder_present = true;
                 if !self.container_context {
                     facts.standalone_placeholder = true;
@@ -995,15 +996,27 @@ impl World {
         })
     }
 
-    /// Public-key material of a key from any structurally valid declaration
-    /// whose key id is the derivation of its public key (trust not required).
+    /// Public-key material of a key from any `weave.key.declared` record of the
+    /// context whose envelope and `sigs` format passed and whose `body.key`/`body.public_key`
+    /// are well formed and consistent (the key id is the derivation of the
+    /// public key). Trust and the other body rules are not required: §11.3 and
+    /// §4.4 ask whether a key "resolves through a declaration", which is a
+    /// question of available material (F41).
     pub(crate) fn declared_material(&self, key: &str) -> Option<[u8; 32]> {
         self.slots.iter().find_map(|slot| {
-            let body = slot.decl_schema.as_ref()?;
-            if body.key != key || digest::derive_key_id(&body.public_key) != key {
+            let record = slot.record.as_ref()?;
+            let envelope = record.envelope()?;
+            if envelope.kind != "weave.key.declared" || envelope.body.get_str("key") != Some(key) {
                 return None;
             }
-            <[u8; 32]>::try_from(body.public_key.as_slice()).ok()
+            // The record's own structure (envelope and `sigs` format) passed.
+            envelope::parse_sigs(&record.object).ok()?;
+            let text = envelope.body.get_str("public_key")?;
+            let bytes = crate::b64::decode_exact(text, 32).ok()?;
+            if digest::derive_key_id(&bytes) != key {
+                return None;
+            }
+            <[u8; 32]>::try_from(bytes.as_slice()).ok()
         })
     }
 
@@ -1167,13 +1180,13 @@ impl World {
         if let Some(bytes) = check.self_material {
             if let Ok(public_key) = <[u8; 32]>::try_from(bytes) {
                 let class = self.key_class(key_id);
+                // §9.1 rule 5 / §9.4 apply to every signature made by the key,
+                // a declaration's own self-signature included (F38).
+                let window = self.governing_window(key_id);
                 return Some(SignatureMaterial {
                     public_key,
                     class,
-                    // The record supplying its own key (a declaration's
-                    // self-signature, a rotation's explicit material) is not
-                    // judged against the declared window of that key (F38).
-                    window: None,
+                    window,
                     source: MaterialSource::SelfRecord,
                     // Material supplied by the record under verification is not
                     // "context" material for the §14.9 TOFU predicate (pinned by

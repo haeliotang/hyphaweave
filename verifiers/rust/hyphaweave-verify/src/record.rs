@@ -721,9 +721,12 @@ fn check_kind_semantics(
                 let Some(revoke) = grant.revoke.as_ref() else {
                     return Err(e::GRANT_SCHEMA);
                 };
-                let target = match world.identity_match(&revoke.revokes) {
-                    Some(target) => target,
-                    None => return Err(e::GRANT_REVOKE_REF),
+                // §5.5.4: the reference MUST resolve (§6.3 `found`: present,
+                // matching digest, valid) to an authorising weave.grant (F53).
+                let resolution = world.resolve(&revoke.revokes);
+                let target = match (resolution.state, resolution.target_slot) {
+                    ("found", Some(target)) => target,
+                    _ => return Err(e::GRANT_REVOKE_REF),
                 };
                 if world.record_of(target).map(RecordFile::kind) != Some("weave.grant") {
                     return Err(e::GRANT_REVOKE_REF);

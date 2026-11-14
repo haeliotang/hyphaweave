@@ -9,9 +9,9 @@
 //! check and is performed by [`parse_sigs`].
 //!
 //! A `weave.erased` placeholder is a special shape rather than a normal
-//! envelope (§4.5, kind page): every structural violation of the placeholder is
-//! `E_KIND_BODY_SCHEMA`, except that a wrong `format` keeps `E_ENV_FORMAT` and
-//! the shared `origin`/`id` members keep their envelope codes.
+//! envelope (§4.5, kind page): every structural violation of the placeholder,
+//! its `origin` and `id` included, is `E_KIND_BODY_SCHEMA`; only a wrong
+//! `format` keeps `E_ENV_FORMAT`.
 
 use crate::b64;
 use crate::digest;
@@ -482,11 +482,15 @@ fn parse_placeholder(object: &Object) -> Result<ErasedPlaceholder, Code> {
     if object.first_unknown(PLACEHOLDER_MEMBERS).is_some() {
         return Err(e::KIND_BODY_SCHEMA);
     }
-    let origin = parse_origin(object.get("origin").ok_or(e::ENV_ORIGIN)?)?;
-    let id_value = object.get("id").ok_or(e::ENV_ID)?;
-    let id_text = id_value.as_str().ok_or(e::ENV_ID)?;
+    // §4.5: every structural violation of the placeholder, its `origin` and
+    // `id` included, is E_KIND_BODY_SCHEMA (the members have the envelope
+    // grammar, but the placeholder is not a normal envelope; F43).
+    let origin = parse_origin(object.get("origin").ok_or(e::KIND_BODY_SCHEMA)?)
+        .map_err(|_| e::KIND_BODY_SCHEMA)?;
+    let id_value = object.get("id").ok_or(e::KIND_BODY_SCHEMA)?;
+    let id_text = id_value.as_str().ok_or(e::KIND_BODY_SCHEMA)?;
     if !patterns::is_envelope_id(id_text) {
-        return Err(e::ENV_ID);
+        return Err(e::KIND_BODY_SCHEMA);
     }
     if object.get_str("kind") != Some("weave.erased") {
         return Err(e::KIND_BODY_SCHEMA);
