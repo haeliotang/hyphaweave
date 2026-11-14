@@ -75,6 +75,54 @@ pub fn decode_range(text: &str, min: usize, max: usize) -> Result<Vec<u8>, Decod
     }
 }
 
+/// Decodes standard-alphabet base64 with `=` padding (RFC 4648 §4), as used
+/// inside PEM blocks of the `--tsa-trust` operator input (§12.3). Whitespace
+/// must already be removed.
+///
+/// Returns `None` for any character outside the alphabet, a length that is
+/// not a multiple of 4, misplaced padding or non-zero pad bits.
+#[must_use]
+pub fn decode_standard_padded(text: &str) -> Option<Vec<u8>> {
+    let bytes = text.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let value = |byte: u8| -> Option<u32> {
+        match byte {
+            b'A'..=b'Z' => Some(u32::from(byte - b'A')),
+            b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    let chunks = bytes.chunks(4).count();
+    for (index, chunk) in bytes.chunks(4).enumerate() {
+        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
+        if padding > 2 || (padding > 0 && index + 1 != chunks) {
+            return None;
+        }
+        let mut accumulator = 0u32;
+        for &byte in &chunk[..4 - padding] {
+            accumulator = (accumulator << 6) | value(byte)?;
+        }
+        accumulator <<= 6 * padding as u32;
+        let produced = [
+            (accumulator >> 16) as u8,
+            (accumulator >> 8) as u8,
+            accumulator as u8,
+        ];
+        let keep = 3 - padding;
+        if produced[keep..].iter().any(|byte| *byte != 0) {
+            return None;
+        }
+        out.extend_from_slice(&produced[..keep]);
+    }
+    Some(out)
+}
+
 /// Encodes bytes as unpadded base64url (used by tests and by report metadata;
 /// the verifier itself never re-encodes signed material).
 #[must_use]
