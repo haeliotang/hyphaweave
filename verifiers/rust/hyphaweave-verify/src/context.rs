@@ -302,13 +302,32 @@ pub(crate) struct UsableGrant {
     pub spec: kinds::GrantSpec,
 }
 
+/// Full record identity: `(origin.project, origin.instance, id)`.
+///
+/// §6.3 and §10.3 match records and placeholders by "the same `origin` and
+/// `id`"; `origin` is the `{project, instance}` pair (§4.1). Dropping the
+/// instance would let a record or placeholder of another instance stand in for
+/// the referenced one, and a placeholder's own `origin` is not covered by the
+/// digest it carries.
+pub(crate) type IdentityKey = (String, String, String);
+
+fn identity_key(origin: &envelope::Origin, id: &str) -> IdentityKey {
+    (
+        origin.project.clone(),
+        origin.instance.clone(),
+        id.to_owned(),
+    )
+}
+
 /// One target's verification context.
 pub struct World {
     pub(crate) slots: Vec<Slot>,
     pub(crate) target_count: usize,
     pub(crate) options: VerifyOptions,
     pub(crate) evidence: ChainEvidence,
-    pub(crate) by_origin_id: HashMap<(String, String), Vec<usize>>,
+    /// Context slots by full record identity `(origin.project, origin.instance,
+    /// id)` (§4.1, §6.3, §10.3: "the same `origin` and `id`").
+    pub(crate) by_origin_id: HashMap<IdentityKey, Vec<usize>>,
     pub(crate) trusted: BTreeMap<String, TrustedKey>,
     /// Keyset declarations' class/window pins by key id (§5.3, T4).
     pub(crate) keyset_pins: BTreeMap<String, KeysetPin>,
@@ -431,13 +450,8 @@ impl World {
                 .and_then(|record| record.invalid().map(|partial| partial.code));
             if let Some(record) = &self.slots[index].record {
                 if let Some(origin) = record.origin() {
-                    let (project, instance) = (origin.project.clone(), origin.instance.clone());
-                    let id = record.id().to_owned();
-                    self.by_origin_id
-                        .entry((project.clone(), id))
-                        .or_default()
-                        .push(index);
-                    let _ = instance;
+                    let key = identity_key(origin, record.id());
+                    self.by_origin_id.entry(key).or_default().push(index);
                 }
             }
             self.slots[index].digest = Some(digest_string);
@@ -1392,7 +1406,7 @@ impl World {
         if parsed.algorithm != "sha256" {
             return Resolution::simple(UNVERIFIABLE);
         }
-        let lookup = (reference.origin.project.clone(), reference.id.clone());
+        let lookup = identity_key(&reference.origin, &reference.id);
         let Some(indices) = self.by_origin_id.get(&lookup).cloned() else {
             return Resolution::simple(MISSING);
         };
@@ -1451,7 +1465,7 @@ impl World {
     /// target's own verdict. Used by the erasure cross-checks, which concern the
     /// recorded identity rather than the record's individual verdict.
     pub(crate) fn identity_match(&self, reference: &RefObject) -> Option<usize> {
-        let lookup = (reference.origin.project.clone(), reference.id.clone());
+        let lookup = identity_key(&reference.origin, &reference.id);
         let indices = self.by_origin_id.get(&lookup)?;
         for &index in indices {
             let Some(record) = self.slots[index].record.as_ref() else {
@@ -1966,7 +1980,7 @@ impl World {
                 continue;
             };
             let erased_ref = body.erased.clone();
-            let lookup = (erased_ref.origin.project.clone(), erased_ref.id.clone());
+            let lookup = identity_key(&erased_ref.origin, &erased_ref.id);
             let candidates = self.by_origin_id.get(&lookup).cloned().unwrap_or_default();
             let mut matching_placeholder: Option<usize> = None;
             for candidate in candidates {
@@ -2022,7 +2036,7 @@ impl World {
             // Rule 1 + 3: a live record with the same identity and the original
             // digest contradicts the placeholder; two placeholders for the same
             // target are also a contradiction.
-            let lookup = (placeholder.origin.project.clone(), placeholder.id.clone());
+            let lookup = identity_key(&placeholder.origin, &placeholder.id);
             let candidates = self.by_origin_id.get(&lookup).cloned().unwrap_or_default();
             let mut placeholder_count = 0usize;
             for candidate in candidates {
