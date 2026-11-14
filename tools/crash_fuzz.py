@@ -5,8 +5,10 @@
 
 The gate feeds the verifier a fixed batch of malformed inputs and requires that
 **every** mutant is rejected *cleanly*: the process exit code must be one of
-``0``/``1``/``2``/``3`` and nothing may be written to stderr that contains a
-``Traceback``. An escaping exception is a crash and makes the gate fail; a crash
+``0``/``1``/``2`` and nothing may be written to stderr that contains a
+``Traceback``. Exit code ``3`` belongs to the §14.7 test-only check hook, which
+is only active behind ``--test-hooks``; the gate never passes that switch, so a
+``3`` here is a failure (S2, the same accepted set as the Rust crash-fuzz gate). An escaping exception is a crash and makes the gate fail; a crash
 is never an accepted rejection (spec S1-FIX3 V2d).
 
 Input classes (each ``--count`` >= 300 deterministic mutants that actually change
@@ -35,7 +37,7 @@ exist, so the batch stays deterministic.
 Every mutant is executed through the **real CLI process** (``python -m
 hyphaweave_verify.cli``): the gate observes the process exit code and stderr, so
 a crash is exactly what a user would see. The criterion is the S1-FIX3 V8 rule:
-the exit code must be in ``{0, 1, 2, 3}`` and stderr must not contain
+the exit code must be in ``{0, 1, 2}`` and stderr must not contain
 ``Traceback``; anything else (including a timeout or a signal) is a crash and
 fails the gate. A crash is never an accepted rejection.
 
@@ -77,7 +79,9 @@ TMP_ROOT = REPO / ".tmp-work" / "crash-fuzz"
 
 DEFAULT_SEED = 20261111
 DEFAULT_COUNT = 300
-ACCEPTED_EXIT_CODES = (0, 1, 2, 3)
+#: §14.8: 0 valid, 1 invalid/unverifiable, 2 usage error. 3 is the §14.7 test-only
+#: hook, reachable only with ``--test-hooks``, which this gate never passes (S2).
+ACCEPTED_EXIT_CODES = (0, 1, 2)
 
 #: Fixed base cases per class (all committed conformance vectors).
 BASE_CASES: dict[str, list[str]] = {
@@ -923,7 +927,7 @@ def main(argv: list[str] | None = None) -> int:
         % (
             total,
             sum(1 for item in results if item["crash"]),
-            sum(1 for item in results if not item["crash"] and item["rc"] in (1, 2, 3)),
+            sum(1 for item in results if not item["crash"] and item["rc"] in (1, 2)),
             sum(1 for item in results if not item["crash"] and item["rc"] == 0),
         )
     )
