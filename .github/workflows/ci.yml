@@ -80,3 +80,72 @@ jobs:
 
       - name: REUSE lint
         run: reuse lint
+
+  rust:
+    name: H1 Rust verifier (stable toolchain)
+    runs-on: ubuntu-latest
+    # CI uses the default CARGO_HOME and target directory. The .tmp-work/cargo-home
+    # setting described in verifiers/rust/ARCHITECTURE.md is a local sandbox
+    # workaround only and must not be used here.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust formatting
+        # `--all`: verifiers/rust/Cargo.toml is a virtual workspace, and
+        # `cargo fmt --manifest-path` without it finds no target (H1-FIX1 R1).
+        run: cargo fmt --manifest-path verifiers/rust/Cargo.toml --all --check
+
+      - name: Rust lints (clippy, warnings are errors)
+        run: cargo clippy --manifest-path verifiers/rust/Cargo.toml --all-targets -- -D warnings
+
+      - name: Rust library without the test-hooks feature (lints, warnings are errors)
+        run: cargo clippy --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify --lib -- -D warnings
+
+      - name: Rust unit and integration tests
+        run: cargo test --manifest-path verifiers/rust/Cargo.toml --workspace
+
+      - name: Rust verifier over the conformance vectors
+        run: |
+          cargo run --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify-rs -- vectors vectors
+          cargo run --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify-rs -- vectors vectors/frozen/v0.1-candidate
+
+      - name: Install supply-chain tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+
+      - name: Licence, bans, sources and advisory policy
+        working-directory: verifiers/rust
+        run: cargo deny check
+
+      - name: RustSec advisory audit
+        working-directory: verifiers/rust
+        # No ignored advisories (H1-FIX1 R2: rsa 0.10, p256/p384 0.14).
+        run: cargo audit
+
+      - name: Rust crash-fuzz gate (deterministic mutants, no panic, no timeout, exit codes 0-2)
+        run: |
+          cargo build --release --manifest-path verifiers/rust/Cargo.toml -p hyphaweave-verify-rs
+          python3 verifiers/rust/scripts/crash_fuzz.py --binary verifiers/rust/target/release/hyphaweave-verify-rs --count 2000 --jobs 2
+
+      - name: Set up Python for the reference verifier (gate 3 black box)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install reference verifier (used as a black box only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"
+
+      - name: Two-implementation report comparison (gate 3)
+        # Runs only after the Rust verifier passed the vector steps above; the
+        # script re-checks that precondition and compares every case's report
+        # bytes after normalizing the §14.6 verifier identity object.
+        run: python verifiers/rust/scripts/compare_reports.py --include-frozen

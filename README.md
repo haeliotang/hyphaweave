@@ -30,13 +30,15 @@ Read this before using anything in this repository:
   projects are actually performed, v0.1 is not valid. H0 produces the
   specification, schemas, vectors and the Python verifier; it does not perform
   the round trips.
-- **One implementation on this branch, a second one not yet caught up.** The
-  `main` branch carries **one** implementation: the Python reference verifier in
-  this repository. A second, independent implementation (the Rust verifier,
-  milestone H1) exists on a separate branch; it was written from an earlier text
-  and has **not yet** been brought up to the current revision (the S1 rounds
-  described below). Until it passes the current vectors, this repository does
-  **not** claim two conforming implementations.
+- **Two implementations: the Python reference verifier and the Rust verifier;
+  the Rust verifier has caught up with revision 3.** The Python reference
+  verifier lives in `verifiers/python/`; the second, independent implementation
+  (milestone H1, `verifiers/rust/`) was written from the specification and the
+  conformance vectors only, and its revision H1-FIX1 implements revision 3 of
+  the specification and the S1 rounds that followed it: it passes every current
+  vector and the candidate regression set. The revised Rust verifier has not
+  itself been re-reviewed yet, and passing the same vectors is necessary but not
+  sufficient evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
   J1/J2 acceptance cases and on a second implementation that conforms to the

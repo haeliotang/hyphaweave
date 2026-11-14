@@ -6,6 +6,177 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1-FIX2B — 2026-11-15 — DRAFT, UNRELEASED
+
+Supplement to revision 2 (decision 2026-11-15 #6, rulings Z1–Z4), after the
+narrow re-check of H1-FIX2.
+
+### Changed
+
+- **Grant chain** (Z1): §5.5.2 step 6 judges the whole chain, including the
+  links beyond the step-7 depth bound (only a cycle stops the walk), for a
+  cited grant and for a `weave.grant` record's own ancestors alike; step 7 is
+  decided afterwards. A revoked or expired root beyond the bound now reports
+  `E_GRANT_REVOKED` or `E_GRANT_EXPIRED` instead of `E_GRANT_UNRESOLVED`
+  (F68).
+- **Bounded reads** (Z2): a misnamed `records/` file of a directory container
+  is sized through a read bounded by `MAX_RECORD_BYTES + 1`, not by the
+  filesystem-reported size (§13); a zip-form test covers the same case.
+- **Gate 3** (Z3): allow-listed field paths keep their array indices
+  (`records[3].sigs[0].state`), and arrays of different lengths are compared
+  element by element, so a regression in another element of an allow-listed
+  array fails the gate.
+- **Findings** (Z4): F62 records the three signer-certificate version shapes
+  on which the two verifiers diverge; F50's reproduction names both signers.
+
+## H1-FIX2 — 2026-11-15 — DRAFT, UNRELEASED
+
+Revision 2 of the Rust verifier (decision 2026-11-15 #3, rulings Y1–Y10),
+after the two re-reviews of H1-FIX1.
+
+### Changed
+
+- **Record identity** (Y1): references, erasure placeholders and the §10.3
+  cross-checks are matched by the full `(origin.project, origin.instance, id)`
+  identity. A cross-instance reference is now `missing` (§6.3), a placeholder
+  of another instance no longer satisfies §10.3 rule 1, and placeholders of two
+  instances no longer contradict each other.
+- **Strict DER** (Y4): EXTERNAL, EMBEDDED PDV and CHARACTER STRING are
+  constructed-only (X.690 §8.18, §8.19, §8.21.1); their primitive form is a
+  check-1 violation.
+- **Signer certificate version** (Y5): v1 (absent), v2 and v3 per the RFC 5280
+  module; extensions require v3 and unique identifiers v2 or v3.
+- **Fixes from the H1-FIX2 differential fuzzing**: a misnamed `records/`
+  file above `MAX_RECORD_BYTES` now reports `E_JSON_SIZE` with
+  `E_MANIFEST_RECORD_EXTRA` (F55); a delegated grant chain is judged for
+  validity (§5.5.2 step 6) before its depth bound (step 7) (F68).
+- **Crash-fuzz gate** (Y6): `scripts/crash_fuzz.py` never enables the test
+  hooks, so only exit codes 0–2 pass; an exit 3 now fails the gate.
+- **Gate 3** (Y10): each known-difference entry names the report fields that
+  may differ and the comparison script's own reading of `expected.json`
+  (`vector_basis`); a further field difference, a listed field that no longer
+  differs, a different basis, or a classification inconsistent with the basis
+  fails the gate.
+- **Tests** (Y1, Y2): `tests/identity.rs` (three identity cases through
+  `verify_container`), `tests/l2_probes.rs` (the `Extension.critical`
+  DEFAULT row and the chain-head `renews` rule, with a re-signed receipt) and
+  `tests/precedence.rs` (F68).
+- **Findings** (Y3, Y8, Y9): `docs/h1-findings.md` F57–F69 and the
+  reclassification of F42, F44, F47 and F55.
+
+## H1-FIX1 — 2026-11-14 — DRAFT, UNRELEASED
+
+Revision 1 of the Rust verifier (decision 2026-11-11 #2, rulings R1–R7, and the
+parts of S1–S16 that fall to Rust). It brings `verifiers/rust/` up to
+specification revision 3 and the S1 rounds that followed it (S1-FIX1 to
+S1-FIX5, X6, X7). The Rust verifier was still written from the specification
+and the vectors only; the Python verifier is run only as a black box.
+
+### Changed
+
+- **Specification revision 3 implemented**: governing key class and keyset
+  pins (`E_KEY_CLASS_CONFLICT`), order-independent revocations including keyset
+  records, revocation validity, grant own-window and depth rules, JSON and SPDX
+  nesting limits, the closed `L_*` limitation identifiers, the §14.6 report
+  byte rule and field shapes, the nullable input identity, the container stop
+  rules (W5), the `--previous` link verified in the target context, and the
+  timestamp check order (W6).
+- **RFC 3161 check 1** is a strict DER check written from X.690 and the module
+  definitions (`src/der.rs`, `src/timestamp.rs`); the `cms`, `x509-cert`,
+  `der`, `spki` and `const-oid` crates are no longer direct dependencies.
+  `der`, `spki` and `const-oid` are still used transitively through `rsa` and
+  `ecdsa`, in check 10 only (decoding the signer's public key and an ECDSA
+  signature value); no check-1 decision depends on them.
+- **Zip form**: the archive structure is parsed in the §11.9 order, ZIP64 is
+  accepted, prefix/comment/trailing bytes are rejected, members are
+  decompressed lazily under a cap and `readable/` is never decompressed.
+- **Bounded reads**: directory files through probes bounded by their class
+  limit, blobs hashed while streaming, record targets read to at most
+  `MAX_RECORD_BYTES + 1` bytes; operator inputs are `lstat`-checked and bounded.
+- **Test hook** (R3, S13): `VerifyOptions::skip_checks` exists only with the
+  `test-hooks` cargo feature; the CLI reads the hook only behind `--test-hooks`
+  and exits 3 when checks were disabled.
+- **Dependencies** (R2): `rsa` 0.10, `p256`/`p384` 0.14, MSRV 1.87; `cargo audit`
+  and `cargo deny` run without ignored advisories.
+- **CI** (R1): `cargo fmt --manifest-path verifiers/rust/Cargo.toml --all
+  --check`; a standing Rust crash-fuzz step (`scripts/crash_fuzz.py`).
+- **Tests**: survivor probes in the default `cargo test` (R4), a 64 KiB-stack
+  nesting test (R6); `scripts/diff_fuzz.py` for differential fuzzing.
+- **Findings** (R7): `docs/h1-findings.md` records the status of F1–F17 after
+  revision 3, the review items missing from the H1 hand-off and the new
+  ambiguities found while implementing revision 3.
+
+## H1 — 2026-11-11 — DRAFT, UNRELEASED
+
+Milestone H1 adds a **second, independent verifier** for `weave-record/1`,
+written in Rust from the specification (`spec/`) and the conformance vectors
+(`vectors/`) only. **H1 has not been externally reviewed.** The format itself is
+still a draft: v0.1 has **not** passed the J1/J2 round-trip acceptance cases, the
+regression set remains the candidate `vectors/frozen/v0.1-candidate/`, and no
+compatibility promise is made. The H0 sections below describe the earlier H0
+hand-off snapshot; in particular, the H0 statement that only one implementation
+exists is superseded by this milestone.
+
+### Added
+
+- **Independent Rust verifier** (`verifiers/rust/`): the `hyphaweave-verify`
+  0.1.0 library and the `hyphaweave-verify-rs` command line, implementing the
+  record envelope, references, labels and consent, key lifecycle and grants,
+  erasure, the L0/L1/L2 container format (including the RFC 3161 timestamp
+  profile of §12) and the deterministic §14.6 report. The CLI exposes `record`,
+  `container` and `vectors` with `--keys`, `--tsa-trust`, `--previous` and
+  `--json`; reports are byte-stable and never depend on the clock, locale, time
+  zone, environment or filesystem order. The implementation was written from
+  the specification and the vectors only; the Python reference verifier is used
+  only as a black box by the gate-3 comparison, never read as source.
+- **Tests**: unit tests in the modules, integration tests for the external
+  vectors (RFC 8032, Wycheproof, RFC 8785-derived canonical JSON), the §14.6
+  report bytes and the committed L2 timestamp cases, plus the conformance runner
+  over `vectors/` and the candidate regression set.
+- **Supply chain** (`verifiers/rust/deny.toml`): a real `cargo deny check`
+  policy with a narrow licence allow list (Apache-2.0, MIT, BSD-3-Clause,
+  Unicode-3.0, the identifiers the locked tree requires), crates.io as the only
+  allowed source, and active bans/advisories checks. Two timing-side-channel
+  advisories that concern secret-key operations (RSA private-key operations and
+  constant-time big-integer arithmetic on secrets) are ignored with a written
+  reason because the verifier only performs public-key signature verification
+  and handles no secret key material.
+  `REUSE.toml` now covers `verifiers/rust/**`, and
+  `verifiers/rust/README.md` documents the build, CLI, library API, crate
+  layout, dependency table and tests.
+- **CI**: a new `rust` job in `.github/workflows/ci.yml` runs `cargo fmt
+  --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, the
+  verifier over `vectors` and `vectors/frozen/v0.1-candidate`, `cargo deny
+  check`, `cargo audit`, and the gate-3 report-comparison script. The existing
+  Python `gates` job is unchanged. This entry does not claim that any CI run
+  passed.
+- **Gate 3 tooling** (`verifiers/rust/scripts/`): `compare_reports.py` runs both
+  implementations over every case with the case's reproduced arguments,
+  normalizes only the §14.6 `verifier` identity object and compares the
+  remaining report bytes. It runs the Python black box only after the Rust
+  verifier passes every vector (the H1 ordering rule), and it fails on any
+  difference not explicitly listed in the empty-by-default
+  `gate3_known_differences.json`.
+- **Findings** (`docs/h1-findings.md`): the specification ambiguities and
+  implementation-shape choices that an independent implementation must resolve,
+  with the chapter, the possible readings, the chosen reading and reason,
+  whether a committed vector pins it, the Python black-box agreement (filled in
+  after gate 3) and a proposed wording change. This is the single place for H1
+  findings.
+
+### Explicitly not yet true in H1
+
+- **H1 has not been externally reviewed.** Passing the shared vectors is
+  necessary but not sufficient evidence that the format is implementable from
+  the specification alone; an outside review of the Rust verifier and of the
+  findings still has to happen.
+- **Gate results are not asserted here.** The Rust gates and the gate-3 report
+  comparison are run on the integrated tree; this changelog claims none of them
+  passed until their results are recorded in the H1 hand-off.
+- **The format is not accepted and not stable.** J1/J2 acceptance and the
+  official freeze of the regression set are still pending, exactly as the H0
+  sections below state.
+
 ## 0.1.0 — 2026-11-10 — DRAFT, UNRELEASED
 
 Milestone H0: the `weave-record/1` v0.1 specification set, JSON Schemas,
