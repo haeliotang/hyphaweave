@@ -1,601 +1,720 @@
 // SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 // SPDX-License-Identifier: Apache-2.0
 
-//! Minimal pure-Rust zip reader for the zip form of a container (§11.9).
+//! Pure-Rust zip structure parser for the zip form of a container (§11.9).
 //!
-//! Only the stored (0) and deflated (8) methods are supported. Entry names are
-//! returned exactly as stored; *path* safety and the remaining layout checks
-//! stay in [`crate::container`] so that the deterministic split between
-//! `E_CONTAINER_ENTRY` and `E_CONTAINER_ZIP` is made in one place.
+//! The verdict must not depend on a standard-library zip reader (T6), so the
+//! archive structure is parsed here from the bytes, in the fixed order of the
+//! §11.9 checks (W7):
 //!
-//! The reader itself classifies the entry-level defects that cannot survive
-//! materialisation: a duplicate entry name or a symbolic-link entry is
-//! `E_CONTAINER_ENTRY` (§11.9), while a corrupt archive, an encrypted entry, an
-//! unsupported compression method, zip64 metadata, a mismatched name/size/CRC or
-//! an out-of-bounds structure is `E_CONTAINER_ZIP`. The uncompressed total and
-//! the entry count are enforced while streaming, against the §13 limits
-//! (`E_CONTAINER_SIZE`), and decompression is bounded by the size the central
-//! directory declares so a hostile archive can never inflate past the budget.
+//! 1. locate the end-of-central-directory record (it ends exactly at the last
+//!    input byte; a ZIP64 sentinel requires a locator pointing at a well-formed
+//!    ZIP64 EOCD that ends exactly at the locator; the central directory lies
+//!    inside the file; a non-empty archive starts with a local header at
+//!    offset 0) — `E_CONTAINER_ZIP`;
+//! 2. parse the central directory (framing, ZIP64 extended information, a
+//!    decodable name, records filling the declared size exactly and matching
+//!    the EOCD entry count) — `E_CONTAINER_ZIP`;
+//! 3. the §13 limits: entry count (all entries) and the sum of the declared
+//!    uncompressed sizes (`readable/**` and directory entries excluded) —
+//!    `E_CONTAINER_SIZE`, and nothing later is checked;
+//! 4. every remaining structural rule: archive comment, single volume, EOCD
+//!    and ZIP64 consistency, per-entry version needed, disk start, method,
+//!    encryption and entry classes, local headers and data descriptors against
+//!    the central directory, and the byte coverage — `E_CONTAINER_ZIP`.
+//!
+//! ZIP64 archives are accepted (S5). Entry names, symbolic links and duplicate
+//! names are judged by the container layer afterwards (`E_CONTAINER_ENTRY`).
+//! Member content is decompressed lazily and only on request, under a bounded
+//! output cap; `readable/**` members are never decompressed or CRC-checked
+//! (§11.8). A decompression failure is reported to the caller, never a crash.
 
-use std::collections::BTreeMap;
-
-use miniz_oxide::inflate::decompress_to_vec_with_limit;
+use miniz_oxide::inflate::stream::{inflate, InflateState};
+use miniz_oxide::{DataFormat, MZFlush, MZStatus};
 
 use crate::error_codes::{e, Code};
 use crate::limits;
 
-/// End of central directory record signature.
 const EOCD_SIGNATURE: u32 = 0x0605_4b50;
-/// Zip64 end of central directory locator signature (unsupported).
 const ZIP64_LOCATOR_SIGNATURE: u32 = 0x0706_4b50;
-/// Zip64 end of central directory record signature (unsupported).
 const ZIP64_EOCD_SIGNATURE: u32 = 0x0606_4b50;
-/// Central directory file header signature.
 const CENTRAL_SIGNATURE: u32 = 0x0201_4b50;
-/// Local file header signature.
 const LOCAL_SIGNATURE: u32 = 0x0403_4b50;
-
-/// Size of the fixed end-of-central-directory record (without the comment).
+const DESCRIPTOR_SIGNATURE: u32 = 0x0807_4b50;
 const EOCD_FIXED: usize = 22;
-/// Maximum length of the archive comment (a `u16`).
-const MAX_COMMENT: usize = 65_535;
-/// Size of the fixed central directory file header (without name/extra/comment).
+const ZIP64_LOCATOR_SIZE: usize = 20;
+const ZIP64_EOCD_FIXED: usize = 56;
 const CENTRAL_FIXED: usize = 46;
-/// Size of the fixed local file header (without name/extra).
 const LOCAL_FIXED: usize = 30;
+const MAX_COMMENT: usize = 65_535;
+const ZIP64_EXTRA_ID: u16 = 0x0001;
 
-/// Reads a zip-form container into `relative path -> bytes`.
-///
-/// # Errors
-/// Returns `E_CONTAINER_ENTRY` for a duplicate entry name or a symbolic-link
-/// entry, `E_CONTAINER_ZIP` for an archive that is corrupt or unsupported
-/// (encryption, unknown method, zip64, out-of-bounds structure, CRC/size
-/// mismatch), and `E_CONTAINER_SIZE` when the entry count or uncompressed total
-/// exceeds the §13 limits.
-pub fn read_zip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, Code> {
-    let eocd = find_eocd(bytes)?;
-    let disk_number = u16_at(bytes, eocd + 4).ok_or(e::CONTAINER_ZIP)?;
-    let cd_disk = u16_at(bytes, eocd + 6).ok_or(e::CONTAINER_ZIP)?;
-    let entries_this_disk = u16_at(bytes, eocd + 8).ok_or(e::CONTAINER_ZIP)?;
-    let entries_total = u16_at(bytes, eocd + 10).ok_or(e::CONTAINER_ZIP)?;
-    let cd_size = u32_at(bytes, eocd + 12).ok_or(e::CONTAINER_ZIP)?;
-    let cd_offset = u32_at(bytes, eocd + 16).ok_or(e::CONTAINER_ZIP)?;
-
-    // Only single-disk archives are supported, and zip64 (which changes every
-    // offset/size field to a wider encoding) is rejected as unreadable here.
-    if disk_number != 0 || cd_disk != 0 {
-        return Err(e::CONTAINER_ZIP);
-    }
-    if entries_total == 0xFFFF
-        || cd_size == 0xFFFF_FFFF
-        || cd_offset == 0xFFFF_FFFF
-        || (eocd >= 20 && u32_at(bytes, eocd - 20) == Some(ZIP64_LOCATOR_SIGNATURE))
-        || u32_at(bytes, 0) == Some(ZIP64_EOCD_SIGNATURE)
-    {
-        return Err(e::CONTAINER_ZIP);
-    }
-    if entries_total != entries_this_disk {
-        return Err(e::CONTAINER_ZIP);
-    }
-    let entries_total = usize::from(entries_total);
-    if entries_total > limits::MAX_CONTAINER_ENTRIES {
-        return Err(e::CONTAINER_SIZE);
-    }
-    let cd_offset = usize::try_from(cd_offset).map_err(|_| e::CONTAINER_ZIP)?;
-    let cd_size = usize::try_from(cd_size).map_err(|_| e::CONTAINER_ZIP)?;
-    let cd_end = cd_offset.checked_add(cd_size).ok_or(e::CONTAINER_ZIP)?;
-    if cd_end > eocd || cd_end > bytes.len() {
-        return Err(e::CONTAINER_ZIP);
-    }
-
-    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    let mut total_uncompressed: u64 = 0;
-    let mut position = cd_offset;
-    for _ in 0..entries_total {
-        let header = slice(bytes, position, CENTRAL_FIXED).ok_or(e::CONTAINER_ZIP)?;
-        if u32_at(header, 0) != Some(CENTRAL_SIGNATURE) {
-            return Err(e::CONTAINER_ZIP);
-        }
-        let version_made_by = u16_at(header, 4).ok_or(e::CONTAINER_ZIP)?;
-        let flags = u16_at(header, 8).ok_or(e::CONTAINER_ZIP)?;
-        let method = u16_at(header, 10).ok_or(e::CONTAINER_ZIP)?;
-        let crc = u32_at(header, 16).ok_or(e::CONTAINER_ZIP)?;
-        let compressed_size = u32_at(header, 20).ok_or(e::CONTAINER_ZIP)?;
-        let uncompressed_size = u32_at(header, 24).ok_or(e::CONTAINER_ZIP)?;
-        let name_length = usize::from(u16_at(header, 28).ok_or(e::CONTAINER_ZIP)?);
-        let extra_length = usize::from(u16_at(header, 30).ok_or(e::CONTAINER_ZIP)?);
-        let comment_length = usize::from(u16_at(header, 32).ok_or(e::CONTAINER_ZIP)?);
-        let start_disk = u16_at(header, 34).ok_or(e::CONTAINER_ZIP)?;
-        let external_attributes = u32_at(header, 38).ok_or(e::CONTAINER_ZIP)?;
-        let local_offset = u32_at(header, 42).ok_or(e::CONTAINER_ZIP)?;
-
-        if start_disk != 0 {
-            return Err(e::CONTAINER_ZIP);
-        }
-        // §11.9: encrypted entries are E_CONTAINER_ZIP (flag bit 0).
-        if flags & 0x0001 != 0 {
-            return Err(e::CONTAINER_ZIP);
-        }
-        // §11.9: entries may be stored or deflated; anything else is unsupported.
-        if method != 0 && method != 8 {
-            return Err(e::CONTAINER_ZIP);
-        }
-        if compressed_size == 0xFFFF_FFFF
-            || uncompressed_size == 0xFFFF_FFFF
-            || local_offset == 0xFFFF_FFFF
-        {
-            return Err(e::CONTAINER_ZIP);
-        }
-        let variable_length = name_length
-            .checked_add(extra_length)
-            .and_then(|value| value.checked_add(comment_length))
-            .ok_or(e::CONTAINER_ZIP)?;
-        let record_end = position
-            .checked_add(CENTRAL_FIXED)
-            .and_then(|value| value.checked_add(variable_length))
-            .ok_or(e::CONTAINER_ZIP)?;
-        let name_bytes =
-            slice(bytes, position + CENTRAL_FIXED, name_length).ok_or(e::CONTAINER_ZIP)?;
-        if record_end > cd_end {
-            return Err(e::CONTAINER_ZIP);
-        }
-
-        // Unix-made entries carrying the symbolic-link file type are rejected
-        // during entry enumeration (§11.9).
-        let host_system = version_made_by >> 8;
-        let unix_mode = external_attributes >> 16;
-        let is_unix = host_system == 3;
-        let is_symlink = is_unix && unix_mode & 0xF000 == 0xA000;
-        let is_directory = name_bytes.last() == Some(&b'/')
-            || (host_system == 0 && (external_attributes & 0x10) != 0);
-        position = record_end;
-        if is_directory {
-            // §11.9: directory entries are ignored.
-            continue;
-        }
-        if is_symlink {
-            return Err(e::CONTAINER_ENTRY);
-        }
-        let name = std::str::from_utf8(name_bytes).map_err(|_| e::CONTAINER_ENTRY)?;
-        if name.is_empty() {
-            return Err(e::CONTAINER_ENTRY);
-        }
-        // Duplicate entry names are an entry-safety violation (§11.9), and a
-        // map cannot represent them faithfully.
-        if files.contains_key(name) {
-            return Err(e::CONTAINER_ENTRY);
-        }
-
-        let actual = read_entry_data(
-            bytes,
-            local_offset,
-            name,
-            method,
-            compressed_size,
-            uncompressed_size,
-            &mut total_uncompressed,
-        )?;
-        if crc32(&actual) != crc {
-            return Err(e::CONTAINER_ZIP);
-        }
-        files.insert(name.to_owned(), actual);
-    }
-    // The central directory must be walked exactly once; slack bytes indicate a
-    // structure the reader did not understand.
-    if position != cd_end {
-        return Err(e::CONTAINER_ZIP);
-    }
-    Ok(files)
+/// One central-directory entry after phases 1–4.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZipEntry {
+    /// The decoded entry name.
+    pub name: String,
+    /// True for a directory entry (name ending `/`, or the DOS directory
+    /// attribute) with zero data; ignored by the layout (§11.9 rule 4).
+    pub is_directory: bool,
+    /// True for a Unix symbolic-link entry.
+    pub is_symlink: bool,
+    /// Compression method (0 stored, 8 deflated).
+    pub method: u16,
+    /// CRC-32 from the central directory.
+    pub crc32: u32,
+    /// Declared compressed size.
+    pub compressed_size: u64,
+    /// Declared uncompressed size.
+    pub uncompressed_size: u64,
+    /// Offset of the entry data in the archive.
+    data_start: usize,
 }
 
-/// Reads and decompresses one entry, enforcing the §13 uncompressed budget.
-fn read_entry_data(
-    bytes: &[u8],
-    local_offset: u32,
-    cd_name: &str,
+/// A parsed archive whose structure passed phases 1–4.
+#[derive(Debug)]
+pub struct ZipArchive<'a> {
+    bytes: &'a [u8],
+    /// Every central-directory entry, in central-directory order.
+    pub entries: Vec<ZipEntry>,
+}
+
+/// Why a member could not be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemberError {
+    /// The declared uncompressed size exceeds the caller's cap; nothing was
+    /// decompressed.
+    TooLarge,
+    /// The member's data is corrupt: a DEFLATE failure, a size that contradicts
+    /// the declaration, or a CRC-32 mismatch (§11.9 V1).
+    Corrupt,
+}
+
+/// A central-directory record before the remaining rules of phase 4.
+struct CentralRecord {
+    name_bytes: Vec<u8>,
+    name: String,
+    version_needed: u16,
+    flags: u16,
     method: u16,
-    compressed_size: u32,
-    uncompressed_size: u32,
-    total_uncompressed: &mut u64,
-) -> Result<Vec<u8>, Code> {
-    let local_offset = usize::try_from(local_offset).map_err(|_| e::CONTAINER_ZIP)?;
-    let header = slice(bytes, local_offset, LOCAL_FIXED).ok_or(e::CONTAINER_ZIP)?;
-    if u32_at(header, 0) != Some(LOCAL_SIGNATURE) {
-        return Err(e::CONTAINER_ZIP);
-    }
-    let flags = u16_at(header, 6).ok_or(e::CONTAINER_ZIP)?;
-    if flags & 0x0001 != 0 {
-        return Err(e::CONTAINER_ZIP);
-    }
-    let local_method = u16_at(header, 8).ok_or(e::CONTAINER_ZIP)?;
-    if local_method != method {
-        return Err(e::CONTAINER_ZIP);
-    }
-    let name_length = usize::from(u16_at(header, 26).ok_or(e::CONTAINER_ZIP)?);
-    let extra_length = usize::from(u16_at(header, 28).ok_or(e::CONTAINER_ZIP)?);
-    let local_name =
-        slice(bytes, local_offset + LOCAL_FIXED, name_length).ok_or(e::CONTAINER_ZIP)?;
-    if local_name != cd_name.as_bytes() {
-        return Err(e::CONTAINER_ZIP);
-    }
-    let data_start = local_offset
-        .checked_add(LOCAL_FIXED)
-        .and_then(|value| value.checked_add(name_length))
-        .and_then(|value| value.checked_add(extra_length))
-        .ok_or(e::CONTAINER_ZIP)?;
-    let compressed_size = usize::try_from(compressed_size).map_err(|_| e::CONTAINER_ZIP)?;
-    let data_end = data_start
-        .checked_add(compressed_size)
-        .ok_or(e::CONTAINER_ZIP)?;
-    let data = bytes.get(data_start..data_end).ok_or(e::CONTAINER_ZIP)?;
-
-    let declared = u64::from(uncompressed_size);
-    let remaining = limits::MAX_CONTAINER_UNCOMPRESSED_BYTES
-        .checked_sub(*total_uncompressed)
-        .ok_or(e::CONTAINER_SIZE)?;
-    if declared > remaining {
-        // The archive itself declares an output larger than the §13 budget;
-        // this is a size-limit violation, not a corruption.
-        return Err(e::CONTAINER_SIZE);
-    }
-
-    let actual = if method == 0 {
-        // Stored: the two sizes must agree, and the bytes are the output.
-        if declared != u64::try_from(compressed_size).map_err(|_| e::CONTAINER_ZIP)? {
-            return Err(e::CONTAINER_ZIP);
-        }
-        data.to_vec()
-    } else {
-        // Deflated: bound the output by the declared size; a stream that wants
-        // to produce more is corrupt (or a bomb) and is rejected without ever
-        // materialising more than the declaration allows.
-        let limit = usize::try_from(declared).map_err(|_| e::CONTAINER_SIZE)?;
-        decompress_to_vec_with_limit(data, limit).map_err(|_| e::CONTAINER_ZIP)?
-    };
-    if u64::try_from(actual.len()).unwrap_or(u64::MAX) != declared {
-        return Err(e::CONTAINER_ZIP);
-    }
-    *total_uncompressed = total_uncompressed.saturating_add(declared);
-    if *total_uncompressed > limits::MAX_CONTAINER_UNCOMPRESSED_BYTES {
-        return Err(e::CONTAINER_SIZE);
-    }
-    Ok(actual)
+    crc32: u32,
+    compressed_size: u64,
+    uncompressed_size: u64,
+    disk_start: u32,
+    local_offset: u64,
+    external_attributes: u32,
+    version_made_by: u16,
+    zip64: bool,
 }
 
-/// Finds the end-of-central-directory record, validating the optional comment.
-fn find_eocd(bytes: &[u8]) -> Result<usize, Code> {
+fn slice(bytes: &[u8], offset: usize, length: usize) -> Option<&[u8]> {
+    bytes.get(offset..offset.checked_add(length)?)
+}
+
+fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
+    let chunk = slice(bytes, offset, 2)?;
+    Some(u16::from_le_bytes([chunk[0], chunk[1]]))
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    let chunk = slice(bytes, offset, 4)?;
+    Some(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+}
+
+fn u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
+    let chunk = slice(bytes, offset, 8)?;
+    let mut array = [0u8; 8];
+    array.copy_from_slice(chunk);
+    Some(u64::from_le_bytes(array))
+}
+
+fn to_usize(value: u64) -> Result<usize, Code> {
+    usize::try_from(value).map_err(|_| e::CONTAINER_ZIP)
+}
+
+/// The EOCD and optional ZIP64 records located in phase 1.
+struct EndRecords {
+    eocd: usize,
+    disk_number: u16,
+    cd_disk: u16,
+    entries_this_disk: u16,
+    entries_total: u16,
+    cd_size32: u32,
+    cd_offset32: u32,
+    comment_length: usize,
+    zip64: Option<Zip64End>,
+    /// Where the central directory must end: the ZIP64 EOCD record when
+    /// present, otherwise the EOCD.
+    cd_end_bound: usize,
+    cd_offset: usize,
+    cd_size: usize,
+    total_entries: u64,
+}
+
+struct Zip64End {
+    disk_number: u32,
+    cd_disk: u32,
+    entries_this_disk: u64,
+    entries_total: u64,
+    locator_disk: u32,
+    locator_total_disks: u32,
+}
+
+/// Phase 1: locate the EOCD (and the ZIP64 records).
+fn locate_end(bytes: &[u8]) -> Result<EndRecords, Code> {
     if bytes.len() < EOCD_FIXED {
         return Err(e::CONTAINER_ZIP);
     }
+    // The EOCD must end exactly at the last input byte.
     let lowest = bytes.len().saturating_sub(EOCD_FIXED + MAX_COMMENT);
     let mut candidate = bytes.len() - EOCD_FIXED;
-    loop {
+    let eocd = loop {
         if u32_at(bytes, candidate) == Some(EOCD_SIGNATURE) {
-            let comment_length =
-                usize::from(u16_at(bytes, candidate + 20).ok_or(e::CONTAINER_ZIP)?);
-            if candidate + EOCD_FIXED + comment_length == bytes.len() {
-                return Ok(candidate);
+            let comment = usize::from(u16_at(bytes, candidate + 20).ok_or(e::CONTAINER_ZIP)?);
+            if candidate + EOCD_FIXED + comment == bytes.len() {
+                break candidate;
             }
         }
         if candidate == lowest {
             return Err(e::CONTAINER_ZIP);
         }
         candidate -= 1;
+    };
+    let field16 = |offset| u16_at(bytes, eocd + offset).ok_or(e::CONTAINER_ZIP);
+    let field32 = |offset| u32_at(bytes, eocd + offset).ok_or(e::CONTAINER_ZIP);
+    let disk_number = field16(4)?;
+    let cd_disk = field16(6)?;
+    let entries_this_disk = field16(8)?;
+    let entries_total = field16(10)?;
+    let cd_size32 = field32(12)?;
+    let cd_offset32 = field32(16)?;
+    let comment_length = usize::from(field16(20)?);
+    let uses_sentinel = entries_this_disk == 0xFFFF
+        || entries_total == 0xFFFF
+        || cd_size32 == 0xFFFF_FFFF
+        || cd_offset32 == 0xFFFF_FFFF;
+    let locator = eocd
+        .checked_sub(ZIP64_LOCATOR_SIZE)
+        .filter(|&offset| u32_at(bytes, offset) == Some(ZIP64_LOCATOR_SIGNATURE));
+    let mut zip64 = None;
+    let (cd_end_bound, cd_offset, cd_size, total_entries) = match locator {
+        Some(locator) => {
+            let locator_disk = u32_at(bytes, locator + 4).ok_or(e::CONTAINER_ZIP)?;
+            let record = to_usize(u64_at(bytes, locator + 8).ok_or(e::CONTAINER_ZIP)?)?;
+            let locator_total_disks = u32_at(bytes, locator + 16).ok_or(e::CONTAINER_ZIP)?;
+            // A well-formed ZIP64 EOCD record that ends exactly at the locator.
+            if u32_at(bytes, record) != Some(ZIP64_EOCD_SIGNATURE) {
+                return Err(e::CONTAINER_ZIP);
+            }
+            let record_size = to_usize(u64_at(bytes, record + 4).ok_or(e::CONTAINER_ZIP)?)?;
+            if record_size < ZIP64_EOCD_FIXED - 12
+                || record
+                    .checked_add(12)
+                    .and_then(|end| end.checked_add(record_size))
+                    != Some(locator)
+            {
+                return Err(e::CONTAINER_ZIP);
+            }
+            let disk = u32_at(bytes, record + 16).ok_or(e::CONTAINER_ZIP)?;
+            let cd_disk64 = u32_at(bytes, record + 20).ok_or(e::CONTAINER_ZIP)?;
+            let this_disk = u64_at(bytes, record + 24).ok_or(e::CONTAINER_ZIP)?;
+            let total = u64_at(bytes, record + 32).ok_or(e::CONTAINER_ZIP)?;
+            let size = to_usize(u64_at(bytes, record + 40).ok_or(e::CONTAINER_ZIP)?)?;
+            let offset = to_usize(u64_at(bytes, record + 48).ok_or(e::CONTAINER_ZIP)?)?;
+            zip64 = Some(Zip64End {
+                disk_number: disk,
+                cd_disk: cd_disk64,
+                entries_this_disk: this_disk,
+                entries_total: total,
+                locator_disk,
+                locator_total_disks,
+            });
+            (record, offset, size, total)
+        }
+        None => {
+            if uses_sentinel {
+                // A sentinel needs a ZIP64 locator.
+                return Err(e::CONTAINER_ZIP);
+            }
+            (
+                eocd,
+                to_usize(u64::from(cd_offset32))?,
+                to_usize(u64::from(cd_size32))?,
+                u64::from(entries_total),
+            )
+        }
+    };
+    // The central directory lies inside the file.
+    if cd_offset
+        .checked_add(cd_size)
+        .is_none_or(|end| end > cd_end_bound)
+    {
+        return Err(e::CONTAINER_ZIP);
+    }
+    // A non-empty archive starts with a local file header at offset 0.
+    if (total_entries > 0 || cd_size > 0) && u32_at(bytes, 0) != Some(LOCAL_SIGNATURE) {
+        return Err(e::CONTAINER_ZIP);
+    }
+    Ok(EndRecords {
+        eocd,
+        disk_number,
+        cd_disk,
+        entries_this_disk,
+        entries_total,
+        cd_size32,
+        cd_offset32,
+        comment_length,
+        zip64,
+        cd_end_bound,
+        cd_offset,
+        cd_size,
+        total_entries,
+    })
+}
+
+/// Reads a ZIP64 extended-information extra field for the fields that carry a
+/// sentinel, in the APPNOTE order: uncompressed size, compressed size, local
+/// header offset, disk start.
+fn zip64_fields(extra: &[u8], wanted: [bool; 4]) -> Option<[Option<u64>; 4]> {
+    let mut position = 0usize;
+    while position + 4 <= extra.len() {
+        let id = u16_at(extra, position)?;
+        let size = usize::from(u16_at(extra, position + 2)?);
+        let data = slice(extra, position + 4, size)?;
+        if id == ZIP64_EXTRA_ID {
+            let mut out = [None; 4];
+            let mut cursor = 0usize;
+            for (index, needed) in wanted.iter().enumerate() {
+                if !needed {
+                    continue;
+                }
+                if index == 3 {
+                    out[index] = Some(u64::from(u32_at(data, cursor)?));
+                    cursor += 4;
+                } else {
+                    out[index] = Some(u64_at(data, cursor)?);
+                    cursor += 8;
+                }
+            }
+            return Some(out);
+        }
+        position += 4 + size;
+    }
+    if wanted.iter().any(|needed| *needed) {
+        None
+    } else {
+        Some([None; 4])
     }
 }
 
-/// A bounds-checked slice.
-fn slice(bytes: &[u8], offset: usize, length: usize) -> Option<&[u8]> {
-    let end = offset.checked_add(length)?;
-    bytes.get(offset..end)
+/// Decodes an entry name: UTF-8 when general-purpose bit 11 is set; otherwise
+/// each byte maps to one scalar value (an injective mapping, so duplicate
+/// detection and path checks are byte-faithful). `None` when not decodable.
+fn decode_name(bytes: &[u8], flags: u16) -> Option<String> {
+    if flags & 0x0800 != 0 || bytes.is_ascii() {
+        return std::str::from_utf8(bytes).ok().map(str::to_owned);
+    }
+    Some(bytes.iter().map(|&byte| char::from(byte)).collect())
 }
 
-/// Reads a little-endian `u16`, if the range is in bounds.
-fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
-    let chunk = slice(bytes, offset, 2)?;
-    Some(u16::from_le_bytes([chunk[0], chunk[1]]))
+/// Phase 2: parse every central-directory record.
+fn parse_central_directory(bytes: &[u8], end: &EndRecords) -> Result<Vec<CentralRecord>, Code> {
+    let mut records = Vec::new();
+    let mut position = end.cd_offset;
+    let cd_end = end.cd_offset + end.cd_size;
+    while position < cd_end {
+        let header = slice(bytes, position, CENTRAL_FIXED).ok_or(e::CONTAINER_ZIP)?;
+        if position + CENTRAL_FIXED > cd_end || u32_at(header, 0) != Some(CENTRAL_SIGNATURE) {
+            return Err(e::CONTAINER_ZIP);
+        }
+        let field16 = |offset| u16_at(header, offset).ok_or(e::CONTAINER_ZIP);
+        let field32 = |offset| u32_at(header, offset).ok_or(e::CONTAINER_ZIP);
+        let version_made_by = field16(4)?;
+        let version_needed = field16(6)?;
+        let flags = field16(8)?;
+        let method = field16(10)?;
+        let crc32 = field32(16)?;
+        let compressed32 = field32(20)?;
+        let uncompressed32 = field32(24)?;
+        let name_length = usize::from(field16(28)?);
+        let extra_length = usize::from(field16(30)?);
+        let comment_length = usize::from(field16(32)?);
+        let disk_start16 = field16(34)?;
+        let external_attributes = field32(38)?;
+        let local_offset32 = field32(42)?;
+        let record_end = position + CENTRAL_FIXED + name_length + extra_length + comment_length;
+        if record_end > cd_end {
+            return Err(e::CONTAINER_ZIP);
+        }
+        let name_bytes = slice(bytes, position + CENTRAL_FIXED, name_length)
+            .ok_or(e::CONTAINER_ZIP)?
+            .to_vec();
+        let extra = slice(bytes, position + CENTRAL_FIXED + name_length, extra_length)
+            .ok_or(e::CONTAINER_ZIP)?;
+        let wanted = [
+            uncompressed32 == 0xFFFF_FFFF,
+            compressed32 == 0xFFFF_FFFF,
+            local_offset32 == 0xFFFF_FFFF,
+            disk_start16 == 0xFFFF,
+        ];
+        let fields = zip64_fields(extra, wanted).ok_or(e::CONTAINER_ZIP)?;
+        let zip64 = wanted.iter().any(|needed| *needed);
+        let name = decode_name(&name_bytes, flags).ok_or(e::CONTAINER_ZIP)?;
+        records.push(CentralRecord {
+            name_bytes,
+            name,
+            version_needed,
+            flags,
+            method,
+            crc32,
+            compressed_size: fields[1].unwrap_or(u64::from(compressed32)),
+            uncompressed_size: fields[0].unwrap_or(u64::from(uncompressed32)),
+            disk_start: fields[3].map_or(u32::from(disk_start16), |value| {
+                u32::try_from(value).unwrap_or(u32::MAX)
+            }),
+            local_offset: fields[2].unwrap_or(u64::from(local_offset32)),
+            external_attributes,
+            version_made_by,
+            zip64,
+        });
+        position = record_end;
+    }
+    if position != cd_end || u64::try_from(records.len()).ok() != Some(end.total_entries) {
+        return Err(e::CONTAINER_ZIP);
+    }
+    Ok(records)
 }
 
-/// Reads a little-endian `u32`, if the range is in bounds.
-fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
-    let chunk = slice(bytes, offset, 4)?;
-    Some(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+fn is_readable(name: &str) -> bool {
+    name.starts_with("readable/")
 }
 
-/// CRC-32 (IEEE 802.3), as used by the zip format.
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xEDB8_8320;
-            } else {
-                crc >>= 1;
-            }
+fn is_directory_record(record: &CentralRecord) -> bool {
+    record.name.ends_with('/') || record.external_attributes & 0x10 != 0
+}
+
+/// Parses an archive through phases 1–4 of §11.9 (W7).
+///
+/// # Errors
+/// `E_CONTAINER_ZIP` for a phase 1, 2 or 4 failure and `E_CONTAINER_SIZE` for
+/// a phase 3 (§13) failure.
+pub fn open(bytes: &[u8]) -> Result<ZipArchive<'_>, Code> {
+    // Phase 1.
+    let end = locate_end(bytes)?;
+    // Phase 2.
+    let records = parse_central_directory(bytes, &end)?;
+    // Phase 3: the §13 limits; nothing after this phase is checked.
+    if records.len() > limits::MAX_CONTAINER_ENTRIES {
+        return Err(e::CONTAINER_SIZE);
+    }
+    let declared_total = records
+        .iter()
+        .filter(|record| !is_readable(&record.name) && !is_directory_record(record))
+        .fold(0u64, |total, record| {
+            total.saturating_add(record.uncompressed_size)
+        });
+    if declared_total > limits::MAX_CONTAINER_UNCOMPRESSED_BYTES {
+        return Err(e::CONTAINER_SIZE);
+    }
+    // Phase 4.
+    let entries = remaining_rules(bytes, &end, &records)?;
+    Ok(ZipArchive { bytes, entries })
+}
+
+/// Phase 4: every remaining structural rule (§11.9 rules 1–4).
+fn remaining_rules(
+    bytes: &[u8],
+    end: &EndRecords,
+    records: &[CentralRecord],
+) -> Result<Vec<ZipEntry>, Code> {
+    let actual = records.len();
+    // Archive comment.
+    if end.comment_length != 0 {
+        return Err(e::CONTAINER_ZIP);
+    }
+    // Single volume (rule 3).
+    if end.disk_number != 0 || end.cd_disk != 0 {
+        return Err(e::CONTAINER_ZIP);
+    }
+    let count_ok = |field: u16| -> bool {
+        usize::from(field) == actual || (field == 0xFFFF && end.zip64.is_some())
+    };
+    if !count_ok(end.entries_this_disk) || !count_ok(end.entries_total) {
+        return Err(e::CONTAINER_ZIP);
+    }
+    let size_ok = |field: u32, value: usize| -> bool {
+        usize::try_from(field).ok() == Some(value) || (field == 0xFFFF_FFFF && end.zip64.is_some())
+    };
+    if !size_ok(end.cd_size32, end.cd_size) || !size_ok(end.cd_offset32, end.cd_offset) {
+        return Err(e::CONTAINER_ZIP);
+    }
+    if let Some(zip64) = &end.zip64 {
+        if zip64.disk_number != 0
+            || zip64.cd_disk != 0
+            || zip64.locator_disk != 0
+            || zip64.locator_total_disks != 1
+            || usize::try_from(zip64.entries_this_disk).ok() != Some(actual)
+            || usize::try_from(zip64.entries_total).ok() != Some(actual)
+        {
+            return Err(e::CONTAINER_ZIP);
         }
     }
-    !crc
+    // Per entry (rules 1 and 4), then the byte coverage (rule 2).
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(records.len());
+    let mut entries = Vec::with_capacity(records.len());
+    for record in records {
+        if record.version_needed > 63 || record.disk_start != 0 {
+            return Err(e::CONTAINER_ZIP);
+        }
+        if record.method != 0 && record.method != 8 {
+            return Err(e::CONTAINER_ZIP);
+        }
+        // Encryption: traditional (bit 0) and strong encryption (bit 6).
+        if record.flags & 0x0041 != 0 {
+            return Err(e::CONTAINER_ZIP);
+        }
+        let carries_data = record.compressed_size != 0 || record.uncompressed_size != 0;
+        let is_directory = is_directory_record(record);
+        if is_directory && carries_data {
+            return Err(e::CONTAINER_ZIP);
+        }
+        let (data_start, span_end) = check_local_header(bytes, record)?;
+        spans.push((to_usize(record.local_offset)?, span_end));
+        let host = record.version_made_by >> 8;
+        let unix_mode = record.external_attributes >> 16;
+        entries.push(ZipEntry {
+            name: record.name.clone(),
+            is_directory,
+            is_symlink: host == 3 && unix_mode & 0xF000 == 0xA000,
+            method: record.method,
+            crc32: record.crc32,
+            compressed_size: record.compressed_size,
+            uncompressed_size: record.uncompressed_size,
+            data_start,
+        });
+    }
+    // Rule 2: every byte has a home, in physical offset order.
+    spans.sort_unstable();
+    let mut expected_start = 0usize;
+    for (start, span_end) in &spans {
+        if *start != expected_start {
+            return Err(e::CONTAINER_ZIP);
+        }
+        expected_start = *span_end;
+    }
+    if expected_start != end.cd_offset || end.cd_offset + end.cd_size != end.cd_end_bound {
+        return Err(e::CONTAINER_ZIP);
+    }
+    if end.zip64.is_none() && end.cd_end_bound != end.eocd {
+        return Err(e::CONTAINER_ZIP);
+    }
+    Ok(entries)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// One synthetic archive entry for the builder below.
-    struct TestEntry<'a> {
-        name: &'a str,
-        data: &'a [u8],
-        deflate: bool,
-        flags: u16,
-        version_made_by: u16,
-        external_attributes: u32,
-        /// Override the uncompressed size written to the central directory.
-        declared_uncompressed: Option<u32>,
+/// Rule 1: the local header agrees with the central directory; returns the
+/// data start and the end of the entry (data plus data descriptor).
+fn check_local_header(bytes: &[u8], record: &CentralRecord) -> Result<(usize, usize), Code> {
+    let offset = to_usize(record.local_offset)?;
+    let header = slice(bytes, offset, LOCAL_FIXED).ok_or(e::CONTAINER_ZIP)?;
+    if u32_at(header, 0) != Some(LOCAL_SIGNATURE) {
+        return Err(e::CONTAINER_ZIP);
     }
+    let field16 = |position| u16_at(header, position).ok_or(e::CONTAINER_ZIP);
+    let field32 = |position| u32_at(header, position).ok_or(e::CONTAINER_ZIP);
+    let flags = field16(6)?;
+    let method = field16(8)?;
+    let crc32 = field32(14)?;
+    let compressed32 = field32(18)?;
+    let uncompressed32 = field32(22)?;
+    let name_length = usize::from(field16(26)?);
+    let extra_length = usize::from(field16(28)?);
+    let name = slice(bytes, offset + LOCAL_FIXED, name_length).ok_or(e::CONTAINER_ZIP)?;
+    let extra =
+        slice(bytes, offset + LOCAL_FIXED + name_length, extra_length).ok_or(e::CONTAINER_ZIP)?;
+    if name != record.name_bytes.as_slice() || flags != record.flags || method != record.method {
+        return Err(e::CONTAINER_ZIP);
+    }
+    let data_start = offset + LOCAL_FIXED + name_length + extra_length;
+    let data_end = data_start
+        .checked_add(to_usize(record.compressed_size)?)
+        .ok_or(e::CONTAINER_ZIP)?;
+    if data_end > bytes.len() {
+        return Err(e::CONTAINER_ZIP);
+    }
+    if flags & 0x0008 != 0 {
+        // Data descriptor: the local CRC and sizes are zero, and the
+        // descriptor (optionally signed) carries the central values.
+        if crc32 != 0 || compressed32 != 0 || uncompressed32 != 0 {
+            return Err(e::CONTAINER_ZIP);
+        }
+        let mut position = data_end;
+        if u32_at(bytes, position) == Some(DESCRIPTOR_SIGNATURE) {
+            position += 4;
+        }
+        let descriptor_crc = u32_at(bytes, position).ok_or(e::CONTAINER_ZIP)?;
+        let (compressed, uncompressed, length) = if record.zip64 {
+            (
+                u64_at(bytes, position + 4).ok_or(e::CONTAINER_ZIP)?,
+                u64_at(bytes, position + 12).ok_or(e::CONTAINER_ZIP)?,
+                20,
+            )
+        } else {
+            (
+                u64::from(u32_at(bytes, position + 4).ok_or(e::CONTAINER_ZIP)?),
+                u64::from(u32_at(bytes, position + 8).ok_or(e::CONTAINER_ZIP)?),
+                12,
+            )
+        };
+        if descriptor_crc != record.crc32
+            || compressed != record.compressed_size
+            || uncompressed != record.uncompressed_size
+        {
+            return Err(e::CONTAINER_ZIP);
+        }
+        return Ok((data_start, position + length));
+    }
+    let wanted = [
+        uncompressed32 == 0xFFFF_FFFF,
+        compressed32 == 0xFFFF_FFFF,
+        false,
+        false,
+    ];
+    let fields = zip64_fields(extra, wanted).ok_or(e::CONTAINER_ZIP)?;
+    let local_compressed = fields[1].unwrap_or(u64::from(compressed32));
+    let local_uncompressed = fields[0].unwrap_or(u64::from(uncompressed32));
+    if crc32 != record.crc32
+        || local_compressed != record.compressed_size
+        || local_uncompressed != record.uncompressed_size
+    {
+        return Err(e::CONTAINER_ZIP);
+    }
+    Ok((data_start, data_end))
+}
 
-    impl<'a> TestEntry<'a> {
-        fn stored(name: &'a str, data: &'a [u8]) -> Self {
-            Self {
-                name,
-                data,
-                deflate: false,
-                flags: 0,
-                version_made_by: 20,
-                external_attributes: 0,
-                declared_uncompressed: None,
+impl ZipArchive<'_> {
+    /// Streams the decompressed content of `entry` to `sink` in bounded
+    /// chunks, never producing more than the declared size, and checks the
+    /// size and CRC-32. `cap` bounds the declared size before anything is
+    /// decompressed.
+    ///
+    /// # Errors
+    /// [`MemberError::TooLarge`] when the declared size exceeds `cap`;
+    /// [`MemberError::Corrupt`] for any decompression, size or CRC failure.
+    pub fn stream(
+        &self,
+        entry: &ZipEntry,
+        cap: u64,
+        mut sink: impl FnMut(&[u8]),
+    ) -> Result<(), MemberError> {
+        if entry.uncompressed_size > cap {
+            return Err(MemberError::TooLarge);
+        }
+        let length = usize::try_from(entry.compressed_size).map_err(|_| MemberError::Corrupt)?;
+        let data = slice(self.bytes, entry.data_start, length).ok_or(MemberError::Corrupt)?;
+        let mut crc = Crc32::new();
+        let mut produced: u64 = 0;
+        let mut emit = |chunk: &[u8]| {
+            crc.update(chunk);
+            sink(chunk);
+        };
+        if entry.method == 0 {
+            if entry.compressed_size != entry.uncompressed_size {
+                return Err(MemberError::Corrupt);
+            }
+            for chunk in data.chunks(64 * 1024) {
+                emit(chunk);
+            }
+            produced = entry.uncompressed_size;
+        } else {
+            let mut state = InflateState::new_boxed(DataFormat::Raw);
+            let mut input = data;
+            let mut buffer = vec![0u8; 64 * 1024];
+            loop {
+                let result = inflate(&mut state, input, &mut buffer, MZFlush::None);
+                input = &input[result.bytes_consumed..];
+                produced = produced.saturating_add(result.bytes_written as u64);
+                if produced > entry.uncompressed_size {
+                    return Err(MemberError::Corrupt);
+                }
+                emit(&buffer[..result.bytes_written]);
+                match result.status {
+                    Ok(MZStatus::StreamEnd) => break,
+                    Ok(_) => {
+                        if result.bytes_consumed == 0 && result.bytes_written == 0 {
+                            // No progress: truncated stream.
+                            return Err(MemberError::Corrupt);
+                        }
+                    }
+                    Err(_) => return Err(MemberError::Corrupt),
+                }
+            }
+            if !input.is_empty() {
+                return Err(MemberError::Corrupt);
             }
         }
-
-        fn deflated(name: &'a str, data: &'a [u8]) -> Self {
-            Self {
-                deflate: true,
-                ..Self::stored(name, data)
-            }
+        if produced != entry.uncompressed_size || crc.finish() != entry.crc32 {
+            return Err(MemberError::Corrupt);
         }
+        Ok(())
     }
 
-    /// Builds a zip archive with the given entries (no data descriptors).
-    fn make_zip(entries: &[TestEntry<'_>]) -> Vec<u8> {
+    /// Decompresses `entry` into memory under `cap` (see [`Self::stream`]).
+    ///
+    /// # Errors
+    /// As [`Self::stream`].
+    pub fn read(&self, entry: &ZipEntry, cap: u64) -> Result<Vec<u8>, MemberError> {
         let mut out = Vec::new();
-        let mut central = Vec::new();
-        let mut count: u16 = 0;
-        for entry in entries {
-            count = count.checked_add(1).expect("entry count fits");
-            let name = entry.name.as_bytes();
-            let stored = if entry.deflate {
-                miniz_oxide::deflate::compress_to_vec(entry.data, 6)
-            } else {
-                entry.data.to_vec()
-            };
-            let crc = crc32(entry.data);
-            let method: u16 = if entry.deflate { 8 } else { 0 };
-            let compressed_size = u32::try_from(stored.len()).expect("size fits");
-            let uncompressed_size = entry
-                .declared_uncompressed
-                .unwrap_or_else(|| u32::try_from(entry.data.len()).expect("size fits"));
-            let offset = u32::try_from(out.len()).expect("offset fits");
+        self.stream(entry, cap, |chunk| out.extend_from_slice(chunk))?;
+        Ok(out)
+    }
+}
 
-            out.extend_from_slice(&LOCAL_SIGNATURE.to_le_bytes());
-            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
-            out.extend_from_slice(&entry.flags.to_le_bytes());
-            out.extend_from_slice(&method.to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes()); // modification time
-            out.extend_from_slice(&0u16.to_le_bytes()); // modification date
-            out.extend_from_slice(&crc.to_le_bytes());
-            out.extend_from_slice(&compressed_size.to_le_bytes());
-            out.extend_from_slice(&uncompressed_size.to_le_bytes());
-            out.extend_from_slice(&u16::try_from(name.len()).expect("name fits").to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes()); // extra field length
-            out.extend_from_slice(name);
-            out.extend_from_slice(&stored);
+/// Table-driven CRC-32 (IEEE 802.3), as used by the zip format.
+struct Crc32 {
+    value: u32,
+}
 
-            central.extend_from_slice(&CENTRAL_SIGNATURE.to_le_bytes());
-            central.extend_from_slice(&entry.version_made_by.to_le_bytes());
-            central.extend_from_slice(&20u16.to_le_bytes()); // version needed
-            central.extend_from_slice(&entry.flags.to_le_bytes());
-            central.extend_from_slice(&method.to_le_bytes());
-            central.extend_from_slice(&0u16.to_le_bytes()); // time
-            central.extend_from_slice(&0u16.to_le_bytes()); // date
-            central.extend_from_slice(&crc.to_le_bytes());
-            central.extend_from_slice(&compressed_size.to_le_bytes());
-            central.extend_from_slice(&uncompressed_size.to_le_bytes());
-            central.extend_from_slice(&u16::try_from(name.len()).expect("name fits").to_le_bytes());
-            central.extend_from_slice(&0u16.to_le_bytes()); // extra length
-            central.extend_from_slice(&0u16.to_le_bytes()); // comment length
-            central.extend_from_slice(&0u16.to_le_bytes()); // disk start
-            central.extend_from_slice(&0u16.to_le_bytes()); // internal attributes
-            central.extend_from_slice(&entry.external_attributes.to_le_bytes());
-            central.extend_from_slice(&offset.to_le_bytes());
-            central.extend_from_slice(name);
-        }
-        let central_offset = u32::try_from(out.len()).expect("offset fits");
-        let central_size = u32::try_from(central.len()).expect("size fits");
-        out.extend_from_slice(&central);
-        out.extend_from_slice(&EOCD_SIGNATURE.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes()); // disk number
-        out.extend_from_slice(&0u16.to_le_bytes()); // central directory disk
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&central_size.to_le_bytes());
-        out.extend_from_slice(&central_offset.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes()); // comment length
-        out
+impl Crc32 {
+    fn new() -> Self {
+        Self { value: 0xFFFF_FFFF }
     }
 
-    /// Offset of the central directory record for the entry named `name`.
-    fn central_offset(zip: &[u8], name: &str) -> usize {
-        let eocd = find_eocd(zip).expect("eocd");
-        let mut position = u32_at(zip, eocd + 16).expect("cd offset") as usize;
-        loop {
-            let name_length = u16_at(zip, position + 28).expect("name length") as usize;
-            let extra = u16_at(zip, position + 30).expect("extra") as usize;
-            let comment = u16_at(zip, position + 32).expect("comment") as usize;
-            let current = &zip[position + CENTRAL_FIXED..position + CENTRAL_FIXED + name_length];
-            if current == name.as_bytes() {
-                return position;
+    fn table() -> &'static [u32; 256] {
+        static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+        TABLE.get_or_init(|| {
+            let mut table = [0u32; 256];
+            for (index, slot) in table.iter_mut().enumerate() {
+                let mut crc = index as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0xEDB8_8320
+                    } else {
+                        crc >> 1
+                    };
+                }
+                *slot = crc;
             }
-            position += CENTRAL_FIXED + name_length + extra + comment;
+            table
+        })
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        let table = Self::table();
+        for &byte in data {
+            self.value =
+                table[((self.value ^ u32::from(byte)) & 0xFF) as usize] ^ (self.value >> 8);
         }
     }
 
-    #[test]
-    fn reads_stored_entries() {
-        let zip = make_zip(&[
-            TestEntry::stored("a.txt", b"hello"),
-            TestEntry::stored("dir/b.bin", &[0u8, 1, 2, 3]),
-        ]);
-        let files = read_zip(&zip).expect("valid archive");
-        assert_eq!(files.get("a.txt").map(Vec::as_slice), Some(&b"hello"[..]));
-        assert_eq!(
-            files.get("dir/b.bin").map(Vec::as_slice),
-            Some(&[0, 1, 2, 3][..])
-        );
+    fn finish(&self) -> u32 {
+        !self.value
     }
+}
 
-    #[test]
-    fn reads_deflated_entries() {
-        let payload = b"weave-record/1 deflate payload ".repeat(200);
-        let zip = make_zip(&[TestEntry::deflated("manifest.json", &payload)]);
-        let files = read_zip(&zip).expect("valid archive");
-        assert_eq!(
-            files.get("manifest.json").map(Vec::as_slice),
-            Some(payload.as_slice())
-        );
-    }
-
-    #[test]
-    fn empty_archive_is_empty_container() {
-        let zip = make_zip(&[]);
-        assert!(read_zip(&zip).expect("valid archive").is_empty());
-    }
-
-    #[test]
-    fn directory_entries_are_ignored() {
-        let zip = make_zip(&[
-            TestEntry::stored("records/", b""),
-            TestEntry::stored("manifest.json", b"{}"),
-        ]);
-        let files = read_zip(&zip).expect("valid archive");
-        assert_eq!(files.len(), 1);
-        assert!(files.contains_key("manifest.json"));
-    }
-
-    #[test]
-    fn traversal_names_are_returned_for_the_container_layer() {
-        // Path safety is the container's job (§11.9 split): the reader must not
-        // silently rewrite or drop the stored name.
-        let zip = make_zip(&[TestEntry::stored("../escape.json", b"x")]);
-        let files = read_zip(&zip).expect("readable archive");
-        assert!(files.contains_key("../escape.json"));
-    }
-
-    #[test]
-    fn duplicate_entry_names_are_entry_errors() {
-        let zip = make_zip(&[
-            TestEntry::stored("a.txt", b"one"),
-            TestEntry::stored("a.txt", b"two"),
-        ]);
-        assert_eq!(read_zip(&zip), Err(e::CONTAINER_ENTRY));
-    }
-
-    #[test]
-    fn symlink_entries_are_entry_errors() {
-        let mut entry = TestEntry::stored("link", b"/etc/passwd");
-        entry.version_made_by = (3 << 8) | 20; // Unix
-        entry.external_attributes = 0o120777 << 16; // S_IFLNK | 0777
-        let zip = make_zip(&[entry]);
-        assert_eq!(read_zip(&zip), Err(e::CONTAINER_ENTRY));
-    }
-
-    #[test]
-    fn encrypted_entries_are_archive_errors() {
-        let mut entry = TestEntry::stored("a.txt", b"secret");
-        entry.flags = 0x0001;
-        let zip = make_zip(&[entry]);
-        assert_eq!(read_zip(&zip), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn unsupported_compression_is_an_archive_error() {
-        let zip = make_zip(&[TestEntry::stored("a.txt", b"hello")]);
-        let offset = central_offset(&zip, "a.txt");
-        // Patch both the local header and the central directory method to 12
-        // (bzip2), which this reader does not support.
-        let mut patched = zip.clone();
-        patched[offset + 10..offset + 12].copy_from_slice(&12u16.to_le_bytes());
-        let local_offset = u32_at(&patched, offset + 42).expect("local offset") as usize;
-        patched[local_offset + 8..local_offset + 10].copy_from_slice(&12u16.to_le_bytes());
-        assert_eq!(read_zip(&patched), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn crc_mismatch_is_an_archive_error() {
-        let zip = make_zip(&[TestEntry::stored("a.txt", b"hello")]);
-        let mut patched = zip.clone();
-        // The data of "a.txt" starts after the 30-byte local header and the name.
-        patched[30 + 5] ^= 0x01;
-        assert_eq!(read_zip(&patched), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn deflated_size_lie_is_an_archive_error() {
-        let payload = b"abc".repeat(100);
-        let mut entry = TestEntry::deflated("a.bin", &payload);
-        entry.declared_uncompressed = Some(10);
-        let zip = make_zip(&[entry]);
-        assert_eq!(read_zip(&zip), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn corrupt_deflate_stream_is_an_archive_error() {
-        let payload = b"abcdefgh".repeat(50);
-        let zip = make_zip(&[TestEntry::deflated("a.bin", &payload)]);
-        let mut patched = zip.clone();
-        // Corrupt the first byte of the deflate stream (after local header and
-        // the 5-byte name).
-        patched[30 + 5] ^= 0xFF;
-        assert_eq!(read_zip(&patched), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn declared_oversized_entry_is_a_size_error() {
-        let mut entry = TestEntry::stored("a.bin", b"x");
-        entry.declared_uncompressed =
-            Some(u32::try_from(limits::MAX_CONTAINER_UNCOMPRESSED_BYTES).unwrap() + 1);
-        let zip = make_zip(&[entry]);
-        assert_eq!(read_zip(&zip), Err(e::CONTAINER_SIZE));
-    }
-
-    #[test]
-    fn truncated_archive_is_an_archive_error() {
-        let zip = make_zip(&[TestEntry::stored("a.txt", b"hello")]);
-        assert_eq!(read_zip(&zip[..zip.len() - 1]), Err(e::CONTAINER_ZIP));
-        assert_eq!(read_zip(b"PK"), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn zip64_archive_is_rejected() {
-        let zip = make_zip(&[TestEntry::stored("a.txt", b"hello")]);
-        let mut patched = zip.clone();
-        let eocd = find_eocd(&patched).expect("eocd");
-        patched[eocd + 10..eocd + 12].copy_from_slice(&0xFFFFu16.to_le_bytes());
-        patched[eocd + 8..eocd + 10].copy_from_slice(&0xFFFFu16.to_le_bytes());
-        assert_eq!(read_zip(&patched), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn multi_disk_archive_is_rejected() {
-        let zip = make_zip(&[TestEntry::stored("a.txt", b"hello")]);
-        let mut patched = zip.clone();
-        let eocd = find_eocd(&patched).expect("eocd");
-        patched[eocd + 4..eocd + 6].copy_from_slice(&1u16.to_le_bytes());
-        assert_eq!(read_zip(&patched), Err(e::CONTAINER_ZIP));
-    }
-
-    #[test]
-    fn crc32_matches_known_vector() {
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b""), 0);
-    }
+/// CRC-32 of a byte string (used by tests and the in-crate archive builder).
+#[must_use]
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc = Crc32::new();
+    crc.update(data);
+    crc.finish()
 }

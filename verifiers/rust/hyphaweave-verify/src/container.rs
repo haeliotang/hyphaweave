@@ -1,28 +1,31 @@
 // SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 // SPDX-License-Identifier: Apache-2.0
 
-//! Container verification (§11).
+//! Container verification (§11, §14.5).
 //!
-//! This module performs the container-level checks of §14.5 in the fixed order:
-//! entry enumeration/safety, manifest parse and canonical form, manifest
-//! structure, manifest digest, manifest signature, level/chain completeness,
-//! records listing and per-record verification, cross-record state, blobs,
-//! previous-manifest chain, timestamps, aggregation.
+//! The container checks run in the fixed order of §14.5: (1) entry
+//! enumeration and safety, (2) manifest parse and canonical form, (3) manifest
+//! structure, (4) manifest digest, (5) manifest signature, (6) level/chain
+//! completeness, (7) records listing and per-record verification, (8)
+//! cross-record state, (9) blobs, (10) previous-manifest chain, (11)
+//! timestamps, (12) aggregation.
 //!
-//! Per-record verification and cross-record state are delegated to
-//! [`crate::context`]; timestamp verification to [`crate::timestamp`].
-//! Directory enumeration is sorted so the verdict never depends on filesystem
-//! order, and zip decompression is bounded while streaming.
+//! A container-level **invalid** error stops the pipeline at the stage where
+//! it is found (W5): later stages report nothing, and an invalid error before
+//! step (7) reports `records: []`. The failing stage reports every violation
+//! it found (sorted, unique). An `unverifiable` container condition does not
+//! stop the pipeline. Timestamps are verified early, because §9.4 uses them as
+//! evidence, but are reported only when the pipeline reaches step (11).
 //!
-//! Report fields that cannot be determined because an earlier check failed are
-//! `None`/empty, never invented. A container-level invalid error found before
-//! the records stage stops the run and reports `records: []` with exactly one
-//! container error (§14.5). Errors found by the records *listing* stage make
-//! the container invalid without pretending to have verified the listed
-//! records, so the `records[]` entries are reported as invalid with what is
-//! known from the manifest (a record whose file is missing is still listed).
+//! Reading is bounded (S4, §13): every file of a directory container is read
+//! through a probe bounded by its class limit plus one byte, `readable/` is
+//! never descended into, and the container byte total is accumulated while
+//! reading; a zip is checked through phases 1–4 of §11.9 before anything is
+//! decompressed, members are decompressed under their class cap, blobs are
+//! hashed while streaming and `readable/**` is never decompressed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::Path;
 
 use crate::context::World;
@@ -30,6 +33,7 @@ use crate::digest;
 use crate::envelope::{self, RecordFile, SigEntry};
 use crate::error_codes::{e, n, Code};
 use crate::json;
+use crate::limitations::{self, LimitationFacts};
 use crate::limits;
 use crate::options::{ContainerInput, UsageError, VerifyOptions};
 use crate::patterns;
@@ -38,148 +42,612 @@ use crate::report::{
     TimestampReport, Verdict, VerdictCounts, VerifierInfo,
 };
 use crate::time::Timestamp;
-use crate::timestamp::{self, AttestationTimestamp, ChainEvidence, ReceiptOutcome, ReceiptState};
+use crate::timestamp::{self, AttestationTimestamp, ChainEvidence, ReceiptState};
 use crate::value::{Object, Value};
 use crate::zip;
 
 /// Relative path of the manifest (§11.1).
 const MANIFEST_PATH: &str = "manifest.json";
+/// Relative path of the manifest attestation file (§11.1).
+const SIGFILE_PATH: &str = "signatures/manifest.sig.json";
 /// The only `format` value defined by this specification version.
 const FORMAT: &str = "weave-record/1";
+
+// ---------------------------------------------------------------------------
+// Step (1): materialised content
+// ---------------------------------------------------------------------------
+
+/// The bytes of one in-container file, read under its class limit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FileData {
+    /// The file, within its class limit.
+    Bytes(Vec<u8>),
+    /// The file exceeds its §13 class limit; it was not read in full.
+    Oversize,
+}
+
+/// A blob, hashed while streaming.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BlobData {
+    /// SHA-256 digest string and byte size.
+    Hashed { digest: String, size: u64 },
+    /// Above `MAX_BLOB_BYTES`.
+    Oversize,
+}
+
+/// The closed container layout after step (1).
+#[derive(Default)]
+struct Content {
+    manifest: Option<FileData>,
+    sigfile: Option<FileData>,
+    previous_manifest: Option<FileData>,
+    timestamps: BTreeMap<String, FileData>,
+    records: BTreeMap<String, FileData>,
+    /// A file in `records/` whose name is not `<64 hex>.json` (§11.1: an extra
+    /// record file, reported by the records listing at step (7)).
+    records_extra: bool,
+    blobs: BTreeMap<String, BlobData>,
+    /// A file in `blobs/` outside `blobs/sha256/<64 hex>` (§11.1: reported by
+    /// the blob stage, step (9)).
+    blobs_extra: bool,
+    readable_present: bool,
+}
+
+/// The class of a container-relative path (§11.1) and its §13 read limit.
+enum PathClass {
+    Manifest,
+    Sigfile,
+    Timestamp,
+    TsaCert,
+    PreviousManifest,
+    Record,
+    RecordsExtra,
+    Blob,
+    BlobsExtra,
+    Readable,
+    Unknown,
+}
+
+fn classify_path(path: &str) -> PathClass {
+    if path == MANIFEST_PATH {
+        return PathClass::Manifest;
+    }
+    if path.starts_with("readable/") {
+        return PathClass::Readable;
+    }
+    if let Some(rest) = path.strip_prefix("signatures/") {
+        if !rest.contains('/') {
+            if rest == "manifest.sig.json" {
+                return PathClass::Sigfile;
+            }
+            if is_timestamp_file_name(rest) {
+                return PathClass::Timestamp;
+            }
+            if is_tsa_cert_file_name(rest) {
+                return PathClass::TsaCert;
+            }
+        }
+        return PathClass::Unknown;
+    }
+    if path == "previous/manifest.json" {
+        return PathClass::PreviousManifest;
+    }
+    if let Some(rest) = path.strip_prefix("records/") {
+        if !rest.contains('/') && is_record_file_name(rest) {
+            return PathClass::Record;
+        }
+        if !rest.contains('/') {
+            return PathClass::RecordsExtra;
+        }
+        return PathClass::Unknown;
+    }
+    if let Some(rest) = path.strip_prefix("blobs/") {
+        if let Some(hex) = rest.strip_prefix("sha256/") {
+            if !hex.contains('/') && is_lower_hex_64(hex) {
+                return PathClass::Blob;
+            }
+        }
+        return PathClass::BlobsExtra;
+    }
+    PathClass::Unknown
+}
+
+/// The §13 read limit of a file class.
+fn class_limit(class: &PathClass) -> u64 {
+    let limit = match class {
+        PathClass::Manifest | PathClass::PreviousManifest => limits::MAX_MANIFEST_BYTES,
+        PathClass::Sigfile => limits::MAX_SIGFILE_BYTES,
+        PathClass::Timestamp => limits::MAX_TIMESTAMP_BYTES,
+        PathClass::Record => limits::MAX_RECORD_BYTES,
+        PathClass::Blob => return limits::MAX_BLOB_BYTES,
+        _ => 0,
+    };
+    u64::try_from(limit).unwrap_or(u64::MAX)
+}
+
+/// True when a path is a safe container-relative path: no absolute prefix, no
+/// `.`/`..`/empty segments, no NUL bytes, no backslash.
+fn is_safe_relative_path(path: &str) -> bool {
+    if path.is_empty() || path.starts_with('/') || path.contains('\0') || path.contains('\\') {
+        return false;
+    }
+    path.split('/')
+        .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// A step-(1) failure: the stage's codes and whether a `readable/` entry was
+/// observed before it (§11.8, T12).
+struct EnumerationFailure {
+    codes: Vec<Code>,
+    readable_observed: bool,
+    /// `manifest.json` when it was read within its limit (§14.6 tier (b)).
+    manifest: Option<FileData>,
+}
+
+/// Accumulates the container byte total while reading (§13, T15).
+struct Budget {
+    total: u64,
+    exceeded: bool,
+}
+
+impl Budget {
+    fn add(&mut self, bytes: u64) {
+        self.total = self.total.saturating_add(bytes);
+        if self.total > limits::MAX_CONTAINER_UNCOMPRESSED_BYTES {
+            self.exceeded = true;
+        }
+    }
+}
+
+impl Content {
+    fn store(&mut self, path: &str, class: &PathClass, data: FileData) {
+        match class {
+            PathClass::Manifest => self.manifest = Some(data),
+            PathClass::Sigfile => self.sigfile = Some(data),
+            PathClass::PreviousManifest => self.previous_manifest = Some(data),
+            PathClass::Timestamp => {
+                self.timestamps.insert(path.to_owned(), data);
+            }
+            PathClass::Record => {
+                self.records.insert(path.to_owned(), data);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Step (1) for a directory container.
+fn enumerate_directory(root: &Path) -> Result<Result<Content, EnumerationFailure>, UsageError> {
+    let metadata = std::fs::symlink_metadata(root).map_err(|error| {
+        UsageError(format!("cannot read container {}: {error}", root.display()))
+    })?;
+    if !metadata.is_dir() {
+        return Err(UsageError(format!(
+            "container path {} is not a directory",
+            root.display()
+        )));
+    }
+    let mut content = Content::default();
+    let mut codes: BTreeSet<Code> = BTreeSet::new();
+    let mut entries: usize = 0;
+    let mut budget = Budget {
+        total: 0,
+        exceeded: false,
+    };
+    // Iterative, sorted walk: (absolute path, relative path).
+    let mut stack: Vec<(std::path::PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
+    while let Some((directory, prefix)) = stack.pop() {
+        let reader = std::fs::read_dir(&directory).map_err(|error| {
+            UsageError(format!(
+                "cannot read container directory {}: {error}",
+                directory.display()
+            ))
+        })?;
+        let mut names: Vec<std::ffi::OsString> = Vec::new();
+        for entry in reader {
+            let entry = entry.map_err(|error| {
+                UsageError(format!(
+                    "cannot read container directory {}: {error}",
+                    directory.display()
+                ))
+            })?;
+            names.push(entry.file_name());
+        }
+        names.sort();
+        let mut subdirectories = Vec::new();
+        for name in names {
+            let Some(name) = name.to_str().map(str::to_owned) else {
+                codes.insert(e::CONTAINER_ENTRY);
+                continue;
+            };
+            let relative = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let path = directory.join(&name);
+            let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+                UsageError(format!("cannot inspect {}: {error}", path.display()))
+            })?;
+            if relative == "readable" {
+                // §11.8: `readable/` is never descended into, read, stat-ed
+                // or counted; only its presence is noted.
+                if metadata.is_dir() {
+                    content.readable_present = true;
+                } else {
+                    codes.insert(e::CONTAINER_ENTRY);
+                }
+                continue;
+            }
+            if metadata.file_type().is_symlink() {
+                codes.insert(e::CONTAINER_ENTRY);
+                continue;
+            }
+            if metadata.is_dir() {
+                let allowed = matches!(
+                    (prefix.as_str(), name.as_str()),
+                    ("", "signatures" | "previous" | "records" | "blobs") | ("blobs", "sha256")
+                );
+                if allowed {
+                    subdirectories.push((path, relative));
+                } else {
+                    codes.insert(e::CONTAINER_ENTRY);
+                }
+                continue;
+            }
+            if !metadata.is_file() {
+                codes.insert(e::CONTAINER_ENTRY);
+                continue;
+            }
+            entries += 1;
+            if entries > limits::MAX_CONTAINER_ENTRIES {
+                codes.insert(e::CONTAINER_SIZE);
+                continue;
+            }
+            let class = classify_path(&relative);
+            match class {
+                PathClass::Unknown => {
+                    codes.insert(e::CONTAINER_ENTRY);
+                }
+                PathClass::RecordsExtra => content.records_extra = true,
+                PathClass::BlobsExtra => content.blobs_extra = true,
+                PathClass::TsaCert | PathClass::Readable => {}
+                PathClass::Blob => {
+                    if codes.is_empty() {
+                        let blob = hash_file(&path, limits::MAX_BLOB_BYTES, &mut budget)?;
+                        content.blobs.insert(relative, blob);
+                    }
+                }
+                _ => {
+                    // The manifest is always read (bounded), so the §14.6
+                    // tier-(b) identity is available after a later failure.
+                    if codes.is_empty() || matches!(class, PathClass::Manifest) {
+                        let data = read_bounded(&path, class_limit(&class), &mut budget)?;
+                        content.store(&relative, &class, data);
+                    }
+                }
+            }
+            if budget.exceeded {
+                codes.insert(e::CONTAINER_SIZE);
+            }
+        }
+        // Depth-first in sorted order.
+        subdirectories.reverse();
+        stack.extend(subdirectories);
+    }
+    if codes.is_empty() {
+        Ok(Ok(content))
+    } else {
+        Ok(Err(EnumerationFailure {
+            codes: codes.into_iter().collect(),
+            readable_observed: content.readable_present,
+            manifest: content.manifest,
+        }))
+    }
+}
+
+/// Reads one file through a probe bounded by `limit + 1` bytes (§13).
+fn read_bounded(path: &Path, limit: u64, budget: &mut Budget) -> Result<FileData, UsageError> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| UsageError(format!("cannot read {}: {error}", path.display())))?;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| UsageError(format!("cannot read {}: {error}", path.display())))?;
+    budget.add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        Ok(FileData::Oversize)
+    } else {
+        Ok(FileData::Bytes(bytes))
+    }
+}
+
+/// Hashes one blob file while streaming, bounded by `limit + 1` bytes.
+fn hash_file(path: &Path, limit: u64, budget: &mut Budget) -> Result<BlobData, UsageError> {
+    use sha2::Digest;
+    let file = std::fs::File::open(path)
+        .map_err(|error| UsageError(format!("cannot read {}: {error}", path.display())))?;
+    let mut reader = file.take(limit.saturating_add(1));
+    let mut hasher = sha2::Sha256::new();
+    let mut size: u64 = 0;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| UsageError(format!("cannot read {}: {error}", path.display())))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        size += read as u64;
+        budget.add(read as u64);
+        if budget.exceeded {
+            break;
+        }
+    }
+    if size > limit {
+        return Ok(BlobData::Oversize);
+    }
+    Ok(BlobData::Hashed {
+        digest: format!("sha256:{}", digest::to_lower_hex(&hasher.finalize())),
+        size,
+    })
+}
+
+/// Step (1) for an in-memory file map (`ContainerInput::Files`).
+fn enumerate_files(files: &BTreeMap<String, Vec<u8>>) -> Result<Content, EnumerationFailure> {
+    let mut content = Content::default();
+    let mut codes: BTreeSet<Code> = BTreeSet::new();
+    let mut budget = Budget {
+        total: 0,
+        exceeded: false,
+    };
+    let mut entries = 0usize;
+    for (path, bytes) in files {
+        if !is_safe_relative_path(path) {
+            codes.insert(e::CONTAINER_ENTRY);
+            continue;
+        }
+        let class = classify_path(path);
+        if matches!(class, PathClass::Readable) {
+            content.readable_present = true;
+            continue;
+        }
+        entries += 1;
+        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        match class {
+            PathClass::Unknown => {
+                codes.insert(e::CONTAINER_ENTRY);
+            }
+            PathClass::RecordsExtra => content.records_extra = true,
+            PathClass::BlobsExtra => content.blobs_extra = true,
+            PathClass::TsaCert | PathClass::Readable => {}
+            PathClass::Blob => {
+                budget.add(length.min(limits::MAX_BLOB_BYTES + 1));
+                let blob = if length > limits::MAX_BLOB_BYTES {
+                    BlobData::Oversize
+                } else {
+                    BlobData::Hashed {
+                        digest: digest::sha256_digest_string(bytes),
+                        size: length,
+                    }
+                };
+                content.blobs.insert(path.clone(), blob);
+            }
+            _ => {
+                let limit = class_limit(&class);
+                budget.add(length.min(limit + 1));
+                let data = if length > limit {
+                    FileData::Oversize
+                } else {
+                    FileData::Bytes(bytes.clone())
+                };
+                content.store(path, &class, data);
+            }
+        }
+    }
+    if entries > limits::MAX_CONTAINER_ENTRIES || budget.exceeded {
+        codes.insert(e::CONTAINER_SIZE);
+    }
+    if codes.is_empty() {
+        Ok(content)
+    } else {
+        Err(EnumerationFailure {
+            codes: codes.into_iter().collect(),
+            readable_observed: content.readable_present,
+            manifest: content.manifest,
+        })
+    }
+}
+
+/// Step (1) for a zip container (§11.9): phases 1–4, then entry names,
+/// symbolic links and duplicates (`E_CONTAINER_ENTRY`), then the layout, and
+/// only then bounded decompression of the members that are read.
+fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
+    let archive = match zip::open(bytes) {
+        Ok(archive) => archive,
+        Err(code) => {
+            return Err(EnumerationFailure {
+                codes: vec![code],
+                readable_observed: false,
+                manifest: None,
+            })
+        }
+    };
+    let mut content = Content::default();
+    let mut codes: BTreeSet<Code> = BTreeSet::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    // Entry checks in central-directory order. Ignored directory entries are
+    // not entries of the layout; a `readable/` entry is "observed" once it
+    // passed its own checks, before any failing entry (§11.8, T12).
+    for entry in &archive.entries {
+        if entry.is_directory {
+            continue;
+        }
+        if !is_safe_relative_path(&entry.name) || entry.is_symlink || !seen.insert(&entry.name) {
+            codes.insert(e::CONTAINER_ENTRY);
+            break;
+        }
+        if entry.name.starts_with("readable/") {
+            content.readable_present = true;
+        }
+    }
+    if !codes.is_empty() {
+        return Err(EnumerationFailure {
+            codes: codes.into_iter().collect(),
+            readable_observed: content.readable_present,
+            manifest: None,
+        });
+    }
+    for entry in &archive.entries {
+        if entry.is_directory {
+            continue;
+        }
+        let class = classify_path(&entry.name);
+        match class {
+            PathClass::Unknown => {
+                codes.insert(e::CONTAINER_ENTRY);
+            }
+            PathClass::RecordsExtra => content.records_extra = true,
+            PathClass::BlobsExtra => content.blobs_extra = true,
+            PathClass::TsaCert | PathClass::Readable => {}
+            PathClass::Blob => {
+                use sha2::Digest;
+                let mut hasher = sha2::Sha256::new();
+                match archive.stream(entry, limits::MAX_BLOB_BYTES, |chunk| hasher.update(chunk)) {
+                    Ok(()) => {
+                        content.blobs.insert(
+                            entry.name.clone(),
+                            BlobData::Hashed {
+                                digest: format!(
+                                    "sha256:{}",
+                                    digest::to_lower_hex(&hasher.finalize())
+                                ),
+                                size: entry.uncompressed_size,
+                            },
+                        );
+                    }
+                    Err(zip::MemberError::TooLarge) => {
+                        content.blobs.insert(entry.name.clone(), BlobData::Oversize);
+                    }
+                    Err(zip::MemberError::Corrupt) => {
+                        codes.insert(e::CONTAINER_ZIP);
+                    }
+                }
+            }
+            _ => match archive.read(entry, class_limit(&class)) {
+                Ok(data) => content.store(&entry.name, &class, FileData::Bytes(data)),
+                Err(zip::MemberError::TooLarge) => {
+                    content.store(&entry.name, &class, FileData::Oversize);
+                }
+                Err(zip::MemberError::Corrupt) => {
+                    codes.insert(e::CONTAINER_ZIP);
+                }
+            },
+        }
+    }
+    if codes.is_empty() {
+        Ok(content)
+    } else {
+        Err(EnumerationFailure {
+            codes: codes.into_iter().collect(),
+            readable_observed: content.readable_present,
+            manifest: None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The pipeline
+// ---------------------------------------------------------------------------
 
 /// Verifies one container target.
 ///
 /// # Errors
-/// Returns a [`UsageError`] for I/O problems reading the container; container
-/// *content* defects are reported in the `Report`, not as `Err`.
+/// Returns a [`UsageError`] for operator-input problems (keyset, trust
+/// anchors) and I/O problems reading the container; container *content*
+/// defects are reported in the `Report`.
 pub fn verify_container(
     input: &ContainerInput,
     options: &VerifyOptions,
 ) -> Result<Report, UsageError> {
-    let mut run = Run::new(options);
-
-    // ------------------------------------------------------------------
-    // Materialise the container: directory enumeration, zip reader, or the
-    // in-memory file map. Entry count and uncompressed bytes are bounded
-    // while reading (§13); zip entry safety defects are classified by the
-    // reader, path safety below.
-    // ------------------------------------------------------------------
-    let (materialised, archive_identity) = match input {
-        ContainerInput::Directory(root) => match read_directory(root) {
-            Ok(materialised) => (materialised, None),
-            Err(ReadFailure::Usage(error)) => return Err(error),
-            Err(ReadFailure::Content { code, partial }) => {
-                let identity = fallback_identity(&partial.files);
-                if options.skipped(code) {
-                    (Materialised::default(), Some(identity))
-                } else {
-                    return Ok(run.fail(code, identity));
-                }
-            }
-        },
-        ContainerInput::Zip(bytes) => {
-            let identity = InputIdentity {
-                sha256: digest::sha256_digest_string(bytes),
-                size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-            };
-            match zip::read_zip(bytes) {
-                Ok(files) => (Materialised::from_files(files), Some(identity)),
-                Err(code) => {
-                    if options.skipped(code) {
-                        (Materialised::default(), Some(identity))
-                    } else {
-                        return Ok(run.fail(code, identity));
-                    }
-                }
-            }
-        }
-        ContainerInput::Files(files) => (Materialised::from_files(files.clone()), None),
+    // §14.1 (W4): operator inputs are checked before any stage runs.
+    let anchors = if options.tsa_trust.is_empty() {
+        Vec::new()
+    } else {
+        timestamp::load_trust_anchors(&options.tsa_trust)?
     };
+    World::from_results(Vec::new(), options)?;
 
-    // The reported input identity follows what was actually identified (§14.6,
-    // Q27): a zip container is always identified by its archive bytes; a
-    // directory container by its manifest once the manifest is read, and by the
-    // manifest digest once the manifest structure passes. Until then the
-    // fallback identity of the materialised file set is reported.
+    let mut run = Run::new(options);
+    let archive_identity = match input {
+        ContainerInput::Zip(bytes) => Some(InputIdentity::of_bytes(bytes)),
+        _ => None,
+    };
     let is_archive = archive_identity.is_some();
-    let mut identity = archive_identity.unwrap_or_else(|| fallback_identity(&materialised.files));
+    let mut identity = archive_identity.unwrap_or_else(InputIdentity::unknown);
 
-    // §13: entry count and total uncompressed bytes for the in-memory forms
-    // (the zip reader enforces the same limits while inflating; a directory
-    // reader enforces them while reading).
-    if !matches!(input, ContainerInput::Zip(_)) {
-        let total: u64 = materialised
-            .files
-            .values()
-            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-            .fold(0u64, u64::saturating_add);
-        for code in [
-            (materialised.files.len() > limits::MAX_CONTAINER_ENTRIES).then_some(e::CONTAINER_SIZE),
-            (total > limits::MAX_CONTAINER_UNCOMPRESSED_BYTES).then_some(e::CONTAINER_SIZE),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if !options.skipped(code) {
-                return Ok(run.fail(code, identity));
+    // (1) Entry enumeration and safety.
+    let enumerated = match input {
+        ContainerInput::Directory(root) => enumerate_directory(root)?,
+        ContainerInput::Zip(bytes) => enumerate_zip(bytes),
+        ContainerInput::Files(files) => enumerate_files(files),
+    };
+    let content = match enumerated {
+        Ok(content) => content,
+        Err(failure) => {
+            if failure.readable_observed {
+                run.container.notices.push(n::READABLE_PRESENT);
             }
+            if !is_archive {
+                // §14.6 tier (b): the raw manifest bytes when they were read
+                // within their limit; otherwise null (tier (c)).
+                identity = match &failure.manifest {
+                    Some(FileData::Bytes(bytes)) => InputIdentity::of_bytes(bytes),
+                    _ => InputIdentity::unknown(),
+                };
+            }
+            return Ok(run.fail(&failure.codes, identity, LimitationFacts::default()));
         }
-    }
-
-    // ------------------------------------------------------------------
-    // (1) Entry enumeration / safety and closed layout (§11.1, §11.9).
-    // ------------------------------------------------------------------
-    let (layout, layout_error) = classify_layout(materialised, options);
-    if layout.readable_present {
-        // §11.8: informational only; the directory is never parsed or hashed.
+    };
+    if content.readable_present {
         run.container.notices.push(n::READABLE_PRESENT);
     }
-    if let Some(code) = layout_error {
-        return Ok(run.fail(code, identity));
-    }
 
-    // ------------------------------------------------------------------
-    // (2) Manifest parse and canonical file form (§1.8), (3) manifest
-    // structure (§11.2, §11.2.1).
-    // ------------------------------------------------------------------
-    let Some(manifest_bytes) = layout.manifest.as_deref() else {
-        if options.skipped(e::MANIFEST_MISSING) {
-            return Ok(run.finish(identity, Vec::new()));
+    // (2) Manifest bytes and canonical form.
+    let manifest_bytes = match &content.manifest {
+        None => return Ok(run.fail(&[e::MANIFEST_MISSING], identity, LimitationFacts::default())),
+        Some(FileData::Oversize) => {
+            return Ok(run.fail(&[e::JSON_SIZE], identity, LimitationFacts::default()))
         }
-        return Ok(run.fail(e::MANIFEST_MISSING, identity));
+        Some(FileData::Bytes(bytes)) => bytes.as_slice(),
     };
-    // From here on the manifest file itself is the identified input (a zip
-    // container keeps its archive identity for the whole run).
     if !is_archive {
-        identity = raw_manifest_identity(manifest_bytes);
+        identity = InputIdentity::of_bytes(manifest_bytes);
     }
     let manifest_object =
         match json::parse_canonical_object(manifest_bytes, limits::MAX_MANIFEST_BYTES) {
             Ok(object) => object,
-            Err(code) => {
-                if options.skipped(code) {
-                    return Ok(run.finish(identity, Vec::new()));
-                }
-                return Ok(run.fail(code, identity));
-            }
+            Err(code) => return Ok(run.fail(&[code], identity, LimitationFacts::default())),
         };
+    // §11.5/§14.9 (T12): `previous_manifest` is non-null in the parsed
+    // manifest, so the previous manifest's own signature is not re-verified
+    // (unless a supplied `--previous` verifies it at step (10)); this is
+    // reported even when a later check fails.
+    run.previous_sig_unverified = manifest_object
+        .get("previous_manifest")
+        .is_some_and(|value| !value.is_null());
     let canonical_manifest = json::canonical_object_bytes(&manifest_object);
     let manifest_digest = digest::manifest_digest(&canonical_manifest);
+    // (3) Manifest structure.
     let manifest = match parse_manifest(&manifest_object, options) {
         Ok(manifest) => manifest,
-        Err(code) => {
-            if options.skipped(code) {
-                return Ok(run.finish(identity, Vec::new()));
-            }
-            return Ok(run.fail(code, identity));
-        }
+        Err(code) => return Ok(run.fail(&[code], identity, LimitationFacts::default())),
     };
-    // The manifest structure passed: the container is now identified by its
-    // §2.4 manifest digest, and the determined manifest fields may be reported.
     if !is_archive {
         identity = InputIdentity {
-            sha256: manifest_digest.clone(),
-            size: u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX),
+            sha256: Some(manifest_digest.clone()),
+            size: Some(u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX)),
         };
     }
     run.container.manifest_digest = Some(manifest_digest.clone());
@@ -187,119 +655,92 @@ pub fn verify_container(
     run.container.level_claimed = Some(manifest.level.as_str().to_owned());
     run.container.previous_manifest_digest = manifest.previous_manifest.clone();
     run.container.record_count = Some(u64::try_from(manifest.records.len()).unwrap_or(u64::MAX));
+    // §11.5/§14.9 (T12): the previous manifest's own signature is not
+    // re-verified unless a supplied `--previous` verifies it at step (10).
 
-    // ------------------------------------------------------------------
-    // (4) Manifest digest and the attestation file (§11.3).
-    // ------------------------------------------------------------------
-    let Some(sigfile_bytes) = layout.sigfile.as_deref() else {
-        // The layout requires the attestation file; without it the manifest has
-        // no signature at all.
-        if options.skipped(e::MANIFEST_SCHEMA) {
-            return Ok(run.finish(identity, Vec::new()));
+    // (4) The attestation file and the manifest digest.
+    let sigfile_bytes = match &content.sigfile {
+        None => {
+            return Ok(run.fail(
+                &[e::MANIFEST_UNSIGNED],
+                identity,
+                LimitationFacts::default(),
+            ))
         }
-        return Ok(run.fail(e::MANIFEST_SCHEMA, identity));
+        Some(FileData::Oversize) => {
+            return Ok(run.fail(&[e::JSON_SIZE], identity, LimitationFacts::default()))
+        }
+        Some(FileData::Bytes(bytes)) => bytes.as_slice(),
     };
     let sigfile_object =
         match json::parse_canonical_object(sigfile_bytes, limits::MAX_SIGFILE_BYTES) {
             Ok(object) => object,
-            Err(code) => {
-                if options.skipped(code) {
-                    return Ok(run.finish(identity, Vec::new()));
-                }
-                return Ok(run.fail(code, identity));
-            }
+            Err(code) => return Ok(run.fail(&[code], identity, LimitationFacts::default())),
         };
     let attestation = match parse_attestation(&sigfile_object, &manifest, &manifest_digest, options)
     {
         Ok(attestation) => attestation,
-        Err(code) => {
-            if options.skipped(code) {
-                return Ok(run.finish(identity, Vec::new()));
-            }
-            return Ok(run.fail(code, identity));
-        }
+        Err(code) => return Ok(run.fail(&[code], identity, LimitationFacts::default())),
     };
 
-    // Parse the listed record files early: the manifest signature must be
-    // checked against the key state the container's own records establish, and
-    // the same parse results are reused by the records stage. Parse failures
-    // are reported later, not here.
-    let entries = build_entries(&manifest.records, &layout.records);
+    // The verification context: the manifest-listed records (in manifest
+    // order) plus the keyset. Parse results are reused by step (7).
+    let entries = build_entries(&manifest.records, &content.records);
     let results: Vec<Result<RecordFile, Code>> = entries
         .iter()
-        .map(|entry| match &entry.parsed {
-            Some(result) => result.clone(),
-            None => Err(e::JSON_INVALID),
+        .map(|entry| entry.parsed.clone().unwrap_or(Err(e::JSON_INVALID)))
+        .collect();
+    let listed: BTreeSet<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+    let extra_records: Vec<RecordFile> = content
+        .records
+        .iter()
+        .filter(|(path, _)| !listed.contains(path.as_str()))
+        .filter_map(|(_, data)| match data {
+            FileData::Bytes(bytes) => envelope::parse_record_file(bytes).ok(),
+            FileData::Oversize => None,
         })
         .collect();
-    let mut world = World::from_results(results, options)?;
+    let mut world = World::from_results_with_context(results, extra_records, options)?;
     world.set_container_context();
 
-    // ------------------------------------------------------------------
-    // Timestamp chain (§12). Verified before evaluation so the §9.4
-    // compromise rule and the manifest signature check can use the evidence;
-    // the receipt-file problems and the verdict effects are reported in the
-    // §14.5 (11) position below.
-    // ------------------------------------------------------------------
-    let timestamps = verify_timestamps(
+    // Timestamp evidence (§12), computed early for §9.4 and reported at (11).
+    let raw_manifest_digest = digest::sha256_digest_bytes(&manifest_digest).unwrap_or([0u8; 32]);
+    let timestamp_files: BTreeMap<String, Vec<u8>> = content
+        .timestamps
+        .iter()
+        .filter_map(|(path, data)| match data {
+            FileData::Bytes(bytes) => Some((path.clone(), bytes.clone())),
+            FileData::Oversize => None,
+        })
+        .collect();
+    let mut evidence = timestamp::verify_chain(
         &attestation.timestamps,
-        &manifest_digest,
-        &layout.timestamps,
-        options,
-    )?;
-    run.container.anchor_verified = Some(timestamps.evidence.anchor_verified);
-    world.set_timestamp_evidence(timestamps.evidence.clone());
+        &raw_manifest_digest,
+        &timestamp_files,
+        &anchors,
+    );
+    apply_receipt_inventory(&mut evidence, &attestation.timestamps, &content.timestamps);
+    world.set_timestamp_evidence(evidence.clone());
 
-    // ------------------------------------------------------------------
-    // (5) Manifest signature (§11.3, §4.4).
-    // ------------------------------------------------------------------
-    if !attestation.signatures.is_empty() {
-        let outcome = world.check_manifest_signatures(
-            &attestation.signatures,
-            &manifest_digest,
-            &manifest.created_at,
-        );
-        for notice in &outcome.notices {
-            if !options.skipped(notice) {
-                run.container.notices.push(notice);
-            }
+    // (5) The manifest signature (§11.3).
+    let outcome = world.check_manifest_signatures(
+        &attestation.signatures,
+        &manifest_digest,
+        &manifest.created_at,
+    );
+    run.facts.context_trusted_outside_records |= outcome.context_trusted;
+    match outcome.code {
+        Some(code) if crate::record::effect(code) == Verdict::Invalid && !options.skipped(code) => {
+            let facts = run.facts;
+            return Ok(run.fail(&[code], identity, facts));
         }
-        if !outcome.invalid_errors.is_empty() {
-            let code = *outcome
-                .invalid_errors
-                .iter()
-                .filter(|code| !options.skipped(code))
-                .min()
-                .unwrap_or(&e::MANIFEST_SIG_INVALID);
-            if !options.skipped(code) {
-                let limitations = world.limitations(Some(&run.container));
-                return Ok(run.fail_with(code, identity, limitations));
-            }
-        } else {
-            for code in &outcome.unverifiable_errors {
-                if !options.skipped(code) {
-                    run.container.errors.push(code);
-                }
-            }
-            if !outcome.verified
-                && outcome.unverifiable_errors.is_empty()
-                && !options.skipped(e::SIG_UNVERIFIABLE)
-                && !options.skipped(e::KEY_UNKNOWN)
-            {
-                // Defensive: a non-empty signature list that establishes
-                // nothing is unverifiable, never silently passed (§11.3).
-                run.container.errors.push(e::SIG_UNVERIFIABLE);
-            }
-        }
+        Some(code) if !options.skipped(code) => run.container.errors.push(code),
+        _ => {}
     }
 
-    // ------------------------------------------------------------------
-    // (6) Level and chain completeness (§11.2, §11.4).
-    // ------------------------------------------------------------------
+    // (6) Level and chain completeness.
     match check_level_and_chain(&manifest) {
         Ok(()) => {
-            // §11.4: the chain claim status is only determined once the chain
-            // structure itself is complete.
             run.container.chain = Some(ChainReport {
                 status: match manifest.level {
                     Level::L0 => "absent",
@@ -313,89 +754,150 @@ pub fn verify_container(
         }
         Err(code) => {
             if !options.skipped(code) {
-                let limitations = world.limitations(Some(&run.container));
-                return Ok(run.fail_with(code, identity, limitations));
+                {
+                    let facts = run.facts;
+                    return Ok(run.fail(&[code], identity, facts));
+                }
             }
         }
     }
 
-    // ------------------------------------------------------------------
-    // (7) Records listing and per-record verification (§11.2.1, §11.6).
-    // ------------------------------------------------------------------
-    let mut listing_errors: Vec<Code> = Vec::new();
+    // (7) Records listing (§11.6): every independent violation together (U8).
+    let mut listing: BTreeSet<Code> = BTreeSet::new();
     for entry in &entries {
         if let Some(code) = entry.error {
-            if !options.skipped(code) {
-                listing_errors.push(code);
-            }
+            listing.insert(code);
         }
     }
     let listed_paths: BTreeSet<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
-    if layout
-        .records
-        .keys()
-        .any(|path| !listed_paths.contains(path.as_str()))
-        && !options.skipped(e::MANIFEST_RECORD_EXTRA)
+    if content.records_extra
+        || content
+            .records
+            .keys()
+            .any(|path| !listed_paths.contains(path.as_str()))
     {
-        listing_errors.push(e::MANIFEST_RECORD_EXTRA);
+        listing.insert(e::MANIFEST_RECORD_EXTRA);
     }
-    listing_errors.sort_unstable();
-    listing_errors.dedup();
-    if !listing_errors.is_empty() {
-        // The records listing is inconsistent: the container is invalid and no
-        // per-record verification result is claimed (records: [], zero
-        // summary counts, exactly the container errors).
-        run.container.errors.extend(listing_errors);
-        let limitations = world.limitations(Some(&run.container));
-        return Ok(run.finish_with(identity, Vec::new(), limitations));
+    listing.retain(|code| !options.skipped(code));
+    if !listing.is_empty() {
+        let codes: Vec<Code> = listing.into_iter().collect();
+        let facts = run.facts;
+        return Ok(run.fail(&codes, identity, facts));
     }
-
+    // Per-record verification.
     let mut records = world.evaluate_all();
+    // (8) Cross-record state.
     let cross = world.container_cross_checks();
     merge_cross_checks(&cross, &mut run.container, &mut records);
-
-    // ------------------------------------------------------------------
-    // (9) Blobs (§11.7).
-    // ------------------------------------------------------------------
-    for code in check_blobs(manifest.blobs.as_deref(), &layout.blobs) {
-        if !options.skipped(code) {
-            run.container.errors.push(code);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // (10) Previous-manifest chain (§11.5), including `--previous`.
-    // ------------------------------------------------------------------
-    for code in check_previous_chain(&manifest, &layout, options)? {
-        if !options.skipped(code) {
-            run.container.errors.push(code);
-        }
-    }
-    if manifest.previous_manifest.is_some() {
-        // §11.5: the embedded previous manifest's own signature is not
-        // re-verified; only its digest is chained.
-        run.container.notices.push(n::PREVIOUS_SIG_UNVERIFIED);
-    }
-
-    // ------------------------------------------------------------------
-    // (11) Timestamp outcomes and the container verdict (§12.5).
-    // ------------------------------------------------------------------
-    run.container.timestamps = timestamp_reports(&attestation.timestamps, &timestamps.evidence);
-    let timestamp_errors = if timestamps.verified {
-        timestamp_effects(&timestamps.evidence)
-    } else {
-        timestamps.errors.clone()
+    let facts = |run: &Run<'_>, world: &World| {
+        let mut facts = world.limitation_facts(true);
+        facts.context_trusted_outside_records = run.facts.context_trusted_outside_records;
+        facts.previous_content_unverified = run.facts.previous_content_unverified;
+        facts
     };
-    for code in timestamp_errors {
+    if !cross.container_errors.is_empty() {
+        let facts = facts(&run, &world);
+        return Ok(run.finish(identity, records, facts));
+    }
+    // (9) Blobs.
+    let blob_errors = check_blobs(
+        manifest.blobs.as_deref(),
+        &content.blobs,
+        content.blobs_extra,
+    );
+    let blob_errors: Vec<Code> = blob_errors
+        .into_iter()
+        .filter(|code| !options.skipped(code))
+        .collect();
+    if !blob_errors.is_empty() {
+        run.container.errors.extend(blob_errors);
+        let facts = facts(&run, &world);
+        return Ok(run.finish(identity, records, facts));
+    }
+    // (10) Previous-manifest chain.
+    let previous = previous_stage(&manifest, &content, &mut world, options)?;
+    run.facts.context_trusted_outside_records |= previous.context_trusted;
+    if previous.signature_verified {
+        run.facts.previous_content_unverified = true;
+        run.previous_sig_unverified = false;
+    }
+    if let Some(code) = previous.code {
+        if !options.skipped(code) {
+            run.container.errors.push(code);
+            let facts = facts(&run, &world);
+            return Ok(run.finish(identity, records, facts));
+        }
+    }
+    // (11) Timestamps.
+    run.container.timestamps = timestamp_reports(&attestation.timestamps, &evidence);
+    run.container.anchor_verified = Some(evidence.anchor_verified);
+    for code in evidence.reported_codes() {
         if !options.skipped(code) {
             run.container.errors.push(code);
         }
     }
-    // ------------------------------------------------------------------
-    // (12) Aggregation and report.
-    // ------------------------------------------------------------------
-    let limitations = world.limitations(Some(&run.container));
-    Ok(run.finish_with(identity, records, limitations))
+    // (12) Aggregation.
+    let facts = facts(&run, &world);
+    Ok(run.finish(identity, records, facts))
+}
+
+/// §11.3: every `.tsr` file in `signatures/` must be listed, and a listed file
+/// above `MAX_TIMESTAMP_BYTES` is `E_JSON_SIZE` (§13). Both are file checks of
+/// the timestamp phase (W6): every listed receipt is then invalid.
+fn apply_receipt_inventory(
+    evidence: &mut ChainEvidence,
+    listed: &[AttestationTimestamp],
+    files: &BTreeMap<String, FileData>,
+) {
+    let unlisted = files
+        .keys()
+        .any(|path| !listed.iter().any(|entry| &entry.path == path));
+    let oversize: Vec<bool> = listed
+        .iter()
+        .map(|entry| matches!(files.get(&entry.path), Some(FileData::Oversize)))
+        .collect();
+    if !unlisted && !oversize.iter().any(|flag| *flag) {
+        return;
+    }
+    let mut receipts: Vec<timestamp::ReceiptOutcome> = listed
+        .iter()
+        .zip(&oversize)
+        .map(|(entry, oversize)| timestamp::ReceiptOutcome {
+            state: ReceiptState::Invalid,
+            gen_time: None,
+            accuracy_us: None,
+            error: if *oversize {
+                Some(e::JSON_SIZE)
+            } else if files.contains_key(&entry.path) {
+                evidence
+                    .receipts
+                    .iter()
+                    .zip(listed)
+                    .find(|(_, other)| other.path == entry.path)
+                    .and_then(|(receipt, _)| receipt.error)
+                    .filter(|code| matches!(*code, e::TS_FILE | e::JSON_SIZE))
+            } else {
+                Some(e::TS_FILE)
+            },
+        })
+        .collect();
+    if unlisted {
+        if let Some(first) = receipts.first_mut() {
+            first.error.get_or_insert(e::TS_FILE);
+        } else {
+            receipts.push(timestamp::ReceiptOutcome {
+                state: ReceiptState::Invalid,
+                gen_time: None,
+                accuracy_us: None,
+                error: Some(e::TS_FILE),
+            });
+        }
+    }
+    *evidence = ChainEvidence {
+        receipts,
+        chain_error: None,
+        anchor_verified: false,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -406,14 +908,16 @@ pub fn verify_container(
 struct Run<'a> {
     options: &'a VerifyOptions,
     container: ContainerReport,
+    facts: LimitationFacts,
+    previous_sig_unverified: bool,
 }
 
 impl<'a> Run<'a> {
     fn new(options: &'a VerifyOptions) -> Self {
         Self {
             options,
-            // §14.6: these fields are always present; their default is the
-            // honest "not determined" value, never an invented pass.
+            // §14.6: these fields are always present; their defaults are the
+            // honest "not determined" values, never an invented pass.
             container: ContainerReport {
                 created_at: None,
                 manifest_digest: None,
@@ -429,37 +933,32 @@ impl<'a> Run<'a> {
                 notices: Vec::new(),
                 timestamps: Vec::new(),
             },
+            facts: LimitationFacts::default(),
+            previous_sig_unverified: false,
         }
     }
 
-    /// A report for a container-level invalid failure: `records: []` and
-    /// exactly one container error (§14.5), with the limitations known before
-    /// the verification context exists.
-    fn fail(self, code: Code, input: InputIdentity) -> Report {
-        self.fail_with(code, input, vec![LIMITATION_OFFLINE.to_owned()])
-    }
-
-    /// A report for a container-level invalid failure with explicit
-    /// limitations (the context exists and owns the §14.9 wording).
-    fn fail_with(mut self, code: Code, input: InputIdentity, limitations: Vec<String>) -> Report {
-        if !self.options.skipped(code) {
-            self.container.errors.push(code);
+    /// A pre-record container-level failure: the stage's codes, `records: []`.
+    fn fail(mut self, codes: &[Code], input: InputIdentity, facts: LimitationFacts) -> Report {
+        for code in codes {
+            if !self.options.skipped(code) {
+                self.container.errors.push(code);
+            }
         }
-        self.finish_with(input, Vec::new(), limitations)
+        self.finish(input, Vec::new(), facts)
     }
 
-    /// Final report with explicit limitations; sorts and dedupes codes,
-    /// computes the verdict and summary.
-    fn finish(self, input: InputIdentity, records: Vec<RecordReport>) -> Report {
-        self.finish_with(input, records, vec![LIMITATION_OFFLINE.to_owned()])
-    }
-
-    fn finish_with(
+    /// The final report: sorts and dedupes codes, computes the verdict, the
+    /// summary and the limitations.
+    fn finish(
         mut self,
         input: InputIdentity,
         mut records: Vec<RecordReport>,
-        limitations: Vec<String>,
+        facts: LimitationFacts,
     ) -> Report {
+        if self.previous_sig_unverified {
+            self.container.notices.push(n::PREVIOUS_SIG_UNVERIFIED);
+        }
         sort_unique(&mut self.container.errors);
         sort_unique(&mut self.container.notices);
         for record in &mut records {
@@ -468,8 +967,9 @@ impl<'a> Run<'a> {
         }
         let verdict = aggregate_verdict(&self.container.errors, &records);
         let summary = Summary::Verdicts(count_verdicts(&records));
+        let limitations = limitations::compute(&records, Some(&self.container), facts);
         Report {
-            checks_disabled: skipped_codes(self.options),
+            checks_disabled: self.options.checks_disabled(),
             report_version: crate::REPORT_VERSION.to_owned(),
             spec: crate::SPEC.to_owned(),
             target: Target::Container,
@@ -488,375 +988,46 @@ impl<'a> Run<'a> {
     }
 }
 
-/// The §14.9 offline limitation, the only one that applies before a
-/// verification context exists. The context owns the rest (`World::limitations`).
-const LIMITATION_OFFLINE: &str = "Offline verification: only this container's records and the supplied keyset are in the verification context; references to records outside the context resolve as missing.";
-
 /// §14.4: the error codes that mean `unverifiable`, never `invalid`.
 fn is_unverifiable_code(code: Code) -> bool {
-    matches!(
-        code,
-        e::KEY_UNKNOWN
-            | e::KEY_UNTRUSTED
-            | e::SIG_UNVERIFIABLE
-            | e::GRANT_UNRESOLVED
-            | e::GRANT_REVOKED
-            | e::GRANT_EXPIRED
-            | e::TS_UNTRUSTED
-    )
+    crate::record::effect(code) == Verdict::Unverifiable
 }
 
-/// Verdict precedence: invalid over unverifiable over valid (§14.3). A
-/// container is never `erased` at the top level.
+/// The container verdict: invalid beats unverifiable beats valid (erased
+/// records are not failures).
 fn aggregate_verdict(container_errors: &[Code], records: &[RecordReport]) -> Verdict {
-    let mut invalid = container_errors
-        .iter()
-        .any(|code| !is_unverifiable_code(code));
-    let mut unverifiable = container_errors
-        .iter()
-        .any(|code| is_unverifiable_code(code));
+    let mut verdict = Verdict::Valid;
+    for code in container_errors {
+        if is_unverifiable_code(code) {
+            if verdict == Verdict::Valid {
+                verdict = Verdict::Unverifiable;
+            }
+        } else {
+            return Verdict::Invalid;
+        }
+    }
     for record in records {
         match record.verdict {
-            Verdict::Invalid => invalid = true,
-            Verdict::Unverifiable => unverifiable = true,
+            Verdict::Invalid => return Verdict::Invalid,
+            Verdict::Unverifiable => verdict = Verdict::Unverifiable,
             Verdict::Valid | Verdict::Erased => {}
         }
     }
-    if invalid {
-        Verdict::Invalid
-    } else if unverifiable {
-        Verdict::Unverifiable
-    } else {
-        Verdict::Valid
-    }
+    verdict
 }
 
-/// Summary counts of the per-record verdicts (§14.6).
 fn count_verdicts(records: &[RecordReport]) -> VerdictCounts {
-    let mut counts = VerdictCounts::default();
-    for record in records {
-        match record.verdict {
-            Verdict::Valid => counts.valid += 1,
-            Verdict::Invalid => counts.invalid += 1,
-            Verdict::Unverifiable => counts.unverifiable += 1,
-            Verdict::Erased => counts.erased += 1,
-        }
-    }
-    counts
+    crate::record::count_verdicts(records)
 }
 
-/// §14.7: echoes the sorted skipped-check list as registry codes.
-fn skipped_codes(options: &VerifyOptions) -> Vec<Code> {
-    options
-        .skip_checks
-        .iter()
-        .filter_map(|text| {
-            crate::error_codes::ALL_ERROR_CODES
-                .iter()
-                .chain(crate::error_codes::ALL_NOTICES.iter())
-                .copied()
-                .find(|code| *code == text.as_str())
-        })
-        .collect()
-}
-
-/// Sorts and deduplicates a code list (reports use sorted unique codes).
 fn sort_unique(codes: &mut Vec<Code>) {
     codes.sort_unstable();
     codes.dedup();
 }
 
 // ---------------------------------------------------------------------------
-// Materialisation (§11.1, §11.9, §13)
+// Entry layout helpers (§11.1)
 // ---------------------------------------------------------------------------
-
-/// A materialised container: relative path -> bytes plus the observed
-/// `readable/` presence (§11.8) and the running byte total.
-#[derive(Default)]
-struct Materialised {
-    files: BTreeMap<String, Vec<u8>>,
-    readable_present: bool,
-    total_bytes: u64,
-}
-
-impl Materialised {
-    fn from_files(files: BTreeMap<String, Vec<u8>>) -> Self {
-        let readable_present = files.keys().any(|path| path.starts_with("readable/"));
-        Self {
-            files,
-            readable_present,
-            total_bytes: 0,
-        }
-    }
-}
-
-/// A directory read failure: I/O is a usage error, content defects are
-/// reported. The partially materialised container is kept so `input` identity
-/// can still be computed when the manifest was already read.
-enum ReadFailure {
-    Usage(UsageError),
-    Content {
-        code: Code,
-        partial: Box<Materialised>,
-    },
-}
-
-fn content_failure(code: Code, materialised: &Materialised) -> ReadFailure {
-    ReadFailure::Content {
-        code,
-        partial: Box::new(Materialised {
-            files: materialised.files.clone(),
-            readable_present: materialised.readable_present,
-            total_bytes: materialised.total_bytes,
-        }),
-    }
-}
-
-/// True when `name` may be a directory directly under the container-relative
-/// path `parent` (§11.1 layout).
-fn is_allowed_directory(parent: &str, name: &str) -> bool {
-    match parent {
-        "" => matches!(
-            name,
-            "signatures" | "previous" | "records" | "blobs" | "readable"
-        ),
-        "blobs" => name == "sha256",
-        _ => false,
-    }
-}
-
-/// Reads a directory container recursively in sorted relative-path order.
-fn read_directory(root: &Path) -> Result<Materialised, ReadFailure> {
-    let metadata = std::fs::symlink_metadata(root).map_err(|error| {
-        ReadFailure::Usage(UsageError(format!(
-            "cannot read container directory {root:?}: {error}"
-        )))
-    })?;
-    if !metadata.is_dir() {
-        return Err(ReadFailure::Usage(UsageError(format!(
-            "container path {root:?} is not a directory"
-        ))));
-    }
-    let mut materialised = Materialised::default();
-    walk_directory(root, "", &mut materialised)?;
-    Ok(materialised)
-}
-
-fn walk_directory(
-    directory: &Path,
-    prefix: &str,
-    materialised: &mut Materialised,
-) -> Result<(), ReadFailure> {
-    let reader = std::fs::read_dir(directory).map_err(|error| {
-        ReadFailure::Usage(UsageError(format!(
-            "cannot read container directory {directory:?}: {error}"
-        )))
-    })?;
-    let mut names: Vec<std::ffi::OsString> = Vec::new();
-    for entry in reader {
-        let entry = entry.map_err(|error| {
-            ReadFailure::Usage(UsageError(format!(
-                "cannot read container directory {directory:?}: {error}"
-            )))
-        })?;
-        names.push(entry.file_name());
-    }
-    // Deterministic traversal: the verdict never depends on filesystem order.
-    names.sort();
-    for name in names {
-        let Some(name) = name.to_str() else {
-            return Err(content_failure(e::CONTAINER_ENTRY, materialised));
-        };
-        let relative = if prefix.is_empty() {
-            name.to_owned()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let path = directory.join(name);
-        let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-            ReadFailure::Usage(UsageError(format!("cannot inspect {path:?}: {error}")))
-        })?;
-        let readable = relative == "readable" || relative.starts_with("readable/");
-        // §11.8: `readable/` is ignored entirely — not read, not hashed, not
-        // trusted. Only its presence is noted.
-        if readable {
-            materialised.readable_present = true;
-            continue;
-        }
-        if metadata.file_type().is_symlink() {
-            // §11.1: all entries are ordinary files.
-            return Err(content_failure(e::CONTAINER_ENTRY, materialised));
-        }
-        if metadata.is_dir() {
-            // §11.1: only the listed directories exist in a container, and
-            // `readable/` was already skipped above.
-            if !is_allowed_directory(prefix, name) {
-                return Err(content_failure(e::CONTAINER_ENTRY, materialised));
-            }
-            walk_directory(&path, &relative, materialised)?;
-            continue;
-        }
-        if !metadata.is_file() {
-            return Err(content_failure(e::CONTAINER_ENTRY, materialised));
-        }
-        if materialised.files.len() >= limits::MAX_CONTAINER_ENTRIES {
-            return Err(content_failure(e::CONTAINER_SIZE, materialised));
-        }
-        let bytes = std::fs::read(&path).map_err(|error| {
-            ReadFailure::Usage(UsageError(format!("cannot read {path:?}: {error}")))
-        })?;
-        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let total = materialised.total_bytes.saturating_add(length);
-        if total > limits::MAX_CONTAINER_UNCOMPRESSED_BYTES {
-            return Err(content_failure(e::CONTAINER_SIZE, materialised));
-        }
-        materialised.total_bytes = total;
-        materialised.files.insert(relative, bytes);
-    }
-    Ok(())
-}
-
-/// §14.6/Q27: the identity of a directory (or materialised-files) container
-/// before its manifest has been read: the SHA-256 over the materialised entry
-/// stream in sorted relative-path order, and the total byte size.
-fn fallback_identity(files: &BTreeMap<String, Vec<u8>>) -> InputIdentity {
-    let mut buffer = Vec::new();
-    let mut total: u64 = 0;
-    for (path, bytes) in files {
-        buffer.extend_from_slice(path.as_bytes());
-        buffer.push(0);
-        buffer.extend_from_slice(bytes);
-        total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-    }
-    InputIdentity {
-        sha256: digest::sha256_digest_string(&buffer),
-        size: total,
-    }
-}
-
-/// §14.6/Q27: once the manifest file has been read, a directory container is
-/// identified by the SHA-256 of its manifest bytes and the manifest byte size.
-fn raw_manifest_identity(bytes: &[u8]) -> InputIdentity {
-    InputIdentity {
-        sha256: digest::sha256_digest_string(bytes),
-        size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Entry enumeration and layout (§11.1, §11.8, §11.9)
-// ---------------------------------------------------------------------------
-
-/// The closed container layout after entry-safety classification.
-#[derive(Default)]
-struct Layout {
-    manifest: Option<Vec<u8>>,
-    sigfile: Option<Vec<u8>>,
-    previous_manifest: Option<Vec<u8>>,
-    timestamps: BTreeMap<String, Vec<u8>>,
-    records: BTreeMap<String, Vec<u8>>,
-    blobs: BTreeMap<String, Vec<u8>>,
-    readable_present: bool,
-}
-
-/// True when a path is a safe container-relative path: no absolute prefix, no
-/// `.`/`..`/empty segments, no NUL bytes.
-fn is_safe_relative_path(path: &str) -> bool {
-    if path.is_empty() || path.starts_with('/') || path.contains('\0') {
-        return false;
-    }
-    for segment in path.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
-            return false;
-        }
-    }
-    true
-}
-
-/// Classifies every entry into the closed layout, returning the first
-/// non-skipped layout error (§11.1, §11.9).
-fn classify_layout(materialised: Materialised, options: &VerifyOptions) -> (Layout, Option<Code>) {
-    let Materialised {
-        files,
-        readable_present,
-        ..
-    } = materialised;
-    let mut layout = Layout {
-        readable_present,
-        ..Layout::default()
-    };
-    let mut error: Option<Code> = None;
-    for (path, bytes) in files {
-        let violation = if !is_safe_relative_path(&path) {
-            Some(e::CONTAINER_ENTRY)
-        } else {
-            classify_one(&path, bytes, &mut layout)
-        };
-        let Some(code) = violation else {
-            continue;
-        };
-        if !options.skipped(code) {
-            error.get_or_insert(code);
-        }
-    }
-    (layout, error)
-}
-
-fn classify_one(path: &str, bytes: Vec<u8>, layout: &mut Layout) -> Option<Code> {
-    if path == MANIFEST_PATH {
-        layout.manifest = Some(bytes);
-        return None;
-    }
-    if let Some(rest) = path.strip_prefix("signatures/") {
-        if !rest.contains('/') {
-            if rest == "manifest.sig.json" {
-                layout.sigfile = Some(bytes);
-                return None;
-            }
-            if is_timestamp_file_name(rest) {
-                layout.timestamps.insert(path.to_owned(), bytes);
-                return None;
-            }
-            if is_tsa_cert_file_name(rest) {
-                // §11.3: transport convenience, never trusted on its own.
-                return None;
-            }
-        }
-        return Some(e::CONTAINER_ENTRY);
-    }
-    if let Some(rest) = path.strip_prefix("previous/") {
-        if !rest.contains('/') && rest == "manifest.json" {
-            layout.previous_manifest = Some(bytes);
-            return None;
-        }
-        return Some(e::CONTAINER_ENTRY);
-    }
-    if let Some(rest) = path.strip_prefix("records/") {
-        if !rest.contains('/') && is_record_file_name(rest) {
-            layout.records.insert(path.to_owned(), bytes);
-            return None;
-        }
-        // §11.1 special case: an extra file in `records/` keeps the content code.
-        return Some(e::MANIFEST_RECORD_EXTRA);
-    }
-    if let Some(rest) = path.strip_prefix("blobs/") {
-        if let Some(hex) = rest.strip_prefix("sha256/") {
-            if !hex.contains('/') && is_lower_hex_64(hex) {
-                layout.blobs.insert(path.to_owned(), bytes);
-                return None;
-            }
-        }
-        // §11.1 special case: an extra file in `blobs/` keeps the content code.
-        return Some(e::MANIFEST_BLOB);
-    }
-    if path.starts_with("readable/") {
-        // §11.8: `readable/` is ignored entirely. A *file* named `readable`
-        // is not the optional directory and stays an unknown entry.
-        layout.readable_present = true;
-        return None;
-    }
-    Some(e::CONTAINER_ENTRY)
-}
 
 /// True for `<64 lowercase hex>.json` (§11.6).
 fn is_record_file_name(name: &str) -> bool {
@@ -1502,175 +1673,6 @@ fn parse_timestamp_entry(value: &Value) -> Option<AttestationTimestamp> {
 }
 
 // ---------------------------------------------------------------------------
-// Timestamp chain (§12)
-// ---------------------------------------------------------------------------
-
-/// Verifies the renewal chain (§12.4). L0/L1 containers list no receipts and
-/// get empty evidence; nothing touches the timestamp parser in that case.
-fn verify_timestamps(
-    entries: &[AttestationTimestamp],
-    manifest_digest: &str,
-    files: &BTreeMap<String, Vec<u8>>,
-    options: &VerifyOptions,
-) -> Result<TimestampOutcomes, UsageError> {
-    if entries.is_empty() {
-        return Ok(TimestampOutcomes {
-            evidence: ChainEvidence::none(),
-            errors: Vec::new(),
-            verified: false,
-        });
-    }
-    // §11.3: every listed `.tsr` MUST exist, obey the per-receipt size limit
-    // and hash to its listed digest; every `.tsr` file in `signatures/` MUST be
-    // listed. These inventory checks are reported in the §14.5 (11) position.
-    let mut issues: Vec<Code> = Vec::new();
-    for entry in entries {
-        match files.get(&entry.path) {
-            Some(bytes) => {
-                if bytes.len() > limits::MAX_TIMESTAMP_BYTES {
-                    // §13 maps the per-receipt size limit to E_JSON_SIZE.
-                    issues.push(e::JSON_SIZE);
-                } else if digest::sha256_digest_string(bytes) != entry.digest {
-                    issues.push(e::TS_FILE);
-                }
-            }
-            None => issues.push(e::TS_FILE),
-        }
-    }
-    for path in files.keys() {
-        if !entries.iter().any(|entry| &entry.path == path) {
-            issues.push(e::TS_FILE);
-        }
-    }
-    issues.sort_unstable();
-    issues.dedup();
-    let reported: Vec<Code> = issues
-        .iter()
-        .copied()
-        .filter(|code| !options.skipped(code))
-        .collect();
-    if !issues.is_empty() {
-        // The promised receipt bytes cannot be checked, so no chain is
-        // verified: every listed receipt is reported invalid with no genTime.
-        let evidence = ChainEvidence {
-            receipts: entries
-                .iter()
-                .map(|_| ReceiptOutcome {
-                    state: ReceiptState::Invalid,
-                    gen_time: None,
-                    accuracy_us: 0,
-                    error: None,
-                })
-                .collect(),
-            chain_error: None,
-            anchor_verified: false,
-        };
-        return Ok(TimestampOutcomes {
-            evidence,
-            errors: reported,
-            verified: false,
-        });
-    }
-    let anchors = if options.tsa_trust.is_empty() {
-        Vec::new()
-    } else {
-        timestamp::load_trust_anchors(&options.tsa_trust)?
-    };
-    let raw_manifest_digest = digest::sha256_digest_bytes(manifest_digest).unwrap_or([0u8; 32]);
-    let evidence = timestamp::verify_chain(entries, &raw_manifest_digest, files, &anchors);
-    Ok(TimestampOutcomes {
-        evidence,
-        errors: Vec::new(),
-        verified: true,
-    })
-}
-
-/// What the timestamp stage established: the evidence handed to the world
-/// (§9.4, manifest signature) and the receipt-file errors reported at (11).
-struct TimestampOutcomes {
-    evidence: ChainEvidence,
-    /// Receipt-file problems (`E_TS_FILE` / `E_JSON_SIZE`), deferred to (11).
-    errors: Vec<Code>,
-    /// True when the renewal chain was verified over the receipt bytes.
-    verified: bool,
-}
-
-/// One `container.timestamps[]` report entry per attestation entry (§14.6).
-fn timestamp_reports(
-    entries: &[AttestationTimestamp],
-    evidence: &ChainEvidence,
-) -> Vec<TimestampReport> {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let receipt = evidence.receipts.get(index);
-            // A structurally broken renewal chain (§12.2 row 14) invalidates
-            // every receipt of the chain, whatever its individual checks said.
-            let (state, gen_time) = if evidence.chain_error.is_some() {
-                ("invalid", None)
-            } else {
-                let state = match receipt {
-                    Some(receipt) => match receipt.state {
-                        ReceiptState::Verified => "verified",
-                        ReceiptState::PresentUnverified => "present-unverified",
-                        ReceiptState::Invalid => "invalid",
-                    },
-                    None => "invalid",
-                };
-                (
-                    state,
-                    receipt
-                        .and_then(|receipt| receipt.gen_time)
-                        .map(Timestamp::to_ts_string),
-                )
-            };
-            TimestampReport {
-                index,
-                path: Some(entry.path.clone()),
-                state: state.to_owned(),
-                gen_time,
-            }
-        })
-        .collect()
-}
-
-/// §12.5: the container-level effects of the timestamp outcomes. Checks 1–14
-/// make the container invalid; an all-checks-1–14-pass but untrusted chain
-/// makes it unverifiable.
-fn timestamp_effects(evidence: &ChainEvidence) -> Vec<Code> {
-    if let Some(chain_error) = evidence.chain_error {
-        return vec![chain_error];
-    }
-    let mut codes = Vec::new();
-    let mut any_invalid = false;
-    for receipt in &evidence.receipts {
-        if receipt.state == ReceiptState::Invalid {
-            any_invalid = true;
-            if let Some(code) = receipt.error {
-                codes.push(code);
-            }
-        }
-    }
-    if any_invalid && codes.is_empty() {
-        // Every receipt state comes with its first failing check; stay honest
-        // about an invalid receipt that did not name one.
-        codes.push(e::TS_SCHEMA);
-    }
-    if !any_invalid
-        && evidence
-            .receipts
-            .iter()
-            .any(|receipt| receipt.state == ReceiptState::PresentUnverified)
-    {
-        codes.push(e::TS_UNTRUSTED);
-    }
-    codes.sort_unstable();
-    codes.dedup();
-    codes
-}
-
-// ---------------------------------------------------------------------------
 // Level and chain completeness (§11.2, §11.4)
 // ---------------------------------------------------------------------------
 
@@ -1704,15 +1706,13 @@ fn check_level_and_chain(manifest: &Manifest) -> Result<(), Code> {
 // Records listing (§11.6)
 // ---------------------------------------------------------------------------
 
-/// One manifest record entry together with the outcome of reading its file.
+/// One manifest-listed record and its listing state.
 struct EntryState {
-    /// Container-relative file path derived from the entry digest.
+    /// `records/<hex>.json`.
     path: String,
-    /// Result of [`envelope::parse_record_file`] when the file is present; the
-    /// error code is passed to the world so the per-record report carries the
-    /// real first failing check.
+    /// The parsed record file, when the listing found a file to parse.
     parsed: Option<Result<RecordFile, Code>>,
-    /// The first container-level records-listing error for this entry.
+    /// The listing violation for this entry, if any.
     error: Option<Code>,
 }
 
@@ -1721,30 +1721,38 @@ fn entry_file_path(digest_string: &str) -> Option<String> {
     Some(format!("records/{hex}.json"))
 }
 
-/// Reads every manifest-listed record file and checks the §11.6 listing
-/// consistency for it. Content defects of the *record itself* are left to the
-/// per-record pipeline; parse failures that make the digest uncomputable and
-/// digest/metadata mismatches are container errors.
+/// Checks the §11.6 listing consistency of every manifest entry. A record file
+/// above `MAX_RECORD_BYTES` is `E_JSON_SIZE` (T16, U8); a file whose digest
+/// cannot be computed or does not match is `E_MANIFEST_RECORD_DIGEST`; an
+/// `id`/`kind` mismatch is `E_MANIFEST_RECORDS`.
 fn build_entries(
     records: &[ManifestRecordEntry],
-    record_files: &BTreeMap<String, Vec<u8>>,
+    record_files: &BTreeMap<String, FileData>,
 ) -> Vec<EntryState> {
     records
         .iter()
         .map(|entry| {
             let path = entry_file_path(&entry.digest).unwrap_or_default();
-            let Some(bytes) = record_files.get(&path) else {
-                return EntryState {
-                    path,
-                    parsed: None,
-                    error: Some(e::MANIFEST_RECORD_MISSING),
-                };
+            let bytes = match record_files.get(&path) {
+                None => {
+                    return EntryState {
+                        path,
+                        parsed: None,
+                        error: Some(e::MANIFEST_RECORD_MISSING),
+                    }
+                }
+                Some(FileData::Oversize) => {
+                    return EntryState {
+                        path,
+                        parsed: Some(Err(e::JSON_SIZE)),
+                        error: Some(e::JSON_SIZE),
+                    }
+                }
+                Some(FileData::Bytes(bytes)) => bytes,
             };
             let object = match json::parse_canonical_object(bytes, limits::MAX_RECORD_BYTES) {
                 Ok(object) => object,
                 Err(code) => {
-                    // The digest cannot be computed from a file that is not
-                    // canonical JSON; §13 keeps its own size code.
                     let mapped = if code == e::JSON_SIZE {
                         e::JSON_SIZE
                     } else {
@@ -1752,7 +1760,7 @@ fn build_entries(
                     };
                     return EntryState {
                         path,
-                        parsed: None,
+                        parsed: Some(Err(code)),
                         error: Some(mapped),
                     };
                 }
@@ -1781,12 +1789,12 @@ fn merge_cross_checks(
     container: &mut ContainerReport,
     records: &mut [RecordReport],
 ) {
-    for code in &cross.container_errors {
-        container.errors.push(code);
-    }
-    for code in &cross.container_notices {
-        container.notices.push(code);
-    }
+    container
+        .errors
+        .extend(cross.container_errors.iter().copied());
+    container
+        .notices
+        .extend(cross.container_notices.iter().copied());
     for (index, code) in &cross.record_errors {
         if let Some(report) = records.get_mut(*index) {
             report.errors.push(code);
@@ -1811,11 +1819,17 @@ fn merge_cross_checks(
 // ---------------------------------------------------------------------------
 
 /// §14.5 (9): the blob inventory must agree exactly with `manifest.blobs`.
-fn check_blobs(listed: Option<&[BlobEntry]>, files: &BTreeMap<String, Vec<u8>>) -> Vec<Code> {
+fn check_blobs(
+    listed: Option<&[BlobEntry]>,
+    files: &BTreeMap<String, BlobData>,
+    extra: bool,
+) -> Vec<Code> {
     let mut errors = Vec::new();
+    if extra {
+        errors.push(e::MANIFEST_BLOB);
+    }
     match listed {
         None => {
-            // A present `blobs/` directory must have a non-empty listing.
             if !files.is_empty() {
                 errors.push(e::MANIFEST_BLOB);
             }
@@ -1829,15 +1843,15 @@ fn check_blobs(listed: Option<&[BlobEntry]>, files: &BTreeMap<String, Vec<u8>>) 
                 };
                 let path = format!("blobs/sha256/{hex}");
                 match files.get(&path) {
-                    Some(bytes) => {
-                        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != blob.size
-                            || digest::sha256_digest_string(bytes) != blob.digest
+                    Some(BlobData::Hashed { digest, size }) => {
+                        if *size != blob.size
+                            || *digest != blob.digest
                             || blob.size > limits::MAX_BLOB_BYTES
                         {
                             errors.push(e::MANIFEST_BLOB);
                         }
                     }
-                    None => errors.push(e::MANIFEST_BLOB),
+                    Some(BlobData::Oversize) | None => errors.push(e::MANIFEST_BLOB),
                 }
                 expected.insert(path);
             }
@@ -1852,83 +1866,260 @@ fn check_blobs(listed: Option<&[BlobEntry]>, files: &BTreeMap<String, Vec<u8>>) 
 }
 
 // ---------------------------------------------------------------------------
-// Previous-manifest chain (§11.5)
+// Timestamps (§12) — report entries
 // ---------------------------------------------------------------------------
 
-/// §14.5 (10): embedded previous-manifest chain and the `--previous` check.
-fn check_previous_chain(
-    manifest: &Manifest,
-    layout: &Layout,
-    options: &VerifyOptions,
-) -> Result<Vec<Code>, UsageError> {
-    let mut errors = Vec::new();
-    match &manifest.previous_manifest {
-        None => {
-            // §11.5: with a null `previous_manifest`, `previous/` must be
-            // absent or empty.
-            if layout.previous_manifest.is_some() {
-                errors.push(e::MANIFEST_CHAIN_UNEXPECTED);
-            }
-        }
-        Some(expected_digest) => match layout.previous_manifest.as_deref() {
-            None => errors.push(e::MANIFEST_CHAIN_MISSING),
-            Some(bytes) => {
-                if let Err(code) = previous_manifest_matches(bytes, expected_digest, manifest) {
-                    errors.push(code);
-                }
-            }
-        },
-    }
-    // `--previous <dir>`: the supplied previous container's manifest digest
-    // must equal `manifest.previous_manifest.digest` (§11.5).
-    if let Some(previous_input) = &options.previous {
-        let previous_files = match previous_input {
-            ContainerInput::Directory(root) => match read_directory(root) {
-                Ok(materialised) => materialised.files,
-                Err(ReadFailure::Usage(error)) => return Err(error),
-                Err(ReadFailure::Content { partial, .. }) => partial.files,
-            },
-            ContainerInput::Zip(bytes) => zip::read_zip(bytes).unwrap_or_default(),
-            ContainerInput::Files(files) => files.clone(),
-        };
-        let matches = match previous_files.get(MANIFEST_PATH) {
-            Some(bytes) => {
-                let without_lf = match bytes.split_last() {
-                    Some((&b'\n', head)) => head,
-                    _ => bytes.as_slice(),
+/// One `container.timestamps[]` report entry per attestation entry (§14.6).
+fn timestamp_reports(
+    entries: &[AttestationTimestamp],
+    evidence: &ChainEvidence,
+) -> Vec<TimestampReport> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let receipt = evidence.receipts.get(index);
+            let (state, gen_time) = if evidence.chain_error.is_some() {
+                ("invalid", None)
+            } else {
+                let state = match receipt.map(|receipt| receipt.state) {
+                    Some(ReceiptState::Verified) => "verified",
+                    Some(ReceiptState::PresentUnverified) => "present-unverified",
+                    Some(ReceiptState::Invalid) | None => "invalid",
                 };
-                let computed = digest::manifest_digest(without_lf);
-                manifest.previous_manifest.as_deref() == Some(computed.as_str())
+                (
+                    state,
+                    receipt
+                        .and_then(|receipt| receipt.gen_time)
+                        .map(Timestamp::to_ts_string),
+                )
+            };
+            TimestampReport {
+                index,
+                path: Some(entry.path.clone()),
+                state: state.to_owned(),
+                gen_time,
             }
-            None => false,
-        };
-        if !matches {
-            errors.push(e::MANIFEST_CHAIN);
-        }
-    }
-    errors.sort_unstable();
-    errors.dedup();
-    Ok(errors)
+        })
+        .collect()
 }
 
-/// Validates an embedded `previous/manifest.json` against the current manifest
-/// (§11.5): canonical form, a supported manifest, the §2.4 digest match and the
-/// same-publisher rule.
+// ---------------------------------------------------------------------------
+// Previous-manifest chain (§11.5, step (10))
+// ---------------------------------------------------------------------------
+
+/// What step (10) established.
+struct PreviousOutcome {
+    /// The first failing check of the W5 order, if any.
+    code: Option<Code>,
+    /// The supplied `--previous` manifest signature verified (§11.5, W1).
+    signature_verified: bool,
+    /// A supplied-previous signature check was context-trusted (§14.9).
+    context_trusted: bool,
+}
+
+/// The two members read from a supplied previous container.
+struct SuppliedMembers {
+    manifest: Vec<u8>,
+    sigfile: Vec<u8>,
+}
+
+/// Reads exactly `manifest.json` and `signatures/manifest.sig.json` from a
+/// supplied previous container, each bounded by `MAX_MANIFEST_BYTES` (§11.5,
+/// V3, W2). Any failure is `Err(())` (`E_MANIFEST_CHAIN`).
+fn read_supplied_members(input: &ContainerInput) -> Result<SuppliedMembers, ()> {
+    let limit = u64::try_from(limits::MAX_MANIFEST_BYTES).unwrap_or(u64::MAX);
+    match input {
+        ContainerInput::Directory(root) => {
+            let member = |relative: &str| -> Result<Vec<u8>, ()> {
+                let mut path = root.clone();
+                let mut current = root.clone();
+                for (index, part) in relative.split('/').enumerate() {
+                    path = path.join(part);
+                    current = current.join(part);
+                    let metadata = std::fs::symlink_metadata(&current).map_err(|_| ())?;
+                    let last = index + 1 == relative.split('/').count();
+                    if metadata.file_type().is_symlink()
+                        || (last && !metadata.is_file())
+                        || (!last && !metadata.is_dir())
+                    {
+                        return Err(());
+                    }
+                }
+                let mut budget = Budget {
+                    total: 0,
+                    exceeded: false,
+                };
+                match read_bounded(&path, limit, &mut budget) {
+                    Ok(FileData::Bytes(bytes)) => Ok(bytes),
+                    _ => Err(()),
+                }
+            };
+            Ok(SuppliedMembers {
+                manifest: member(MANIFEST_PATH)?,
+                sigfile: member(SIGFILE_PATH)?,
+            })
+        }
+        ContainerInput::Zip(bytes) => {
+            // §11.9 rules 1–4 and the §13 limits apply to the whole archive.
+            let archive = zip::open(bytes).map_err(|_| ())?;
+            let member = |name: &str| -> Result<Vec<u8>, ()> {
+                let matching: Vec<&zip::ZipEntry> = archive
+                    .entries
+                    .iter()
+                    .filter(|entry| !entry.is_directory && entry.name == name)
+                    .collect();
+                match matching.as_slice() {
+                    [entry] => archive.read(entry, limit).map_err(|_| ()),
+                    _ => Err(()),
+                }
+            };
+            Ok(SuppliedMembers {
+                manifest: member(MANIFEST_PATH)?,
+                sigfile: member(SIGFILE_PATH)?,
+            })
+        }
+        ContainerInput::Files(files) => {
+            let member = |name: &str| -> Result<Vec<u8>, ()> {
+                let bytes = files.get(name).ok_or(())?;
+                if bytes.len() > limits::MAX_MANIFEST_BYTES {
+                    return Err(());
+                }
+                Ok(bytes.clone())
+            };
+            Ok(SuppliedMembers {
+                manifest: member(MANIFEST_PATH)?,
+                sigfile: member(SIGFILE_PATH)?,
+            })
+        }
+    }
+}
+
+/// The supplied previous's identity and signature result (§11.5 W1/W5).
+struct SuppliedPrevious {
+    /// The §2.4 digest of the supplied previous manifest, when its identity
+    /// and signatures passed.
+    digest: Option<String>,
+    signature_verified: bool,
+    context_trusted: bool,
+}
+
+fn verify_supplied_previous(
+    input: &ContainerInput,
+    world: &mut World,
+    options: &VerifyOptions,
+) -> SuppliedPrevious {
+    let failed = SuppliedPrevious {
+        digest: None,
+        signature_verified: false,
+        context_trusted: false,
+    };
+    let Ok(members) = read_supplied_members(input) else {
+        return failed;
+    };
+    let Ok(manifest_object) =
+        json::parse_canonical_object(&members.manifest, limits::MAX_MANIFEST_BYTES)
+    else {
+        return failed;
+    };
+    let Ok(previous_manifest) = parse_manifest(&manifest_object, options) else {
+        return failed;
+    };
+    let digest_string = digest::manifest_digest(&json::canonical_object_bytes(&manifest_object));
+    let Ok(sig_object) = json::parse_canonical_object(&members.sigfile, limits::MAX_MANIFEST_BYTES)
+    else {
+        return failed;
+    };
+    let Ok(attestation) =
+        parse_attestation(&sig_object, &previous_manifest, &digest_string, options)
+    else {
+        return failed;
+    };
+    let (verified, context_trusted) = world.check_previous_signatures(
+        &attestation.signatures,
+        &digest_string,
+        previous_manifest.created_at,
+    );
+    SuppliedPrevious {
+        digest: verified.then_some(digest_string),
+        signature_verified: verified,
+        context_trusted,
+    }
+}
+
+/// Step (10) in the W5 order.
+fn previous_stage(
+    manifest: &Manifest,
+    content: &Content,
+    world: &mut World,
+    options: &VerifyOptions,
+) -> Result<PreviousOutcome, UsageError> {
+    // The supplied previous is read and its signatures verified first.
+    let supplied = options
+        .previous
+        .as_ref()
+        .map(|input| verify_supplied_previous(input, world, options));
+    let mut outcome = PreviousOutcome {
+        code: None,
+        signature_verified: supplied
+            .as_ref()
+            .is_some_and(|value| value.signature_verified),
+        context_trusted: supplied.as_ref().is_some_and(|value| value.context_trusted),
+    };
+    let first = (|| -> Option<Code> {
+        // (a) An embedded previous manifest above MAX_MANIFEST_BYTES.
+        if matches!(content.previous_manifest, Some(FileData::Oversize)) {
+            return Some(e::JSON_SIZE);
+        }
+        match &manifest.previous_manifest {
+            // (b) A null chain.
+            None => {
+                if content.previous_manifest.is_some() {
+                    return Some(e::MANIFEST_CHAIN_UNEXPECTED);
+                }
+                if supplied.is_some() {
+                    return Some(e::MANIFEST_CHAIN);
+                }
+                None
+            }
+            // (c) The embedded manifest, (d) the supplied previous, (e) the
+            // supplied digest comparison.
+            Some(expected_digest) => {
+                let Some(FileData::Bytes(bytes)) = &content.previous_manifest else {
+                    return Some(e::MANIFEST_CHAIN_MISSING);
+                };
+                if previous_manifest_matches(bytes, expected_digest, manifest).is_err() {
+                    return Some(e::MANIFEST_CHAIN);
+                }
+                if let Some(supplied) = &supplied {
+                    match &supplied.digest {
+                        None => return Some(e::MANIFEST_CHAIN),
+                        Some(digest_string) if digest_string != expected_digest => {
+                            return Some(e::MANIFEST_CHAIN)
+                        }
+                        Some(_) => {}
+                    }
+                }
+                None
+            }
+        }
+    })();
+    outcome.code = first;
+    Ok(outcome)
+}
+
+/// Validates an embedded `previous/manifest.json` (§11.5): canonical form, a
+/// supported manifest, the same publisher and the §2.4 digest.
 fn previous_manifest_matches(
     bytes: &[u8],
     expected_digest: &str,
     current: &Manifest,
 ) -> Result<(), Code> {
-    if bytes.len() > limits::MAX_MANIFEST_BYTES {
-        // §13: `previous/manifest.json` shares the manifest size limit.
-        return Err(e::JSON_SIZE);
-    }
     let object = json::parse_canonical_object(bytes, limits::MAX_MANIFEST_BYTES)
         .map_err(|_| e::MANIFEST_CHAIN)?;
     if object.get_str("format") != Some(FORMAT) || object.get_i64("manifest_version") != Some(1) {
         return Err(e::MANIFEST_CHAIN);
     }
-    // §11.5 [M-8]: the chain records the history of one publisher.
     let previous_origin = object
         .get("origin")
         .and_then(parse_origin_object)
