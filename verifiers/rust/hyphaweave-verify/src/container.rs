@@ -782,13 +782,25 @@ pub fn verify_container(
         }
     }
     let listed_paths: BTreeSet<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
-    if content.records_extra
-        || content
-            .records
-            .keys()
-            .any(|path| !listed_paths.contains(path.as_str()))
-    {
+    let unlisted: Vec<&FileData> = content
+        .records
+        .iter()
+        .filter(|(path, _)| !listed_paths.contains(path.as_str()))
+        .map(|(_, data)| data)
+        .collect();
+    if content.records_extra || !unlisted.is_empty() {
         listing.insert(e::MANIFEST_RECORD_EXTRA);
+    }
+    // An unlisted `records/` file above `MAX_RECORD_BYTES` is both an extra
+    // file and a record file above its §13 class limit: §14.5 lists
+    // `E_JSON_SIZE` "for record files above MAX_RECORD_BYTES" among the
+    // independent violations of this phase without restricting it to listed
+    // files (F55).
+    if unlisted
+        .iter()
+        .any(|data| matches!(data, FileData::Oversize))
+    {
+        listing.insert(e::JSON_SIZE);
     }
     listing.retain(|code| !options.skipped(code));
     if !listing.is_empty() {

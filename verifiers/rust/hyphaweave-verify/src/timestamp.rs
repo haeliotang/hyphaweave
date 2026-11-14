@@ -1807,4 +1807,72 @@ mod tests {
         assert!(!check(id(&sha256, None), id(&ecdsa, Some(null_tlv))));
         assert!(check(id(&sha256, None), id(&ecdsa, None)));
     }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    /// Review A L-2: the ECDSA signer path. P-256 is also pinned by the X6
+    /// vector `integrity-levels/l2-ts-signer-ecdsa-params-absent`; P-384 has
+    /// no committed receipt, so both curves are checked here on fixed
+    /// fixtures (key, DER signature over a fixed message), including the
+    /// negative cases.
+    #[test]
+    fn ecdsa_signer_signatures_p256_and_p384() {
+        let message = b"H1-FIX1 ECDSA timestamp signer fixture";
+        let p384_key = hex("3076301006072a8648ce3d020106052b8104002203620004bf44fda84ac92e7c95742766910c01be6a0438acc929fd596fa44b7b6ff218d8aea9f85d06ef37703e0df594762df1117056bdbf72028d333ed43651a6bed705c972a75ad71362a9b7740e22c82990c50a4042859a2879db71ef97050c3668ad");
+        let p384_signature = hex("306402303773aa3a9c4aed216ee725b144e5c081469597100c1e61b8685218aa6c1cf06812ed88a27e4b02e43781f17dadd4c2cb02300d1faf1b1c15bbb02e3206cd0ea24d6c0020928b669dfa8c0e694029d5b8bf83c666cdb215f3b8f51a9feb61cd82a4fa");
+        let p256_key = hex("3059301306072a8648ce3d020106082a8648ce3d03010703420004e1b63df2af0d5616fa1079e11e0266d04bb252500d95d709be9f563b6aeaf2437042f5167d26e310b210461cf4c9fa1c210155fe66d0da128173665d37823ad3");
+        let p256_signature = hex("304402203876f7fdf26a4ff05a738bcdbb5caaa7932a39423da840541d63a59c87cc598702207f859fc5b0ff3a4446716b49807c03df09766443ab350938b07feaf3037b502a");
+        assert!(verify_ecdsa(
+            &p384_key,
+            HashAlgorithm::Sha384,
+            message,
+            &p384_signature
+        ));
+        assert!(verify_ecdsa(
+            &p256_key,
+            HashAlgorithm::Sha256,
+            message,
+            &p256_signature
+        ));
+        // Another message, another digest, the other curve's key.
+        assert!(!verify_ecdsa(
+            &p384_key,
+            HashAlgorithm::Sha384,
+            b"other",
+            &p384_signature
+        ));
+        assert!(!verify_ecdsa(
+            &p384_key,
+            HashAlgorithm::Sha256,
+            message,
+            &p384_signature
+        ));
+        assert!(!verify_ecdsa(
+            &p256_key,
+            HashAlgorithm::Sha384,
+            message,
+            &p256_signature
+        ));
+        assert!(!verify_ecdsa(
+            &p256_key,
+            HashAlgorithm::Sha256,
+            message,
+            &p384_signature
+        ));
+        // A flipped signature byte.
+        let mut flipped = p384_signature.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 1;
+        assert!(!verify_ecdsa(
+            &p384_key,
+            HashAlgorithm::Sha384,
+            message,
+            &flipped
+        ));
+    }
 }

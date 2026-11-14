@@ -237,30 +237,35 @@ fn probe_container_size_directory_entry_count() {
     assert_ne!(conclusion(&plain), conclusion(&skipped));
 }
 
+/// Copies a directory tree (test fixtures only).
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    fs::create_dir_all(to).expect("mkdir");
+    for entry in fs::read_dir(from).expect("read_dir") {
+        let entry = entry.expect("entry");
+        let destination = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), &destination).expect("copy");
+        }
+    }
+}
+
+/// A scratch copy of `container/l0-minimal` under the system temporary
+/// directory, unique per process and call site.
+fn l0_minimal_copy(tag: u32) -> PathBuf {
+    let source = vectors_root().join("container/l0-minimal/container");
+    let target = std::env::temp_dir().join(format!("h1-probe-{}-{tag}", std::process::id()));
+    copy_tree(&source, &target);
+    target
+}
+
 /// Regression (H1-FIX1 differential fuzzing): §11.7 requires a non-empty
 /// `manifest.blobs` whenever a `blobs/` directory is present, even an empty
 /// one. Built from `container/l0-minimal` plus an empty `blobs/sha256/`.
 #[test]
 fn empty_blobs_directory_without_listing_is_manifest_blob() {
-    let source = vectors_root().join("container/l0-minimal/container");
-    let target =
-        std::env::temp_dir().join(format!("h1-empty-blobs-{}-{}", std::process::id(), line!()));
-    let copy = |from: &std::path::Path, to: &std::path::Path| {
-        fn walk(from: &std::path::Path, to: &std::path::Path) {
-            fs::create_dir_all(to).expect("mkdir");
-            for entry in fs::read_dir(from).expect("read_dir") {
-                let entry = entry.expect("entry");
-                let destination = to.join(entry.file_name());
-                if entry.path().is_dir() {
-                    walk(&entry.path(), &destination);
-                } else {
-                    fs::copy(entry.path(), &destination).expect("copy");
-                }
-            }
-        }
-        walk(from, to);
-    };
-    copy(&source, &target);
+    let target = l0_minimal_copy(line!());
     let plain = verify_container(ContainerInput::Directory(target.clone()), &keyset_options())
         .expect("container");
     fs::create_dir_all(target.join("blobs/sha256")).expect("blobs dir");
@@ -270,4 +275,23 @@ fn empty_blobs_directory_without_listing_is_manifest_blob() {
     fs::remove_dir_all(&target).expect("cleanup");
     assert_eq!(errors(&plain), Vec::<&str>::new());
     assert_eq!(errors(&with_empty_blobs), vec![e::MANIFEST_BLOB]);
+}
+
+/// F55 (H1-FIX1 replays): an unlisted `records/` file above
+/// `MAX_RECORD_BYTES` is an extra file and an oversize record file; the
+/// records-listing phase reports both (§14.5, U8, T16). The committed
+/// `oversize-record-*` vectors only have listed oversize files.
+#[test]
+fn unlisted_oversize_record_file_reports_both_listing_violations() {
+    let target = l0_minimal_copy(line!());
+    let name = format!("records/{}.json", "0".repeat(64));
+    fs::write(target.join(&name), vec![b' '; 1_048_577]).expect("oversize file");
+    let report = verify_container(ContainerInput::Directory(target.clone()), &keyset_options())
+        .expect("container");
+    fs::remove_dir_all(&target).expect("cleanup");
+    assert_eq!(
+        errors(&report),
+        vec![e::JSON_SIZE, e::MANIFEST_RECORD_EXTRA]
+    );
+    assert!(report.records.is_empty());
 }
