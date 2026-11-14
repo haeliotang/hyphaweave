@@ -1545,7 +1545,14 @@ impl World {
         match actor.actor_type.as_str() {
             "human" | "organization" => {}
             "agent" => {
-                self.grant_chain_check(index, 0, crate::limits::MAX_GRANT_CHAIN)?;
+                // §5.5.2: steps 1–5, then step 6 (validity at `at`), then
+                // step 7 (depth); the first failing step decides (P5 shape).
+                let too_deep = self.grant_chain_check(index, 0, crate::limits::MAX_GRANT_CHAIN)?;
+                self.grant_chain_validity(index, at)?;
+                if too_deep {
+                    return Err(e::GRANT_UNRESOLVED);
+                }
+                return Ok(UsableGrant { spec });
             }
             _ => return Err(e::GRANT_UNRESOLVED),
         }
@@ -1555,18 +1562,21 @@ impl World {
     }
 
     /// Checks the delegation-chain structure of `slot` against its parents
-    /// (§5.5.2 steps 1–5, 7).
+    /// (§5.5.2 steps 1–5). Returns `Ok(true)` when the walk reached the
+    /// step-7 depth bound: §5.5.2 evaluates its steps in order, so the caller
+    /// reports that `E_GRANT_UNRESOLVED` only after step 6 (validity) passed
+    /// (H1-FIX2 gate 5, docs/h1-findings.md F68).
     fn grant_chain_check(
         &mut self,
         slot: usize,
         depth: usize,
         max_depth: usize,
-    ) -> Result<(), Code> {
+    ) -> Result<bool, Code> {
         // §5.5.2 step 7 (S10, T8): at most MAX_GRANT_CHAIN links from the cited
         // grant to its root; `max_depth` is one more when the record being
         // verified is itself a grant, whose own link is not counted.
         if depth > max_depth {
-            return Err(e::GRANT_UNRESOLVED);
+            return Ok(true);
         }
         let Some(KindBody::Grant(body)) = self.slots[slot].body.clone() else {
             return Err(e::GRANT_UNRESOLVED);
@@ -1584,7 +1594,7 @@ impl World {
             return Err(e::GRANT_UNRESOLVED);
         };
         match actor.actor_type.as_str() {
-            "human" | "organization" => Ok(()),
+            "human" | "organization" => Ok(false),
             "agent" => {
                 let Some(parent_ref) = actor.grant.clone() else {
                     return Err(e::GRANT_UNRESOLVED);
@@ -2111,7 +2121,8 @@ impl World {
             // its own window or revocation at its own `recorded_at`.
             "human" | "organization" => Ok(()),
             "agent" => {
-                self.grant_chain_check(index, 0, crate::limits::MAX_GRANT_CHAIN + 1)?;
+                let too_deep =
+                    self.grant_chain_check(index, 0, crate::limits::MAX_GRANT_CHAIN + 1)?;
                 // Only the ancestors are judged at the grant's own
                 // `recorded_at` (S9); the chain starts at the parent.
                 let parent = actor
@@ -2119,7 +2130,12 @@ impl World {
                     .as_ref()
                     .and_then(|reference| self.resolve(reference).target_slot)
                     .ok_or(e::GRANT_UNRESOLVED)?;
-                self.grant_chain_validity(parent, at)
+                self.grant_chain_validity(parent, at)?;
+                // §5.5.2 step 7 after step 6 (F68).
+                if too_deep {
+                    return Err(e::GRANT_UNRESOLVED);
+                }
+                Ok(())
             }
             _ => Err(e::GRANT_UNRESOLVED),
         }
