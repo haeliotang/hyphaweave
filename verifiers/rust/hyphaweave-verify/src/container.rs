@@ -86,6 +86,9 @@ struct Content {
     /// A file in `records/` whose name is not `<64 hex>.json` (§11.1: an extra
     /// record file, reported by the records listing at step (7)).
     records_extra: bool,
+    /// Such a misnamed `records/` file is above `MAX_RECORD_BYTES` (F55: an
+    /// unlisted or misnamed oversize file reports `E_JSON_SIZE` as well).
+    records_extra_oversize: bool,
     blobs: BTreeMap<String, BlobData>,
     /// A file in `blobs/` outside `blobs/sha256/<64 hex>` (§11.1: reported by
     /// the blob stage, step (9)).
@@ -153,6 +156,11 @@ fn classify_path(path: &str) -> PathClass {
         return PathClass::BlobsExtra;
     }
     PathClass::Unknown
+}
+
+/// `MAX_RECORD_BYTES` as a byte count.
+fn record_limit() -> u64 {
+    u64::try_from(limits::MAX_RECORD_BYTES).unwrap_or(u64::MAX)
 }
 
 /// The §13 read limit of a file class.
@@ -315,7 +323,12 @@ fn enumerate_directory(root: &Path) -> Result<Result<Content, EnumerationFailure
                 PathClass::Unknown => {
                     codes.insert(e::CONTAINER_ENTRY);
                 }
-                PathClass::RecordsExtra => content.records_extra = true,
+                PathClass::RecordsExtra => {
+                    content.records_extra = true;
+                    if metadata.len() > record_limit() {
+                        content.records_extra_oversize = true;
+                    }
+                }
                 PathClass::BlobsExtra => content.blobs_extra = true,
                 PathClass::TsaCert | PathClass::Readable => {}
                 PathClass::Blob => {
@@ -428,7 +441,12 @@ fn enumerate_files(files: &BTreeMap<String, Vec<u8>>) -> Result<Content, Enumera
             PathClass::Unknown => {
                 codes.insert(e::CONTAINER_ENTRY);
             }
-            PathClass::RecordsExtra => content.records_extra = true,
+            PathClass::RecordsExtra => {
+                content.records_extra = true;
+                if length > record_limit() {
+                    content.records_extra_oversize = true;
+                }
+            }
             PathClass::BlobsExtra => content.blobs_extra = true,
             PathClass::TsaCert | PathClass::Readable => {}
             PathClass::Blob => {
@@ -520,7 +538,14 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
             PathClass::Unknown => {
                 codes.insert(e::CONTAINER_ENTRY);
             }
-            PathClass::RecordsExtra => content.records_extra = true,
+            PathClass::RecordsExtra => {
+                content.records_extra = true;
+                // The central directory's declared size; the member is not
+                // decompressed (§11.9 W7: only listed content is read).
+                if entry.uncompressed_size > record_limit() {
+                    content.records_extra_oversize = true;
+                }
+            }
             PathClass::BlobsExtra => content.blobs_extra = true,
             PathClass::TsaCert | PathClass::Readable => {}
             PathClass::Blob => {
@@ -795,10 +820,12 @@ pub fn verify_container(
     // file and a record file above its §13 class limit: §14.5 lists
     // `E_JSON_SIZE` "for record files above MAX_RECORD_BYTES" among the
     // independent violations of this phase without restricting it to listed
-    // files (F55).
-    if unlisted
-        .iter()
-        .any(|data| matches!(data, FileData::Oversize))
+    // files (F55). That holds for a misnamed `records/` file too (H1-FIX2
+    // gate 5; review B's wording for F55: "an unlisted or misnamed file").
+    if content.records_extra_oversize
+        || unlisted
+            .iter()
+            .any(|data| matches!(data, FileData::Oversize))
     {
         listing.insert(e::JSON_SIZE);
     }

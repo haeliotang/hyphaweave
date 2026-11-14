@@ -295,3 +295,49 @@ fn unlisted_oversize_record_file_reports_both_listing_violations() {
     );
     assert!(report.records.is_empty());
 }
+
+/// F55, H1-FIX2 gate 5: a **misnamed** `records/` file above
+/// `MAX_RECORD_BYTES` (not `<64 hex>.json`) is an extra file and an oversize
+/// record file too. Review B's wording for F55 covers "an unlisted or
+/// misnamed file"; the H1-FIX1 change only covered well-named unlisted files.
+/// Checked for the directory and the in-memory input forms.
+#[test]
+fn misnamed_oversize_record_file_reports_both_listing_violations() {
+    let target = l0_minimal_copy(line!());
+    let name = format!("records/{}.JSON", "D".repeat(64));
+    fs::write(target.join(&name), vec![b' '; 1_048_577]).expect("oversize file");
+    let report = verify_container(ContainerInput::Directory(target.clone()), &keyset_options())
+        .expect("container");
+    let mut files = BTreeMap::new();
+    for entry in ["manifest.json", "signatures/manifest.sig.json"] {
+        files.insert(
+            entry.to_owned(),
+            fs::read(target.join(entry)).expect("read"),
+        );
+    }
+    for entry in fs::read_dir(target.join("records")).expect("records") {
+        let entry = entry.expect("entry");
+        files.insert(
+            format!("records/{}", entry.file_name().to_string_lossy()),
+            fs::read(entry.path()).expect("read"),
+        );
+    }
+    fs::remove_dir_all(&target).expect("cleanup");
+    assert_eq!(
+        errors(&report),
+        vec![e::JSON_SIZE, e::MANIFEST_RECORD_EXTRA]
+    );
+    let in_memory =
+        verify_container(ContainerInput::Files(files), &keyset_options()).expect("container");
+    assert_eq!(
+        errors(&in_memory),
+        vec![e::JSON_SIZE, e::MANIFEST_RECORD_EXTRA]
+    );
+    // A misnamed file within the limit is only an extra file.
+    let target = l0_minimal_copy(line!());
+    fs::write(target.join(&name), b"{}").expect("small file");
+    let small = verify_container(ContainerInput::Directory(target.clone()), &keyset_options())
+        .expect("container");
+    fs::remove_dir_all(&target).expect("cleanup");
+    assert_eq!(errors(&small), vec![e::MANIFEST_RECORD_EXTRA]);
+}
