@@ -269,8 +269,8 @@ fn base_report(target: Target, verdict: Verdict) -> Report {
         target,
         verdict,
         input: InputIdentity {
-            sha256: "sha256:0000".to_owned(),
-            size: 0,
+            sha256: Some("sha256:0000".to_owned()),
+            size: Some(0),
         },
         records: Vec::new(),
         container: None,
@@ -329,8 +329,8 @@ fn container_report() -> Report {
     let mut report = base_report(Target::Container, Verdict::Invalid);
     report.checks_disabled = vec![e::JSON_INVALID, e::SIG_REQUIRED];
     report.input = InputIdentity {
-        sha256: "sha256:abcdef".to_owned(),
-        size: 42,
+        sha256: Some("sha256:abcdef".to_owned()),
+        size: Some(42),
     };
     report.records = vec![first, placeholder];
     report.container = Some(ContainerReport {
@@ -373,8 +373,8 @@ fn container_report() -> Report {
 fn vectors_report() -> Report {
     let mut report = base_report(Target::Vectors, Verdict::Invalid);
     report.input = InputIdentity {
-        sha256: "sha256:ffff".to_owned(),
-        size: 33,
+        sha256: Some("sha256:ffff".to_owned()),
+        size: Some(33),
     };
     report.cases = vec![
         VectorCaseReport {
@@ -401,8 +401,8 @@ fn vectors_report() -> Report {
 fn record_report() -> Report {
     let mut report = base_report(Target::Record, Verdict::Valid);
     report.input = InputIdentity {
-        sha256: "sha256:7777".to_owned(),
-        size: 321,
+        sha256: Some("sha256:7777".to_owned()),
+        size: Some(321),
     };
     report.records = vec![RecordReport {
         digest: Some("sha256:8888".to_owned()),

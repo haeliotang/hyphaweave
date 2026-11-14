@@ -69,7 +69,7 @@ fn hex32(text: &str) -> [u8; 32] {
 }
 
 fn is_hex_line(line: &str) -> bool {
-    line.len() % 2 == 0 && line.bytes().all(|byte| byte.is_ascii_hexdigit())
+    line.len().is_multiple_of(2) && line.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 // ---------------------------------------------------------------------------

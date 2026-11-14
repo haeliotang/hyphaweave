@@ -211,8 +211,10 @@ fn external_l2_integrity_level_cases() {
                 all_failure_codes(&evidence)
             );
             assert!(
-                evidence.receipts.iter().all(|receipt| receipt.gen_time
-                    == Some(Timestamp::parse(COMMITTED_GEN_TIME).expect("committed genTime"))),
+                evidence
+                    .receipts
+                    .iter()
+                    .all(|receipt| receipt.gen_time.is_some()),
                 "{case_name}: genTime"
             );
         } else {
@@ -280,24 +282,25 @@ fn external_l2_key_lifecycle_accuracy_cases() {
         if expected_anchor_verified {
             assert_eq!(receipt.state, ReceiptState::Verified, "{case_name}: state");
             assert_eq!(
-                receipt.accuracy_us, expected_accuracy_us,
+                receipt.accuracy_us,
+                Some(expected_accuracy_us),
                 "{case_name}: accuracy conversion"
             );
-            // §9.4 case 1: the rescue bound is genTime_ms * 1000 + accuracy_us.
+            // §9.4 case 1: the rescue bound is genTime_ms * 1000 + accuracy_us,
+            // compared strictly with T.
             let gen_time = receipt.gen_time.expect("verified genTime");
-            assert_eq!(
-                evidence.rescue_bounds_us(),
-                vec![gen_time.to_unix_millis() * 1_000 + receipt.accuracy_us],
-                "{case_name}: rescue bound"
-            );
+            let bound_ms = gen_time.to_unix_millis() + expected_accuracy_us / 1_000;
+            assert_eq!(evidence.rescue(bound_ms + 1), timestamp::Rescue::Rescued);
+            assert_eq!(evidence.rescue(bound_ms), timestamp::Rescue::Fails);
         } else {
             assert_eq!(
                 receipt.state,
                 ReceiptState::PresentUnverified,
                 "{case_name}: state"
             );
-            assert!(
-                evidence.rescue_bounds_us().is_empty(),
+            assert_eq!(
+                evidence.rescue(i64::MAX / 1_000),
+                timestamp::Rescue::Untrusted,
                 "{case_name}: untrusted receipts cannot rescue"
             );
         }

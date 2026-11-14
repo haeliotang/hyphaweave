@@ -32,7 +32,9 @@
 //! disabled) or documented as never emitted by this verifier.
 //!
 //! These tests are `#[ignore]`d because they take minutes: run them with
-//! `cargo test --release --test gates -- --include-ignored --nocapture`.
+//! `cargo test --release --test gates -- --include-ignored --nocapture`. The
+//! targeted probes that pin the ablation survivors are ordinary tests in
+//! `tests/probes.rs` and run in the default `cargo test` (R4).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -43,9 +45,7 @@ use hyphaweave_verify::error_codes::{e, ALL_ERROR_CODES};
 use hyphaweave_verify::options::ContainerInput;
 use hyphaweave_verify::report::{Report, Verdict};
 use hyphaweave_verify::value::{Object, Value};
-use hyphaweave_verify::{
-    b64, digest, ed25519, json, verify_container, verify_record, VerifyOptions,
-};
+use hyphaweave_verify::{json, verify_container, verify_record, VerifyOptions};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
@@ -488,7 +488,20 @@ fn byte_flip_container_positives() {
             read_directory_files(&input)
         } else {
             let bytes = fs::read(&input).expect("zip container");
-            hyphaweave_verify::zip::read_zip(&bytes).expect("zip parses")
+            let archive = hyphaweave_verify::zip::open(&bytes).expect("zip parses");
+            archive
+                .entries
+                .iter()
+                .filter(|entry| !entry.is_directory)
+                .map(|entry| {
+                    let data = if entry.name.starts_with("readable/") {
+                        Vec::new()
+                    } else {
+                        archive.read(entry, u64::MAX).expect("member")
+                    };
+                    (entry.name.clone(), data)
+                })
+                .collect()
         };
         for (path, data) in &files {
             if unbound_container_file(path) {
@@ -557,170 +570,6 @@ fn vectors_report_with_skip(code: &str) -> hyphaweave_verify::VectorCounts {
     }
 }
 
-/// Builds one Ed25519-signed record from an object skeleton (test helper).
-fn signed_record(mut object: Object, signer: &str, key_id: &str) -> Vec<u8> {
-    let digest_string = digest::record_digest(&object);
-    let message = digest::record_signature_message(&digest_string);
-    let seed_path = vectors_root().join("keys").join(format!("{signer}.seed"));
-    let seed_hex = fs::read_to_string(seed_path).expect("seed");
-    let mut seed = [0u8; 32];
-    for (index, pair) in seed_hex.trim().as_bytes().chunks(2).enumerate() {
-        let byte = u8::from_str_radix(std::str::from_utf8(pair).expect("hex"), 16).expect("hex");
-        seed[index] = byte;
-    }
-    let signature = ed25519::sign(&seed, &message);
-    let mut entry = Object::new();
-    entry.insert("alg", "ed25519");
-    entry.insert("key", key_id);
-    entry.insert("value", b64::encode(&signature));
-    object.insert("sigs", Value::Array(vec![Value::Object(entry)]));
-    json::canonical_object_bytes(&object)
-}
-
-/// The conclusion-relevant outcome of a report: verdict, error codes (container
-/// and record level) and notices. Probes compare this with and without the
-/// disabled check.
-fn outcome(report: &Report) -> (Verdict, Vec<&'static str>) {
-    let mut errors: Vec<&'static str> = report
-        .records
-        .iter()
-        .flat_map(|record| record.errors.clone())
-        .collect();
-    let mut notices: Vec<&'static str> = report
-        .records
-        .iter()
-        .flat_map(|record| record.notices.clone())
-        .collect();
-    if let Some(container) = &report.container {
-        errors.extend(container.errors.iter().copied());
-        notices.extend(container.notices.iter().copied());
-    }
-    errors.sort_unstable();
-    notices.sort_unstable();
-    (report.verdict, errors)
-}
-
-fn json_size_probe() -> bool {
-    let mut options = VerifyOptions::new();
-    options.keyset = load_keyset(&keyset_dir());
-    let bytes = fs::read(vectors_root().join("sig/valid-single/record.json")).expect("record");
-    let mut padded = bytes.clone();
-    padded.extend(std::iter::repeat_n(b' ', 1_048_576));
-    let plain = verify_record(&padded, &options).expect("record");
-    let mut skipped_options = options.clone();
-    skipped_options.skip_checks.insert(e::JSON_SIZE.to_owned());
-    let skipped = verify_record(&padded, &skipped_options).expect("record");
-    outcome(&plain) != outcome(&skipped)
-}
-
-fn grant_schema_probe() -> bool {
-    let mut options = VerifyOptions::new();
-    options.keyset = load_keyset(&keyset_dir());
-    let key_id = "ed25519:333f90d1d9dfb653b78df977b9b13ff2";
-    let mut origin = Object::new();
-    origin.insert("project", "example");
-    origin.insert("instance", key_id);
-    let mut actor = Object::new();
-    actor.insert("type", "human");
-    actor.insert("key", key_id);
-    let mut grant = Object::new();
-    let mut grantee = Object::new();
-    grantee.insert("key", "ed25519:b6190071e4bbc7c82afc702fa9ffa6f5");
-    grant.insert("grantee", Value::Object(grantee));
-    grant.insert("kinds", Value::Array(vec![Value::from("example.note")]));
-    // Invalid action token: the closed vocabulary requires E_GRANT_SCHEMA.
-    grant.insert("actions", Value::Array(vec![Value::from("bogus")]));
-    grant.insert("scope", Value::Array(vec![Value::from("example")]));
-    grant.insert("valid_from", "2026-11-01T00:00:00.000Z");
-    grant.insert("valid_until", Value::Null);
-    grant.insert("transferable", false);
-    grant.insert("evidence", Value::Null);
-    grant.insert("remedy", Value::Null);
-    let mut body = Object::new();
-    body.insert("action", "grant");
-    body.insert("grant", Value::Object(grant));
-    let mut record = Object::new();
-    record.insert("actor", Value::Object(actor));
-    record.insert("body", Value::Object(body));
-    record.insert("format", "weave-record/1");
-    record.insert("id", "grant-schema-probe");
-    record.insert("kind", "weave.grant");
-    record.insert("origin", Value::Object(origin));
-    record.insert("recorded_at", "2026-11-01T00:00:00.000Z");
-    record.insert("stage", "accepted");
-    let bytes = signed_record(record, "human-1", key_id);
-    let plain = verify_record(&bytes, &options).expect("record");
-    let mut skipped_options = options.clone();
-    skipped_options
-        .skip_checks
-        .insert(e::GRANT_SCHEMA.to_owned());
-    let skipped = verify_record(&bytes, &skipped_options).expect("record");
-    let pinned = plain
-        .records
-        .iter()
-        .any(|record| record.errors.contains(&e::GRANT_SCHEMA));
-    pinned && outcome(&plain) != outcome(&skipped)
-}
-
-fn minimal_manifest(extra: Option<(&str, Value)>) -> Vec<u8> {
-    let key_id = "ed25519:333f90d1d9dfb653b78df977b9b13ff2";
-    let mut origin = Object::new();
-    origin.insert("project", "example");
-    origin.insert("instance", key_id);
-    let mut manifest = Object::new();
-    manifest.insert("created_at", "2026-11-01T00:00:00.000Z");
-    manifest.insert("format", "weave-record/1");
-    manifest.insert("level", "L0");
-    manifest.insert("manifest_version", 1);
-    manifest.insert("origin", Value::Object(origin));
-    manifest.insert("previous_manifest", Value::Null);
-    manifest.insert("records", Value::Array(Vec::new()));
-    if let Some((name, value)) = extra {
-        manifest.insert(name, value);
-    }
-    json::canonical_object_bytes(&manifest)
-}
-
-fn container_files(manifest: Vec<u8>) -> BTreeMap<String, Vec<u8>> {
-    let mut files = BTreeMap::new();
-    files.insert("manifest.json".to_owned(), manifest);
-    files
-}
-
-fn manifest_schema_probe() -> bool {
-    let manifest = minimal_manifest(Some(("bogus_member", Value::Int(1))));
-    let files = container_files(manifest);
-    let plain = verify_container(ContainerInput::Files(files.clone()), &VerifyOptions::new())
-        .expect("container");
-    let mut options = VerifyOptions::new();
-    options.skip_checks.insert(e::MANIFEST_SCHEMA.to_owned());
-    let skipped = verify_container(ContainerInput::Files(files), &options).expect("container");
-    outcome(&plain) != outcome(&skipped)
-}
-
-fn container_zip_probe() -> bool {
-    let input = ContainerInput::Zip(vec![0u8; 64]);
-    let plain = verify_container(input.clone(), &VerifyOptions::new()).expect("container");
-    let mut options = VerifyOptions::new();
-    options.skip_checks.insert(e::CONTAINER_ZIP.to_owned());
-    let skipped = verify_container(input, &options).expect("container");
-    outcome(&plain) != outcome(&skipped)
-}
-
-fn container_size_probe() -> bool {
-    let manifest = minimal_manifest(None);
-    let mut files = container_files(manifest);
-    for index in 0..=200_000usize {
-        files.insert(format!("readable/{index}"), Vec::new());
-    }
-    let input = ContainerInput::Files(files);
-    let plain = verify_container(input.clone(), &VerifyOptions::new()).expect("container");
-    let mut options = VerifyOptions::new();
-    options.skip_checks.insert(e::CONTAINER_SIZE.to_owned());
-    let skipped = verify_container(input, &options).expect("container");
-    outcome(&plain) != outcome(&skipped)
-}
-
 #[test]
 #[ignore = "gate run: minutes; execute with --release --include-ignored"]
 fn ablation_every_code_turns_corpus_red() {
@@ -740,15 +589,27 @@ fn ablation_every_code_turns_corpus_red() {
         survivors.len()
     );
     // Codes never emitted by this verifier are documented survivors; every other
-    // survivor must be pinned by a targeted probe whose outcome changes when the
-    // check is disabled.
+    // survivor must be pinned by a targeted probe in `tests/probes.rs`, which
+    // runs in the default `cargo test` (R4).
     let never_emitted: BTreeSet<&str> = [e::ENV_SIG_ALG].into_iter().collect();
-    let probes: BTreeMap<&str, fn() -> bool> = [
-        (e::JSON_SIZE, json_size_probe as fn() -> bool),
-        (e::GRANT_SCHEMA, grant_schema_probe as fn() -> bool),
-        (e::MANIFEST_SCHEMA, manifest_schema_probe as fn() -> bool),
-        (e::CONTAINER_ZIP, container_zip_probe as fn() -> bool),
-        (e::CONTAINER_SIZE, container_size_probe as fn() -> bool),
+    let pinned_by_probes: BTreeMap<&str, &str> = [
+        (e::JSON_SIZE, "probes::probe_json_size_record_target"),
+        (
+            e::GRANT_SCHEMA,
+            "probes::probe_grant_schema_action_vocabulary",
+        ),
+        (
+            e::MANIFEST_SCHEMA,
+            "probes::probe_manifest_schema_unknown_member",
+        ),
+        (
+            e::CONTAINER_ZIP,
+            "probes::probe_container_zip_encrypted_entry",
+        ),
+        (
+            e::CONTAINER_SIZE,
+            "probes::probe_container_size_directory_entry_count",
+        ),
     ]
     .into_iter()
     .collect();
@@ -756,17 +617,10 @@ fn ablation_every_code_turns_corpus_red() {
     for code in &survivors {
         if never_emitted.contains(code) {
             println!("  documented survivor (never emitted by H1): {code}");
-            continue;
-        }
-        match probes.get(code) {
-            Some(probe) => {
-                if probe() {
-                    println!("  survivor pinned by probe: {code}");
-                } else {
-                    unpinned.push(code);
-                }
-            }
-            None => unpinned.push(code),
+        } else if let Some(probe) = pinned_by_probes.get(code) {
+            println!("  survivor pinned by {probe}");
+        } else {
+            unpinned.push(code);
         }
     }
     assert!(

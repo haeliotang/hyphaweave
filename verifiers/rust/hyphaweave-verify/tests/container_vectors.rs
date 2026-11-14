@@ -12,7 +12,8 @@
 //! - `verdict` exact;
 //! - `errors` as a set over `container.errors ∪ every records[].errors`;
 //! - `notices` as a subset over the same union;
-//! - `expected_container` as a recursive subset match of the `container` object;
+//! - `expected_container` as a recursive subset match of the `container` object
+//!   (arrays element by element, §14.10);
 //! - `records` as per-id subset matches (`verdict`/`errors` when present).
 //!
 //! Paths are resolved relative to `env!("CARGO_MANIFEST_DIR")`. The frozen
@@ -24,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use hyphaweave_verify::container;
 use hyphaweave_verify::json;
+use hyphaweave_verify::operator;
 use hyphaweave_verify::options::{ContainerInput, VerifyOptions};
 use hyphaweave_verify::report::{ContainerReport, Report, Verdict};
 use hyphaweave_verify::value::{Object, Value};
@@ -112,20 +114,6 @@ fn resolve_token(corpus: &Path, case_directory: &Path, token: &str) -> PathBuf {
     }
 }
 
-/// Loads a `--keys` directory: top-level `*.json` files sorted by file name.
-fn load_keyset(directory: &Path) -> Vec<Vec<u8>> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(directory)
-        .unwrap_or_else(|error| panic!("cannot read keyset dir {}: {error}", directory.display()))
-        .map(|entry| entry.expect("keyset entry").path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    files.sort();
-    files
-        .into_iter()
-        .map(|path| std::fs::read(&path).expect("keyset file readable"))
-        .collect()
-}
-
 /// Reproduces one case's verification inputs from `expected.json`.
 fn build_case(corpus: &Path, case: &Case) -> (ContainerInput, VerifyOptions) {
     let mut options = VerifyOptions::new();
@@ -145,18 +133,17 @@ fn build_case(corpus: &Path, case: &Case) -> (ContainerInput, VerifyOptions) {
                 "--keys" => {
                     index += 1;
                     let directory = resolve_token(corpus, &case.directory, &tokens[index]);
-                    options.keyset = load_keyset(&directory);
+                    options.keyset = operator::load_keyset(&directory).expect("keyset");
                 }
                 "--tsa-trust" => {
                     index += 1;
                     let path = resolve_token(corpus, &case.directory, &tokens[index]);
-                    options.tsa_trust = vec![std::fs::read(&path)
-                        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))];
+                    options.tsa_trust = vec![operator::read_tsa_trust(&path).expect("tsa trust")];
                 }
                 "--previous" => {
                     index += 1;
-                    let directory = resolve_token(corpus, &case.directory, &tokens[index]);
-                    options.previous = Some(ContainerInput::Directory(directory));
+                    let path = resolve_token(corpus, &case.directory, &tokens[index]);
+                    options.previous = Some(operator::open_previous(&path).expect("previous"));
                 }
                 other => panic!("{}: unsupported arg token {other}", case.id),
             }
@@ -168,11 +155,7 @@ fn build_case(corpus: &Path, case: &Case) -> (ContainerInput, VerifyOptions) {
         .get_str("input")
         .unwrap_or_else(|| panic!("{}: input member missing", case.id));
     let path = case.directory.join(relative);
-    let input = if relative.ends_with(".zip") {
-        ContainerInput::Zip(std::fs::read(&path).expect("zip input readable"))
-    } else {
-        ContainerInput::Directory(path)
-    };
+    let input = operator::open_container(&path).expect("container input");
     (input, options)
 }
 
@@ -295,6 +278,18 @@ fn subset_match(expected: &Value, actual: &Value, path: &str) -> Result<(), Stri
                     return Err(format!("{path}/{name}: missing"));
                 };
                 subset_match(expected_value, actual_value, &format!("{path}/{name}"))?;
+            }
+            Ok(())
+        }
+        // §14.10: arrays compare element by element, recursively, with the
+        // same length.
+        (Value::Array(expected_items), Value::Array(actual_items))
+            if expected_items.len() == actual_items.len() =>
+        {
+            for (index, (expected_item, actual_item)) in
+                expected_items.iter().zip(actual_items).enumerate()
+            {
+                subset_match(expected_item, actual_item, &format!("{path}[{index}]"))?;
             }
             Ok(())
         }
