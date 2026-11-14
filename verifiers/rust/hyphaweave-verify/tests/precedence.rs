@@ -174,3 +174,126 @@ fn grant_chain_validity_is_judged_before_depth() {
         vec!["E_GRANT_EXPIRED"]
     );
 }
+
+const AGENT_1: &str = "ed25519:b6190071e4bbc7c82afc702fa9ffa6f5";
+const AGENT_2: &str = "ed25519:b5598e3317d83ed2ca322be01a8f3560";
+
+fn by_id<'a>(records: &'a [Object], id: &str) -> &'a Object {
+    records
+        .iter()
+        .find(|record| record.get_str("id") == Some(id))
+        .expect("record by id")
+}
+
+/// The reference object naming `record` (§6.3).
+fn reference_to(record: &Object) -> String {
+    format!(
+        r#"{{"digest":"{}","id":"{}","kind":"{}","origin":{{"instance":"{}","project":"{}"}}}}"#,
+        digest::record_digest(record),
+        record.get_str("id").expect("id"),
+        record.get_str("kind").expect("kind"),
+        record
+            .get_object("origin")
+            .and_then(|origin| origin.get_str("instance"))
+            .expect("instance"),
+        record
+            .get_object("origin")
+            .and_then(|origin| origin.get_str("project"))
+            .expect("project"),
+    )
+}
+
+/// A `weave.grant` revocation of `grant` by `human-1` (the root granter, an
+/// authorised revoker by §5.5.4), effective at `effective_at`.
+fn revocation_by_human_1(grant: &Object, effective_at: &str) -> Object {
+    let text = format!(
+        r#"{{"actor":{{"key":"{HUMAN_1}","type":"human"}},"body":{{"action":"revoke","revoke":{{"effective_at":"{effective_at}","reason":null,"revokes":{reference}}}}},"format":"weave-record/1","id":"probe-revoke-root","kind":"weave.grant","origin":{{"instance":"{HUMAN_1}","project":"example"}},"recorded_at":"{effective_at}","sigs":[{{"alg":"ed25519","key":"{HUMAN_1}","value":"AA"}}],"stage":"accepted"}}"#,
+        reference = reference_to(grant),
+    );
+    resign(
+        &json::parse_object(text.as_bytes()).expect("revocation"),
+        "human-1",
+        HUMAN_1,
+    )
+}
+
+/// `grant-depth-10`: a grant record by `agent-2` citing `grant-depth-9`, so
+/// its own parent chain has nine links (one past the bound, S10/T8) and the
+/// root is the tenth grant walked from its parent. Same window as its parent.
+fn grant_depth_10(depth_9: &Object, recorded_at: &str) -> Object {
+    let text = format!(
+        r#"{{"actor":{{"grant":{reference},"idempotency_key":"idem-grant-depth-10","key":"{AGENT_2}","model":"example/model@1.2.3","on_behalf_of":"{HUMAN_1}","type":"agent"}},"body":{{"action":"grant","grant":{{"actions":["grant","propose","accept"],"evidence":null,"grantee":{{"key":"{AGENT_1}"}},"kinds":["weave.grant","example.note"],"remedy":null,"scope":["example"],"transferable":true,"valid_from":"2026-11-01T00:00:00.000Z","valid_until":"2026-11-10T04:05:06.078Z"}}}},"format":"weave-record/1","id":"grant-depth-10","kind":"weave.grant","origin":{{"instance":"{AGENT_2}","project":"example"}},"recorded_at":"{recorded_at}","sigs":[{{"alg":"ed25519","key":"{AGENT_2}","value":"AA"}}],"stage":"accepted"}}"#,
+        reference = reference_to(depth_9),
+    );
+    resign(
+        &json::parse_object(text.as_bytes()).expect("grant-depth-10"),
+        "agent-2",
+        AGENT_2,
+    )
+}
+
+/// §5.5.2 step 6 judges "the entire chain — the cited grant and every
+/// ancestor", not just the links inside the step-7 bound. In
+/// `grant/chain-depth-9-links` the note's chain has nine links, so its root
+/// (`grant-depth-root`) is the tenth grant walked and lies past the bound. A
+/// valid revocation of that root by `human-1`, effective before the note's
+/// `recorded_at`, fails step 6 first: `E_GRANT_REVOKED`, not the step-7
+/// `E_GRANT_UNRESOLVED` (H1-FIX2B Z1, docs/h1-findings.md F68).
+#[test]
+fn grant_chain_validity_covers_links_past_the_depth_bound() {
+    let case = vectors_root().join("grant/chain-depth-9-links/container");
+    let mut edited = records(&case);
+    let root = by_id(&edited, "grant-depth-root").clone();
+    edited.push(revocation_by_human_1(&root, "2026-11-02T00:00:00.000Z"));
+    let report = verify_container(container(&case, &edited), &keyset_options()).expect("container");
+    assert_eq!(
+        record_errors(&report, "probe-revoke-root"),
+        Vec::<&str>::new()
+    );
+    assert_eq!(record_errors(&report, "grant-depth-9"), Vec::<&str>::new());
+    assert_eq!(
+        record_errors(&report, "grant-depth-9-note"),
+        vec!["E_GRANT_REVOKED"]
+    );
+}
+
+/// The same order when the record being verified is itself a grant (its
+/// ancestors are judged at its own `recorded_at`, S9): `grant-depth-10`'s
+/// parent chain is past the bound, so on its own it is `E_GRANT_UNRESOLVED`;
+/// recorded after every ancestor's `valid_until` it is `E_GRANT_EXPIRED`, and
+/// with the root (past the bound) revoked before it, `E_GRANT_REVOKED`
+/// (H1-FIX2B Z1, docs/h1-findings.md F68).
+#[test]
+fn grant_record_chain_validity_is_judged_before_depth() {
+    let case = vectors_root().join("grant/chain-depth-9-links/container");
+    let original = records(&case);
+    let depth_9 = by_id(&original, "grant-depth-9").clone();
+    let root = by_id(&original, "grant-depth-root").clone();
+    let run = |extra: Vec<Object>| {
+        let mut edited = original.clone();
+        edited.extend(extra);
+        verify_container(container(&case, &edited), &keyset_options()).expect("container")
+    };
+
+    let deep = run(vec![grant_depth_10(&depth_9, "2026-11-05T00:00:00.000Z")]);
+    assert_eq!(
+        record_errors(&deep, "grant-depth-10"),
+        vec!["E_GRANT_UNRESOLVED"]
+    );
+
+    let expired = run(vec![grant_depth_10(&depth_9, "2026-12-01T00:00:00.000Z")]);
+    assert_eq!(
+        record_errors(&expired, "grant-depth-10"),
+        vec!["E_GRANT_EXPIRED"]
+    );
+
+    let revoked = run(vec![
+        grant_depth_10(&depth_9, "2026-11-05T00:00:00.000Z"),
+        revocation_by_human_1(&root, "2026-11-02T00:00:00.000Z"),
+    ]);
+    assert_eq!(record_errors(&revoked, "grant-depth-9"), Vec::<&str>::new());
+    assert_eq!(
+        record_errors(&revoked, "grant-depth-10"),
+        vec!["E_GRANT_REVOKED"]
+    );
+}

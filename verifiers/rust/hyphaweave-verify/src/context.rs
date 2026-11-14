@@ -1673,21 +1673,28 @@ impl World {
 
     /// Checks window and revocation state of the whole chain at one time
     /// (§5.5.2 step 6, R1). The chain starts at `slot` and follows parents.
+    ///
+    /// "The entire chain — the cited grant and every ancestor — is judged":
+    /// the walk is not cut at the step-7 depth bound, so a revoked or expired
+    /// grant beyond the bound still reports its step-6 code, and the caller
+    /// reports step 7 only afterwards (H1-FIX2B Z1, docs/h1-findings.md F68).
+    /// Only a cycle stops it. Every link inside the bound already passed
+    /// steps 1–5 (`grant_chain_check`), so the `break`s below are reached only
+    /// beyond the bound: a link there that cannot be judged (not a grant,
+    /// unresolved) ends the walk and is left to step 7.
     fn grant_chain_validity(&mut self, slot: usize, at: Timestamp) -> Result<(), Code> {
         let mut current = Some(slot);
-        let mut depth = 0usize;
         let mut visited: Vec<usize> = Vec::new();
         while let Some(index) = current {
-            if depth > crate::limits::MAX_GRANT_CHAIN || visited.contains(&index) {
+            if visited.contains(&index) {
                 return Err(e::GRANT_UNRESOLVED);
             }
             visited.push(index);
-            depth += 1;
             let Some(KindBody::Grant(body)) = self.slots[index].body.clone() else {
-                return Err(e::GRANT_UNRESOLVED);
+                break;
             };
             let Some(spec) = body.grant.clone() else {
-                return Err(e::GRANT_GRANTER);
+                break;
             };
             if self.grant_revoked_at(index, at) {
                 return Err(e::GRANT_REVOKED);
@@ -1701,14 +1708,18 @@ impl World {
                 }
             }
             let Some(record) = self.slots[index].record.clone() else {
-                return Err(e::GRANT_UNRESOLVED);
+                break;
             };
             current = record
                 .envelope()
                 .and_then(|envelope| envelope.actor.grant.clone())
                 .and_then(|parent| {
                     let resolution = self.resolve(&parent);
-                    resolution.target_slot
+                    if resolution.state == FOUND {
+                        resolution.target_slot
+                    } else {
+                        None
+                    }
                 });
         }
         Ok(())
