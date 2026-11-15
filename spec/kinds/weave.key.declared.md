@@ -113,7 +113,11 @@ permitted (additive evolution, K3, parent specification §7.5).
    MUST be less than or equal to `valid_until`; otherwise `E_KEY_VALIDITY` (invalid). A
    signature made outside the declared window (either before `valid_from` or after
    `valid_until`) is `E_KEY_EXPIRED` (invalid) [Q20] decided (Inceptless decision
-   2026-11-10 #34; Q20).
+   2026-11-10 #34; Q20). This includes the declaration's own self-signature and its
+   cosignatures: parent specification §9.4 judges every signature of this record (window,
+   retired revocations, and the key-compromise rescue rule) for this record's verdict, while
+   the declaration still supplies its key's material, class and window (§5.3)
+   [S2/F38/F61-1] decided by principle (Inceptless decision 2026-11-15 #8; S2).
 6. **Multiple declarations.** The governing class, the governing validity window and the
    declaration-resolution order (smallest claimed `recorded_at`, ties by the
    lexicographically smallest record digest) are defined once in parent specification §5.3;

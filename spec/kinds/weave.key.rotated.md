@@ -45,7 +45,11 @@ remains usable for existing records and must be revoked separately (usually with
    deliberately uses `E_KEY_ROTATION_KEYS`, not `E_KEY_PUBLIC_KEY` or
    `E_KEY_ID_MISMATCH` [M-11] decided (Inceptless decision 2026-11-10 #34; M-11). The
    encoding/length part of this check is **structural** (parent specification §14.1, V5),
-   and a `weave.key.rotated` record is never used to determine a governing class.
+   and a `weave.key.rotated` record is never used to determine a governing class. The rule
+   presupposes well-formed key ids: a `new_key` or `old_key` that is missing, is not a key id
+   (§2.5) or has another JSON type is a body-schema defect, `E_KIND_BODY_SCHEMA`, decided
+   in the same pre-signature structural check and before this rule (parent specification
+   §14.5) [S2/F61-3] decided by principle (Inceptless decision 2026-11-15 #8; S2).
 3. **Both signatures.** At least one valid signature by `old_key` and at least one valid
    signature by `new_key` MUST be present (`E_KEY_ROTATION_SIGS`). The new-key signature is
    verified against `body.new_public_key`; the old-key signature is verified against
