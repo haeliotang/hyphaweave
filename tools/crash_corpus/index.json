@@ -1,5 +1,5 @@
 {
-  "case_count": 154,
+  "case_count": 156,
   "cases": [
     {
       "base_case": "container/previous-zip-valid",
@@ -1816,6 +1816,30 @@
       "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F67: effective_at with second 60 (ValueError: second must be in 0..59). The committed vector is the crash input itself; replayed with its own arguments.",
       "file_id": "s2-00007",
       "index": 7,
+      "overlay": []
+    },
+    {
+      "base_case": "stage/accepted-signed",
+      "category": "keyset",
+      "deleted": [],
+      "desc": "S2-FIX1 T5 (review A medium-2, differential mutant keyset-00013): the keyset declaration key-declared-human-2 with \"sigs\": []. §14.1 makes it a usage error (exit 2, E_SIG_REQUIRED in the structural group); the reference verifier used to accept it. Replayed with a private keyset copy.",
+      "file_id": "s2fix1-00000",
+      "index": 0,
+      "keyset_overlay": [
+        "key-declared-human-2.json"
+      ],
+      "overlay": []
+    },
+    {
+      "base_case": "stage/accepted-signed",
+      "category": "keyset",
+      "deleted": [],
+      "desc": "S2-FIX1 T5 (review A medium-2, differential mutant keyset-00217): the keyset declaration key-declared-key-new with \"sigs\": []. §14.1 makes it a usage error (exit 2, E_SIG_REQUIRED in the structural group); the reference verifier used to accept it. Replayed with a private keyset copy.",
+      "file_id": "s2fix1-00001",
+      "index": 1,
+      "keyset_overlay": [
+        "key-declared-key-new.json"
+      ],
       "overlay": []
     }
   ],

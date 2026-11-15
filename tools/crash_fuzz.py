@@ -46,7 +46,9 @@ crash inputs found by the S1-FIX2 recheck (6 ``previous`` + 139 ``tsa``) and the
 ``--tsa-trust`` PEM with an invalid certificate version found by the S1-FIX3
 recheck with seed 777 (S1-FIX4 W4), plus the eight record-body crash inputs of the
 H1 findings F51, F61-2 and F67 (S2; the committed ``key-lifecycle/crash-*`` vectors
-replayed as-is); every run replays it first and requires zero crashes. ``index.json`` records the original seed/category/index for
+replayed as-is), and the two keyset files with ``"sigs": []`` of S2-FIX1 T5 (a
+usage error, replayed through a private keyset copy, ``keyset_overlay``); every run
+replays it first and requires zero crashes. ``index.json`` records the original seed/category/index for
 traceability.
 
 Load: every worker runs one CLI subprocess at a time. When this gate runs next
@@ -782,8 +784,16 @@ def materialize_corpus_case(case: dict, work_root: Path) -> tuple[Path, list[str
         target = case_dir / relative
         if target.exists():
             target.unlink()
+    keyset = KEYSET
+    if case.get("keyset_overlay"):
+        # S2-FIX1 T5: a corpus input may replace files of a private keyset copy
+        # (stored under <file_id>/_keyset/ in the corpus), replayed as --keys.
+        keyset = case_dir / "_keyset"
+        shutil.copytree(KEYSET, keyset)
+        for relative in case["keyset_overlay"]:
+            shutil.copyfile(CORPUS / case["file_id"] / "_keyset" / relative, keyset / relative)
     expected = load_case(case["base_case"])
-    return case_dir, expand_args(expected, case_dir, KEYSET)
+    return case_dir, expand_args(expected, case_dir, keyset)
 
 
 def run_corpus_job(task: tuple[dict, str]) -> dict:
