@@ -464,12 +464,14 @@ fn parse_envelope(object: &Object) -> Result<Envelope, Code> {
 }
 
 fn parse_placeholder(object: &Object) -> Result<ErasedPlaceholder, Code> {
-    // `format` keeps its envelope code; the rest of the shape is
-    // `E_KIND_BODY_SCHEMA` (§4.5, kind page).
+    // A `format` string other than "weave-record/1" keeps its envelope code;
+    // the rest of the shape — a `format` of another JSON type included ("wrong
+    // member type", §4.5) — is `E_KIND_BODY_SCHEMA` (§4.5, kind page).
     if let Some(value) = object.get("format") {
         match value.as_str() {
             Some("weave-record/1") => {}
-            _ => return Err(e::ENV_FORMAT),
+            Some(_) => return Err(e::ENV_FORMAT),
+            None => return Err(e::KIND_BODY_SCHEMA),
         }
     }
     const PLACEHOLDER_MEMBERS: [&str; 6] =

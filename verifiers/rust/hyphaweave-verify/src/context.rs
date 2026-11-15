@@ -1730,7 +1730,15 @@ impl World {
     ) -> Result<(usize, kinds::GrantSpec), Code> {
         let resolution = self.resolve(reference);
         if resolution.state != FOUND {
-            return Err(e::GRANT_UNRESOLVED);
+            // §5.4 with the two tiers of §5.5.2 step 1 (S2-FIX2/U2, Q6): a
+            // cited grant record that is present but itself invalid is
+            // `E_GRANT_GRANTER`; one that cannot be established is
+            // `E_GRANT_UNRESOLVED`.
+            return Err(if self.reference_target_invalid(reference) {
+                e::GRANT_GRANTER
+            } else {
+                e::GRANT_UNRESOLVED
+            });
         }
         let Some(index) = resolution.target_slot else {
             return Err(e::GRANT_UNRESOLVED);
@@ -1842,7 +1850,13 @@ impl World {
                 };
                 let parent_resolution = self.resolve(&parent_ref);
                 if parent_resolution.state != FOUND {
-                    return Err(e::GRANT_UNRESOLVED);
+                    // §5.5.2 step 1, two tiers (S2-FIX2/U2, Q6): a parent
+                    // present but itself invalid is `E_GRANT_GRANTER`.
+                    return Err(if self.reference_target_invalid(&parent_ref) {
+                        e::GRANT_GRANTER
+                    } else {
+                        e::GRANT_UNRESOLVED
+                    });
                 }
                 let Some(parent_slot) = parent_resolution.target_slot else {
                     return Err(e::GRANT_UNRESOLVED);
@@ -2271,8 +2285,37 @@ impl World {
                     let _ = placeholder;
                 }
             }
+            // §10.3 applies "when both the placeholder and its erasure record
+            // are present in a container"; a record that fails its own §4.5
+            // structure is not a placeholder (S2/F48). Without a placeholder
+            // for the erased identity, rule 1 is broken only when some
+            // placeholder of the container attests this erasure record (its
+            // `erased` reference then names no placeholder); otherwise there
+            // is no placeholder to cross-check.
             let Some(placeholder_slot) = matching_placeholder else {
-                outcome.container_errors.push(e::ERASE_DIGEST_MISMATCH);
+                let Some(erasure_record) = self.slots[erasure_slot].record.as_ref() else {
+                    continue;
+                };
+                let erasure_digest = erasure_record.digest();
+                let erasure_identity = erasure_record
+                    .envelope()
+                    .map(|envelope| identity_key(&envelope.origin, &envelope.id));
+                let attested = placeholder_slots.iter().any(|&slot| {
+                    self.slots[slot]
+                        .record
+                        .as_ref()
+                        .and_then(RecordFile::erased)
+                        .is_some_and(|placeholder| {
+                            placeholder.attestation.digest == erasure_digest
+                                && Some(identity_key(
+                                    &placeholder.attestation.origin,
+                                    &placeholder.attestation.id,
+                                )) == erasure_identity
+                        })
+                });
+                if attested {
+                    outcome.container_errors.push(e::ERASE_DIGEST_MISMATCH);
+                }
                 continue;
             };
             let placeholder = self.slots[placeholder_slot]
