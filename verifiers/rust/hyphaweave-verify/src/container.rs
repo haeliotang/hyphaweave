@@ -597,6 +597,10 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
     if codes.is_empty() {
         Ok(content)
     } else {
+        // §11.8 (S2-FIX2/U7): the central directory was read and the
+        // `readable/` entries were seen, so a member-level failure here (a
+        // CRC, for example) still reports `N_READABLE_PRESENT`; only a
+        // failure to read the central directory itself (above) does not.
         Err(EnumerationFailure {
             codes: codes.into_iter().collect(),
             readable_observed: content.readable_present,
