@@ -14001,6 +14001,180 @@ for _name, _build, _what in (
     )
 
 
+# -- T4 / T7: F69-3, F69-4, F59 (CRL extension), review A medium-1 (anchor bundle) --
+
+declare(
+    "grant",
+    "grantee-mismatch-before-window",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_GRANT_GRANTEE_MISMATCH",),
+    build=lambda case_dir: (
+        lambda grant: container(
+            [grant, agent_action(grant, record_id="agent-grantee-mismatch-late", recorded_at=_S2_LATE)]
+        )
+    )(
+        root_grant(
+            record_id="grant-root-grantee",
+            grantee="agent-2",
+            kinds=("example.note",),
+            actions=("propose", "accept"),
+        )
+    ),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "agent-grantee-mismatch-late", "verdict": "invalid", "errors": ["E_GRANT_GRANTEE_MISMATCH"]},
+    ),
+    notes="S2-FIX1 T4 (F69-3; §5.4: the coverage checks are evaluated in the order of the "
+    "list): grant/grantee-mismatch with the agent record recorded after the grant's "
+    "valid_until (T9). The grantee check (invalid E_GRANT_GRANTEE_MISMATCH) comes before "
+    "the window check (unverifiable E_GRANT_EXPIRED).",
+)
+
+
+def _fix1_rotation_unknown_alg_new_key() -> dict[str, Any]:
+    old_private, old_public, old_id = derived_key("fix1-f69-4-old")
+    new_private, new_public, new_id = derived_key("fix1-f69-4-new")
+    rotation = recordlib.build_record(
+        kind="weave.key.rotated",
+        id="key-rotated-fix1-f69-4",
+        actor={"type": "device", "key": old_id},
+        body={
+            "new_key": new_id,
+            "new_public_key": keyutil.b64url_encode(new_public),
+            "old_key": old_id,
+            "old_public_key": keyutil.b64url_encode(old_public),
+        },
+        stage="accepted",
+        recorded_at=recordlib.T1,
+        origin_instance=old_id,
+    )
+    new_entry = {**_derived_signature(new_private, new_id, rotation), "alg": "ed25519-x"}
+    return {
+        **rotation,
+        "sigs": sorted(
+            [_derived_signature(old_private, old_id, rotation), new_entry],
+            key=lambda entry: entry["key"],
+        ),
+    }
+
+
+declare(
+    "key-lifecycle",
+    "rotation-own-material-declares-its-keys",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_ROTATION_SIGS",),
+    build=lambda case_dir: container([_fix1_rotation_unknown_alg_new_key()]),
+    args=_S2_ARGS,
+    records=(
+        {"id": "key-rotated-fix1-f69-4", "verdict": "invalid", "errors": ["E_KEY_ROTATION_SIGS"]},
+    ),
+    notes="S2-FIX1 T7 (F69-4; §4.4 steps 4-5, §9.2 rule 5): a rotation between two keys that "
+    "no weave.key.declared record names. Its old-key entry verifies against the rotation's "
+    "own old_public_key; its new-key entry uses the unknown algorithm ed25519-x. A key named "
+    "with public material by a weave.key.rotated record is declared, so a known-algorithm "
+    "signature by a declared key exists (step 4) and the missing new-key signature is the "
+    "dedicated code: invalid E_KEY_ROTATION_SIGS, not unverifiable E_KEY_UNKNOWN (step 5).",
+)
+
+
+def _fix1_crl(critical: bytes | None) -> _DerNode:
+    """A minimal CertificateList with one crlNumber extension (never verified)."""
+    issuer = _der_tree(_der_encode(_s2_tbs(_der_tree(_tsa_certificate_der())).children[3]))
+    extension_parts = [_w3_oid("2.5.29.20")]
+    if critical is not None:
+        extension_parts.append(_w3_node(0x01, content=critical))
+    extension_parts.append(_w3_node(0x04, content=b"\x02\x01\x01"))
+    algorithm = _w3_node(0x30, children=[_w3_oid("1.2.840.113549.1.1.11"), _w3_node(0x05, content=b"")])
+    tbs = _w3_node(0x30, children=[
+        _w3_node(0x02, content=b"\x01"),
+        algorithm,
+        issuer,
+        _w3_node(0x17, content=b"260101000000Z"),
+        _w3_node(0xA0, children=[_w3_node(0x30, children=[_w3_node(0x30, children=extension_parts)])]),
+    ])
+    algorithm_copy = _der_tree(_der_encode(algorithm))
+    return _w3_node(0x30, children=[tbs, algorithm_copy, _w3_node(0x03, content=b"\x00\x5a")])
+
+
+def _fix1_with_crl(critical: bytes | None) -> Callable[[_DerNode], None]:
+    def edit(tree: _DerNode) -> None:
+        signed_data = _w3_signed_data(tree)
+        position = next(
+            index for index, child in enumerate(signed_data.children) if child.tag == 0xA0
+        )
+        signed_data.children.insert(position + 1, _w3_node(0xA1, children=[_fix1_crl(critical)]))
+
+    return edit
+
+
+for _name, _critical, _verdict, _why in (
+    ("l2-ts-crl-extension-critical-false", b"\x00", "invalid",
+     "its crlNumber extension writes critical FALSE explicitly; Extension.critical is BOOLEAN "
+     "DEFAULT FALSE (1c DEFAULT table: certificate, CRL, CRL-entry and TSTInfo extensions), "
+     "so the encoded default is a DER violation (E_TS_SCHEMA)"),
+    ("l2-ts-crl-extension-critical-absent", None, "valid",
+     "its crlNumber extension omits critical (control)"),
+    ("l2-ts-crl-extension-critical-true", b"\xff", "valid",
+     "its crlNumber extension writes critical TRUE, which is not the default (control)"),
+):
+    _crl_expected = _S2_VALID_L2 if _verdict == "valid" else _W3_SCHEMA_EXPECTED
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        _verdict,
+        build=lambda case_dir, _critical=_critical: _crafted_l2_files(
+            case_dir,
+            tsr_factory=lambda imprint: _x1_resigned(_fix1_with_crl(_critical))(
+                _crafted_tsr(imprint)
+            ),
+        ),
+        notes="S2-FIX1 T7 (F59; §12.2 1c): the token's SignedData.crls carries one "
+        "CertificateList (walked under the RFC 5280 module, never verified); " + _why + ".",
+        **_crl_expected,
+    )
+
+
+def _fix1_utf8_subject(certificate: _DerNode) -> None:
+    tbs = _s2_tbs(certificate)
+    subject_index = 5 if tbs.children[0].tag == 0xA0 else 4
+    tbs.children[subject_index] = _w3_node(0x30, children=[_w3_node(0x31, children=[
+        _w3_node(0x30, children=[_w3_oid("2.5.4.3"),
+                                 _w3_node(0x0C, content=b"Hyphaweave \xb9 anchor")])
+    ])])
+
+
+def _fix1_anchor_bundle_files(case_dir: Path) -> dict[str, bytes]:
+    files = _crafted_l2_files(case_dir, trust_name=None)
+    files[TSA_CERT_NAME] = TSA_CERT() + _s2_pem(_s2_signer_certificate(_fix1_utf8_subject))
+    return files
+
+
+declare(
+    "integrity-levels",
+    "l2-ts-anchor-bundle-subject-utf8-invalid",
+    "container",
+    "container",
+    "valid",
+    build=_fix1_anchor_bundle_files,
+    args=_S2_L2_ARGS,
+    expected_container={"anchor_verified": True},
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes="S2-FIX1 (review A medium-1 item 2; §14.1, §12.2 1e): the --tsa-trust file holds "
+    "two certificates, the committed test TSA certificate and a second certificate whose "
+    "subject CN is a UTF8String with the octet 0xb9 (not valid UTF-8). An anchor is judged "
+    "by 1e only: the module walk with the 1b/1c rules, the version constraints and the 1a "
+    "rules for every extnValue; AttributeTypeAndValue.value is an open type judged by its "
+    "framing, so the second anchor is accepted (no usage error) and the receipt verifies "
+    "against the first.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,

@@ -1,0 +1,1 @@
+{"created_at":"2026-11-01T00:00:00.000Z","format":"weave-record/1","level":"L0","manifest_version":1,"origin":{"instance":"ed25519:333f90d1d9dfb653b78df977b9b13ff2","project":"example"},"previous_manifest":null,"records":[{"digest":"sha256:5891acab4f465c3c51680911f89dea9d552db53486e4ec7541d3500a0788ab66","id":"key-rotated-fix1-f69-4","kind":"weave.key.rotated"}]}
