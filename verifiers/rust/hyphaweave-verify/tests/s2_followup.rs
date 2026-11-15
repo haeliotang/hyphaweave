@@ -414,8 +414,7 @@ fn trust_is_not_handed_on_through_a_declaration_that_supplies_no_material() {
 
 /// §4.5 (H1-S2 differential fuzzing): every structural violation of a
 /// placeholder is `E_KIND_BODY_SCHEMA`, a `format` of another JSON type
-/// ("wrong member type") included; a `format` string other than
-/// `"weave-record/1"` keeps `E_ENV_FORMAT`.
+/// ("wrong member type") or another string included.
 #[test]
 fn placeholder_format_of_another_type_is_body_schema() {
     let options = keyset_with(None);
@@ -438,7 +437,7 @@ fn placeholder_format_of_another_type_is_body_schema() {
     );
     assert_eq!(
         with_format(Value::Str("weave-record/2".to_owned())).records[0].errors,
-        vec![e::ENV_FORMAT]
+        vec![e::KIND_BODY_SCHEMA]
     );
 }
 
