@@ -14550,6 +14550,120 @@ for _name, _unknown, _forge, _verdict, _code, _records, _why in (
     )
 
 
+# -- S2-FIX2b (decision 2026-11-15 #32): the §9.4 half of U5. A verified entry of a
+#    declared key whose §9.4 outcome is invalid decides the manifest signature even
+#    beside an undeclared key; an unverifiable §9.4 outcome leaves E_KEY_UNKNOWN.
+
+_FIX2B_EFFECTIVE_AT = recordlib.T2
+_FIX2B_CREATED_AT = recordlib.T3
+
+
+def _fix2b_revocation(reason: str) -> dict[str, Any]:
+    # human-1 (the manifest signing key) is revoked by human-2, effective at T2.
+    return recordlib.key_revocation(
+        "human-1",
+        reason=reason,
+        effective_at=_FIX2B_EFFECTIVE_AT,
+        recorded_at=_FIX2B_EFFECTIVE_AT,
+        signer_name="human-2",
+    )
+
+
+def _fix2b_with_unknown_first(files: dict[str, bytes]) -> dict[str, bytes]:
+    def mutator(sigfile: dict[str, Any]) -> dict[str, Any]:
+        genuine = dict(sigfile["signatures"][0])
+        unknown = {"alg": "ed25519", "key": _FIX2_UNKNOWN_FIRST, "value": genuine["value"]}
+        return {**sigfile, "signatures": sorted([genuine, unknown], key=lambda e: e["key"])}
+
+    recordlib.mutate_sigfile(files, mutator)
+    return files
+
+
+def _fix2b_manifest_files(reason: str, *, unknown_first: bool) -> dict[str, bytes]:
+    files = recordlib.build_container(
+        [_fix2b_revocation(reason)], created_at=_FIX2B_CREATED_AT
+    )
+    if unknown_first:
+        _fix2b_with_unknown_first(files)
+    return _wrap_internal(files)
+
+
+def _fix2b_untrusted_receipt_files() -> dict[str, bytes]:
+    def builder(imprint: bytes) -> list[tuple[str, bytes, str | None]]:
+        return [("signatures/timestamp-1.tsr", _crafted_tsr(imprint), None)]
+
+    files = _build_timestamped_container(
+        [_fix2b_revocation("key-compromise")], builder, level="L2",
+        created_at=_FIX2B_CREATED_AT,
+    )
+    return _wrap_internal(_fix2b_with_unknown_first(files))
+
+
+_FIX2B_SETUP = (
+    "human-1, the manifest signing key, is revoked by human-2 with effective_at T2 "
+    "(%s) and the manifest's created_at is T3 (%s)" % (_FIX2B_EFFECTIVE_AT, _FIX2B_CREATED_AT)
+)
+
+for _name, _reason, _unknown, _code, _why in (
+    ("manifest-sig-retired-key-beats-unknown-key", "retired", True, "E_KEY_REVOKED",
+     "a 'retired' revocation; the manifest signatures are two ed25519 entries in key order, "
+     "first an undeclared key ed25519:00…00, then the genuine human-1 signature. The "
+     "human-1 entry verifies and its key's §9.4 outcome at created_at is invalid "
+     "(created_at >= effective_at): E_KEY_REVOKED, not the undeclared key's E_KEY_UNKNOWN"),
+    ("manifest-sig-compromised-key-beats-unknown-key", "key-compromise", True,
+     "E_KEY_COMPROMISED",
+     "a 'key-compromise' revocation; the same two entries as "
+     "manifest-sig-retired-key-beats-unknown-key. The L0 container lists no receipt, so no "
+     "rescue is possible and the human-1 entry's §9.4 outcome is invalid: E_KEY_COMPROMISED, "
+     "not E_KEY_UNKNOWN"),
+    ("manifest-sig-retired-key-only-entry", "retired", False, "E_KEY_REVOKED",
+     "a 'retired' revocation; control: the genuine human-1 signature is the only entry, "
+     "with the same outcome as manifest-sig-retired-key-beats-unknown-key"),
+    ("manifest-sig-compromised-key-only-entry", "key-compromise", False, "E_KEY_COMPROMISED",
+     "a 'key-compromise' revocation; control: the genuine human-1 signature is the only "
+     "entry, with the same outcome as manifest-sig-compromised-key-beats-unknown-key"),
+):
+    declare(
+        "container",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=(_code,),
+        build=lambda case_dir, _reason=_reason, _unknown=_unknown: _fix2b_manifest_files(
+            _reason, unknown_first=_unknown
+        ),
+        args=("--keys", "@keyset"),
+        records=[],
+        notes="S2-FIX2b (decision 2026-11-15 #32 by principle, the §9.4 half of S2-FIX2 U5; "
+        "§11.3, §9.4): " + _FIX2B_SETUP + "; " + _why + ". The pipeline stops at the "
+        "manifest signature's §9.4 judgement, so records is [].",
+    )
+
+declare(
+    "container",
+    "manifest-sig-untrusted-receipt-keeps-unknown-key",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNKNOWN", "E_TS_UNTRUSTED"),
+    build=lambda case_dir: _fix2b_untrusted_receipt_files(),
+    args=("--keys", "@keyset"),
+    expected_container={
+        "level_claimed": "L2",
+        "level_verified": "L0",
+        "anchor_verified": False,
+    },
+    records=[{"id": "key-revoked-human-1-key-compromise", "verdict": "valid", "errors": []}],
+    notes="S2-FIX2b (decision 2026-11-15 #32 by principle; §11.3, §9.4 case 2): "
+    + _FIX2B_SETUP + "; a 'key-compromise' revocation, an L2 container with one receipt "
+    "and no --tsa-trust, and the same two manifest signature entries as "
+    "manifest-sig-compromised-key-beats-unknown-key. The human-1 entry's §9.4 outcome is "
+    "unverifiable (receipts present, none trusted), not invalid, so the undeclared key's "
+    "E_KEY_UNKNOWN stays the manifest signature code and the record pipeline runs; "
+    "E_TS_UNTRUSTED comes from the untrusted receipt at step (11).",
+)
+
 # -- U7: N_READABLE_PRESENT is not reported only when the archive fails before its
 #    entries are enumerated (phases 1-4 of the zip check order).
 

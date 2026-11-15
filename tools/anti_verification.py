@@ -2077,12 +2077,33 @@ def _build_s2_catalogue() -> None:
              "        if material is None:\n            raise WeaveError(\"E_KEY_UNKNOWN\", \"ablation\")\n",
              ("container/manifest-sig-invalid-beats-unknown-key",)),
         _lit("fix2-u5-manifest-unknown-dropped", "container.py", "fix2.u5.manifest-sig",
-             "U5: ignore an undeclared manifest signature key beside a verified entry",
-             "    if unknown_key:\n        raise WeaveError(\n"
-             "            \"E_KEY_UNKNOWN\", \"manifest signature key is not declared in the context\"\n",
-             "    if False:\n        raise WeaveError(\n"
-             "            \"E_KEY_UNKNOWN\", \"manifest signature key is not declared in the context\"\n",
+             "U5: ignore an undeclared manifest signature key beside a verified entry "
+             "(anchor moved to step (5) by S2-FIX2b)",
+             "        if manifest_unknown_key:\n"
+             "            manifest_unknown_signer_keys = manifest_signature_keys\n",
+             "        if False:\n"
+             "            manifest_unknown_signer_keys = manifest_signature_keys\n",
              ("container/manifest-sig-unknown-key-beside-valid-entry",)),
+        # ---------------------------------------------------- S2-FIX2b (#32)
+        _lit("fix2b-manifest-effects-beside-unknown", "container.py", "fix2b.manifest-effects",
+             "S2-FIX2b: skip the §9.4 effects of the verified manifest entries when another "
+             "entry's key is undeclared (E_KEY_UNKNOWN masks a retired or compromised key)",
+             "            manifest_unknown_signer_keys = manifest_signature_keys\n",
+             "            manifest_unknown_signer_keys = ()\n",
+             ("container/manifest-sig-retired-key-beats-unknown-key",
+              "container/manifest-sig-compromised-key-beats-unknown-key")),
+        _lit("fix2b-manifest-effects-keep-unknown", "container.py", "fix2b.manifest-effects",
+             "S2-FIX2b: report the invalid §9.4 code beside E_KEY_UNKNOWN instead of in its place",
+             "            errors.remove(\"E_KEY_UNKNOWN\")\n",
+             "            pass\n",
+             ("container/manifest-sig-retired-key-beats-unknown-key",
+              "container/manifest-sig-compromised-key-beats-unknown-key")),
+        _lit("fix2b-manifest-effects-unverifiable", "container.py", "fix2b.manifest-effects",
+             "S2-FIX2b: let an unverifiable §9.4 outcome (E_TS_UNTRUSTED) replace E_KEY_UNKNOWN "
+             "and stop the pipeline",
+             "        if error.effect == \"invalid\":\n            errors.remove(",
+             "        if True:\n            errors.remove(",
+             ("container/manifest-sig-untrusted-receipt-keeps-unknown-key",)),
         _lit("fix2-u7-member-failure-notice", "container.py", "fix2.u7.readable",
              "U7: drop N_READABLE_PRESENT after a member-level zip failure (S2-FIX1 reading)",
              "            error=structure_error.code,\n            input_sha256=input_sha,\n"
