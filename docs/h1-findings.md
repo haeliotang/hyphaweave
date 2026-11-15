@@ -2034,6 +2034,100 @@ byte-identical on every committed case the Rust verifier passes), so the allow
 list in `verifiers/rust/scripts/gate3_known_differences.json` is stale and fails
 the gate until the H1 follow-up empties it.
 
+## H1-S2 follow-up (decision 2026-11-15 #20)
+
+The Rust verifier follows every "Rust to follow" row of the two tables above, and the
+three deviations that review A (low-1) found by differential fuzzing without a vector.
+Each row names where the rule now lives.
+
+| item | rule | Rust change |
+|---|---|---|
+| F61-3 | §9.2 rule 2, §14.5 | `kinds::key_material_structural_error`: `new_key`/`old_key` key-id syntax first, `E_KIND_BODY_SCHEMA` before the signature layer, `sigs` `[]` |
+| Q2 (F38 trust half) | §5.3, §9.4, kind pages | `World::declaration_admitted` checks every non-subject signature of a declaration under §9.4 (only those, so the subject key's own lifecycle never decides admission); `admitted_trusted` / `admitted_declared_material` give no material from a declaration that fails it. `World::rotation_admitted` re-evaluates an invalid rotation once with only its new-key signature exempt from §9.4 |
+| T2 | §4.4 step 2, §14.5 | `record::evaluate_normalized`: the first invalid entry decides before `E_KEY_UNKNOWN`; `N_KEY_UNDECLARED` is reported whenever an entry's key is undeclared (the registry row states a fact about the entry; the reference verifier agrees) |
+| Q1 (F47) | erasure kind page | erasure check: actor member, signer rule, `World::reference_target_invalid` (present but invalid → `E_ERASE_ACTOR`), `grant_resolve`, coverage, then `grant_usable_at` |
+| Q3 (F55-1, F69-1/2) | §4.4 step 5, §14.5 | step 5 deferred for grant (delegated chain first), declaration (`decl_issue_without_signatures`: owner, class), consent revocation (target) and erasure |
+| F69-3 | §5.4 | `check_actor`: `grant_resolve`, grantee, kind/action, then `grant_usable_at` |
+| Q4 (F64) | §12.2 check 10 | `rsa_key_within_bounds`, `ecdsa_signature_within_bounds`: explicit checks on the decoded `RSAPublicKey` and `Ecdsa-Sig-Value`, before the `rsa`/`p256`/`p384` crates are called; unit tests at each bound |
+| T3 (F57, F66) | §12.2 1a | `der::check_primitive_content` by tag number: REAL (`check_real`), RELATIVE-OID, TIME/DURATION, ESC in 7/20/21/25/27, UniversalString/BMPString units, UTF-8 for 31–33/35/36 |
+| T8 (`readable`) | §11.8 | zip enumeration: no `N_READABLE_PRESENT` when the step-(1) codes include `E_CONTAINER_ZIP` |
+| anchor bundle (review A medium-1 ②) | §14.1, §12.2 1e | `load_trust_anchors`: framing (`der::check_framing`) instead of 1a over the whole certificate; the walk applies the 1c canonical-content rules to its typed primitives (`der::check_typed_content`) and 1a to every `extnValue` |
+| review A low-1, 33-level array | §1.9, §13 | `json::parse_object` judges "top-level value not an object" after the value, so the depth violation is reported (`tests/s2_followup.rs`) |
+| review A low-1, top-level 2^64 | §1.6, §1.9 | the same change: `E_JSON_NUMBER_RANGE` at the token (`tests/s2_followup.rs`) |
+| review A low-1, keyset | §14.1 | `declared_material`: a keyset declaration whose trust outcome is not `None` is ignored; keyset declarations are preferred as the material source, so a context declaration used instead is TOFU material (`tests/s2_followup.rs`) |
+| gate 3 | — | allow list emptied |
+
+### F70 — Where "top-level value not an object" sits in the byte order (§1.9)
+
+§1.9 lists "top-level value not an object where an object is required" among the
+`E_JSON_INVALID` classes of the stage-one pass, which reports the first violation in
+byte order, but does not say at which position that violation is. Read at the first
+byte, `[[…]]` (33 levels) would be `E_JSON_INVALID`; read as a property of the whole
+value, it is `E_JSON_SIZE`, and `18446744073709551616` is `E_JSON_NUMBER_RANGE`. The
+reference verifier takes the second reading, the brief of H1-S2 adopts it, and the Rust
+verifier now follows. A sentence in §1.9 would settle it; no vector pins it.
+
+### F71 — An anchor's typed primitives (§14.1, §12.2 1e)
+
+§14.1 judges a `--tsa-trust` certificate by "the module walk with the 1b/1c rules, the
+version constraints, and the 1a rules for every `extnValue`". The Rust verifier reads
+"1c rules" as including 1c's canonical content of every typed primitive (a non-minimal
+`serialNumber`, a BIT STRING with non-zero unused bits, a `critical` BOOLEAN `0x01`
+fail), while open types (`AttributeTypeAndValue.value`, `parameters`) get framing only.
+No vector has a non-canonical typed primitive in an anchor, and the reference verifier
+was not probed on one; a vector would pin the reading.
+
+### F72 — Trust handed on by a declaration that supplies no material (§5.3, Q2) — reference verifier deviates
+
+Q2 says a declaration in which a signature other than its subject key's fails §9.4
+"supplies no key material (neither the subject key's nor any other key's), governs no
+window and establishes no trust" (§5.3). The trust closure itself runs before any record is
+evaluated (its §9.4 inputs — valid revocations and timestamp evidence — need evaluation),
+so the Rust verifier applies Q2 where material is used: a key trusted only through such a
+declaration has no material, and a declaration whose cosignature is made by such a key is
+not admitted either.
+
+Reproduction (`tests/s2_followup.rs`,
+`trust_is_not_handed_on_through_a_declaration_that_supplies_no_material`; set
+`H1_S2_DUMP_DIR` to write the container out): keyset = human-1's declaration only; an L0
+container with a `retired` revocation of human-1 effective T1 (signed by human-1), a
+`human` declaration of human-2 at T2 cosigned by human-1, a `human` declaration of key-old
+at T3 cosigned by human-2, and a note signed by key-old at T4.
+
+| record | Rust | reference verifier |
+|---|---|---|
+| retirement of human-1 | valid | valid |
+| human-2 declaration | invalid `E_KEY_REVOKED` (human-1 cosignature `unverified`) | the same |
+| key-old declaration | unverifiable `E_KEY_UNKNOWN` (human-2's signature has no material) | **valid** (human-2's signature `valid`) |
+| note by key-old | unverifiable `E_KEY_UNKNOWN` | **valid**, `N_KEY_TOFU` |
+
+The reference verifier still uses human-2's material from a declaration that §5.3 says
+supplies none; its Q2 vectors only cover owner cosignatures of automated keys. Spec
+reading: unique (the §5.3 sentence names "a declaration's owner cosignature or other
+cosignatures"); the Rust verifier follows it. No vector pins it; it belongs on the S2
+list.
+
+### F73–F78 — Differences found by the H1-S2 differential fuzzing
+
+`scripts/diff_fuzz.py`, seeds 151115 and 777001, on the H1-S2 code before the two
+fixes below. Every row is reproducible with the script from (case, class, mutant seed),
+the seed being the `seed` of the JSONL line.
+
+| # | shape (example: case, class, seed) | reference | Rust | reading |
+|---|---|---|---|---|
+| fixed | erasure record with no placeholder of its erased identity, or only a malformed one (`erasure/actor-agent-grant-absent`, `member_delete`, 326222880947857115) | no §10.3 code | was `E_ERASE_DIGEST_MISMATCH` | **Rust was wrong**: §10.3 applies "when both … are present" and a malformed placeholder is not one (S2/F48); now rule 1 without a placeholder fires only when a placeholder attests the erasure (`erasure/placeholder-of-another-instance` keeps its code) |
+| fixed | placeholder whose `format` is a number (`erasure/placeholder-of-another-instance`, `number`, 4247991127229048556) | `E_KIND_BODY_SCHEMA` | was `E_ENV_FORMAT` | **Rust was wrong**: §4.5 "wrong member type" of the placeholder is `E_KIND_BODY_SCHEMA`; a wrong `format` string keeps `E_ENV_FORMAT` |
+| F73 | an automated declaration whose owner's declaration has no `sigs` (`container/previous-key-not-trusted-in-target`, `member_delete`, 2466068138702282238) | `E_KEY_UNTRUSTED` | `E_KEY_UNKNOWN` | spec-ambiguous: §9.1 rule 3 lets the owner declaration be "not otherwise valid", while §5.3 takes the class only from structurally valid declarations (the structural group includes `sigs` presence) |
+| F74 | a rotation without `new_public_key`, or with it renamed (`key-lifecycle/rotation-pubkey-contradicts-id`, `bitflip`, 1206337844626379176; `grant/revocation-rotation-successor-valid`, `member_delete`, 232162857186555824) | `E_KEY_ROTATION_KEYS`, `sigs` `[]` | the signature-layer code, or `E_KIND_BODY_SCHEMA` at check (6) | reference suspected wrong: rule 2 judges a public key "when present", §14.1 makes the *encoding and length* (not the presence) of the rotation keys structural, and a missing required member is the body-schema code |
+| F75 | zip whose root `readable` file and members fail (`container/readable-root-regular-file-zip`, `bitflip`, 4433355601911133336) | `E_CONTAINER_ZIP` | `E_CONTAINER_ENTRY` + `E_CONTAINER_ZIP` | spec-ambiguous: §11.9 orders entry judgement before decompression but does not say whether a layout failure and a member CRC failure of the same step are reported together; to be re-run after S2-FIX2 U7 |
+| F76 | `refs` with two entries equal but for the reference `kind` (`ref/duplicate-refs`, `refs`, 3196356845985137547) | `E_ENV_REFS` | valid | reference suspected wrong: §6.1 duplicates "repeat an identical `(rel, ref)` pair" |
+| F77 | a proposed agent record whose `actor.key` is declared `human`, signed only with an unknown algorithm (`actor/agent-with-human-key`, `sigs`, 4478745140622538270) | `E_GRANT_UNRESOLVED` | `E_ACTOR_KEY_TYPE_MISMATCH` | reference suspected wrong: §5.1 compares `actor.type` with the class of `actor.key`, which needs no verified signature, and invalid beats unverifiable |
+| F78 | report detail: the input identity of a directory container whose `manifest.json` was renamed (`input` `null` by S14 in Rust, a digest in the reference); `L_LABELS_ARE_CLAIMS` for records failing check (2) or (3), and `L_ERASED_*` for a malformed placeholder (F37) | — | — | S14 is unique (Rust); for the limitations the reference changed its F37 reading after S2 (it now counts a container record that fails check (2) with a `labels` member, not a record target that fails check (3), and no malformed placeholder); spec-ambiguous, a sentence in §14.9 would settle it |
+| also | an erasure whose attesting placeholder is fine but the erasure record fails its `sigs` format (`erasure/actor-agent-grant-present-invalid`, `number`, 2971139823131269709) | adds `E_ERASE_ATTESTATION` | identity+digest match, no code | spec-ambiguous (whether a structurally failed record is "the `weave.erasure` record" of §10.3 rule 2) |
+
+The S2-FIX2 rows (the DATE / OID-IRI types, `N_READABLE_PRESENT` after a member CRC
+failure) differed only because the Rust verifier already followed S2-FIX2.
+
 ## H1-FIX2B gate results
 
 Recorded 2026-11-15 on branch `h1/rust-verifier`, code at `97f56df`
@@ -2127,3 +2221,5 @@ black box, installed non-editable from `git archive origin/main`.
   added the three diverging certificate-version shapes to F62, corrected
   F50's reproduction (both signers re-sign), and added the H1-FIX2B gate
   results.
+- **2026-11-15 (H1-S2)** — added the H1-S2 follow-up table, F70–F72, and
+  the H1-S2 gate results.
