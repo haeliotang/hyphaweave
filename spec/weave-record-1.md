@@ -2518,10 +2518,65 @@ structure failure anywhere in the receipt is never reported under a later check'
   whatever its length; ENUMERATED is encoded as an INTEGER (X.690 §8.4), so it has no
   redundant leading `0x00`/`0xFF` octet; and EXTERNAL (8), EMBEDDED PDV (11) and the
   unrestricted CHARACTER STRING (29) are SEQUENCE-based types that use the constructed form
-  only (X.690 §8.18, §8.19, §8.21), so their primitive form is a violation while their
-  constructed form is judged by its framing. These are all the universal rules of 1a: the
-  content of a REAL or a RELATIVE-OID, and the character repertoire of a string type, are
-  not judged by 1a [S2/F57/F66] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+  only (X.690 §8.18, §8.17, §8.24; the S2 text cited §8.19 and §8.21, corrected by S2-FIX1), so their primitive form is a violation while their
+  constructed form is judged by its framing [S2/F57/F66] decided by principle (Inceptless
+  decision 2026-11-15 #8; S2). The list is **not** closed: 1a is X.690 (clauses 8, 10 and
+  11) for every universal tag number, as the registry's `E_TS_SCHEMA` row says ("a universal
+  DER rule violated anywhere in the file"). By universal tag number:
+  - **0** — never occurs (§8.1.5).
+  - **1 BOOLEAN** — primitive; one content octet, `0x00` or `0xFF` (§8.2, §11.1).
+  - **2 INTEGER, 10 ENUMERATED** — primitive; at least one content octet, two's complement
+    in the fewest octets (§8.3, §8.4).
+  - **3 BIT STRING** — primitive (§10.2); the unused-bit rules above (§8.6.2, §11.2).
+  - **4 OCTET STRING** — primitive (§10.2).
+  - **5 NULL** — primitive; no content octets (§8.8).
+  - **6 OBJECT IDENTIFIER** — primitive; at least one sub-identifier, each in the fewest
+    octets (leading octet not `0x80`) and complete (its last octet has bit 8 clear)
+    (§8.19).
+  - **7 ObjectDescriptor** — a GraphicString: primitive (§10.2) and an ISO 2022 register
+    type (see 20 below).
+  - **8 EXTERNAL, 11 EMBEDDED PDV, 29 CHARACTER STRING** — constructed only; framing
+    (§8.18, §8.17, §8.24).
+  - **9 REAL** — primitive (§8.5.1). Plus zero has no content octets (§8.5.2). The first
+    content octet selects the form (§8.5.6). Binary (bit 8 set): base 2 (bits 6–5 `00`),
+    scaling factor 0 (bits 4–3 `00`), and the exponent and the mantissa each in the fewest
+    octets (§11.3.1): the exponent is two's complement without a redundant leading `0x00`
+    or `0xFF` octet, written with format `00`, `01` or `10` for one to three octets and
+    with format `11` (a length octet, §8.5.7.4 d) only for four or more octets; the
+    mantissa N is non-empty, has no leading `0x00` octet and is odd. Decimal (bits 8–7
+    `00`): only the NR3 form (bits 6–1 `000011`, §11.3.2.1), its text matching
+    `-?[1-9]([0-9]*[1-9])?.E(+0|-?[1-9][0-9]*)` — no SPACE, a MINUS SIGN only for a negative
+    value, neither the first nor the last mantissa digit `0`, the mantissa immediately
+    followed by `.E`, the exponent `+0` or without PLUS SIGN or leading zero (§11.3.2.2–6).
+    Special values (bits 8–7 `01`): exactly one content octet, `0x40`–`0x43` (§8.5.9);
+    the other values are reserved.
+  - **12 UTF8String** — primitive (§10.2); well-formed UTF-8 (§8.23.10).
+  - **13 RELATIVE-OID** — primitive; at least one sub-identifier, each in the fewest octets
+    and complete, as for 6 (§8.20).
+  - **14 TIME, 34 DURATION** — rejected wherever they occur. Their DER form is the canonical
+    value notation of §11.9, which needs an ISO 8601 interval and duration parser that this
+    profile does not define; neither type occurs in the RFC 3161, RFC 5652 or RFC 5280
+    modules, so the conservative reading rejects them.
+  - **18 NumericString, 19 PrintableString, 22 IA5String, 26 VisibleString** — primitive
+    (§10.2).
+  - **20 TeletexString, 21 VideotexString, 25 GraphicString, 27 GeneralString** (and 7) —
+    primitive (§10.2); these are defined by reference to the ISO 2022 register, and §11.4
+    restricts their escape sequences to designations that are not already in force. 1a
+    judges §11.4 conservatively: the content contains no ESC (`0x1B`) octet, so the default
+    designations of §8.23.5.2 hold throughout.
+  - **23 UTCTime, 24 GeneralizedTime** — primitive; the whole-content forms above (§11.7,
+    §11.8).
+  - **28 UniversalString** — primitive; whole 4-octet units (§8.23.7). **30 BMPString** —
+    primitive; whole 2-octet units (§8.23.8).
+  - **31 DATE, 32 TIME-OF-DAY, 33 DATE-TIME, 35 OID-IRI, 36 RELATIVE-OID-IRI** — primitive;
+    well-formed UTF-8 content (§8.26, §8.21.2, §8.22.2).
+  - **16 SEQUENCE, 17 SET** — constructed only; a universal SET is a SET OF in DER order, as
+    above.
+  - **15 and 37 or more** — reserved by X.680 for later editions; no DER rule exists for
+    them, so only the framing rules apply, as for a type the verifier does not know (X1).
+  Which characters a restricted string type admits (X.680 §41) is a property of the abstract
+  value, not an X.690 encoding rule, and is not judged by 1a beyond the rules listed above
+  [S2-FIX1/T3] decided by principle (Inceptless decision 2026-11-15 #13; X.690 in full).
 - **1b — schema decoding.** The file decodes as an RFC 3161 `TimeStampResp` against the
   module definitions of RFC 3161, RFC 5652, RFC 5280 and RFC 5035/RFC 5816 (ESS), with the
   open types listed under 1c.
@@ -3703,7 +3758,7 @@ Questions the principle does not settle are listed there as open, for the founde
 | S2/F48 | the §10.3 rules are evaluated independently and reported together; a malformed placeholder is not a placeholder | §10.3, registry |
 | S2/F54 | an unlisted `.tsr` in `signatures/` is `E_TS_FILE`, whatever the level | §11.3, §12.2, registry |
 | S2/F55, F60 | a `records/` file is subject to `MAX_RECORD_BYTES` and `MAX_JSON_DEPTH` whether or not it is listed; both are `E_JSON_SIZE` in the listing phase | §14.5, registry |
-| S2/F57, F66 | 1a: universal tag 0 never occurs, ENUMERATED follows INTEGER, EXTERNAL/EMBEDDED PDV/CHARACTER STRING are constructed-only; the list of 1a rules is closed | §12.2 |
+| S2/F57, F66 | 1a: universal tag 0 never occurs, ENUMERATED follows INTEGER, EXTERNAL/EMBEDDED PDV/CHARACTER STRING are constructed-only (the "list of 1a rules is closed" sentence was withdrawn by S2-FIX1 T3) | §12.2 |
 | S2/F61-3 | rotation key ids are body-schema members checked before the key-material rule | §14.5, `weave.key.rotated.md` |
 | S2/F62, F63 | 1e is the module walk plus the RFC 5280 version constraints; open types stay open in the signer certificate; `--tsa-trust` anchors are judged by 1e | §12.2, §14.1 |
 | S2/F68 | §5.5.2 step 6 covers the whole chain, links beyond the depth bound included, before step 7 | §5.5.2 |
