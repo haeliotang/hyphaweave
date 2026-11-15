@@ -6,13 +6,87 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round, revision 1 (S2-FIX1) — 2026-11-15 — DRAFT, UNRELEASED
+
+Decision 2026-11-15 #13: the founder's rulings Q1–Q5 on the questions the S2 round left
+open, and the corrections from the two reviews of the S2 round (T1–T8). The
+specification stays at revision 3; the registry stays at revision 7, which carries both
+decisions of the S2 round (§0.3). The `format` identifier is unchanged.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **Key-lifecycle trust (Q2, T1; security).** Only the signature of the key a record
+  states for itself (a declaration's `body.key`, a rotation's `new_key`) is exempt from
+  §9.4 when the record's key material and trust are decided (§5.3). A declaration whose
+  owner cosignature, or a rotation whose old-key signature, fails §9.4 supplies no
+  material and no trust: a signature by the declared or rotated-in key is `unverifiable`
+  `E_KEY_UNKNOWN` (it used to be `valid`, which let a stolen, compromised or retired key
+  hand trust to a key of the thief's choice with a backdated record and no evidence). This
+  corrects an S2 sentence that had written the less conservative reading and contradicted
+  X5.
+- **Signature entries (T2).** The record's code is chosen invalid-first: an entry that
+  fails its equation (or has an invalid §9.4 outcome) decides even when another entry's
+  key cannot be resolved; `E_KEY_UNKNOWN` only when no entry is invalid. This corrects the
+  S2 rule, which had been labelled "the more conservative reading" but was the wider one.
+- **Erasure (Q1).** An authorising grant that is present but itself invalid is
+  `E_ERASE_ACTOR`; one that is absent, outside its window, revoked or too deep gives the
+  grant codes (unverifiable); a program/device `basis` that cannot be resolved is now
+  `E_GRANT_UNRESOLVED` (it was `E_ERASE_ACTOR`).
+- **Order inside steps (7) and (9) (Q3).** Record-local rules, then the signer rule, then
+  the rules that consult other records; the §4.4 step-5 outcome only after every other
+  rule of step (7); a record that fails step (9) carries no
+  `N_LABEL_PROPAGATION_UNCHECKED`. The consent window now precedes the consent signer
+  rule, and the granter signer rule precedes the delegated-chain checks.
+- **Check 10 bounds (Q4).** RSA moduli of 2,048 to 8,192 bits and odd public exponents
+  with 65,537 ≤ `e` < 2^256; an ECDSA signature value is strict DER with `r`, `s` in
+  [1, `n` − 1]; otherwise `E_TS_CMS`.
+- **Grant chains (Q5).** §5.5.2 steps 1–5 are walked beyond the depth bound too, stopped
+  only by a cycle.
+- **1a (T3).** X.690 for every universal tag number, listed in §12.2: REAL (§8.5, §11.3),
+  RELATIVE-OID, ObjectDescriptor and the date/time/IRI types primitive-only, UTF-8 contents
+  where X.690 defines them, whole code units for UniversalString and BMPString, no ESC in the
+  ISO 2022 register types (§11.4, conservatively), TIME and DURATION rejected. The S2
+  sentence that closed the list of 1a rules is withdrawn.
+- **Keyset (T5).** A keyset record that must be signed but has `sigs` absent or empty is
+  a usage error (exit 2), as §14.1 already said.
+- **Containers (T8).** A root regular file named `readable` is `E_CONTAINER_ENTRY`;
+  `N_READABLE_PRESENT` is not reported after a zip-structure failure; `L_ERASED_PLACEHOLDER`
+  and `L_LABELS_ARE_CLAIMS` are not reported when the records-listing phase stops the
+  container. §11.5 W1 rule 2 is kept (`--previous` without a keyset is
+  `E_MANIFEST_CHAIN`) and its consequence is written down.
+- **Documentation (T4, T7).** F61-3 and F69-3 are labelled as new rules decided by
+  principle; §0.3 describes the registry's own numbering; §4.4 step 5 states its relation
+  to §14.5 step (4).
+
+### Vectors, tools and tests
+
+- **Vectors**: 82 new main cases (574 → 656), one expectation corrected
+  (`key-lifecycle/signature-key-resolution-before-equation`, now `E_SIG_INVALID`). The
+  frozen candidate set is unchanged (202 cases).
+- **Crash corpus**: two keyset files with `sigs: []` (156 inputs); the replay supports a
+  private keyset overlay.
+- **Ablation catalogue**: the S2 and S2-FIX1 corrections are entries of
+  `tools/anti_verification.py`.
+- **Tests**: `verifiers/python/tests/test_s2_fix1.py` (keyset usage error, check-10 bounds
+  at their edges).
+
+### Not yet followed by the Rust verifier
+
+The Rust verifier was not changed. It fails 38 main vectors of this round and the S2
+round, listed with their rules in the S2-FIX1 report of the Rust follow-up; and it treats a
+`--tsa-trust` bundle holding a certificate with a non-UTF-8 subject as a usage error, which
+aborts its whole `vectors` run on `integrity-levels/l2-ts-anchor-bundle-subject-utf8-invalid`.
+
 ## S2 round of revision 3 — 2026-11-15 — DRAFT, UNRELEASED
 
 Decision 2026-11-15 #8: the specification, the Python reference verifier and the
 vectors close the findings of the second implementation (`docs/h1-findings.md`,
-F38–F69). Every rule below is decided by principle (the more conservative reading)
-and recorded in `docs/open-questions.md` §7; five questions are left to the founder
-(§7.2) and their text is unchanged.
+F38–F69). Every rule below is decided by principle and recorded in
+`docs/open-questions.md` §7; five questions were left to the founder (§7.2, since ruled by
+decision 2026-11-15 #13). *Correction (S2-FIX1):* not every rule took the more
+conservative reading — the signature-entry rule and the closed 1a list were the wider
+readings, and F61-3 and F69-3 were new rules rather than what the text already said; see
+the S2-FIX1 section above.
 
 **Version numbering.** The specification stays at revision 3: by the rule now
 written in §0.3 (and followed by the S1 rounds), a revision is opened by one
@@ -35,7 +109,9 @@ revision 7. The `format` identifier is unchanged.
 - **Signature entries** (§14.5, §4.4 step 2): step (4) resolves every `ed25519`
   entry before any equation, so an unresolvable key anywhere is `E_KEY_UNKNOWN`;
   every entry is judged and reports its own `sigs[].state`; the first failing entry
-  decides. A signature whose key state fails §9.4 is `unverified` (F52).
+  decides (the code choice was corrected by S2-FIX1 T2: an invalid entry decides
+  before an unresolved key). A signature whose key state fails §9.4 is `unverified`
+  (F52).
 - **`E_KEY_PUBLIC_KEY` before key resolution** (F39, F50): `sigs` is `[]`, and the
   code wins over any other body defect.
 - **§4.4 step 5** (F46): decided by the required signer key (as the frozen vector
@@ -91,7 +167,9 @@ revision 7. The `format` identifier is unchanged.
 
 The Rust verifier was not changed in this round. It fails the two rotation key-id
 vectors (F61-3), and its gate-3 allow list (37 entries) is stale: the S2 Python
-corrections made all 37 reports identical. The H1 follow-up adopts the S2 rules.
+corrections made all 37 reports identical. It also has to follow F69-3 (the §5.4 list is
+the order: grantee before window; vector added by S2-FIX1). The H1 follow-up adopts the S2
+rules.
 
 ## H1-FIX2B — 2026-11-15 — DRAFT, UNRELEASED
 

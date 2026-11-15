@@ -3771,7 +3771,7 @@ Questions the principle does not settle are listed there as open, for the founde
 | S2/F44, F58 | record identity is `(origin.project, origin.instance, id)`; a structurally failed record with a well-formed `origin` and `id` is present (`unverifiable`), one with a malformed `origin` or `id` has no identity (`missing`) | §6.3 |
 | S2/F45, F67 | the agent-only actor members are decided in the presence phase; a `sigs` member of the wrong JSON type is `E_ENV_SIGS`, before any member's grammar | §4.3, §14.5 |
 | S2/F46, F69 | §4.4 step 5 is decided by the required signer key and applies to the signer-constrained kinds; a rotation's explicit key material declares its keys | §4.4, registry |
-| S2 (signature entries) | step (4) resolves every entry before any equation; every entry is judged and reports its state; the first failing entry decides | §14.5, §14.6, registry |
+| S2 (signature entries) | step (4) resolves every entry before any equation; every entry is judged and reports its state (the code choice was corrected by S2-FIX1 T2: invalid first) | §14.5, §14.6, registry |
 | S2/F48 | the §10.3 rules are evaluated independently and reported together; a malformed placeholder is not a placeholder | §10.3, registry |
 | S2/F54 | an unlisted `.tsr` in `signatures/` is `E_TS_FILE`, whatever the level | §11.3, §12.2, registry |
 | S2/F55, F60 | a `records/` file is subject to `MAX_RECORD_BYTES` and `MAX_JSON_DEPTH` whether or not it is listed; both are `E_JSON_SIZE` in the listing phase | §14.5, registry |
@@ -3780,6 +3780,24 @@ Questions the principle does not settle are listed there as open, for the founde
 | S2/F62, F63 | 1e is the module walk plus the RFC 5280 version constraints; open types stay open in the signer certificate; `--tsa-trust` anchors are judged by 1e | §12.2, §14.1 |
 | S2/F68 | §5.5.2 step 6 covers the whole chain, links beyond the depth bound included, before step 7 | §5.5.2 |
 | S2/F69 | the §5.4 coverage list is the evaluation order | §5.4 |
+
+The following rows are fixed by Inceptless decision **2026-11-15 #13** (S2-FIX1, the first
+revision of the S2 round): the founder's rulings Q1–Q5 on the questions §7.2 of
+`docs/open-questions.md` left open (**decided**), and the review items T1–T8, each
+**decided by principle** ("invalid beats unverifiable", or the more conservative reading)
+and recorded in `docs/open-questions.md` §7.3.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S2-FIX1/Q1 | an erasure's authorising grant present but itself invalid is `E_ERASE_ACTOR`; absent, outside its window, revoked or too deep gives the grant codes (unverifiable); order inside step (7) | `weave.erasure.md`, registry |
+| S2-FIX1/Q2 (T1) | only the subject key's own signature (a declaration's `body.key`, a rotation's `new_key`) is exempt from §9.4 when a key-lifecycle record's admission is decided; a cosignature or old-key signature that fails §9.4 leaves the record without material and trust | §5.3, §9.4, `weave.key.declared.md`, `weave.key.rotated.md` |
+| S2-FIX1/Q3 | inside step (7): the kind's record-local rules, the signer rule, then the rules that consult other records; the §4.4 step-5 outcome only after every other step-(7) rule; no `N_LABEL_PROPAGATION_UNCHECKED` on a record that fails step (9) | §4.4, §14.5, kind pages, registry |
+| S2-FIX1/Q4 | check 10: RSA modulus 2,048–8,192 bits, odd `e` with 65,537 ≤ `e` < 2^256; ECDSA `Ecdsa-Sig-Value` strict DER, `r`, `s` in [1, `n` − 1] | §12.2, registry |
+| S2-FIX1/Q5 | §5.5.2 steps 1–5 are walked beyond the depth bound too; the walk is limited only by cycle detection | §5.5.2, `weave.grant.md` |
+| S2-FIX1/T2 | across signature entries an invalid outcome decides before an unresolved key's `E_KEY_UNKNOWN` | §4.4, §14.5 |
+| S2-FIX1/T3 | 1a is X.690 for every universal tag number, listed tag by tag (REAL, RELATIVE-OID, primitive-only and constructed-only types, string units, §11.4 conservatively, TIME and DURATION rejected) | §12.2, registry |
+| S2-FIX1/T7 | §0.3 registry numbering follows the registry's own history; §4.4 step 5 is reached only after §14.5 step (4) | §0.3, §4.4 |
+| S2-FIX1/T8 | a root regular file named `readable` is `E_CONTAINER_ENTRY`; no `N_READABLE_PRESENT` after a zip-structure failure; `L_ERASED_PLACEHOLDER` and `L_LABELS_ARE_CLAIMS` only for verified records; §11.5 W1 rule 2 with no trust root keeps `E_MANIFEST_CHAIN`, with advice to recipients | §11.5, §11.8, §14.9, registry |
 
 ### A.2 PROVISIONAL implementation shapes
 

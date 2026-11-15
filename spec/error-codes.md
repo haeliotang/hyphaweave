@@ -39,7 +39,7 @@
 > round of specification revision 3) adds no code; it sharpens `E_KEY_EXPIRED`,
 > `E_KEY_REVOKED`, `E_KEY_COMPROMISED` and `E_TS_UNTRUSTED` (every signature of a
 > key-lifecycle record is judged under §9.4, F38/F61-1), `E_KEY_UNKNOWN` /
-> `E_SIG_UNVERIFIABLE` (step (4) covers every entry; §4.4 step 5 is decided by the required
+> `E_SIG_UNVERIFIABLE` (step (4) covers every entry — the code is chosen invalid-first since S2-FIX1 T2; §4.4 step 5 is decided by the required
 > signer key, F46), `E_ENV_SIGS` (member JSON types before grammar, F67), `E_KEY_PUBLIC_KEY`
 > (before key resolution, F39/F50), `E_KIND_BODY_SCHEMA` (rotation key ids, F61-3),
 > `E_JSON_SIZE` (an unlisted or too-deep `records/` file, F55/F60), `E_TS_FILE` (an unlisted
@@ -156,7 +156,7 @@ as `valid`.
 | `E_KEY_ROTATION_SIGS` | invalid | `weave.key.rotated` is not signed by both the old and the new key. |
 | `E_KEY_REVOKE_EFFECTIVE` | invalid | `weave.key.revoked.effective_at` is later than the revocation record's `recorded_at`. |
 | `E_KEY_REVOKE_SIGNER` | invalid | A `weave.key.revoked` record lacks an acceptable signer (compromise requires a human/organization key; retired/other require the revoked key or a human/organization key). |
-| `E_KEY_UNKNOWN` | unverifiable | A signature or actor names a key that is not declared anywhere in the verification context (container plus external keyset); the signature cannot be checked. Key resolution covers every `ed25519` entry before any equation, so one unresolvable entry makes the record `E_KEY_UNKNOWN` even when another entry fails its equation (specification §14.5, S2). |
+| `E_KEY_UNKNOWN` | unverifiable | A signature or actor names a key that is not declared anywhere in the verification context (container plus external keyset); the signature cannot be checked. Key resolution covers every `ed25519` entry before any equation, but an entry that fails its equation, or another entry's invalid §9.4 outcome, makes the record invalid instead: `E_KEY_UNKNOWN` is the record's code only when no entry is invalid (specification §14.5, S2; invalid first, S2-FIX1 T2). |
 | `E_KEY_UNTRUSTED` | unverifiable | A `human`/`organization` declaration in a container or record target cannot be chained to a trusted root supplied by the local keyset (`--keys`): its key is not already trusted and it has no valid cosignature by a trusted human/organization key. Also used when an `agent`/`program`/`device` declaration's owner resolves but is not in the trusted set. An untrusted declaration never invalidates other declarations and never becomes trusted; with no `--keys` input every container/target human/organization declaration is untrusted. |
 | `E_KEY_EXPIRED` | invalid | A signature's claimed `recorded_at` is outside the signing key's declared validity window: later than `valid_until`, or earlier than `valid_from`. This includes the signatures of a `weave.key.declared` or `weave.key.rotated` record itself (§9.4, S2/F38). |
 | `E_KEY_REVOKED` | invalid | A signature was made after a `retired`/`other` revocation's `effective_at` (claimed `recorded_at`; equality counts as revoked). The `retired`/`other` family and the `key-compromise` family are independent: when this code applies it is the record's outcome and **no timestamp evidence can rescue it**, even if a compromise revocation also exists (T2). |

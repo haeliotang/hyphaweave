@@ -2004,16 +2004,30 @@ H1 follow-up has to change. Every row has a vector unless it says otherwise.
 | F59 | vectors (`Extension.critical` FALSE in the signer certificate and in TSTInfo; chain-head `renews`) | none |
 | F60 | spec sentence (`E_JSON_SIZE` in the listing phase); Python corrected | none |
 | F61-2, F67 (crashes) | Python corrected; inputs in the crash corpus | none |
-| F61-3 | spec sentence: key ids are checked as body schema **before** the key-material rule and before key resolution | **yes**: a malformed `old_key` currently ends in key resolution (`E_KEY_UNKNOWN`) and the `sigs` list is reported; `key-lifecycle/rotation-old-key-malformed`, `rotation-new-key-wrong-type` |
+| F61-3 | spec sentence (a new rule decided by principle): key ids are checked as body schema **before** the key-material rule and before key resolution | **yes**: the Rust verifier already reports `E_KIND_BODY_SCHEMA`, but after the signature layer, so its `sigs` lists the two signatures; to follow: decide it before step (4), `sigs` `[]` (`key-lifecycle/rotation-old-key-malformed`, `rotation-new-key-wrong-type`; corrected by S2-FIX1 T4) |
 | F62, F63 | spec sentence (1e and `--tsa-trust` by the module rules); Python corrected | none |
 | F64 | open for the founder (check-10 bounds) | — |
 | F65 | vectors (P-384) | none |
 | F67 (`sigs` member type) | Python corrected | none |
 | F68 | spec sentence (step 6 covers the whole chain before step 7); open point (steps 1–5 beyond the bound) for the founder | none for the decided part |
 | F69-1, F69-2 | open for the founder | — |
-| F69-3 | spec sentence: the §5.4 list is the order (Python's order) | **yes**: grantee before window (`grant/grantee-mismatch` with a late `recorded_at`; no committed vector reaches it) |
+| F69-3 | spec sentence (a new rule decided by principle; the order Python already had) | **yes**: grantee before window (`grant/grantee-mismatch-before-window`, added by S2-FIX1 T4) |
 | F69-4 | spec sentence: a rotation's key material declares its keys (§4.4) | none |
 | signature entries | spec sentence: step (4) over every entry, every entry judged (the Rust reading); Python corrected | none |
+
+### S2-FIX1 dispositions (decision 2026-11-15 #13)
+
+| finding | disposition | Rust to follow |
+|---|---|---|
+| F47 | founder ruling Q1: a present but invalid grant is `E_ERASE_ACTOR`; a grant that cannot be established keeps the grant codes | **yes**: `erasure/actor-agent-grant-present-invalid`, `actor-program-basis-present-invalid`, `actor-agent-grant-expired-and-lacks-erase` |
+| F38 trust half (Q2) | founder ruling Q2: a cosignature or old-key signature that fails §9.4 supplies no material and no trust | **yes** for the cosignature half and for the new-key half (`key-lifecycle/declaration-cosigner-*-note-by-device`, `rotation-new-key-compromised-note-by-new-key`); the old-key half already agrees |
+| F55 first part, F69-1, F69-2 | founder ruling Q3: step-5 outcome last in step (7); record-local rules, signer rule, cross-record rules; no step-(9) notice on a failed record | **yes**: `grant/*-step5-outcome-last`, `key-lifecycle/declaration-class-conflict-before-step5-outcome` |
+| F64 | founder ruling Q4: RSA 2,048–8,192 bits, 65,537 ≤ `e` < 2^256 odd; strict ECDSA DER | **yes**: `integrity-levels/l2-ts-check10-rsa-1024`, `l2-ts-check10-rsa-exponent-3` |
+| F68 open point | founder ruling Q5: steps 1–5 walked beyond the bound (observable only through step 1) | none observed (`grant/chain-depth-9-root-not-transferable`, `chain-depth-9-first-link-exceeds` pass) |
+| signature entries | S2-FIX1 T2: invalid first | **yes**: `key-lifecycle/signature-key-resolution-before-equation`, `signature-revoked-entry-beats-unknown-key` |
+| F57, F66 (1a list) | S2-FIX1 T3: X.690 tag by tag | **yes**: 21 of the `integrity-levels/l2-ts-der-1a-*` cases |
+| F59 (CRL) | vectors `integrity-levels/l2-ts-crl-extension-critical-*` | none |
+| F69-4 | vector `key-lifecycle/rotation-own-material-declares-its-keys` | none |
 
 Gate 3 after S2: the 37 allow-listed differences are gone (both reports are
 byte-identical on every committed case the Rust verifier passes), so the allow

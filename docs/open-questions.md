@@ -1110,7 +1110,11 @@ for the founder and the specification text is unchanged for them.
    key's own lifecycle (`E_KEY_COMPROMISED`, invalid), which is the less conservative
    outcome. Vectors `key-lifecycle/declaration-compromised-*`,
    `declaration-before-own-valid-from`, `declaration-cosigner-retired`,
-   `rotation-old-key-retired`.
+   `rotation-old-key-retired`. *Corrected by S2-FIX1 (decision 2026-11-15 #13, Q2):* the
+   S2 text extended the "facts still supplied" half to every signature of the record, which
+   let a cosignature or an old-key signature that fails §9.4 still hand material and trust
+   to another key (review A high-1, review B medium-1); it also contradicted X5. Only the
+   subject key's own signature is exempt now (§5.3); see §7.3.
 2. **`sigs[]` when `E_KEY_PUBLIC_KEY` precedes signature verification (F39, F50).**
    Reading A: the malformed `public_key` is found at step (6) as a body defect, after the
    signatures were checked, so `sigs` lists their states. Reading B: T1 places it "before
@@ -1147,10 +1151,15 @@ for the founder and the specification text is unchanged for them.
 7. **Signature entries across steps (4) and (5).** Reading A: each entry is resolved,
    verified and judged before the next, and the first failure stops the layer. Reading B:
    steps (4) and (5) are steps of the record (§14.5) and §4.4 step 2 verifies "every"
-   entry. **Chosen B**: an unresolvable key anywhere makes the record `E_KEY_UNKNOWN`; every
-   entry is judged and reports its own state; the first failing entry (equation, then
-   §9.4) decides the code. Vectors `key-lifecycle/signature-entries-all-judged`,
-   `key-lifecycle/signature-key-resolution-before-equation`.
+   entry. **Chosen B**: every entry is judged and reports its own state. *Correction (S2-FIX1
+   T2, decision 2026-11-15 #13):* S2 also wrote that an unresolvable key anywhere makes the
+   record `E_KEY_UNKNOWN` even when another entry fails its equation. That was **not** the
+   more conservative reading, although S2 labelled it so (review B high-1, review A low-3):
+   it lowers an invalid `E_SIG_INVALID` to unverifiable, and §4.4 step 2 says the opposite.
+   The code is now chosen invalid-first (§7.3). Vectors
+   `key-lifecycle/signature-entries-all-judged`,
+   `key-lifecycle/signature-key-resolution-before-equation` (expectation corrected to
+   `E_SIG_INVALID`), `key-lifecycle/signature-revoked-entry-beats-unknown-key`.
 8. **§10.3 when the erasure record and the placeholder do not pair (F48).** Reading A: the
    first failing rule decides. Reading B: the three rules are independent and the stage
    reports every violation (§14.5). **Chosen B**, the more complete report. A placeholder that
@@ -1170,10 +1179,14 @@ for the founder and the specification text is unchanged for them.
     every universal TLV (universal tag 0 never occurs; ENUMERATED is an INTEGER;
     EXTERNAL, EMBEDDED PDV and CHARACTER STRING are constructed-only). Reading B: 1a is the
     list it enumerates. **Chosen A** for those three rules, the more conservative (a receipt
-    one implementation accepted is rejected), with the list of 1a rules then closed: the
-    content of REAL and RELATIVE-OID and the character repertoire of string types stay
-    outside 1a, as both implementations already treat them. Vectors `integrity-levels/l2-ts-der-*`.
-12. **Rotation key-id grammar (F61-3).** Reading A: a malformed `new_key`/`old_key` is a
+    one implementation accepted is rejected). S2 then declared the list of 1a rules closed,
+    leaving the content of REAL and RELATIVE-OID outside 1a. *Withdrawn by S2-FIX1 T3
+    (decision 2026-11-15 #13):* closing the list was a relaxation of the registry's "any
+    universal DER rule" (review B medium-2); 1a is now X.690 tag by tag (§7.3). Vectors
+    `integrity-levels/l2-ts-der-*`, `l2-ts-der-1a-*`.
+12. **Rotation key-id grammar (F61-3)** — *a new rule decided by principle, not "what the
+    text already said" (label corrected by S2-FIX1 T4; the second verifier already reported
+    `E_KIND_BODY_SCHEMA` and differs only in `sigs`).* Reading A: a malformed `new_key`/`old_key` is a
     "contradiction" with its public key, `E_KEY_ROTATION_KEYS`. Reading B: the key ids are
     body-table members, `E_KIND_BODY_SCHEMA`. **Chosen B**, decided in the pre-signature
     structural check (so never the unverifiable `E_KEY_UNKNOWN` that key resolution would give).
@@ -1188,20 +1201,30 @@ for the founder and the specification text is unchanged for them.
 14. **§5.5.2 step 6 beyond the depth bound (F68).** Step 6 judges "the cited grant and every
     ancestor"; it covers links beyond the bound and precedes step 7. Vectors
     `grant/chain-depth-9-*`, `grant/chain-depth-10-grant-*`.
-15. **§5.4 bullet order (F69-3).** Reading A: the list is not an order. Reading B: it is.
+15. **§5.4 bullet order (F69-3)** — *a new rule decided by principle; before S2 the text
+    did not say the list was an order (label corrected by S2-FIX1 T4).* Reading A: the list
+    is not an order. Reading B: it is.
     **Chosen B**: the invalid mismatches (grantee, kind/action) precede the unverifiable
     window and revocation state, so a defect that makes the record invalid is never hidden
-    behind an unverifiable outcome.
+    behind an unverifiable outcome. Vector `grant/grantee-mismatch-before-window` (S2-FIX1).
 16. **How this round is numbered.** §0.3 now states the rule the history already followed:
     a revision is opened by one decision's rulings and later decisions are rounds of it, so
-    the specification stays "revision 3"; the registry counts its own revisions per decision
-    (this round is its revision 7).
+    the specification stays "revision 3"; the registry counts its own revisions (this round is
+    its revision 7). *Corrected by S2-FIX1 T7:* the registry folds later decisions of one
+    round into the same registry revision (revision 6 carries 2026-11-12 #1–#3; revision 7
+    carries 2026-11-15 #8 and #13); "one per decision" did not match its history.
 
-### 7.2 Open for the founder (not decided; text unchanged)
+### 7.2 Handed to the founder — ruled by decision 2026-11-15 #13
 
 Each was handed to the founder with both readings, their consequences and a
-recommendation; the specification keeps its current text for each until the founder rules
-in a later decision.
+recommendation. **All five are ruled** (decision 2026-11-15 #13): F47 as recommended (Q1);
+cosignature and old-key trust: **not** supplied (Q2, the more conservative answer); F69-1,
+F69-2, F55 first part as recommended, "invalid first" (Q3); F64 with fixed bounds from
+2,048 bits (Q4); F68 open point as recommended, steps 1–5 walked beyond the bound (Q5). The
+rulings are in the specification (`[S2-FIX1/Q1]`–`[S2-FIX1/Q5]`) and the list below is kept
+for the record. *Correction:* the Q2 text described both implementations as supplying the
+material of a rotation whose old-key signature fails §9.4; the second verifier already did
+not (review A high-1 item 3), only the cosignature half was shared.
 
 - **F47** — an erasure whose authorising grant is present but invalid: `E_ERASE_ACTOR`
   (invalid, the reference verifier) or the grant codes (unverifiable, the second verifier).
@@ -1212,3 +1235,83 @@ in a later decision.
   rule sit inside step (7), and the consent checks against label propagation in step (9).
 - **F64** — the key-size and signature-encoding bounds of check 10.
 - **F68 open point** — whether steps 1–5 of §5.5.2 are walked beyond the depth bound.
+
+### 7.3 S2-FIX1: decided by principle (decision 2026-11-15 #13)
+
+Besides the founder's rulings, decision 2026-11-15 #13 settled the review items of the S2
+round. The main session decided T2 by the founder's Q3 principle ("invalid beats
+unverifiable"); the founder can overturn it.
+
+1. **Signature entries (T2).** Reading A (S2): an unresolved key anywhere makes the record
+   `E_KEY_UNKNOWN`. Reading B: an invalid outcome of any entry decides first. **Chosen B**,
+   applied to every invalid entry outcome: the first entry, in array order, with a §3.4
+   failure or an invalid §9.4 outcome (`E_KEY_REVOKED`, `E_KEY_EXPIRED`,
+   `E_KEY_COMPROMISED`) decides; only without one does an unresolved key give
+   `E_KEY_UNKNOWN`, and only then an unverifiable §9.4 outcome. Extending the rule to the
+   invalid §9.4 outcomes is this round's reading of the same principle (vector
+   `key-lifecycle/signature-revoked-entry-beats-unknown-key`).
+2. **Q2 for rotations.** The exemption is "the declared key's own signature"; for a
+   rotation that is the new key, the key the rotation states for itself (§9.2 rule 5). A
+   rotation whose only §9.4 failure is the new key's own signature still supplies the new
+   key's material, so the new key's later signatures are judged under its own lifecycle
+   (invalid `E_KEY_COMPROMISED`) rather than lowered to `E_KEY_UNKNOWN`, the argument of
+   entry 1. Vector `key-lifecycle/rotation-new-key-compromised-note-by-new-key`.
+3. **Order inside step (7) (Q3).** "The dedicated code stays where the signer rule sits"
+   needed a definition, because the two implementations placed the signer rule differently
+   (consent: the reference verifier before the window, the second verifier after it;
+   sub-grant: the reference verifier after the delegated chain, the second verifier before
+   it). **Chosen**: the kind's record-local rules, then the signer rule, then the rules that
+   consult other records; a signer rule whose signers come from another record follows that
+   lookup. Placing the signer rule before the cross-record rules follows from "invalid
+   first" (those rules can be unverifiable); among the record-local invalid rules the
+   principle does not decide, and the order the second verifier already follows was taken.
+   When §4.4 step 5 applies, the rules that need a verified signature (trust through a
+   cosignature) are not evaluated either. Vectors `labels/consent-validity-*`,
+   `grant/sub-grant-granter-signer-before-delegation`, `grant/*-step5-outcome-last`,
+   `key-lifecycle/declaration-class-conflict-before-step5-outcome`.
+4. **Erasure order (Q1, Q3).** The erasure signer rule precedes the lookup of the
+   authorising grant, so a wrong signer (invalid) is never hidden behind an unresolved
+   grant (unverifiable). Vector `erasure/actor-program-signer-rule-before-basis-lookup`.
+5. **1a table (T3).** REAL and RELATIVE-OID are judged by X.690 §8.5/§11.3 and §8.20.
+   Three choices are this round's conservative readings: the REAL long exponent format
+   `11` is accepted only for four or more exponent octets ("the fewest octets", §11.3.1,
+   read for the whole exponent encoding); §11.4 (escape sequences of the ISO 2022 register
+   types) is judged as "no ESC octet", because the register is not part of the profile;
+   TIME (14) and DURATION (34) are rejected, because their §11.9 canonical form needs an
+   ISO 8601 parser the profile does not define. The repertoire of a restricted string type
+   is X.680 value validity, not an X.690 encoding rule, and stays outside 1a; universal tag
+   numbers 15 and 37 or more have no DER rule and keep the framing-only treatment of X1.
+   Vectors `integrity-levels/l2-ts-der-1a-*`.
+6. **`readable` (T8).** A root regular file named `readable` is outside the layout
+   (`E_CONTAINER_ENTRY`, the second verifier's answer and the more conservative one).
+   Vectors `container/readable-root-regular-file*`.
+7. **Notices and limitations of a stopped container (review A low-1).** By §14.5 "later
+   checks are not run": `N_READABLE_PRESENT` is not reported after a zip-structure failure
+   (`E_CONTAINER_ZIP`, no entry is enumerated), and `L_ERASED_PLACEHOLDER` and
+   `L_LABELS_ARE_CLAIMS` are not reported when the records-listing phase stops the
+   container (no record is verified). An `E_CONTAINER_ENTRY` from the entry checks keeps the
+   notice (the entries were enumerated; T6). Vectors `container/readable-*-failure`,
+   `container/*-limitation-not-reported-after-listing-failure`.
+8. **§11.5 W1 rule 2 without a trust root (T8).** Kept as written: `--previous` with no
+   keyset is `E_MANIFEST_CHAIN` (invalid). The specification now states the consequence and
+   advises recipients to supply their keyset and only a `--previous` they accepted earlier.
+
+### 7.4 Registered, not changed in S2-FIX1
+
+From the S2 next-batch list (decision 2026-11-15 #13, T8: registered only):
+
+- §11.5: the two tiers of one origin (ledger / receipts) cannot tell a new chain head from
+  a silent restart; a series or tier identifier in the manifest is proposed.
+- receipts tier: whether a recipient may resolve a `derived_from` event from a container
+  of the same origin that it already stored (§9.8 excludes cross-container resolution).
+- §11.11 directory-form granularity: whether empty directories must be kept and whether
+  `readable/` may be dropped on import.
+- report fields: `verifier.version` stays 0.1.0 across revisions; the report does not
+  carry the manifest `origin`.
+- §11.3: changing a signature entry's `key` or `alg` gives `unverifiable`, not `invalid`
+  (optional; the J1b recipient narrowed it on its side).
+- §11.3 manifest signature entries: the entries are judged in array order and the first
+  failing entry decides (W10/L5), so an unverifiable entry (an undeclared key) can precede
+  an invalid one (`E_MANIFEST_SIG_INVALID`). The T2 principle ("invalid first") was ruled
+  for record signature entries only; whether the manifest rule should follow it is noted
+  here for a later decision.
