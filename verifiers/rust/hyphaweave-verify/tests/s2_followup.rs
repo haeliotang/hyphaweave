@@ -469,3 +469,66 @@ fn erasure_without_placeholder_has_no_cross_check_code() {
         container_errors(&report)
     );
 }
+
+/// §11.3, §12.2 step 1, §9.4 (S2/F54; H1-S2 differential fuzzing): an
+/// unlisted `.tsr` is `E_TS_FILE`, and with no receipt listed there is still
+/// no timestamp evidence at all, so a signature by a compromised key stays
+/// `E_KEY_COMPROMISED` (not the `E_TS_UNTRUSTED` of present but unusable
+/// receipts).
+#[test]
+fn unlisted_receipt_is_no_evidence_for_the_compromise_rule() {
+    let mut files =
+        read_tree(&vectors_root().join("key-lifecycle/compromise-retroactive/container"));
+    let plain = verify_container(ContainerInput::Files(files.clone()), &keyset_with(None))
+        .expect("container");
+    let codes = |report: &Report| {
+        let mut out: Vec<&str> = report
+            .records
+            .iter()
+            .flat_map(|record| record.errors.clone())
+            .chain(container_errors(report))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    };
+    assert_eq!(codes(&plain), vec![e::KEY_COMPROMISED]);
+    files.insert("signatures/timestamp-9.tsr".to_owned(), vec![0x30, 0x00]);
+    let report =
+        verify_container(ContainerInput::Files(files), &keyset_with(None)).expect("container");
+    assert_eq!(codes(&report), vec![e::KEY_COMPROMISED, e::TS_FILE]);
+}
+
+/// §10.3 with S2/F48 read symmetrically (H1-S2 differential fuzzing): an
+/// erasure record that fails the structural group (here its `sigs` format,
+/// `E_ENV_SIGS`) is not "its erasure record", so the placeholder's
+/// attestation does not resolve to one (`E_ERASE_ATTESTATION`).
+#[test]
+fn structurally_failed_erasure_record_is_not_attested() {
+    let mut files = read_tree(&vectors_root().join("erasure/valid-container/container"));
+    let erasure_path = files
+        .iter()
+        .find(|(_, bytes)| {
+            json::parse_object(bytes)
+                .is_ok_and(|object| object.get_str("kind") == Some("weave.erasure"))
+        })
+        .map(|(path, _)| path.clone())
+        .expect("erasure record");
+    let plain = verify_container(ContainerInput::Files(files.clone()), &keyset_with(None))
+        .expect("container");
+    assert!(container_errors(&plain).is_empty());
+    let mut object = json::parse_object(&files[&erasure_path]).expect("json");
+    let mut entries = Object::new();
+    for (name, value) in object.iter() {
+        if name == "sigs" {
+            entries.insert(name, Value::Int(1));
+        } else {
+            entries.insert(name, value.clone());
+        }
+    }
+    object = entries;
+    files.insert(erasure_path, json::canonical_object_bytes(&object));
+    let report =
+        verify_container(ContainerInput::Files(files), &keyset_with(None)).expect("container");
+    assert_eq!(container_errors(&report), vec![e::ERASE_ATTESTATION]);
+}
