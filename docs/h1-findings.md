@@ -2148,6 +2148,26 @@ the seed being the `seed` of the JSONL line.
 The S2-FIX2 rows (the DATE / OID-IRI types, `N_READABLE_PRESENT` after a member CRC
 failure) differed only because the Rust verifier already followed S2-FIX2.
 
+## H1-S2 gate results
+
+Recorded 2026-11-16 on branch `r2/rust-s2`. Code at `d648268` (`f1a8bd6` adds documentation
+only), after merging `origin/main` `3712151` and `s2/spec-revision` up to `b7baea7`
+(S2-FIX2b; 689 main cases, 202 frozen). The reference verifier ran only as a black box,
+installed non-editable from this branch's `verifiers/python`. `CARGO_TARGET_DIR` was outside
+the repository, so the crash-fuzz `--binary` follows it and gate 3 gets
+`--rust-binary`/`--python-cli`; the Python job used the non-editable install (CI uses
+`-e`); rustup stable 1.100.0.
+
+| gate | result |
+|---|---|
+| 1. CI, both jobs, from the repository root | Python job (on `69d551f`, the Python, tools and vectors of `b7baea7`): all 16 steps exit 0 — generators `--check`, pytest 412 passed 1 skipped, vectors 689/689, SHA256SUMS (712 files) and `CHECK_FROZEN: PASS`, frozen 202/202, schemas, external, ablation (315 mutations, 280 killed, 25 documented equivalent, 0 unpinned, 0 catalogue errors), byte-flip (430,350 mutants, 0 survivors), crash fuzz (1,956 mutants, 0 crashes), spec examples, REUSE 3.3. Rust job (on `d648268`): fmt, clippy all targets, clippy library, `cargo test --workspace` (17 test binaries, 119 passed, 0 failed, 3 ignored), both `vectors` runs, `cargo deny check`, `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz, gate 3: every step exit 0. The first full run (on `a2bc89d`) had `cargo test` red in `tests/external_l2.rs`: the S2 vector `integrity-levels/l2-unlisted-receipt-file` (an unlisted `.tsr`) was replayed as a profile case although its outcome is container-level; fixed in `de7bcb0` |
+| 2. vectors | Rust 689/689 main and 202/202 frozen (also 656/656 before the S2-FIX2 merge and 684/684 between the merges) |
+| 3. two-implementation comparison | allow list empty; 891 cases (689 + 202), 891 byte-identical, PASS |
+| 4. red checks | every change class removed on its own turns red and is restored (`cmp` equal, then `touch`): F61-3, Q2 (declaration, rotation, second order), T2 (code order; `N_KEY_UNDECLARED` through gate 3), Q1 (tier, order), Q3 (grant, declaration), F69-3, Q4 (RSA call site; ECDSA function by its unit test), T3 (REAL, RELATIVE-OID, TIME/DURATION, ESC, string units), the anchor walk, review A low-1 (JSON shape, keyset declaration ignored, keyset material first), S2-FIX2 (U1, U2 parent and cited, U4 re-designation, smallest set, announcer, incomplete escape, ESC in the five plain types, the date and IRI types; U5; U7), S2-FIX2b (equation before §9.4, §9.4 before an undeclared key) and the four differential-fuzzing fixes. Not red because no vector or test reaches them: the step-5 deferral of a consent revocation (Q3) and the ECDSA bound at the P-256 call site (the curve crate rejects the same signatures) |
+| 5. differential fuzzing | `scripts/diff_fuzz.py`, 10 classes × 400, final binary (`d648268`), merged repository: seed **151115** 3,748 mutants, 3,710 byte-identical, 14 conclusion differences (F77 2, F79 2, F80 5, F82 1, sigs-absent erasure record 4) and 24 report-detail differences (F78: 13 `input` identities, 11 limitation lists); seed **777001** 3,780 mutants, 3,737 byte-identical, 15 conclusion differences (F74 3, F79 3, F80 8, F82 1) and 28 report-detail differences (F78: 16 `input`, 12 limitations). **Rust wrong 0**; Rust exit codes 0 and 1 only, no panic, no timeout. The runs on earlier binaries found the four Rust defects fixed above |
+| 6. other gates | Rust crash fuzz 2,000 mutants, 0 failures; `cargo check -p hyphaweave-verify --target aarch64-linux-android` exit 0, no warning; `reuse lint` compliant |
+| 7. other workstreams untouched | `git diff --stat s2/spec-revision..r2/rust-s2 -- spec schemas vectors verifiers/python tools` is empty |
+
 ## H1-FIX2B gate results
 
 Recorded 2026-11-15 on branch `h1/rust-verifier`, code at `97f56df`
