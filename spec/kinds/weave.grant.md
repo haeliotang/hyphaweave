@@ -90,12 +90,14 @@ The granter signer rule (`E_GRANT_GRANTER` when `sigs` has a verified signature 
 `actor.key`) is decided after the grant variant's own window rule (`E_KEY_VALIDITY`) and
 before every check below, whose outcomes can be `unverifiable`; a §4.4 step-5 outcome waits
 until all of them have passed (parent specification §14.5) [S2-FIX1/Q3] decided (Inceptless
-decision 2026-11-15 #13; Q3). Checks on a delegated sub-grant, in fixed order (the first
+decision 2026-11-15 #18; Q3). Checks on a delegated sub-grant, in fixed order (the first
 failure is the record's single error; the exact code precedence is PROVISIONAL, see the
 parent specification Appendix A):
 
-1. **Resolve.** Parent reference unresolvable, or parent verdict invalid → `E_GRANT_UNRESOLVED`
-   (unverifiable).
+1. **Resolve.** Two tiers: a parent record that is present but whose own verdict is
+   invalid → `E_GRANT_GRANTER` (invalid); a parent reference that is unresolvable, or a
+   parent whose verdict is not `valid` for any other reason (for example `unverifiable`) →
+   `E_GRANT_UNRESOLVED` (unverifiable) [S2-FIX2/U2] decided (Inceptless decision 2026-11-15 #22; Q6).
 2. **Authorising action and capability.** Parent `action` is not `grant`, or parent `kinds`
    lacks `weave.grant`, or parent `actions` lacks `grant` → `E_GRANT_GRANTER` (invalid).
 3. **Transferable.** Parent `transferable` is not `true` → `E_GRANT_NOT_TRANSFERABLE`.
@@ -120,8 +122,10 @@ parent specification Appendix A):
 7. **Depth.** Up to 8 links from the grant used by a record to its root; deeper chains are
    `unverifiable` (`E_GRANT_UNRESOLVED`). Steps 1–6 walk the whole chain, links beyond
    this bound included, stopped only by cycle detection; the depth is decided after them
-   (parent specification §5.5.2) [S2-FIX1/Q5] decided (Inceptless decision 2026-11-15 #13;
-   Q5). A cycle is not constructible for digest
+   (parent specification §5.5.2) [S2-FIX1/Q5] decided (Inceptless decision 2026-11-15 #18;
+   Q5). With the first tier of step 1, an invalid link beyond the bound makes every grant
+   above it, and the record citing the chain, invalid `E_GRANT_GRANTER` rather than
+   `E_GRANT_UNRESOLVED` [S2-FIX2/U2]. A cycle is not constructible for digest
    references; the key-id rotation graph used by the revocation rule is bounded separately.
 
 ### Authorisation of a record
@@ -135,7 +139,9 @@ whole chain is evaluated at that same time, the single verification time (R1). O
 (unverifiable); revoked → `E_GRANT_REVOKED` (unverifiable); outside window →
 `E_GRANT_EXPIRED` (unverifiable); grantee mismatch → `E_GRANT_GRANTEE_MISMATCH` (invalid);
 kind/action not covered → `E_GRANT_NOT_APPLICABLE` (invalid). A grant reference to a
-`action == "revoke"` record is `E_GRANT_GRANTER` (invalid).
+`action == "revoke"` record is `E_GRANT_GRANTER` (invalid), and so is a cited grant record
+that is present but whose own verdict is invalid; a cited grant present but not valid for
+any other reason is `E_GRANT_UNRESOLVED` (the two tiers of step 1 above) [S2-FIX2/U2].
 
 `scope` is not machine-evaluated for an individual record; it is used only for delegation
 subsetting above.

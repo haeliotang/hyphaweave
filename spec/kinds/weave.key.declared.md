@@ -121,7 +121,7 @@ permitted (additive evolution, K3, parent specification §7.5).
    material, class and window (§5.3); when a cosignature fails §9.4, the declaration supplies
    no material and establishes no trust, so a signature by the declared key is
    `E_KEY_UNKNOWN` unless another record supplies the key [S2-FIX1/Q2] decided (Inceptless
-   decision 2026-11-15 #13; Q2).
+   decision 2026-11-15 #18; Q2).
 6. **Multiple declarations.** The governing class, the governing validity window and the
    declaration-resolution order (smallest claimed `recorded_at`, ties by the
    lexicographically smallest record digest) are defined once in parent specification §5.3;
