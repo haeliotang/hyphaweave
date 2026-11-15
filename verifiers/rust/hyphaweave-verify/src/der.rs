@@ -387,15 +387,9 @@ pub fn check_primitive_content(number: u64, content: &[u8]) -> Result<(), DerErr
         }
         universal::REAL => check_real(content),
         universal::RELATIVE_OID => check_relative_oid(content),
-        // §12.2 1a (X.690 §11.4, judged conservatively): the ISO 2022 register
-        // types carry no ESC octet, so the default designations hold.
-        7 | 20 | 21 | 25 | 27 => {
-            if content.contains(&0x1B) {
-                Err(DerError("ESC in an ISO 2022 string"))
-            } else {
-                Ok(())
-            }
-        }
+        // §12.2 1a (X.690 §11.4, §8.23.5; S2-FIX2/U4 ②): the ISO 2022
+        // register types.
+        7 | 20 | 21 | 25 | 27 => check_iso2022(number, content),
         // X.690 §8.23.5.3 and Table 3, §8.23.10 (S2-FIX2/U4 ①): NumericString,
         // PrintableString, IA5String, VisibleString and UTF8String carry no
         // explicit escape sequence, so no ESC octet.
@@ -517,6 +511,116 @@ pub fn check_oid(content: &[u8]) -> Result<(), DerError> {
     }
     if !at_start {
         return Err(DerError("truncated OID sub-identifier"));
+    }
+    Ok(())
+}
+
+/// A register entry named by a designating escape sequence: the class of
+/// set and the octets that follow the class intermediates (further
+/// intermediates and the final octet).
+type RegisterEntry<'a> = (SetClass, &'a [u8]);
+
+/// The class of a designated set (ISO/IEC 2022).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SetClass {
+    /// 94-character graphic set.
+    G94,
+    /// 96-character graphic set.
+    G96,
+    /// 94^n-character graphic set.
+    G94N,
+    /// 96^n-character graphic set.
+    G96N,
+    /// C0 control set.
+    C0,
+    /// C1 control set.
+    C1,
+}
+
+/// The ISO 2022 register types of §12.2 1a (S2-FIX2/U4 ②): starting from the
+/// designations X.690 Table 3 assumes for the type (§8.23.5.2), every ESC
+/// begins a complete escape sequence (intermediates `0x20`–`0x2F`, then a
+/// final `0x30`–`0x7E`); no announcer (`ESC 2/0 F`, §8.23.5.4); and a
+/// designating sequence neither names an entry already designated as G0–G3,
+/// C0 or C1 nor designates into a G set other than the smallest one for its
+/// class (G0 for 94-character sets, G1 for 96-character sets) (§11.4).
+/// Whether an escape sequence is needed, and whether its entry is among the
+/// type's registrations (§8.23.5.1), is not judged.
+///
+/// # Errors
+/// The violated rule.
+fn check_iso2022(number: u64, content: &[u8]) -> Result<(), DerError> {
+    // G0, G1, G2, G3, C0, C1.
+    let mut designated: [Option<RegisterEntry<'_>>; 6] = [None; 6];
+    match number {
+        // TeletexString: G0 102 (ESC 2/8 7/5), C0 106 (ESC 2/1 4/5), C1 107
+        // (ESC 2/2 4/8).
+        20 => {
+            designated[0] = Some((SetClass::G94, &[0x75]));
+            designated[4] = Some((SetClass::C0, &[0x45]));
+            designated[5] = Some((SetClass::C1, &[0x48]));
+        }
+        // VideotexString: G0 102, C0 1 (ESC 2/1 4/0), C1 73 (ESC 2/2 4/1).
+        21 => {
+            designated[0] = Some((SetClass::G94, &[0x75]));
+            designated[4] = Some((SetClass::C0, &[0x40]));
+            designated[5] = Some((SetClass::C1, &[0x41]));
+        }
+        // GeneralString: G0 6 (ESC 2/8 4/2), C0 1.
+        27 => {
+            designated[0] = Some((SetClass::G94, &[0x42]));
+            designated[4] = Some((SetClass::C0, &[0x40]));
+        }
+        // GraphicString and ObjectDescriptor (a GraphicString): G0 6.
+        _ => designated[0] = Some((SetClass::G94, &[0x42])),
+    }
+    let mut position = 0usize;
+    while let Some(offset) = content[position..].iter().position(|octet| *octet == 0x1B) {
+        let start = position + offset + 1;
+        let mut end = start;
+        while content
+            .get(end)
+            .is_some_and(|octet| (0x20..=0x2F).contains(octet))
+        {
+            end += 1;
+        }
+        if !content
+            .get(end)
+            .is_some_and(|octet| (0x30..=0x7E).contains(octet))
+        {
+            return Err(DerError("incomplete ISO 2022 escape sequence"));
+        }
+        let sequence = &content[start..=end];
+        position = end + 1;
+        let (class, target, entry): (SetClass, usize, &[u8]) = match sequence {
+            [0x20, ..] => return Err(DerError("ISO 2022 announcer")),
+            [0x21, rest @ ..] => (SetClass::C0, 4, rest),
+            [0x22, rest @ ..] => (SetClass::C1, 5, rest),
+            [0x24, second @ 0x28..=0x2B, rest @ ..] => {
+                (SetClass::G94N, usize::from(second - 0x28), rest)
+            }
+            [0x24, second @ 0x2D..=0x2F, rest @ ..] => {
+                (SetClass::G96N, usize::from(second - 0x2C), rest)
+            }
+            [0x24, rest @ ..] => (SetClass::G94N, 0, rest),
+            [first @ 0x28..=0x2B, rest @ ..] => (SetClass::G94, usize::from(first - 0x28), rest),
+            [first @ 0x2D..=0x2F, rest @ ..] => (SetClass::G96, usize::from(first - 0x2C), rest),
+            // Not a designation (an invocation, for example): not judged.
+            _ => continue,
+        };
+        let key = (class, entry);
+        if designated.contains(&Some(key)) {
+            return Err(DerError("ISO 2022 re-designation of an entry in force"));
+        }
+        let smallest = match class {
+            SetClass::G94 | SetClass::G94N => Some(0),
+            SetClass::G96 | SetClass::G96N => Some(1),
+            SetClass::C0 | SetClass::C1 => None,
+        };
+        if smallest.is_some_and(|smallest| smallest != target) {
+            return Err(DerError("ISO 2022 designation into a larger G set"));
+        }
+        designated[target] = Some(key);
     }
     Ok(())
 }
@@ -836,17 +940,33 @@ mod tests {
         // 14 TIME, 34 DURATION: rejected.
         assert!(check_universal_rules(&[0x0E, 0x00]).is_err());
         assert!(check_universal_rules(&[0x1F, 0x22, 0x02, 0x31, 0x59]).is_err());
-        // 7, 20, 21, 25, 27: no ESC.
-        for tag in [0x07, 0x14, 0x15, 0x19, 0x1B] {
-            assert!(
-                check_universal_rules(&[tag, 0x02, 0x41, 0x42]).is_ok(),
-                "{tag:#04x}"
-            );
-            assert!(
-                check_universal_rules(&[tag, 0x02, 0x41, 0x1B]).is_err(),
-                "{tag:#04x}"
-            );
+        // 7, 20, 21, 25, 27: complete escape sequences, no announcer, no
+        // re-designation, smallest G set (S2-FIX2/U4 ②).
+        for tag in [0x07u8, 0x14, 0x15, 0x19, 0x1B] {
+            let ok = |content: &[u8]| check_universal_rules(&encode(tag, content)).is_ok();
+            assert!(ok(&[0x41, 0x42]), "{tag:#04x}");
+            assert!(!ok(&[0x41, 0x1B]), "{tag:#04x}");
+            assert!(!ok(&[0x1B, 0x28, 0x1B]), "{tag:#04x}");
+            assert!(!ok(&[0x1B, 0x20, 0x41]), "{tag:#04x}");
+            // Registration 87 (94-set, final 4/9) into G0: a new designation.
+            assert!(ok(&[0x1B, 0x28, 0x49]), "{tag:#04x}");
+            // The same entry into G1: not the smallest G set for a 94-set.
+            assert!(!ok(&[0x1B, 0x29, 0x49]), "{tag:#04x}");
+            // Designating it twice: the second is a re-designation.
+            assert!(!ok(&[0x1B, 0x28, 0x49, 0x1B, 0x28, 0x49]), "{tag:#04x}");
+            // A 96-set (final 4/1) into G1 is the smallest; into G2 it is not.
+            assert!(ok(&[0x1B, 0x2D, 0x41]), "{tag:#04x}");
+            assert!(!ok(&[0x1B, 0x2E, 0x41]), "{tag:#04x}");
+            // A locking shift (no intermediate) is not a designation.
+            assert!(ok(&[0x1B, 0x6E]), "{tag:#04x}");
         }
+        // The assumed G0 of TeletexString is 102 (final 7/5), of GeneralString
+        // 6 (final 4/2), and GeneralString's C0 is 1 (final 4/0): designating
+        // an entry in force is a violation; 6 into a TeletexString's G0 is not.
+        assert!(check_universal_rules(&[0x14, 0x03, 0x1B, 0x28, 0x75]).is_err());
+        assert!(check_universal_rules(&[0x14, 0x03, 0x1B, 0x28, 0x42]).is_ok());
+        assert!(check_universal_rules(&[0x1B, 0x03, 0x1B, 0x28, 0x42]).is_err());
+        assert!(check_universal_rules(&[0x1B, 0x03, 0x1B, 0x21, 0x40]).is_err());
         // 28 UniversalString, 30 BMPString: whole units.
         assert!(check_universal_rules(&[0x1C, 0x03, 0x00, 0x00, 0x00]).is_err());
         assert!(check_universal_rules(&[0x1E, 0x03, 0x00, 0x41, 0x00]).is_err());
