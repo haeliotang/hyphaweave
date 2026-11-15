@@ -10,8 +10,7 @@
 //!
 //! A `weave.erased` placeholder is a special shape rather than a normal
 //! envelope (§4.5, kind page): every structural violation of the placeholder,
-//! its `origin` and `id` included, is `E_KIND_BODY_SCHEMA`; only a wrong
-//! `format` keeps `E_ENV_FORMAT`.
+//! its `origin`, `id` and `format` included, is `E_KIND_BODY_SCHEMA`.
 
 use crate::b64;
 use crate::digest;
@@ -464,14 +463,13 @@ fn parse_envelope(object: &Object) -> Result<Envelope, Code> {
 }
 
 fn parse_placeholder(object: &Object) -> Result<ErasedPlaceholder, Code> {
-    // A `format` string other than "weave-record/1" keeps its envelope code;
-    // the rest of the shape — a `format` of another JSON type included ("wrong
-    // member type", §4.5) — is `E_KIND_BODY_SCHEMA` (§4.5, kind page).
+    // §4.5: "every structural violation of the placeholder is
+    // `E_KIND_BODY_SCHEMA`" — a `format` that is not exactly
+    // "weave-record/1" included, whatever its JSON type (H1-S2 differential
+    // fuzzing; F43's earlier `E_ENV_FORMAT` for a wrong string is withdrawn).
     if let Some(value) = object.get("format") {
-        match value.as_str() {
-            Some("weave-record/1") => {}
-            Some(_) => return Err(e::ENV_FORMAT),
-            None => return Err(e::KIND_BODY_SCHEMA),
+        if value.as_str() != Some("weave-record/1") {
+            return Err(e::KIND_BODY_SCHEMA);
         }
     }
     const PLACEHOLDER_MEMBERS: [&str; 6] =
