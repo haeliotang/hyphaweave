@@ -676,6 +676,15 @@ pub fn key_material_structural_error(envelope: &Envelope) -> Option<Code> {
             None => Some(e::KEY_PUBLIC_KEY),
         },
         "weave.key.rotated" => {
+            // §9.2 rule 2, §14.5 (S2/F61-3): the rule presupposes well-formed
+            // key ids, so a `new_key` or `old_key` that is missing, is not a
+            // key id (§2.5) or has another JSON type is a body-schema defect,
+            // decided in this same pre-signature check and before it.
+            for id_member in ["new_key", "old_key"] {
+                if !body.get_str(id_member).is_some_and(digest::is_valid_key_id) {
+                    return Some(e::KIND_BODY_SCHEMA);
+                }
+            }
             for (id_member, key_member) in
                 [("new_key", "new_public_key"), ("old_key", "old_public_key")]
             {
