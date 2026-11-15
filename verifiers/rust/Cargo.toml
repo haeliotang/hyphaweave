@@ -22,3 +22,13 @@ rsa = { version = "0.10.0", default-features = false, features = ["encoding", "p
 p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "alloc"] }
 p384 = { version = "0.14.0", default-features = false, features = ["ecdsa", "alloc"] }
 signature = "3"
+
+# Dependencies (bignum RSA, curve arithmetic, SHA-2) are compiled with
+# optimisations even in the dev profile. Unoptimised, the RSA and ECDSA
+# vectors make the debug verifier take over ten minutes per vector set on
+# the CI runner, which exceeds gate 3's per-process timeout. Only the
+# third-party crates are affected: this workspace's own crates keep the
+# default dev settings (opt-level 0, debug assertions and overflow checks),
+# so the small-stack test still measures unoptimised verifier frames.
+[profile.dev.package."*"]
+opt-level = 2
