@@ -233,23 +233,34 @@ def validate_grant_chain(
     depth: int = 0,
     seen: frozenset[str] = frozenset(),
 ) -> None:
-    """Validate a grant and its ancestor chain at ``at_time`` (S3, fixed order)."""
-    if depth > MAX_CHAIN_DEPTH or grant.digest in seen:
-        raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is too deep or cyclic")
-    seen = seen | {grant.digest}
-    _check_window(grant, at_time)
-    if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:
-        raise WeaveError("E_GRANT_REVOKED", "grant is revoked")
-    if grant.actor_type in ("human", "organization"):
-        return  # root grant
-    parent, _parent_digest = _resolve_grant(grant.parent_reference, context)
-    # The whole authorisation chain, ancestors included, is evaluated at the
-    # verified record's claimed time. This single assignment is the anti-
-    # verification anchor for the old §5.5.2 step-6 reading: mutating it to the
-    # grant's own time must make grant/ancestor-revoked-before-record fail.
-    ancestor_time = at_time
-    _check_delegation(grant, parent, context, ancestor_time)
-    validate_grant_chain(parent, context, ancestor_time, depth=depth + 1, seen=seen)
+    """Validate a grant and its ancestor chain at ``at_time`` (S3, fixed order).
+
+    S2-FIX1 Q5 (§5.5.2): steps 1-6 walk the entire chain up to its root,
+    links beyond the depth bound included, stopped only by a cycle; the depth
+    bound of step 7 is decided after the walk. ``depth`` is the number of links
+    already counted before ``grant``.
+    """
+    links = depth
+    while True:
+        if grant.digest in seen:
+            raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is cyclic")
+        seen = seen | {grant.digest}
+        _check_window(grant, at_time)
+        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:
+            raise WeaveError("E_GRANT_REVOKED", "grant is revoked")
+        if grant.actor_type in ("human", "organization"):
+            break  # root grant
+        parent, _parent_digest = _resolve_grant(grant.parent_reference, context)
+        # The whole authorisation chain, ancestors included, is evaluated at the
+        # verified record's claimed time. This single assignment is the anti-
+        # verification anchor for the old §5.5.2 step-6 reading: mutating it to the
+        # grant's own time must make grant/ancestor-revoked-before-record fail.
+        ancestor_time = at_time
+        _check_delegation(grant, parent, context, ancestor_time)
+        grant = parent
+        links += 1
+    if links > MAX_CHAIN_DEPTH:
+        raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is too deep")
 
 
 def check_grant_semantics(
