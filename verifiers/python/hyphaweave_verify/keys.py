@@ -322,11 +322,17 @@ class DeclarationContext(Protocol):
     def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
         """Public key and key class of any declared record, valid or not."""
 
+    def owner_declaration(self, key_id: str) -> tuple[bytes, str] | None:
+        """Public key and class of a structurally valid declaration (S2-FIX3 F73)."""
+
     def trusted_human_org(self) -> frozenset[str]:
         """Human/organization key ids trusted via the keyset and its closure."""
 
     def is_declared_key(self, key_id: str) -> bool:
         """Whether the key id is declared anywhere in the context."""
+
+    def trusted_by_another_record(self, key_id: str, record_digest: str, source: str) -> bool:
+        """Whether a declaration other than *record_digest* trusts the key (S2-FIX3 F72)."""
 
     def governing_class(self, key_id: str, exclude_digest: str) -> str | None:
         """The class of the key's governing declaration, excluding one digest (S1)."""
@@ -433,7 +439,11 @@ def check_declared_semantics(
         # R5: owner must be resolvable and be a human/organization declaration.
         if owner is None:  # pragma: no cover - checked above
             raise WeaveError("E_KEY_OWNER_MISSING", "missing owner")
-        owner_material = context.declaration_material(owner)
+        # S2-FIX3 F73 (§5.3, §9.1 rule 3): the owner resolves only through a
+        # declaration that passes the §14.1 structural group; one that fails
+        # it (for example a missing ``sigs``) never takes part in class
+        # determination, so the owner is not resolved: E_KEY_UNKNOWN.
+        owner_material = context.owner_declaration(owner)
         if owner_material is None:
             # Owner key is not declared anywhere in the context: unverifiable.
             raise WeaveError("E_KEY_UNKNOWN", "owner key is not declared in the context")
@@ -459,7 +469,9 @@ def check_declared_semantics(
             pass
         else:
             trusted = context.trusted_human_org()
-            if declared_key in trusted:
+            if declared_key in trusted and context.trusted_by_another_record(
+                declared_key, record_digest, source
+            ):
                 pass  # duplicate declaration of an already trusted key
             elif (trusted & verified_signature_keys) - {declared_key}:
                 pass  # cosigned by a trusted human/organization key

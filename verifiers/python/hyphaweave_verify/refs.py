@@ -17,6 +17,8 @@ This module never loops and never touches I/O.
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -175,10 +177,14 @@ def validate_reference_list(value: Any) -> tuple[ReferenceEntry, ...]:
     if len(value) > grammar.MAX_REFS:
         raise WeaveError("E_ENV_REFS", "refs has too many entries")
     entries: list[ReferenceEntry] = []
-    seen: set[tuple[str, str, str, str, str]] = set()
+    seen: set[str] = set()
     for raw_entry in value:
         entry = validate_reference_entry(raw_entry)
-        identity = (entry.rel, *entry.ref.subject_key(), entry.ref.digest)
+        # S2-FIX3 F76 (§6.1): two entries are duplicates only when they repeat
+        # an identical ``(rel, ref)`` pair, the reference object compared as a
+        # whole JSON value (``kind`` and ``hints`` included, ``hints`` in
+        # order); entries that differ only in the claimed ``kind`` are not.
+        identity = json.dumps(raw_entry, sort_keys=True, ensure_ascii=False)
         if identity in seen:
             raise WeaveError("E_ENV_REFS", "duplicate refs entry")
         seen.add(identity)
