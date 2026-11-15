@@ -11611,7 +11611,7 @@ declare(
         },
     ),
     notes="S2 (§14.5 steps (4) and (5)), expectation corrected by S2-FIX1 T2 (decision "
-    "2026-11-15 #13; §4.4 step 2): the note's first entry is by a declared key and fails "
+    "2026-11-15 #18; §4.4 step 2): the note's first entry is by a declared key and fails "
     "the equation; its second entry names a key that nothing declares. Key resolution "
     "(step (4)) covers every entry and every resolved entry is verified, and an invalid "
     "outcome beats an unverifiable one: a known-key signature that fails the equation makes "
@@ -12749,7 +12749,7 @@ for _name, _factory, _verdict, _errors, _why in (
 
 
 # ---------------------------------------------------------------------------
-# S2-FIX1 (decision 2026-11-15 #13): the founder's rulings Q1-Q5 and the
+# S2-FIX1 (decision 2026-11-15 #18): the founder's rulings Q1-Q5 and the
 # review items T1-T8 of the S2 round. Every expected conclusion below is
 # hand-written from the specification text.
 # ---------------------------------------------------------------------------
@@ -13462,24 +13462,26 @@ for _name, _root_kwargs, _code, _why in (
         "container",
         "container",
         "invalid",
-        errors=(_code, "E_GRANT_UNRESOLVED"),
+        errors=(_code, "E_GRANT_GRANTER"),
         build=lambda case_dir, _root_kwargs=_root_kwargs: _fix1_deep_chain_bad_root_files(
             **_root_kwargs
         ),
         args=GRANT_ARGS,
         records=(
             {"id": "grant-depth-1", "verdict": "invalid", "errors": [_code]},
-            {"id": "grant-depth-2", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
-            {"id": "grant-depth-9", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
-            {"id": "grant-depth-9-note", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
+            {"id": "grant-depth-2", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
+            {"id": "grant-depth-9", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
+            {"id": "grant-depth-9-note", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
         ),
         notes="S2-FIX1 Q5 (F68 open point; §5.5.2): grant/chain-depth-9-links (a note citing "
         "the depth-9 grant, nine parent links, one beyond the bound) where " + _why + ". "
         "Steps 1-5 are walked beyond the bound as well, and step 1 requires each resolved "
-        "parent to be a valid record: grant-depth-1 is itself invalid (" + _code + "), every "
-        "grant above it fails step 1 (unverifiable E_GRANT_UNRESOLVED), and so does the note, "
-        "whose walk stops at its first link. A failure beyond the bound is therefore never "
-        "hidden behind step 7, and it reaches the note as step 1.",
+        "parent to be a valid record: grant-depth-1 is itself invalid (" + _code + "). "
+        "Expectation changed by S2-FIX2 U2 (decision 2026-11-15 #22; Q6, step 1 in two "
+        "tiers): a parent that is present but itself invalid makes its child invalid "
+        "E_GRANT_GRANTER, so every grant above grant-depth-1 and the note are invalid "
+        "E_GRANT_GRANTER. A failure beyond the bound is never hidden behind step 7, and "
+        "the invalid outcome reaches the note (S2-FIX1 had E_GRANT_UNRESOLVED).",
     )
 
 
@@ -13493,8 +13495,10 @@ for _name, _identifier, _content, _verdict, _why in (
      "27 03 07 01 41: an ObjectDescriptor in the constructed form; it is a restricted "
      "character string type, primitive only in DER (X.690 §10.2)"),
     ("l2-ts-der-1a-object-descriptor-escape", b"\x07", b"\x1b(B", "invalid",
-     "07 03 1b 28 42: an ObjectDescriptor carrying an ISO 2022 escape sequence; 1a judges "
-     "X.690 §11.4 conservatively (no ESC octet in an ISO 2022 register type)"),
+     "07 03 1b 28 42: an ObjectDescriptor carrying the escape sequence ESC 2/8 4/2, which "
+     "designates registration 6 as G0 although Table 3 (X.690 §8.23.5.2) already has it "
+     "designated there; X.690 §11.4 allows a designation only of an entry that is not "
+     "currently designated (expectation reasoned by S2-FIX2 U4, decision 2026-11-15 #22)"),
     # 9 REAL: §8.5, §11.3.
     ("l2-ts-der-1a-real-plus-zero", b"\x09", b"", "valid",
      "09 00: the REAL plus zero, no contents octets (X.690 §8.5.2; control)"),
@@ -13558,19 +13562,24 @@ for _name, _identifier, _content, _verdict, _why in (
      "2e 03 0e 01 41: a TIME in the constructed form (X.690 §8.26.1.1: primitive)"),
     ("l2-ts-der-1a-duration-rejected", b"\x1f\x22", b"P1D", "invalid",
      "1f 22 03 'P1D': a DURATION value (universal 34), rejected like TIME"),
-    # 31-33, 35, 36: primitive, UTF-8 contents (§8.21, §8.22, §8.26).
-    ("l2-ts-der-1a-date-utf8", b"\x1f\x1f", b"2026-11-15", "valid",
-     "1f 1f 0a '2026-11-15': a DATE (universal 31) whose contents are UTF-8 (control)"),
+    # 31-33, 35, 36: primitive; rejected like TIME and DURATION (S2-FIX2 U4).
+    ("l2-ts-der-1a-date-rejected", b"\x1f\x1f", b"2026-11-15", "invalid",
+     "1f 1f 0a '2026-11-15': a DATE (universal 31) with well-formed contents; S2-FIX2 U4 "
+     "(decision 2026-11-15 #22) rejects DATE values like TIME and DURATION (no module of "
+     "check 1 uses the type; the profile does not judge its value notation)"),
     ("l2-ts-der-1a-date-not-utf8", b"\x1f\x1f", b"\xff", "invalid",
-     "1f 1f 01 ff: a DATE whose contents are not UTF-8 (X.690 §8.26.2.2)"),
+     "1f 1f 01 ff: a DATE whose contents are not UTF-8 (X.690 §8.26.2.2); a DATE is "
+     "rejected in any case (S2-FIX2 U4)"),
     ("l2-ts-der-1a-date-time-constructed", b"\x3f\x21", b"\x0c\x01A", "invalid",
      "3f 21 03 0c 01 41: a DATE-TIME (universal 33) in the constructed form "
      "(X.690 §8.26.4.1: primitive)"),
-    ("l2-ts-der-1a-oid-iri-utf8", b"\x1f\x23", b"/a", "valid",
-     "1f 23 02 '/a': an OID-IRI (universal 35) whose contents are UTF-8 (control)"),
+    ("l2-ts-der-1a-oid-iri-rejected", b"\x1f\x23", b"/a", "invalid",
+     "1f 23 02 '/a': an OID-IRI (universal 35) with well-formed contents; S2-FIX2 U4 "
+     "(decision 2026-11-15 #22) rejects OID-IRI values like TIME and DURATION"),
     ("l2-ts-der-1a-relative-oid-iri-not-utf8", b"\x1f\x24", b"\xc0\x80", "invalid",
      "1f 24 02 c0 80: a RELATIVE-OID-IRI (universal 36) whose contents are an overlong, "
-     "hence not UTF-8, sequence (X.690 §8.22.2)"),
+     "hence not UTF-8, sequence (X.690 §8.22.2); a RELATIVE-OID-IRI is rejected in any "
+     "case (S2-FIX2 U4)"),
     # 28 UniversalString, 30 BMPString: whole code units (§8.23.7, §8.23.8).
     ("l2-ts-der-1a-universal-string-units", b"\x1c", b"\x00\x00\x00A", "valid",
      "1c 04 00 00 00 41: a UniversalString of one 4-octet unit (control)"),
@@ -13584,8 +13593,9 @@ for _name, _identifier, _content, _verdict, _why in (
     ("l2-ts-der-1a-teletex-string-plain", b"\x14", b"A", "valid",
      "14 01 41: a TeletexString without escape sequences (control)"),
     ("l2-ts-der-1a-general-string-escape", b"\x1b", b"\x1b(B", "invalid",
-     "1b 03 1b 28 42: a GeneralString with an escape sequence; 1a judges X.690 §11.4 "
-     "conservatively (no ESC octet)"),
+     "1b 03 1b 28 42: a GeneralString whose escape sequence ESC 2/8 4/2 designates "
+     "registration 6 as G0 although Table 3 already has it designated there (X.690 §11.4; "
+     "expectation reasoned by S2-FIX2 U4)"),
 ):
     _expected = _S2_VALID_L2 if _verdict == "valid" else _W3_SCHEMA_EXPECTED
     declare(
@@ -13904,7 +13914,7 @@ def _fix1_readable_then_crc_mismatch() -> bytes:
 
 declare(
     "container",
-    "readable-not-reported-after-zip-structure-failure",
+    "readable-reported-after-member-crc-failure",
     "container",
     "container.zip",
     "invalid",
@@ -13912,12 +13922,13 @@ declare(
     build=lambda case_dir: {"container.zip": _fix1_readable_then_crc_mismatch()},
     args=("--keys", "@keyset"),
     records=[],
-    notices_absent=("N_READABLE_PRESENT",),
-    notes="S2-FIX1 (review A low-1; §11.8, §11.9, §14.5): the archive has a well-formed "
+    notices=("N_READABLE_PRESENT",),
+    notes="S2-FIX2 U7 (decision 2026-11-15 #22; §11.8, §11.9, §14.6), replacing S2-FIX1's "
+    "readable-not-reported-after-zip-structure-failure: the archive has a well-formed "
     "readable/notes.txt entry and one byte of a record member's stored data is flipped, so "
-    "its CRC fails (§11.9 rule 5): E_CONTAINER_ZIP. An archive whose zip structure fails "
-    "has no enumerated entries and the later checks are not run, so N_READABLE_PRESENT is "
-    "not reported.",
+    "the member's CRC-32 fails when it is read: E_CONTAINER_ZIP. Phases 1-4 of the zip "
+    "check order and the entry checks passed, so the readable/ entry was observed before "
+    "the member-level failure, and N_READABLE_PRESENT is reported.",
 )
 
 declare(
@@ -13942,7 +13953,7 @@ declare(
     "readable/notes.txt entry passes its own entry checks and a records/link.json entry has "
     "the Unix symlink type (E_CONTAINER_ENTRY). The entries were enumerated and the "
     "readable/ entry was observed, so N_READABLE_PRESENT is reported (control for "
-    "readable-not-reported-after-zip-structure-failure).",
+    "readable-not-reported-after-central-directory-failure, S2-FIX2 U7).",
 )
 
 
@@ -14172,6 +14183,390 @@ declare(
     "rules for every extnValue; AttributeTypeAndValue.value is an open type judged by its "
     "framing, so the second anchor is accepted (no usage error) and the receipt verifies "
     "against the first.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S2-FIX2 (decision 2026-11-15 #22): U1 (program/device erasure basis chain),
+# U2 (Q6: §5.5.2 step 1 in two tiers), U4 (the §12.2 1a string and date rules),
+# U5 (manifest signature entries: invalid first) and U7 (N_READABLE_PRESENT
+# after member-level zip failures). Every expected conclusion below is
+# hand-written from the specification text.
+# ---------------------------------------------------------------------------
+
+# -- U1: a program's or device's body.basis grant is judged at the erasure's
+#    recorded_at like an agent's actor.grant (expired / revoked -> the grant codes).
+
+
+def _fix2_erasure_basis_files(
+    *, signer: str, grant_kwargs: dict[str, Any] | None = None, revoke_at: str | None = None
+) -> dict[str, bytes]:
+    original = erased_original("erasure-revision-original")
+    grant = root_grant(
+        record_id="erasure-basis-grant",
+        grantee=signer,
+        kinds=("weave.erasure",),
+        actions=("erase",),
+        scope=("example",),
+        **(grant_kwargs or {}),
+    )
+    attestation = erasure_record(
+        original,
+        record_id="erasure-revision-attestation",
+        reason="retention-expired",
+        signer=signer,
+        basis=parent_ref(grant),
+    )
+    placeholder = erased_placeholder(original, attestation)
+    records: list[dict[str, Any]] = [grant]
+    if revoke_at is not None:
+        records.append(
+            grant_revocation(grant, record_id="erasure-basis-grant-revoked", effective_at=revoke_at)
+        )
+    return container(records + [placeholder, attestation])
+
+
+for _name, _signer, _kwargs, _code, _other, _why in (
+    ("actor-program-basis-expired", "program-1", dict(grant_kwargs=dict(valid_until=recordlib.T3)),
+     "E_GRANT_EXPIRED", ({"id": "erasure-basis-grant", "verdict": "valid", "errors": []},),
+     "a program erasure recorded at T4 whose body.basis grant is valid but whose window "
+     "ends at T3: the basis is outside its validity window at the erasure's recorded_at"),
+    ("actor-program-basis-revoked", "program-1", dict(revoke_at=recordlib.T3),
+     "E_GRANT_REVOKED",
+     ({"id": "erasure-basis-grant", "verdict": "valid", "errors": []},
+      {"id": "erasure-basis-grant-revoked", "verdict": "valid", "errors": []}),
+     "a program erasure recorded at T4 whose body.basis grant is revoked by its granter "
+     "effective T3, before the erasure"),
+    ("actor-device-basis-expired", "device-1", dict(grant_kwargs=dict(valid_until=recordlib.T3)),
+     "E_GRANT_EXPIRED", ({"id": "erasure-basis-grant", "verdict": "valid", "errors": []},),
+     "the device form of actor-program-basis-expired: a device erasure recorded at T4 whose "
+     "body.basis grant ends at T3"),
+):
+    declare(
+        "erasure",
+        _name,
+        "container",
+        "container",
+        "unverifiable",
+        errors=(_code,),
+        build=lambda case_dir, _signer=_signer, _kwargs=_kwargs: _fix2_erasure_basis_files(
+            signer=_signer, **_kwargs
+        ),
+        args=ERASURE_REVISION_ARGS,
+        records=(
+            {"id": "erasure-revision-attestation", "verdict": "unverifiable", "errors": [_code]},
+        ) + tuple(_other),
+        notes="S2-FIX2 U1 (decision 2026-11-15 #22; weave.erasure signer rules, S2-FIX1 Q1): "
+        + _why + ". The basis covers the actor key, the kind and the erase action, and the "
+        "validity of the grant chain at the erasure's recorded_at is judged last for every "
+        "authorising grant, an agent's actor.grant and a program's or device's body.basis "
+        "alike. A grant that cannot be established at that time gives the grant code: "
+        + _code + " (unverifiable).",
+    )
+
+
+# -- U2 (Q6): §5.5.2 step 1 in two tiers. A parent (or cited) grant record that is
+#    present but itself invalid -> E_GRANT_GRANTER (invalid); absent or present
+#    but not valid for another reason -> E_GRANT_UNRESOLVED (unverifiable).
+
+_FIX2_BAD_WINDOW = dict(valid_from=recordlib.T9, valid_until=recordlib.T0)
+
+
+def _fix2_root(*, bad_window: bool = False, **kwargs: Any) -> dict[str, Any]:
+    args: dict[str, Any] = dict(
+        record_id="grant-fix2-root",
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "propose", "accept"),
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T9,
+        transferable=True,
+    )
+    if bad_window:
+        args.update(_FIX2_BAD_WINDOW, recorded_at=recordlib.T0)
+    args.update(kwargs)
+    return root_grant(**args)
+
+
+def _fix2_sub(parent: dict[str, Any]) -> dict[str, Any]:
+    return delegated_grant(
+        parent,
+        record_id="grant-fix2-sub",
+        sub_granter="agent-1",
+        grantee="agent-2",
+        kinds=("example.note",),
+        actions=("propose", "accept"),
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T9,
+    )
+
+
+def _fix2_note(grant: dict[str, Any], key_name: str) -> dict[str, Any]:
+    return agent_action(
+        grant, record_id="grant-fix2-note", key_name=key_name,
+        recorded_at=recordlib.T4, stage="accepted",
+    )
+
+
+def _fix2_cited_invalid_files() -> dict[str, bytes]:
+    root = _fix2_root(bad_window=True)
+    return _wrap_internal(recordlib.build_container([root, _fix2_note(root, "agent-1")]))
+
+
+def _fix2_parent_files(parent_state: str) -> dict[str, bytes]:
+    root = _fix2_root(bad_window=parent_state == "invalid")
+    if parent_state == "unverifiable":
+        root = _fix1_resign(root, ["human-1"], unknown_alg=True)
+    sub = _fix2_sub(root)
+    records = [sub, _fix2_note(sub, "agent-2")]
+    if parent_state != "absent":
+        records.insert(0, root)
+    return _wrap_internal(recordlib.build_container(records))
+
+
+def _fix2_deep_chain_invalid_root_files() -> dict[str, bytes]:
+    root = _fix2_root(record_id="grant-depth-root", bad_window=True)
+    records = [root]
+    parent = root
+    grantee = "agent-2"
+    final_grantee = grantee
+    for index in range(10):
+        final_grantee = grantee
+        child = delegated_grant(
+            parent,
+            record_id="grant-depth-%d" % (index + 1),
+            sub_granter="agent-1" if index % 2 == 0 else "agent-2",
+            grantee=grantee,
+            kinds=("weave.grant", "example.note"),
+            actions=("grant", "propose", "accept"),
+            valid_from=recordlib.T0,
+            valid_until=recordlib.T9,
+            transferable=True,
+        )
+        records.append(child)
+        parent = child
+        grantee = "agent-1" if index % 2 == 0 else "agent-2"
+    records.append(
+        agent_action(
+            parent, record_id="grant-depth-10-note", key_name=final_grantee,
+            recorded_at=recordlib.T4, stage="accepted",
+        )
+    )
+    return _wrap_internal(recordlib.build_container(records))
+
+
+_FIX2_ROOT_INVALID = {"id": "grant-fix2-root", "verdict": "invalid", "errors": ["E_KEY_VALIDITY"]}
+
+for _name, _build, _verdict, _records, _why in (
+    ("agent-record-cited-grant-present-invalid", _fix2_cited_invalid_files, "invalid",
+     (_FIX2_ROOT_INVALID,
+      {"id": "grant-fix2-note", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]}),
+     "an agent note cites a root grant that is present in the container but itself invalid "
+     "(its valid_from T9 is after its valid_until T0, E_KEY_VALIDITY). The cited "
+     "authorisation is present but invalid: the note is invalid E_GRANT_GRANTER (§5.4, "
+     "§5.5.2 step 1, first tier), not unverifiable E_GRANT_UNRESOLVED"),
+    ("sub-grant-parent-present-invalid", lambda: _fix2_parent_files("invalid"), "invalid",
+     (_FIX2_ROOT_INVALID,
+      {"id": "grant-fix2-sub", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
+      {"id": "grant-fix2-note", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]}),
+     "a delegated sub-grant cites a root grant that is present but itself invalid "
+     "(E_KEY_VALIDITY), and an agent note cites the sub-grant; the chain is well inside the "
+     "depth bound. Step 1, first tier: the sub-grant is invalid E_GRANT_GRANTER, and so is "
+     "the note, whose cited sub-grant is now present but invalid"),
+    ("sub-grant-parent-absent", lambda: _fix2_parent_files("absent"), "unverifiable",
+     ({"id": "grant-fix2-sub", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
+      {"id": "grant-fix2-note", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]}),
+     "control for sub-grant-parent-present-invalid: the parent root grant is not in the "
+     "container. Step 1, second tier: the sub-grant is unverifiable E_GRANT_UNRESOLVED, and "
+     "the note, whose cited sub-grant is present but unverifiable, is E_GRANT_UNRESOLVED too"),
+    ("sub-grant-parent-present-unverifiable", lambda: _fix2_parent_files("unverifiable"),
+     "unverifiable",
+     ({"id": "grant-fix2-root", "verdict": "unverifiable", "errors": ["E_SIG_UNVERIFIABLE"]},
+      {"id": "grant-fix2-sub", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
+      {"id": "grant-fix2-note", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]}),
+     "control for sub-grant-parent-present-invalid: the parent root grant is present but its "
+     "only sigs entry uses an unknown algorithm (ed25519-x), so it is unverifiable "
+     "E_SIG_UNVERIFIABLE (§4.4 step 5). A parent that is present but not valid for a reason "
+     "other than an invalid verdict is the second tier: E_GRANT_UNRESOLVED for the sub-grant "
+     "and for the note"),
+    ("chain-depth-10-root-present-invalid", _fix2_deep_chain_invalid_root_files, "invalid",
+     ({"id": "grant-depth-root", "verdict": "invalid", "errors": ["E_KEY_VALIDITY"]},
+      {"id": "grant-depth-1", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
+      {"id": "grant-depth-9", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
+      {"id": "grant-depth-10", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
+      {"id": "grant-depth-10-note", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]}),
+     "a note cites the depth-10 grant of a chain of ten delegated grants, so its chain has "
+     "ten links, two beyond the bound of 8; the parent at the tenth link, the root grant, is "
+     "present but itself invalid (E_KEY_VALIDITY). Step 1, first tier, at every link: "
+     "grant-depth-1 to grant-depth-10 are invalid E_GRANT_GRANTER (grant-depth-10's own "
+     "chain also has more than eight links, which step 7 would make E_GRANT_UNRESOLVED), and "
+     "so is the note. The invalid outcome beyond the bound is reported instead of the depth "
+     "code, as the S2-FIX1 Q5 walk intends"),
+):
+    declare(
+        "grant",
+        _name,
+        "container",
+        "container",
+        _verdict,
+        errors=tuple(sorted({code for record in _records for code in record["errors"]})),
+        build=lambda case_dir, _build=_build: _build(),
+        args=GRANT_ARGS,
+        records=_records,
+        notes="S2-FIX2 U2 (decision 2026-11-15 #22; Q6, §5.5.2 step 1 in two tiers): "
+        + _why + ".",
+    )
+
+
+# -- U4: the §12.2 1a rules for the string types (X.690 §8.23.5.3, Table 3,
+#    §8.23.10, §11.4, §8.23.5.4) and the date and IRI types (rejected).
+
+for _name, _identifier, _content, _verdict, _why in (
+    ("l2-ts-der-1a-printable-string-escape", b"\x13", b"A\x1b(BA", "invalid",
+     "13 05 41 1b 28 42 41: a PrintableString containing an escape sequence; X.690 "
+     "§8.23.5.3 and Table 3 allow no explicit escape sequence in a PrintableString"),
+    ("l2-ts-der-1a-ia5-string-escape", b"\x16", b"A\x1b(BA", "invalid",
+     "16 05 41 1b 28 42 41: an IA5String containing an escape sequence (X.690 §8.23.5.3, "
+     "Table 3: not allowed)"),
+    ("l2-ts-der-1a-visible-string-escape", b"\x1a", b"A\x1b(BA", "invalid",
+     "1a 05 41 1b 28 42 41: a VisibleString containing an escape sequence (X.690 "
+     "§8.23.5.3, Table 3: not allowed)"),
+    ("l2-ts-der-1a-numeric-string-escape", b"\x12", b"1\x1b(B1", "invalid",
+     "12 05 31 1b 28 42 31: a NumericString containing an escape sequence (X.690 "
+     "§8.23.5.3, Table 3: not allowed)"),
+    ("l2-ts-der-1a-utf8-string-escape", b"\x0c", b"\x1b(B", "invalid",
+     "0c 03 1b 28 42: a UTF8String containing an escape sequence; it is well-formed UTF-8, "
+     "but X.690 §8.23.10 forbids escape sequences in a UTF8String"),
+    ("l2-ts-der-1a-ia5-string-plain", b"\x16", b"A", "valid",
+     "16 01 41: an IA5String without an escape sequence (control)"),
+    ("l2-ts-der-1a-teletex-string-designation", b"\x14", b"\x1b(BA", "valid",
+     "14 04 1b 28 42 41: a TeletexString that designates registration 6 (ESC 2/8 4/2) as "
+     "G0. Table 3 designates registration 102 as the TeletexString G0, so registration 6 is "
+     "not currently designated and the designation is needed: X.690 §11.4 allows it, and "
+     "1a no longer rejects every ESC octet"),
+    ("l2-ts-der-1a-teletex-string-redundant-designation", b"\x14", b"\x1b(uA", "invalid",
+     "14 04 1b 28 75 41: a TeletexString that designates registration 102 (ESC 2/8 7/5) as "
+     "G0, where Table 3 already has it designated; X.690 §11.4 generates a designating "
+     "escape sequence only for an entry that is not currently designated"),
+    ("l2-ts-der-1a-teletex-string-not-smallest-set", b"\x14", b"\x1b)BA", "invalid",
+     "14 04 1b 29 42 41: a TeletexString that designates the 94-character registration 6 "
+     "into G1 (ESC 2/9 4/2); X.690 §11.4 designates into the smallest numbered G set that "
+     "has an escape sequence for the entry, and a 94-character set has one for G0"),
+    ("l2-ts-der-1a-general-string-designation-switch", b"\x1b", b"\x1b(uA\x1b(BA", "valid",
+     "1b 08 1b 28 75 41 1b 28 42 41: a GeneralString that designates registration 102 as G0, "
+     "then registration 6 again once it is no longer designated; each designation is of an "
+     "entry not currently designated (X.690 §11.4)"),
+    ("l2-ts-der-1a-teletex-string-incomplete-escape", b"\x14", b"A\x1b(", "invalid",
+     "14 03 41 1b 28: a TeletexString ending inside an escape sequence (an intermediate "
+     "octet without a final octet, ISO/IEC 2022 and X.690 §8.23.5)"),
+    ("l2-ts-der-1a-graphic-string-announcer", b"\x19", b"\x1b AA", "invalid",
+     "19 04 1b 20 41 41: a GraphicString beginning with the announcer ESC 2/0 4/1; X.690 "
+     "§8.23.5.4 does not allow announcers unless the user of ASN.1 permits them, and no "
+     "module of check 1 does"),
+    ("l2-ts-der-1a-date-time-rejected", b"\x1f\x21", b"2026-11-15T00:00:00", "invalid",
+     "1f 21 13 '2026-11-15T00:00:00': a DATE-TIME (universal 33) with well-formed "
+     "contents, rejected like TIME and DURATION"),
+    ("l2-ts-der-1a-time-of-day-rejected", b"\x1f\x20", b"00:00:00", "invalid",
+     "1f 20 08 '00:00:00': a TIME-OF-DAY (universal 32) with well-formed contents, rejected "
+     "like TIME and DURATION"),
+    ("l2-ts-der-1a-relative-oid-iri-rejected", b"\x1f\x24", b"a", "invalid",
+     "1f 24 01 'a': a RELATIVE-OID-IRI (universal 36) with well-formed contents, rejected "
+     "like TIME and DURATION"),
+):
+    _expected = _S2_VALID_L2 if _verdict == "valid" else _W3_SCHEMA_EXPECTED
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        _verdict,
+        build=lambda case_dir, _identifier=_identifier, _content=_content: _crafted_l2_files(
+            case_dir,
+            tsr_factory=lambda imprint: _x1_resigned(_x1_unsigned_value(_identifier, _content))(
+                _crafted_tsr(imprint)
+            ),
+        ),
+        notes="S2-FIX2 U4 (decision 2026-11-15 #22; §12.2 1a table): the receipt gains one "
+        "unregistered unsigned attribute (an open type, judged by its framing and the "
+        "universal rules of 1a only) whose value is " + _why + ". The receipt is otherwise "
+        "fully re-signed with the test TSA key.",
+        **_expected,
+    )
+
+
+# -- U5: every manifest signature entry is judged; an entry of a declared key
+#    whose equation fails is E_MANIFEST_SIG_INVALID even beside an undeclared key.
+
+_FIX2_UNKNOWN_FIRST = "ed25519:" + "00" * 16
+_FIX2_UNKNOWN_LAST = "ed25519:" + "ff" * 16
+
+
+def _fix2_manifest_sig_files(*, unknown_key: str, forge: bool) -> dict[str, bytes]:
+    def mutator(sigfile: dict[str, Any]) -> dict[str, Any]:
+        genuine = dict(sigfile["signatures"][0])
+        if forge:
+            genuine["value"] = keyutil.b64url_encode(_tampered_signature_value(genuine["value"]))
+        unknown = {"alg": "ed25519", "key": unknown_key, "value": genuine["value"]}
+        entries = sorted([genuine, unknown], key=lambda entry: entry["key"])
+        return {**sigfile, "signatures": entries}
+
+    return _wrap_internal(mutate_sigfile(recordlib.build_container(SIMPLE_RECORDS()), mutator))
+
+
+for _name, _unknown, _forge, _verdict, _code, _records, _why in (
+    ("manifest-sig-invalid-beats-unknown-key", _FIX2_UNKNOWN_FIRST, True, "invalid",
+     "E_MANIFEST_SIG_INVALID", [],
+     "the manifest signatures are two ed25519 entries in key order: first an undeclared key "
+     "ed25519:00…00, then human-1, whose value has one bit flipped. The human-1 entry is "
+     "judged although the first entry's key is undeclared, and its failed equation is "
+     "invalid: E_MANIFEST_SIG_INVALID, the pipeline stops at step (5)"),
+    ("manifest-sig-invalid-before-unknown-key", _FIX2_UNKNOWN_LAST, True, "invalid",
+     "E_MANIFEST_SIG_INVALID", [],
+     "the order control of manifest-sig-invalid-beats-unknown-key: the forged human-1 entry "
+     "comes first and the undeclared key ed25519:ff…ff second; the outcome does not depend "
+     "on the entry order"),
+    ("manifest-sig-unknown-key-beside-valid-entry", _FIX2_UNKNOWN_FIRST, False, "unverifiable",
+     "E_KEY_UNKNOWN", [{"id": "key-declared-human-1", "verdict": "valid", "errors": []}],
+     "control: the same two entries with the genuine human-1 signature. No entry is "
+     "invalid, so the undeclared key decides: E_KEY_UNKNOWN (unverifiable), and the record "
+     "pipeline still runs"),
+):
+    declare(
+        "container",
+        _name,
+        "container",
+        "container",
+        _verdict,
+        errors=(_code,),
+        build=lambda case_dir, _unknown=_unknown, _forge=_forge: _fix2_manifest_sig_files(
+            unknown_key=_unknown, forge=_forge
+        ),
+        args=("--keys", "@keyset"),
+        records=_records,
+        notes="S2-FIX2 U5 (decision 2026-11-15 #22 by principle, as S2-FIX1 T2 for record "
+        "signatures; §11.3): " + _why + ".",
+    )
+
+
+# -- U7: N_READABLE_PRESENT is not reported only when the archive fails before its
+#    entries are enumerated (phases 1-4 of the zip check order).
+
+declare(
+    "container",
+    "readable-not-reported-after-central-directory-failure",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: {"container.zip": _zip_readable_extra("readable/notes.txt") + b"\x00"},
+    args=("--keys", "@keyset"),
+    records=[],
+    notices_absent=("N_READABLE_PRESENT",),
+    notes="S2-FIX2 U7 (decision 2026-11-15 #22; §11.8, §11.9, §14.6): the archive has a "
+    "readable/notes.txt entry and one octet after its end-of-central-directory record, so "
+    "phase 1 of the zip check order fails (the EOCD record does not end at the last input "
+    "byte): E_CONTAINER_ZIP. No entry was enumerated, so the readable/ entry was never "
+    "observed and N_READABLE_PRESENT is not reported (control for "
+    "readable-reported-after-member-crc-failure).",
 )
 
 
