@@ -441,10 +441,11 @@ fn placeholder_format_of_another_type_is_body_schema() {
     );
 }
 
-/// §10.3 (H1-S2 differential fuzzing): the cross-checks apply "when both
-/// the placeholder and its erasure record are present". The container of
-/// `erasure/actor-agent-grant-absent` without its placeholder has no §10.3
-/// code; with the placeholder (the committed case) rule 1 holds as well.
+/// §10.3 (S2-FIX3/F80): rule 1 is evaluated for a valid erasure record and
+/// for one a placeholder names. The erasure record of
+/// `erasure/actor-agent-grant-absent` is unverifiable (its grant is absent);
+/// without its placeholder no placeholder names it, so it is judged by its
+/// own verdict only and the container has no §10.3 code.
 #[test]
 fn erasure_without_placeholder_has_no_cross_check_code() {
     let source = vectors_root().join("erasure/actor-agent-grant-absent/container/records");
