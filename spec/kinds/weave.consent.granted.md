@@ -41,7 +41,11 @@ parent specification.
 ## Semantic rules
 
 1. **Validity window ordering.** When `valid_until` is not `null`, `valid_from` MUST be less
-   than or equal to `valid_until`; otherwise `E_CONSENT_VALIDITY` (invalid) [H3].
+   than or equal to `valid_until`; otherwise `E_CONSENT_VALIDITY` (invalid) [H3]. The rule
+   reads only the record, so it is decided after the `actor.type` rule and **before** the
+   signer rule of the envelope requirements (`E_ACTOR_KEY_TYPE_MISMATCH` for a wrong signer)
+   and before any §4.4 step-5 outcome (parent specification §14.5) [S2-FIX1/Q3] decided
+   (Inceptless decision 2026-11-15 #13; Q3).
 2. **Signed claim.** The consent is a claim by the signing actor that the described consent
    was given. The verifier checks consistency, signatures and grammar; it does not prove that
    a real person was informed, nor that the terms are lawful (parent specification §8.8).

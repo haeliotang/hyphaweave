@@ -3023,6 +3023,25 @@ only for an `accepted` record whose verdict is `valid`; the unverifiable branche
 only their outcome (§4.4) [S7①][S8⑭][Q31][Q13] decided (Inceptless decision 2026-11-11 #2;
 S7/S8/F6; 2026-11-10 #34; Q13/Q31).
 
+**Order inside steps (7) and (9).** Inside step (7) of a signer-constrained kind the rules
+run in this order: first the kind's rules that read only the record itself, in the order of
+its kind page (for example `actor.type`, the consent window `E_CONSENT_VALIDITY`, a grant
+variant's window `E_KEY_VALIDITY`, a declaration's `body.key`/`public_key` agreement); then
+the kind's signer rule, which reports the dedicated code of §4.4 step 4 (invalid); then the
+rules that consult other records (a declaration's governing class and owner, the
+delegated-grant chain of §5.5.2, an erasure's authorising grant, a consent revocation's
+target). A signer rule whose signers are defined by another record follows the lookup of
+that record: a grant revocation's allowed revokers (§5.5.4), a revocation's human or
+organization signers, a declaration's owner cosignature and its trust (§5.3, §9.1). When
+§4.4 step 5 applies — no known-algorithm signature by a declared key exists at all — the
+signer rules, and the rules that need a verified signature (trust through a cosignature),
+are not evaluated: their outcome is the step-5 code, and it is reported only when every
+other rule of the kind's step (7) passes, so an invalid outcome (or an `unverifiable`
+grant-chain or trust outcome) of another rule is reported instead. A record that fails a
+check of step (9) reports only that outcome: the notice `N_LABEL_PROPAGATION_UNCHECKED` of
+the same step is not reported for it, as for any check that is not run after the first
+failure [S2-FIX1/Q3] decided (Inceptless decision 2026-11-15 #13; Q3).
+
 Per container: (1) entry enumeration/safety; (2) manifest parse/canonical form;
 (3) manifest structure; (4) manifest digest; (5) manifest signature; (6) level/chain
 structure completeness; (7) records listing and per-record verification; (8) cross-record

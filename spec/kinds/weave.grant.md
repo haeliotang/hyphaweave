@@ -86,8 +86,13 @@ authority comes from the signer and no parent grant is required (§8.2).
 
 ### Delegated sub-grant chain
 
-Checks on a delegated sub-grant, in fixed order (the first failure is the record's single
-error; the exact code precedence is PROVISIONAL, see the parent specification Appendix A):
+The granter signer rule (`E_GRANT_GRANTER` when `sigs` has a verified signature but none by
+`actor.key`) is decided after the grant variant's own window rule (`E_KEY_VALIDITY`) and
+before every check below, whose outcomes can be `unverifiable`; a §4.4 step-5 outcome waits
+until all of them have passed (parent specification §14.5) [S2-FIX1/Q3] decided (Inceptless
+decision 2026-11-15 #13; Q3). Checks on a delegated sub-grant, in fixed order (the first
+failure is the record's single error; the exact code precedence is PROVISIONAL, see the
+parent specification Appendix A):
 
 1. **Resolve.** Parent reference unresolvable, or parent verdict invalid → `E_GRANT_UNRESOLVED`
    (unverifiable).
