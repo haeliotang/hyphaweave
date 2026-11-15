@@ -1,0 +1,1 @@
+{"category":"sig","errors":["E_ENV_SIGS"],"id":"sig/ed25519-value-wrong-json-type","input":"record.json","notes":"S2/F67 (§4.3): a sigs entry member present with the wrong JSON type is a structural defect of the entry's closed shape, E_ENV_SIGS; the per-member codes (E_ENV_SIG_VALUE here) apply only to the grammar of a string member.","target":"record","verdict":"invalid"}
