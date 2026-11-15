@@ -257,9 +257,15 @@ def check_grant_semantics(
     digest: str,
     context: GrantContext,
     verified_signature_keys: frozenset[str] = frozenset(),
-    signer_error: Callable[[str], WeaveError] | None = None,
+    signer_error: Callable[[str], WeaveError | None] | None = None,
+    granter_check: Callable[[], None] | None = None,
 ) -> GrantRecord | GrantRevocationRecord:
-    """Cross-record semantic checks for a ``weave.grant`` record."""
+    """Cross-record semantic checks for a ``weave.grant`` record.
+
+    ``granter_check`` is the granter signer rule of an ``action == "grant"``
+    record; it runs after the grant's own body rule (``E_KEY_VALIDITY``) and
+    before any delegated-chain check (S2-FIX1 Q3, F55-1).
+    """
     body = envelope.body
     action = body["action"]
     if action == "revoke":
@@ -272,6 +278,8 @@ def check_grant_semantics(
         valid_until
     ):
         raise WeaveError("E_KEY_VALIDITY", "grant valid_from is after valid_until")
+    if granter_check is not None:
+        granter_check()
     if envelope.actor_type in ("human", "organization"):
         return grant  # root grant
     # Delegated sub-grant: steps 1-8 at the sub-grant's recorded_at.
@@ -289,7 +297,7 @@ def _check_grant_revocation(
     digest: str,
     context: GrantContext,
     verified_signature_keys: frozenset[str],
-    signer_error: Callable[[str], WeaveError] | None = None,
+    signer_error: Callable[[str], WeaveError | None] | None = None,
 ) -> GrantRevocationRecord:
     """Semantic checks for a grant-revocation record."""
     revoke = envelope.body["revoke"]
@@ -310,8 +318,18 @@ def _check_grant_revocation(
     signature_keys = frozenset(signature.key for signature in envelope.sigs)
     if not allowed & verified_signature_keys:
         if signer_error is not None:
-            # §4.4 steps 4-5 (S2/F46).
-            raise signer_error("E_GRANT_REVOKE_SIGNER")
+            # §4.4 steps 4-5 (S2/F46); a step-5 outcome is held back to the end
+            # of step (7) by the caller (S2-FIX1 Q3), signalled by ``None``.
+            error = signer_error("E_GRANT_REVOKE_SIGNER")
+            if error is not None:
+                raise error
+            return GrantRevocationRecord(
+                digest=digest,
+                actor_key=envelope.actor_key,
+                effective_at=revoke["effective_at"],
+                target_digest=target_grant.digest,
+                envelope=envelope,
+            )
         candidate_unknown = any(
             key in allowed
             and any(

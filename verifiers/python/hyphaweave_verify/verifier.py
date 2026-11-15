@@ -23,7 +23,7 @@ import os
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from . import ed25519, encoding, envelope as envelope_module, erase, grammar, kinds, labels, refs
 from . import keys as keys_module
@@ -35,6 +35,8 @@ from .grants import (
     GrantState,
     check_agent_authorization,
     check_grant_semantics,
+    grant_record_from_envelope,
+    validate_grant_chain,
 )
 from .keys import (
     KeyDeclaration,
@@ -133,6 +135,10 @@ class RecordView:
     #: for the record to be admitted at all (S2-FIX1 T1, Q2).
     admitted_declaration: KeyDeclaration | None = None
     admitted_rotation: KeyRotation | None = None
+    #: S2-FIX1 Q3 (§4.4 step 5, §14.5): the step-5 outcome of the first signer
+    #: rule of a signer-constrained kind, held back until every other rule of
+    #: the kind's step (7) has passed.
+    deferred_signer_error: WeaveError | None = None
 
     @property
     def subject_key(self) -> tuple[str, str, str] | None:
@@ -777,6 +783,30 @@ def _resolve_signing_key(
     return (None, False)
 
 
+def _signer_rule_error(
+    view: RecordView,
+    envelope: envelope_module.Envelope,
+    context: Context,
+    code: str,
+    required: Iterable[str] | None = None,
+) -> WeaveError | None:
+    """The outcome of a failed signer rule of a signer-constrained kind.
+
+    §4.4 step 4 (some known-algorithm declared-key signature verified): the
+    dedicated *code*, reported where the signer rule sits. §4.4 step 5 (none
+    at all): S2-FIX1 Q3 holds the unverifiable outcome back until every other
+    rule of the kind's step (7) has passed, so ``None`` is returned (the rule
+    is not evaluated further) and the first such outcome is remembered on the
+    view; :func:`_check_kind_semantics` reports it last.
+    """
+    error = signer_obligation_error(view, envelope, context, code, required)
+    if view.verified_keys:
+        return error
+    if view.deferred_signer_error is None:
+        view.deferred_signer_error = error
+    return None
+
+
 def _require_valid_signer(
     view: RecordView, context: Context, key: str, code: str
 ) -> None:
@@ -784,11 +814,15 @@ def _require_valid_signer(
 
     A missing signature uses the kind's dedicated code; a present but
     unverifiable one (unknown algorithm only) is unverifiable: E_KEY_UNKNOWN
-    when the key is undeclared, E_SIG_UNVERIFIABLE otherwise.
+    when the key is undeclared, E_SIG_UNVERIFIABLE otherwise, reported after the
+    kind's other step-(7) rules (S2-FIX1 Q3).
     """
     if key in view.verified_keys:
         return
-    raise signer_obligation_error(view, view.envelope, context, code, (key,))
+    assert view.envelope is not None
+    error = _signer_rule_error(view, view.envelope, context, code, (key,))
+    if error is not None:
+        raise error
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +835,25 @@ def _check_kind_semantics(
     envelope: envelope_module.Envelope,
     context: Context,
 ) -> None:
+    _check_kind_rules(view, envelope, context)
+    if view.deferred_signer_error is not None:
+        # S2-FIX1 Q3 (§4.4 step 5): every other rule of step (7) passed.
+        raise view.deferred_signer_error
+
+
+def _check_kind_rules(
+    view: RecordView,
+    envelope: envelope_module.Envelope,
+    context: Context,
+) -> None:
+    """Step (7) rules of the eight registered kinds (see :func:`_check_kind_semantics`).
+
+    Inside a signer-constrained kind the order is (S2-FIX1 Q3, §14.5): the
+    kind's rules that read only the record itself, then the signer rule (the
+    dedicated code of §4.4 step 4), then the rules that consult other records;
+    a signer rule whose signer set is defined by another record follows the
+    lookup of that record.
+    """
     digest = view.digest or ""
     kind = envelope.kind
     if kind == kinds.KIND_DECLARED:
@@ -814,7 +867,7 @@ def _check_kind_semantics(
             record_digest=digest,
             context=context,
             source=view.loaded.source,
-            signer_error=lambda code: signer_obligation_error(
+            signer_error=lambda code: _signer_rule_error(
                 view, envelope, context, code, (envelope.body.get("key"),)
             ),
         )
@@ -842,15 +895,20 @@ def _check_kind_semantics(
             recorded_at=envelope.recorded_at,
             record_digest=digest,
             verification_context=revocation_context,
-            signer_error=lambda code: signer_obligation_error(view, envelope, context, code),
+            signer_error=lambda code: _signer_rule_error(view, envelope, context, code),
         )
     elif kind == kinds.KIND_GRANT:
+        # S2-FIX1 Q3 (F55-1): the granter signer rule follows the grant's own
+        # body rule (E_KEY_VALIDITY) and precedes the delegated-chain checks,
+        # whose outcomes can be unverifiable (invalid first).
         state = check_grant_semantics(
             envelope, digest, context, view.verified_keys,
-            signer_error=lambda code: signer_obligation_error(view, envelope, context, code),
+            signer_error=lambda code: _signer_rule_error(view, envelope, context, code),
+            granter_check=lambda: _require_valid_signer(
+                view, context, envelope.actor_key, "E_GRANT_GRANTER"
+            ),
         )
         if isinstance(state, GrantRecord):
-            _require_valid_signer(view, context, envelope.actor_key, "E_GRANT_GRANTER")
             view.grant_record = state
         else:
             view.grant_revocation = state
@@ -860,14 +918,16 @@ def _check_kind_semantics(
                 "E_ACTOR_KEY_TYPE_MISMATCH",
                 "consent.granted actor.type must be human or organization",
             )
-        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")
         from .times import timestamp_sort_key
 
+        # S2-FIX1 Q3 (F69-2): the consent window is a rule of the record itself
+        # and precedes the signer rule.
         valid_until = envelope.body["valid_until"]
         if valid_until is not None and timestamp_sort_key(
             envelope.body["valid_from"]
         ) > timestamp_sort_key(valid_until):
             raise WeaveError("E_CONSENT_VALIDITY", "consent valid_from is after valid_until")
+        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")
     elif kind == kinds.KIND_CONSENT_REVOKED:
         if envelope.actor_type not in ("human", "organization"):
             raise WeaveError(
@@ -896,51 +956,102 @@ def _check_kind_semantics(
             effective_at=envelope.body["effective_at"],
         )
     elif kind == kinds.KIND_ERASURE:
-        _check_erasure_actor(envelope, context)
-        _require_valid_signer(view, context, envelope.actor_key, "E_ERASE_ACTOR")
+        _check_erasure_actor(
+            envelope,
+            context,
+            signer_check=lambda: _require_valid_signer(
+                view, context, envelope.actor_key, "E_ERASE_ACTOR"
+            ),
+        )
 
 
-def _check_erasure_actor(envelope: envelope_module.Envelope, context: Context) -> None:
-    """Erasure signer rules (M-10): human/organization, or granted agent/program."""
+_GRANT_ESTABLISHMENT_CODES = ("E_GRANT_UNRESOLVED", "E_GRANT_EXPIRED", "E_GRANT_REVOKED")
+
+
+def _erasure_grant_envelope(
+    reference: refs.Reference, context: Context
+) -> tuple[envelope_module.Envelope, str]:
+    """Resolve an erasure's authorising grant record (S2-FIX1 Q1, F47).
+
+    A grant record that is present but itself ``invalid`` is a disallowed
+    signer basis: ``E_ERASE_ACTOR`` (invalid). A grant that cannot be
+    established (absent, or present but not valid for any other reason) is
+    ``E_GRANT_UNRESOLVED`` (unverifiable).
+    """
+    resolution = context.resolve(reference)
+    if resolution.state != refs.FOUND or resolution.target is None:
+        target = resolution.target
+        if target is not None and target.verdict == "invalid":
+            raise WeaveError(
+                "E_ERASE_ACTOR", "the authorising grant is present but itself invalid"
+            )
+        raise WeaveError("E_GRANT_UNRESOLVED", "the authorising grant cannot be established")
+    target = resolution.target
+    target_envelope = getattr(target.record, "envelope", None)
+    if (
+        target.kind != kinds.KIND_GRANT
+        or target_envelope is None
+        or target_envelope.body.get("action") != "grant"
+    ):
+        raise WeaveError("E_ERASE_ACTOR", "the erasure basis is not an authorising grant")
+    return target_envelope, target.computed_digest or ""
+
+
+def _check_erasure_actor(
+    envelope: envelope_module.Envelope,
+    context: Context,
+    *,
+    signer_check: Callable[[], None],
+) -> None:
+    """Erasure signer rules (M-10): human/organization, or granted agent/program.
+
+    Order (S2-FIX1 Q1/Q3, §14.5 step (7)): the rules that read only the record
+    (an agent without ``actor.grant``, a program/device without ``basis``:
+    ``E_ERASE_ACTOR``), then the signer rule (``signer_check``), then the
+    authorising grant: present but itself invalid, or not covering the
+    erasure, is ``E_ERASE_ACTOR`` (invalid); a grant that cannot be
+    established (absent, outside its window, revoked, chain too deep) gives the
+    grant codes (unverifiable), the chain being judged last.
+    """
     actor_type = envelope.actor_type
     if actor_type in ("human", "organization"):
+        signer_check()
         return
     if actor_type == "agent":
         if envelope.actor_grant is None:
             raise WeaveError("E_ERASE_ACTOR", "agent erasure requires a grant")
+        signer_check()
+        grant_envelope, grant_digest = _erasure_grant_envelope(envelope.actor_grant, context)
+        grant = grant_record_from_envelope(grant_envelope, grant_digest)
+        if grant.grantee_key != envelope.actor_key:
+            raise WeaveError("E_ERASE_ACTOR", "the grant is not for this actor")
+        if (
+            kinds.KIND_ERASURE not in grant.kind_names
+            or "accept" not in grant.actions
+            or "erase" not in grant.actions
+        ):
+            raise WeaveError("E_ERASE_ACTOR", "agent erasure is not covered by an erase grant")
         try:
-            check_agent_authorization(envelope, context)
+            validate_grant_chain(grant, context, envelope.recorded_at, depth=0, seen=frozenset())
         except WeaveError as error:
+            if error.code in _GRANT_ESTABLISHMENT_CODES:
+                raise
             raise WeaveError(
                 "E_ERASE_ACTOR", "agent erasure is not covered by an erase grant"
             ) from error
-        grant = context.resolve(envelope.actor_grant)
-        if grant.target is not None:
-            target_envelope = getattr(grant.target.record, "envelope", None)
-            if target_envelope is not None:
-                grant_body = target_envelope.body.get("grant", {})
-                if "erase" not in grant_body.get("actions", ()):
-                    raise WeaveError("E_ERASE_ACTOR", "grant does not allow erase")
         return
     # program/device: body.basis must reference a valid grant covering the actor
     # key with the erase action.
     basis = envelope.body.get("basis")
     if basis is None:
         raise WeaveError("E_ERASE_ACTOR", "program/device erasure requires a basis grant")
+    signer_check()
     reference = refs.validate_reference(basis)
-    resolution = context.resolve(reference)
-    if resolution.state != refs.FOUND or resolution.target is None:
-        raise WeaveError("E_ERASE_ACTOR", "basis grant cannot be resolved")
-    target = resolution.target
-    if target.kind != kinds.KIND_GRANT:
-        raise WeaveError("E_ERASE_ACTOR", "basis does not reference a grant")
-    target_envelope = getattr(target.record, "envelope", None)
-    if target_envelope is None or target_envelope.body.get("action") != "grant":
-        raise WeaveError("E_ERASE_ACTOR", "basis does not reference an authorising grant")
-    grant = target_envelope.body["grant"]
-    if grant["grantee"]["key"] != envelope.actor_key:
+    target_envelope, _digest = _erasure_grant_envelope(reference, context)
+    grant_body = target_envelope.body["grant"]
+    if grant_body["grantee"]["key"] != envelope.actor_key:
         raise WeaveError("E_ERASE_ACTOR", "basis grant is not for this actor")
-    if "erase" not in grant["actions"] or "weave.erasure" not in grant["kinds"]:
+    if "erase" not in grant_body["actions"] or "weave.erasure" not in grant_body["kinds"]:
         raise WeaveError("E_ERASE_ACTOR", "basis grant does not allow erase")
 
 
@@ -998,8 +1109,12 @@ def _check_actor_and_authorization(
 def _check_labels(
     view: RecordView, envelope: envelope_module.Envelope, context: Context
 ) -> None:
-    view.notices.extend(labels.check_label_propagation(envelope, context))
-    view.notices.extend(labels.check_consent_reference(envelope, context))
+    # S2-FIX1 Q3 (F55-3, §14.5): a record that fails in step (9) reports only
+    # its outcome, so the propagation notice is kept only when step (9) passes.
+    propagation_notices = labels.check_label_propagation(envelope, context)
+    consent_notices = labels.check_consent_reference(envelope, context)
+    view.notices.extend(propagation_notices)
+    view.notices.extend(consent_notices)
 
 
 def _check_references(
@@ -1069,6 +1184,7 @@ def _attempt_record_pass(view: RecordView, context: Context, *, own_effects: boo
     view.grant_record = None
     view.grant_revocation = None
     view.consent_revocation = None
+    view.deferred_signer_error = None
     try:
         value = view.loaded.value
         if value is None:
