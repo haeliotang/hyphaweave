@@ -64,6 +64,12 @@ candidate regression vectors, and the gate-3 allow list is empty.
   symmetrically); every `format` defect of a placeholder is `E_KIND_BODY_SCHEMA`;
   an unlisted `.tsr` with no listed receipt leaves no timestamp evidence for §9.4; trust
   is not handed on through a declaration that supplies no material (Q2).
+- **S2-FIX3** (decision 2026-11-16 #1): a rotation without `new_public_key` is
+  `E_KEY_ROTATION_KEYS` before key resolution (F74); the consent signer is `actor.key`
+  (F81); §10.3 rule 1 for every valid erasure record and every one a placeholder names, a
+  missing or malformed placeholder being `E_ERASE_DIGEST_MISMATCH` (F80); a declaration
+  with any other signature that does not pass supplies no material and never keeps itself
+  trusted (F72); `L_LABELS_ARE_CLAIMS` from the record as parsed (F78).
 - **Gate 3**: `verifiers/rust/scripts/gate3_known_differences.json` is empty again.
 
 ## S2 round, revision 3 (S2-FIX3) — 2026-11-16 — DRAFT, UNRELEASED

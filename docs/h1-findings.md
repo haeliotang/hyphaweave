@@ -2148,23 +2148,84 @@ the seed being the `seed` of the JSONL line.
 The S2-FIX2 rows (the DATE / OID-IRI types, `N_READABLE_PRESENT` after a member CRC
 failure) differed only because the Rust verifier already followed S2-FIX2.
 
+### S2-FIX3 dispositions and the Rust follow-up (decision 2026-11-16 #1)
+
+S2-FIX3 settled F70–F82 by principle (invalid first, the specification's own text) and
+added 27 vectors (689 → 716). The rows below record the ruling and what the Rust
+verifier changed; where the ruling went the other way from the reading above, the ruling
+governs and the finding text above records only the history.
+
+| finding | S2-FIX3 ruling | Rust |
+|---|---|---|
+| F70 | §1.9 states the H1-S2 reading | none |
+| F71 | §14.1 states the H1-S2 reading | none |
+| F72 | §5.3: a declaration with any other signature that does not pass — unresolved key, failed equation, failed §9.4 — supplies no material of any kind, and a declaration never keeps itself trusted | **changed**: declaration admission now requires every non-subject signature to verify and pass §9.4, and a declaration whose admission depends on itself is not admitted (F83); "already trusted" excludes the declaration itself — no vector or probe makes that last change observable (`key-lifecycle/declaration-undeclared-cosigner-supplies-no-material`, `declaration-invalid-cosignature-supplies-no-material`) |
+| F73 | §9.1: an owner resolves only through a structurally valid declaration (`E_KEY_UNKNOWN`) | none (already) |
+| F74 | §9.2: a rotation without `new_public_key` is `E_KEY_ROTATION_KEYS` before key resolution, `sigs` `[]` — the reference's reading, not the H1-S2 one | **changed** (`key-lifecycle/rotation-new-public-key-missing`, `-renamed`) |
+| F75 | §11.9: layout and member failures of step (1) together | none (already) |
+| F76, F77, F79 | the H1-S2 reading | none (already) |
+| F78 | §14.9: the limitations are facts about the records as parsed (`labels` member, `kind` `weave.erased`), whether or not they then pass | **changed** for `L_LABELS_ARE_CLAIMS` (`labels/labels-on-record-failing-envelope`, `container/labels-on-record-failing-envelope`); `L_ERASED_*` already counted the parsed `kind` |
+| F80, F82, sigs-absent erasure record | §10.3: only structurally valid erasure records count; rule 1 for every valid erasure record and every one a placeholder names, a missing or malformed placeholder being `E_ERASE_DIGEST_MISMATCH` | **changed** for F80 (`erasure/erasure-without-placeholder`, `placeholder-malformed-only`); F82 and the sigs-absent record already |
+| F81 | consent pages: the required signer is `actor.key` — the reference's reading, not the H1-S2 one | **changed** (`actor/consent-signed-by-other-human-key`) |
+
+### F83 — Manifest material from a declaration whose other signature fails (§5.3, F72)
+
+Differential fuzzing against S2-FIX3 (`container/previous-device-key-target-context`,
+`bitflip`, seed 2127511279114156445 in the 151115 plan): one bit of the device declaration's
+`owner` changes, so its record digest changes and both its self-signature and the owner's
+cosignature fail their equations. The manifest is signed by the device key. Rust: the
+declaration supplies no material (§5.3 as S2-FIX3 states it: "no material of any kind"),
+so the manifest key is unknown (`E_KEY_UNKNOWN` beside the listing's
+`E_MANIFEST_RECORD_DIGEST`). The reference verifies the manifest with that declaration's
+material (`L_KEY_TRUST_TOFU`, no `E_KEY_UNKNOWN`). Reference suspected wrong: the manifest
+signature resolves its key "through a declaration" (§11.3, F41) only as far as §5.3 lets a
+declaration supply material. The same pass found and fixed a Rust defect: in a
+cosignature cycle (two declarations that only cosign each other) Rust admitted the cycle;
+it now admits no declaration whose admission depends on itself, as the reference does
+(`tests/s2_followup.rs`, `key-lifecycle/nonmonotonic-closure-class-conflict`, `base64`,
+seed 1272873396464227438).
+
+### F84 — The TOFU predicate on key-lifecycle records (§14.9), report detail only
+
+Two report-detail differences remain against S2-FIX3 (seed 151115 plan, conclusions
+equal): `key-lifecycle/declaration-duplicate-earliest` with `body.key` deleted from the
+first declaration (`member_delete`, 4256477586932129590) — its entry by the actor key gets
+context material from the second declaration and fails its equation; Rust reports
+`N_KEY_TOFU` on it ("a record signature check is context-trusted as soon as context
+material is used for it, even when its equation then fails"), the reference does not. And
+`container/previous-key-not-trusted-in-target` with the owner declaration's `sigs` deleted
+(`member_delete`, 941868555482201572) — the reference reports `L_KEY_TRUST_TOFU` for the
+owner cosignature on the device declaration, Rust does not (it has counted a cosignature on
+a key-lifecycle record by a key other than `actor.key` as no TOFU since H1, F33). §14.9 does
+not say whether a key-lifecycle record's cosignatures and a declaration's check of its own
+key take part in the predicate; spec-ambiguous, a sentence would settle it.
+
+### Python job step red at `23fc0f6` (not a Rust matter)
+
+`python tools/check_schemas.py` exits 1 on the S2-FIX3 vectors: "positive record:
+refs[1] duplicates refs[0] (same rel and target origin/id/digest)" (2 problems) — the
+schema self-check still treats two `refs` entries that differ only in `kind` as
+duplicates, the reading S2-FIX3/F76 withdrew. Every other step of the Python job exits 0.
+`tools/` is outside this branch's remit, so it is left to the S2 workstream.
+
 ## H1-S2 gate results
 
-Recorded 2026-11-16 on branch `r2/rust-s2`. Code at `d648268` (`f1a8bd6` adds documentation
-only), after merging `origin/main` `3712151` and `s2/spec-revision` up to `b7baea7`
-(S2-FIX2b; 689 main cases, 202 frozen). The reference verifier ran only as a black box,
-installed non-editable from this branch's `verifiers/python`. `CARGO_TARGET_DIR` was outside
-the repository, so the crash-fuzz `--binary` follows it and gate 3 gets
-`--rust-binary`/`--python-cli`; the Python job used the non-editable install (CI uses
-`-e`); rustup stable 1.100.0.
+Recorded 2026-11-16 on branch `r2/rust-s2`. Code at `e7d2b77`, after merging `origin/main`
+`3712151` and `s2/spec-revision` up to `23fc0f6` (S2-FIX3; 716 main cases, 202 frozen).
+The reference verifier ran only as a black box, installed non-editable from this branch's
+`verifiers/python`. `CARGO_TARGET_DIR` was outside the repository, so the crash-fuzz
+`--binary` follows it and gate 3 gets `--rust-binary`/`--python-cli`; the Python job used
+the non-editable install (CI uses `-e`); rustup stable 1.100.0. Earlier full runs on the
+S2-FIX2 (`a2bc89d`, `de7bcb0`) and S2-FIX2b (`69d551f`, `d648268`) heads passed in the
+same way (684 and 689 main cases; gate 3 886 and 891 identical).
 
 | gate | result |
 |---|---|
-| 1. CI, both jobs, from the repository root | Python job (on `69d551f`, the Python, tools and vectors of `b7baea7`): all 16 steps exit 0 — generators `--check`, pytest 412 passed 1 skipped, vectors 689/689, SHA256SUMS (712 files) and `CHECK_FROZEN: PASS`, frozen 202/202, schemas, external, ablation (315 mutations, 280 killed, 25 documented equivalent, 0 unpinned, 0 catalogue errors), byte-flip (430,350 mutants, 0 survivors), crash fuzz (1,956 mutants, 0 crashes), spec examples, REUSE 3.3. Rust job (on `d648268`): fmt, clippy all targets, clippy library, `cargo test --workspace` (17 test binaries, 119 passed, 0 failed, 3 ignored), both `vectors` runs, `cargo deny check`, `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz, gate 3: every step exit 0. The first full run (on `a2bc89d`) had `cargo test` red in `tests/external_l2.rs`: the S2 vector `integrity-levels/l2-unlisted-receipt-file` (an unlisted `.tsr`) was replayed as a profile case although its outcome is container-level; fixed in `de7bcb0` |
-| 2. vectors | Rust 689/689 main and 202/202 frozen (also 656/656 before the S2-FIX2 merge and 684/684 between the merges) |
-| 3. two-implementation comparison | allow list empty; 891 cases (689 + 202), 891 byte-identical, PASS |
-| 4. red checks | every change class removed on its own turns red and is restored (`cmp` equal, then `touch`): F61-3, Q2 (declaration, rotation, second order), T2 (code order; `N_KEY_UNDECLARED` through gate 3), Q1 (tier, order), Q3 (grant, declaration), F69-3, Q4 (RSA call site; ECDSA function by its unit test), T3 (REAL, RELATIVE-OID, TIME/DURATION, ESC, string units), the anchor walk, review A low-1 (JSON shape, keyset declaration ignored, keyset material first), S2-FIX2 (U1, U2 parent and cited, U4 re-designation, smallest set, announcer, incomplete escape, ESC in the five plain types, the date and IRI types; U5; U7), S2-FIX2b (equation before §9.4, §9.4 before an undeclared key) and the four differential-fuzzing fixes. Not red because no vector or test reaches them: the step-5 deferral of a consent revocation (Q3) and the ECDSA bound at the P-256 call site (the curve crate rejects the same signatures) |
-| 5. differential fuzzing | `scripts/diff_fuzz.py`, 10 classes × 400, final binary (`d648268`), merged repository: seed **151115** 3,748 mutants, 3,710 byte-identical, 14 conclusion differences (F77 2, F79 2, F80 5, F82 1, sigs-absent erasure record 4) and 24 report-detail differences (F78: 13 `input` identities, 11 limitation lists); seed **777001** 3,780 mutants, 3,737 byte-identical, 15 conclusion differences (F74 3, F79 3, F80 8, F82 1) and 28 report-detail differences (F78: 16 `input`, 12 limitations). **Rust wrong 0**; Rust exit codes 0 and 1 only, no panic, no timeout. The runs on earlier binaries found the four Rust defects fixed above |
+| 1. CI, both jobs, from the repository root | Python job (on `664e4bf`, the Python, tools and vectors of `23fc0f6`): 15 of 16 steps exit 0 — generators `--check`, pytest 419 passed 1 skipped, vectors 716/716, SHA256SUMS and `CHECK_FROZEN: PASS`, frozen 202/202, external, ablation (331 mutations, 296 killed, 26 documented equivalent, 0 unpinned, 0 catalogue errors), byte-flip (432,421 mutants, 0 survivors), crash fuzz (1,956 mutants, 0 crashes), spec examples, REUSE 3.3; **`check_schemas.py` exits 1** on two S2-FIX3 vectors (see "Python job step red at `23fc0f6`" above; a `tools/` matter, not changed here). Rust job (on `e7d2b77`): fmt, clippy all targets, clippy library, `cargo test --workspace` (17 test binaries, 120 passed, 0 failed, 3 ignored), both `vectors` runs, `cargo deny check`, `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz, gate 3: every step exit 0 |
+| 2. vectors | Rust 716/716 main and 202/202 frozen |
+| 3. two-implementation comparison | allow list empty; 918 cases (716 + 202), 918 byte-identical, PASS |
+| 4. red checks | every change class removed on its own turns red and is restored (`cmp` equal, then `touch`): F61-3, Q2 (declaration, rotation, second order, cosignature cycle), T2 (code order; `N_KEY_UNDECLARED` through gate 3), Q1, Q3 (grant, declaration), F69-3, Q4 (RSA call site; ECDSA function by its unit test), T3, the anchor walk, review A low-1, S2-FIX2 (U1, U2, U4, U5, U7), S2-FIX2b, S2-FIX3 (F72 any non-passing cosignature, F74 pre-check and body code, F78, F80, F81) and the differential-fuzzing fixes. Not red because nothing reaches them: the step-5 deferral of a consent revocation (Q3), the ECDSA bound at the P-256 call site (the curve crate rejects the same signatures) and F72's "never keeps itself trusted" |
+| 5. differential fuzzing | `scripts/diff_fuzz.py`, 10 classes × 400, final binary (`e7d2b77`), merged repository: seed **151115** 3,768 mutants, 3,765 byte-identical, 1 conclusion difference (F83) and 2 report-detail differences (F84); seed **777001** 3,780 mutants, 3,778 byte-identical, 2 conclusion differences (F83). **Rust wrong 0**; Rust exit codes 0 and 1 only, no panic, no timeout. The runs on earlier binaries found the Rust defects fixed above (H1-S2 table "fixed" rows, F83's cosignature cycle) |
 | 6. other gates | Rust crash fuzz 2,000 mutants, 0 failures; `cargo check -p hyphaweave-verify --target aarch64-linux-android` exit 0, no warning; `reuse lint` compliant |
 | 7. other workstreams untouched | `git diff --stat s2/spec-revision..r2/rust-s2 -- spec schemas vectors verifiers/python tools` is empty |
 
@@ -2261,5 +2322,5 @@ black box, installed non-editable from `git archive origin/main`.
   added the three diverging certificate-version shapes to F62, corrected
   F50's reproduction (both signers re-sign), and added the H1-FIX2B gate
   results.
-- **2026-11-15 (H1-S2)** — added the H1-S2 follow-up table, F70–F72, and
-  the H1-S2 gate results.
+- **2026-11-15 (H1-S2)** — added the H1-S2 follow-up table, F70–F84, the
+  S2-FIX3 dispositions, and the H1-S2 gate results.
