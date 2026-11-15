@@ -1138,10 +1138,12 @@ impl World {
     /// `recorded_at`. Only those signatures are checked here (the subject
     /// key's own §9.4 state never decides admission); a signature whose
     /// equation fails is not a §9.4 outcome. A declaration whose admission is
-    /// already being decided further up (a cosignature cycle) is admitted.
+    /// already being decided further up (a cosignature cycle) is not
+    /// admitted: material must be grounded outside the cycle (§5.3,
+    /// S2-FIX3/F72: a signature counts only when its key resolves).
     pub(crate) fn declaration_admitted(&mut self, index: usize) -> bool {
         if self.admitting.contains(&index) {
-            return true;
+            return false;
         }
         let Some(record) = self.slots[index].record.clone() else {
             return true;
