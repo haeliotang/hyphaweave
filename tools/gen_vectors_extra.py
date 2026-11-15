@@ -12077,6 +12077,30 @@ declare(
 )
 
 
+
+def _s2_erasure_two_rules_files() -> dict[str, bytes]:
+    original = erased_original("s2-f48-erased")
+    attestation = erasure_record(original, record_id="s2-f48-erasure")
+    placeholder = erased_placeholder(original, attestation, digest="sha256:" + "77" * 32)
+    placeholder["attestation"] = {**placeholder["attestation"], "digest": "sha256:" + "66" * 32}
+    return container([placeholder, attestation])
+
+
+declare(
+    "erasure",
+    "cross-checks-reported-independently",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ERASE_ATTESTATION", "E_ERASE_DIGEST_MISMATCH"),
+    build=lambda case_dir: _s2_erasure_two_rules_files(),
+    args=ERASURE_ARGS,
+    notes="S2/F48 (§10.3, §14.5: the failing stage reports every violation it finds): the "
+    "placeholder's digest is not the erased digest (rule 1, E_ERASE_DIGEST_MISMATCH) and "
+    "its attestation reference names another digest (rule 2, E_ERASE_ATTESTATION). Each "
+    "rule is evaluated independently, so both codes are reported.",
+)
+
 # -- F68 (Z1): §5.5.2 step 6 walks the whole chain before the depth bound -------
 
 _S2_LATE = "2026-11-11T00:00:00.000Z"
