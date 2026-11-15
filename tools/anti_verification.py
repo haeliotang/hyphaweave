@@ -1667,6 +1667,340 @@ def _build_catalogue() -> None:
 _build_catalogue()
 
 
+def _lit(
+    mid: str,
+    module: str,
+    check: str,
+    description: str,
+    old: str,
+    new: str,
+    pinned_by: tuple[str, ...] = (),
+    **kwargs: object,
+) -> Mutation:
+    """A mutation given as literal source text (S2, S2-FIX1): ``old`` -> ``new``."""
+    return _m(
+        mid, module, check, description, re.escape(old), new.replace("\\", "\\\\"),
+        pinned_by, **kwargs,  # type: ignore[arg-type]
+    )
+
+
+_KL = "key-lifecycle/"
+_IL = "integrity-levels/"
+
+
+def _build_s2_catalogue() -> None:
+    """S2 (decision 2026-11-15 #8) and S2-FIX1 (decision 2026-11-15 #13) corrections.
+
+    The S2 ablations were first run from an out-of-tree script (review A low-2); they
+    are catalogue entries now, so the CI ablation gate keeps them pinned.
+    """
+    _add(
+        # ------------------------------------------------------------------ S2 (#8)
+        _lit("s2-a1-own-signature-effects", "verifier.py", "s2.a1.own-effects",
+             "S2/F38/F61-1: leave the §9.4 effects off every body-supplied signature of a "
+             "declaration or rotation (the security defect)",
+             "        if from_context or own_effects or signature.key != subject_key:\n",
+             "        if from_context:\n",
+             tuple(_KL + name for name in (
+                 "declaration-compromised-receipt-trailing-byte",
+                 "declaration-compromised-receipt-signature-tampered",
+                 "declaration-compromised-receipt-imprint-mismatch",
+                 "declaration-compromised-receipt-no-anchor",
+                 "declaration-compromised-receipt-unusable-accuracy",
+                 "declaration-compromised-receipt-after-compromise",
+                 "declaration-compromised-l0", "declaration-before-own-valid-from",
+                 "declaration-cosigner-retired", "rotation-old-key-retired"))),
+        _lit("s2-a1-admission", "verifier.py", "s2.a1.admission",
+             "S2/F38: never admit the facts of a declaration or rotation that fails only "
+             "through §9.4 (state from the reported verdict only)",
+             '    if probe.verdict == "valid":\n        view.admitted_declaration',
+             '    if False:\n        view.admitted_declaration',
+             (_KL + "declaration-before-own-valid-from",
+              _KL + "rotation-new-key-compromised-note-by-new-key")),
+        _lit("s2-f52-unverified-state", "verifier.py", "s2.f52.sig-state",
+             "S2/F52: report a signature whose key state fails §9.4 as valid",
+             '                states.append({"key": signature.key, "state": "unverified"})\n'
+             '                if record_verdict([error.code]) == "invalid":',
+             '                states.append({"key": signature.key, "state": "valid"})\n'
+             '                if record_verdict([error.code]) == "invalid":',
+             (_KL + "declaration-compromised-l0", _KL + "declaration-compromised-receipt-no-anchor")),
+        # S2/F51/F61-2/F67 (the candidate key-state schema guard) is not an ablation
+        # entry: removing it makes the verifier crash on the guarded inputs, and a
+        # crash is a catalogue error (V2d). Those inputs are replayed by
+        # tools/crash_fuzz.py from tools/crash_corpus/ (s2-00000 to s2-00007), which
+        # fails on a traceback.
+        _lit("s2-f40-file-identity", "container.py", "s2.f40.identity",
+             "S2/F40: stop reporting the archive identity of a file target that is not a zip",
+             "    try:\n        if path.is_file():\n            with path.open(\"rb\") as handle:",
+             "    try:\n        if False:\n            with path.open(\"rb\") as handle:",
+             ("container/zip-prefix-input-identity",)),
+        _lit("s2-f42-tofu-after-equation", "verifier.py", "s2.f42.tofu",
+             "S2/F42: decide TOFU only after a passing equation",
+             "        if from_context:\n            # S8.10/F12.2",
+             "        if from_context and False:\n            # S8.10/F12.2",
+             (_KL + "tofu-on-failed-equation",)),
+        _lit("s2-f44-raw-identity", "verifier.py", "s2.f44.identity",
+             "S2/F44: a structurally failed record has no identity",
+             "        if self.envelope is not None or self.placeholder is not None:\n            return None",
+             "        if True:\n            return None",
+             ("container/reference-to-structurally-invalid-target",)),
+        _lit("s2-f45-agent-presence", "envelope.py", "s2.f45.agent-presence",
+             "S2/F45/F67: decide the agent-only actor members in the grammar phase",
+             '    if value["type"] == "agent" and not kinds.is_key_lifecycle(kind):',
+             "    if False:",
+             ("actor/agent-missing-idempotency-before-on-behalf-grammar",
+              "actor/agent-missing-grant-before-on-behalf-type",
+              "actor/agent-missing-on-behalf-before-key-type")),
+        _lit("s2-f67-sigs-member-types", "envelope.py", "s2.f67.sigs-types",
+             "S2/F67: judge a sigs member's grammar before its JSON type",
+             "            if not isinstance(entry[member], str):\n                raise WeaveError(",
+             "            if False:\n                raise WeaveError(",
+             ("sig/ed25519-value-wrong-json-type", "sig/ed25519-value-wrong-type-before-key-grammar")),
+        _lit("s2-f46-step4-step5", "verifier.py", "s2.f46.step5",
+             "S2/F46: give the dedicated signer code even with no verified signature at all",
+             '    if view.verified_keys:\n        return WeaveError(code, "no valid signature by the required signer")',
+             '    if True:\n        return WeaveError(code, "no valid signature by the required signer")',
+             (_KL + "declared-only-unknown-algorithm-entries",)),
+        _lit("s2-f49-entry-precheck", "container.py", "s2.f49.zip-order",
+             "S2/F49: decompress members before every entry is checked",
+             "            if entry_error is not None:\n                return ContainerInput(",
+             "            if False:\n                return ContainerInput(",
+             ("container/zip-entry-check-before-crc",)),
+        _lit("s2-f39-public-key-first", "verifier.py", "s2.f39.public-key",
+             "S2/F39/F50: decide a malformed public_key after the signatures",
+             '            decode_public_key_material(envelope.body.get("public_key"))\n'
+             "        if envelope.kind == kinds.KIND_ROTATED:",
+             "            pass\n        if envelope.kind == kinds.KIND_ROTATED:",
+             (_KL + "declared-public-key-before-body-key",)),
+        _lit("s2-f54-unlisted-tsr", "timestamps.py", "s2.f54.unlisted-tsr",
+             "S2/F54: ignore an unlisted .tsr",
+             "    if any(path not in entries for path in present):", "    if False:",
+             ("container/unlisted-receipt-file-l0", _IL + "l2-unlisted-receipt-file")),
+        _lit("s2-f55-unlisted-oversize", "container.py", "s2.f55.extra",
+             "S2/F55: report an unlisted oversize records/ file as E_JSON_SIZE only",
+             '        if match is None or match.group(1) not in listed_hex:\n'
+             '            errors.add("E_MANIFEST_RECORD_EXTRA")',
+             '        if False:\n            errors.add("E_MANIFEST_RECORD_EXTRA")',
+             ("container/oversize-record-file-misnamed",)),
+        _lit("s2-f56-l1-timestamps", "manifest.py", "s2.f56.l1",
+             "S2/F56: accept an L1 manifest that lists timestamps",
+             '    if manifest.level == "L1" and timestamps_listed:', "    if False:",
+             (_IL + "l1-lists-timestamp",)),
+        _lit("s2-f60-depth-as-size", "container.py", "s2.f60.depth",
+             "S2/F60: report a too-deep records/ file as an unconfirmable digest",
+             '            record.size_violation = error.code == "E_JSON_SIZE"',
+             "            record.size_violation = False",
+             ("container/record-nesting-above-limit",)),
+        _lit("s2-f61-3-rotation-key-ids", "keys.py", "s2.f61-3.key-ids",
+             "S2/F61-3: skip the rotation key-id grammar before the material rule",
+             "        if member not in body or not encoding.is_key_id(body[member]):",
+             "        if False:",
+             (_KL + "rotation-old-key-malformed", _KL + "rotation-new-key-wrong-type")),
+        _lit("s2-f57-universal-tag-zero", "timestamps.py", "s2.f57.tag-zero",
+             "S2/F57: accept universal tag number 0",
+             "        if tag_number == 0:\n            # S2/F57",
+             "        if False:\n            # S2/F57",
+             (_IL + "l2-ts-der-universal-tag-zero", _IL + "l2-ts-der-universal-tag-zero-nested")),
+        _lit("s2-f57-enumerated", "timestamps.py", "s2.f57.enumerated",
+             "S2/F57: judge ENUMERATED without the INTEGER rule",
+             "        elif tag_number in (2, 10):", "        elif tag_number in (2,):",
+             (_IL + "l2-ts-der-enumerated-nonminimal",)),
+        _lit("s2-f66-constructed-only", "timestamps.py", "s2.f66.constructed-only",
+             "S2/F66: accept the primitive form of EXTERNAL, EMBEDDED PDV, CHARACTER STRING",
+             "_DER_CONSTRUCTED_ONLY_UNIVERSAL = frozenset({8, 11, 29})",
+             "_DER_CONSTRUCTED_ONLY_UNIVERSAL = frozenset()",
+             (_IL + "l2-ts-der-external-primitive", _IL + "l2-ts-der-embedded-pdv-primitive",
+              _IL + "l2-ts-der-character-string-primitive")),
+        _lit("s2-f62-version-constraints", "timestamps.py", "s2.f62.version",
+             "S2/F62: skip the RFC 5280 version constraints",
+             "        der_schema.check_certificate_version(facts)", "        pass",
+             (_IL + "l2-ts-signer-cert-v1-with-extensions",
+              _IL + "l2-ts-signer-cert-v1-with-issuer-unique-id", _IL + "l2-ts-signer-cert-version-v4")),
+        _lit("s2-f48-independent-rules", "container.py", "s2.f48.independent",
+             "S2/F48: stop the §10.3 cross-checks at the first failing rule",
+             '        if placeholder.digest != reference.digest:\n'
+             '            found.add("E_ERASE_DIGEST_MISMATCH")\n            continue',
+             '        if placeholder.digest != reference.digest:\n'
+             '            found.add("E_ERASE_DIGEST_MISMATCH")\n            return sorted(found)',
+             ("erasure/cross-checks-reported-independently",)),
+        # ------------------------------------------------------------ S2-FIX1 (#13)
+        _lit("fix1-q2-subject-key-only", "verifier.py", "fix1.q2.subject-only",
+             "Q2/T1: exempt every body-supplied signature (cosignature, old key) from §9.4 "
+             "when admission is decided",
+             "        if from_context or own_effects or signature.key != subject_key:\n",
+             "        if from_context or own_effects:\n",
+             tuple(_KL + name for name in (
+                 "rotation-old-key-compromised-backdated-note-by-new-key",
+                 "rotation-old-key-retired-note-by-new-key",
+                 "declaration-cosigner-retired-note-by-device",
+                 "declaration-cosigner-compromised-note-by-device"))),
+        _lit("fix1-t2-invalid-first", "verifier.py", "fix1.t2.invalid-first",
+             "T2: let an unresolved key's E_KEY_UNKNOWN precede an invalid entry",
+             "    if first_invalid is not None:\n        raise first_invalid\n"
+             "    if unknown_key:\n",
+             "    if unknown_key:\n        raise WeaveError(\"E_KEY_UNKNOWN\", \"x\")\n"
+             "    if first_invalid is not None:\n        raise first_invalid\n    if unknown_key:\n",
+             (_KL + "signature-key-resolution-before-equation",
+              _KL + "signature-revoked-entry-beats-unknown-key")),
+        _lit("fix1-t5-keyset-empty-sigs", "verifier.py", "fix1.t5.keyset-sigs",
+             "T5: accept a keyset record with sigs absent or empty",
+             "            if envelope_module.signing_required(envelope.kind, envelope.stage) and not envelope.sigs:\n",
+             "            if False:\n",
+             (), equivalent_reason="a usage error (exit 2, no report) cannot be expressed in "
+             "the vector expectation schema; pinned by the unit tests "
+             "test_keyset_declaration_with_empty_sigs_is_a_usage_error and "
+             "test_keyset_declaration_without_sigs_member_is_a_usage_error"),
+        _lit("fix1-q1-present-invalid", "verifier.py", "fix1.q1.present-invalid",
+             "Q1: report a present but invalid authorising grant with the grant code",
+             '        if target is not None and target.verdict == "invalid":\n',
+             "        if False:\n",
+             ("erasure/actor-agent-grant-present-invalid", "erasure/actor-program-basis-present-invalid")),
+        _lit("fix1-q1-not-established", "verifier.py", "fix1.q1.unresolved",
+             "Q1: report an absent authorising grant as E_ERASE_ACTOR",
+             '        raise WeaveError("E_GRANT_UNRESOLVED", "the authorising grant cannot be established")',
+             '        raise WeaveError("E_ERASE_ACTOR", "the authorising grant cannot be established")',
+             ("erasure/actor-agent-grant-absent", "erasure/actor-program-basis-absent")),
+        _lit("fix1-q1-chain-codes", "verifier.py", "fix1.q1.chain-codes",
+             "Q1: wrap the grant-chain codes of an agent erasure into E_ERASE_ACTOR",
+             "            if error.code in _GRANT_ESTABLISHMENT_CODES:\n                raise\n",
+             "            if False:\n                raise\n",
+             ("erasure/actor-agent-grant-expired", "erasure/actor-agent-grant-revoked")),
+        _lit("fix1-q1-erase-coverage", "verifier.py", "fix1.q1.coverage",
+             "Q1: drop the erase-action coverage of an agent erasure grant",
+             '            or "erase" not in grant.actions\n',
+             "            or False\n",
+             ("erasure/actor-agent-grant-expired-and-lacks-erase",)),
+        _lit("fix1-q3-erasure-signer-before-lookup", "verifier.py", "fix1.q3.erasure-order",
+             "Q1/Q3: look the erasure basis up before the signer rule",
+             "    signer_check()\n    reference = refs.validate_reference(basis)\n"
+             "    target_envelope, _digest = _erasure_grant_envelope(reference, context)\n",
+             "    reference = refs.validate_reference(basis)\n"
+             "    target_envelope, _digest = _erasure_grant_envelope(reference, context)\n"
+             "    signer_check()\n",
+             ("erasure/actor-program-signer-rule-before-basis-lookup",)),
+        _lit("fix1-q3-step5-deferred", "verifier.py", "fix1.q3.step5",
+             "Q3: report the §4.4 step-5 outcome where the signer rule sits",
+             "    if view.deferred_signer_error is None:\n        view.deferred_signer_error = error\n"
+             "    return None\n",
+             "    return error\n",
+             ("labels/consent-validity-before-step5-outcome",
+              "grant/sub-grant-expands-kinds-step5-outcome-last",
+              _KL + "declaration-class-conflict-before-step5-outcome")),
+        _lit("fix1-q3-consent-window-first", "verifier.py", "fix1.q3.consent-order",
+             "Q3/F69-2: decide the consent signer rule before the consent window",
+             "        # S2-FIX1 Q3 (F69-2): the consent window is a rule of the record itself\n",
+             '        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")\n'
+             "        # S2-FIX1 Q3 (F69-2): the consent window is a rule of the record itself\n",
+             ("labels/consent-validity-before-signer-rule",)),
+        _lit("fix1-q3-granter-before-chain", "grants.py", "fix1.q3.granter-order",
+             "Q3/F55-1: skip the granter signer rule before the delegated chain",
+             "    if granter_check is not None:\n        granter_check()\n", "",
+             ("grant/sub-grant-granter-signer-before-delegation",)),
+        _lit("fix1-q3-no-step9-notice", "verifier.py", "fix1.q3.step9-notice",
+             "Q3/F55-3: keep the propagation notice of a record that fails step (9)",
+             "    propagation_notices = labels.check_label_propagation(envelope, context)\n",
+             "    view.notices.extend(labels.check_label_propagation(envelope, context))\n"
+             "    propagation_notices: list[str] = []\n",
+             ("labels/consent-kind-mismatch-reports-no-propagation-notice",)),
+        _lit("fix1-q4-rsa-modulus", "timestamps.py", "fix1.q4.rsa-modulus",
+             "Q4: accept any RSA modulus size the library accepts",
+             "    if not _RSA_MIN_MODULUS_BITS <= public_key.key_size <= _RSA_MAX_MODULUS_BITS:\n",
+             "    if False:\n",
+             (_IL + "l2-ts-check10-rsa-1024",)),
+        _lit("fix1-q4-rsa-exponent", "timestamps.py", "fix1.q4.rsa-exponent",
+             "Q4: accept any RSA public exponent the library accepts",
+             "    if exponent % 2 == 0 or not _RSA_MIN_EXPONENT <= exponent < _RSA_EXPONENT_LIMIT:\n",
+             "    if False:\n",
+             (_IL + "l2-ts-check10-rsa-exponent-3", _IL + "l2-ts-check10-rsa-exponent-2-pow-256-plus-1")),
+        _lit("fix1-q4-ecdsa-der", "timestamps.py", "fix1.q4.ecdsa-der",
+             "Q4: hand the ECDSA signature value to the library without the DER check",
+             "            _check_ecdsa_signature_encoding(signature, public_key)\n", "",
+             (_IL + "l2-ts-check10-ecdsa-r-nonminimal", _IL + "l2-ts-check10-ecdsa-trailing-octet",
+              _IL + "l2-ts-check10-ecdsa-s-plus-order"),
+             equivalent_reason="the cryptography/OpenSSL ECDSA verification re-encodes the "
+             "Ecdsa-Sig-Value and rejects non-DER input and r, s outside [1, n - 1] with the "
+             "same E_TS_CMS outcome; the explicit check is pinned by the unit test "
+             "test_ecdsa_signature_encoding"),
+        _lit("fix1-q5-walk-bounded", "grants.py", "fix1.q5.walk",
+             "Q5: stop the grant-chain walk at the depth bound",
+             "    while True:\n        if grant.digest in seen:\n",
+             "    while True:\n        if links > MAX_CHAIN_DEPTH:\n"
+             "            raise WeaveError(\"E_GRANT_UNRESOLVED\", \"ablation\")\n"
+             "        if grant.digest in seen:\n",
+             ("grant/chain-depth-9-root-revoked", "grant/chain-depth-9-root-not-transferable"),
+             equivalent_reason="a link beyond the bound is reached only after step 1 of the link "
+             "below it resolved a valid grant record, whose own verification already judged "
+             "steps 1-5 of that link and whose parent's window and revocation step 6 checks at "
+             "the link below; the walk past the bound therefore cannot change an outcome "
+             "(docs/open-questions.md §7.3; vectors chain-depth-9-*)"),
+        _lit("fix1-t3-real", "timestamps.py", "fix1.t3.real",
+             "T3: judge REAL by its framing only",
+             "        elif tag_number == 9:\n            _check_der_real(data, position, content_end)\n",
+             "        elif False:\n            _check_der_real(data, position, content_end)\n",
+             tuple(_IL + "l2-ts-der-1a-real-" + name for name in (
+                 "base-8", "scaling-factor", "even-mantissa", "mantissa-leading-zero",
+                 "exponent-nonminimal", "long-exponent-format", "decimal-nr1",
+                 "decimal-trailing-zero", "decimal-plus-exponent", "special-reserved")) ),
+        _lit("fix1-t3-relative-oid", "timestamps.py", "fix1.t3.relative-oid",
+             "T3: judge RELATIVE-OID by its framing only",
+             "        elif tag_number == 13:\n", "        elif False:\n",
+             (_IL + "l2-ts-der-1a-relative-oid-nonminimal", _IL + "l2-ts-der-1a-relative-oid-truncated",
+              _IL + "l2-ts-der-1a-relative-oid-empty")),
+        _lit("fix1-t3-utf8-types", "timestamps.py", "fix1.t3.utf8",
+             "T3: check UTF-8 contents for UTF8String only",
+             "_DER_UTF8_UNIVERSAL = frozenset({12, 31, 32, 33, 35, 36})",
+             "_DER_UTF8_UNIVERSAL = frozenset({12})",
+             (_IL + "l2-ts-der-1a-date-not-utf8", _IL + "l2-ts-der-1a-relative-oid-iri-not-utf8")),
+        _lit("fix1-t3-primitive-only", "timestamps.py", "fix1.t3.primitive",
+             "T3: let ObjectDescriptor and the date/time/IRI types use the constructed form",
+             "    {1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,\n"
+             "     30, 31, 32, 33, 34, 35, 36}",
+             "    {1, 2, 3, 4, 5, 6, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30}",
+             (_IL + "l2-ts-der-1a-object-descriptor-constructed", _IL + "l2-ts-der-1a-date-time-constructed")),
+        _lit("fix1-t3-time-duration", "timestamps.py", "fix1.t3.time",
+             "T3: accept TIME and DURATION values",
+             "_DER_REJECTED_UNIVERSAL = frozenset({14, 34})",
+             "_DER_REJECTED_UNIVERSAL = frozenset()",
+             (_IL + "l2-ts-der-1a-time-rejected", _IL + "l2-ts-der-1a-duration-rejected")),
+        _lit("fix1-t3-string-units", "timestamps.py", "fix1.t3.units",
+             "T3: accept partial UniversalString and BMPString code units",
+             "        elif tag_number == 28 and length % 4:\n", "        elif False:\n",
+             (_IL + "l2-ts-der-1a-universal-string-partial-unit",)),
+        _lit("fix1-t3-bmp-units", "timestamps.py", "fix1.t3.units",
+             "T3: accept partial BMPString code units",
+             "        elif tag_number == 30 and length % 2:\n", "        elif False:\n",
+             (_IL + "l2-ts-der-1a-bmp-string-partial-unit",)),
+        _lit("fix1-t3-iso2022-escape", "timestamps.py", "fix1.t3.escape",
+             "T3: accept an ESC octet in the ISO 2022 register string types",
+             "        elif tag_number in _DER_ISO2022_UNIVERSAL and 0x1B in data[position:content_end]:\n",
+             "        elif False:\n",
+             (_IL + "l2-ts-der-1a-object-descriptor-escape", _IL + "l2-ts-der-1a-general-string-escape")),
+        _lit("fix1-t8-readable-file-dir", "container.py", "fix1.t8.readable-file",
+             "T8: treat a root regular file named readable as a readable/ entry (directory form)",
+             '            if relative_path.startswith("readable/"):\n'
+             "                # spec §11.8/§13",
+             '            if relative_path == "readable" or relative_path.startswith("readable/"):\n'
+             "                # spec §11.8/§13",
+             ("container/readable-root-regular-file",)),
+        _lit("fix1-t8-readable-file-zip", "container.py", "fix1.t8.readable-file",
+             "T8: treat a root file entry named readable as a readable/ entry (zip form)",
+             '                if name.startswith("readable/"):\n                    # T6',
+             '                if name == "readable" or name.startswith("readable/"):\n                    # T6',
+             ("container/readable-root-regular-file-zip",)),
+        _lit("fix1-limitations-after-listing", "container.py", "fix1.limitations.stopped",
+             "review A low-1: report L_ERASED_PLACEHOLDER and L_LABELS_ARE_CLAIMS when the "
+             "records-listing phase stops the container",
+             "    listing_errors = _check_records_listing(manifest, listing, container_input)\n",
+             "    listing_errors = _check_records_listing(manifest, listing, container_input)\n"
+             "    finish_flags[\"placeholder_seen\"] = finish_flags[\"labels_seen\"] = True\n",
+             ("container/erased-placeholder-limitation-not-reported-after-listing-failure",
+              "container/labels-limitation-not-reported-after-listing-failure")),
+    )
+
+
+_build_s2_catalogue()
+
+
 # ----------------------------------------------------------------------------- runner
 
 
