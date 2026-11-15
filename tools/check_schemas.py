@@ -39,7 +39,9 @@ supplementary structural predicates for rules Draft 2020-12 cannot express:
   and one acyclic renewal chain (exactly one ``renews=null`` head, every
   ``renews`` path listed, no receipt renewed twice);
 - semantically duplicate ``refs`` entries (same ``rel`` and target
-  ``origin``/``id``/``digest`` even if the ``hints`` differ).
+  ``origin``/``id``/``digest`` even if the ``hints`` differ);
+- the calendar validity (spec §2.8) of the TS members at the top level of the
+  key-lifecycle and consent bodies (S2; the TS pattern cannot express it).
 
 Every other rule JSON Schema cannot express (cross-field equalities, key-id
 derivation, Ed25519 semantics, canonical bytes, ...) belongs to the verifier and
@@ -851,10 +853,48 @@ def manifest_record_identity_problems(
     return problems
 
 
+#: Top-level body members holding a TS literal (spec §2.8), per registered kind.
+_BODY_TIME_MEMBERS: dict[str, tuple[str, ...]] = {
+    "weave.key.declared": ("valid_from", "valid_until"),
+    "weave.key.revoked": ("effective_at",),
+    "weave.consent.granted": ("valid_from", "valid_until"),
+    "weave.consent.revoked": ("effective_at",),
+}
+_TS_RE = re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})\.[0-9]{3}Z$")
+
+
+def _calendar_problems(document: Any) -> list[str]:
+    """§2.8 calendar validity of body TS members (S2): the pattern cannot say it.
+
+    The schema pattern pins the TS shape but not the month/day combination
+    (`schemas/README.md`, limitation 3); a pattern-conforming value that is not a
+    proleptic Gregorian date-time is a body-schema defect.
+    """
+    import datetime
+
+    problems: list[str] = []
+    if not isinstance(document, dict):
+        return problems
+    members = _BODY_TIME_MEMBERS.get(document.get("kind"), ())
+    body = document.get("body")
+    if not isinstance(body, dict):
+        return problems
+    for member in members:
+        value = body.get(member)
+        match = _TS_RE.fullmatch(value) if isinstance(value, str) else None
+        if match is None:
+            continue
+        try:
+            datetime.datetime(*(int(part) for part in match.groups()))
+        except ValueError:
+            problems.append(f"body.{member} is not a calendar date-time (spec §2.8)")
+    return problems
+
+
 def kind_body_supplement(document: Any) -> list[str]:
     """Kind-specific structural fallbacks for rules JSON Schema cannot express."""
 
-    problems: list[str] = []
+    problems: list[str] = _calendar_problems(document)
     if not isinstance(document, dict) or document.get("kind") != "weave.grant":
         return problems
     body = document.get("body")
