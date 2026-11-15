@@ -61,7 +61,7 @@ gate-3 allow list is empty.
 - **Differential fuzzing** (no vector; tests in `tests/s2_followup.rs`,
   `docs/h1-findings.md` F73–F81): §10.3 applies only with a placeholder present, and a
   structurally failed erasure record is not the attested record (S2/F48 read
-  symmetrically); a placeholder `format` of another JSON type is `E_KIND_BODY_SCHEMA`;
+  symmetrically); every `format` defect of a placeholder is `E_KIND_BODY_SCHEMA`;
   an unlisted `.tsr` with no listed receipt leaves no timestamp evidence for §9.4; trust
   is not handed on through a declaration that supplies no material (Q2).
 - **Gate 3**: `verifiers/rust/scripts/gate3_known_differences.json` is empty again.
