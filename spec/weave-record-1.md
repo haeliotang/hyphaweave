@@ -2209,7 +2209,15 @@ target per-case layout remains implementation-defined (Appendix A P7)
        `agent`/`program`/`device` key, one whose owner is trusted), or it is the `old_key`
        of a valid `weave.key.rotated` record of the target context that lists
        `old_public_key` and whose `new_key` has such a valid declaration. Explicit rotation
-       material alone, without that trusted successor, does not make a key trusted here;
+       material alone, without that trusted successor, does not make a key trusted here.
+       Consequence: with no `--keys` input there is no trusted key, so a supplied
+       `--previous` can never pass this rule and the container is `invalid`
+       (`E_MANIFEST_CHAIN`), although the same container without `--previous` is only
+       `unverifiable` for want of a trust root. This is kept deliberately: the operator asked
+       for a link to be proved and it cannot be. A recipient that checks chain continuity
+       should supply its keyset, and should supply as `--previous` only a container it has
+       itself received and accepted earlier, never one taken from the same untrusted source
+       as the target [S2-FIX1/T8] decided by principle (Inceptless decision 2026-11-15 #13);
     3. its key passes the §9.4 validity-window and revocation rules **at the previous
        manifest's claimed `created_at`**, evaluated with the target context's valid
        declarations and revocations: a validity window that excludes that instant breaks the
@@ -2325,7 +2333,16 @@ MUST report the informational notice `N_READABLE_PRESENT` if and only if an enum
 container contains a `readable/` entry, including when a later container check fails; if
 entry enumeration itself fails before a `readable/` entry is observed, the notice is not
 reported [Q19] decided (Inceptless decision 2026-11-11 #2; S16 report-construction rule;
-2026-11-10 #34; Q19; T12).
+2026-11-10 #34; Q19; T12). A zip archive whose structure fails (`E_CONTAINER_ZIP`, §11.9
+rules 1–3 and 5, a member CRC included) has no enumerated entries: the container stops at
+step (1) and the later checks are not run (§14.5), so the notice is not reported even when
+a `readable/` entry was listed in its central directory; an archive whose structure holds
+but whose entry checks fail (`E_CONTAINER_ENTRY`) was enumerated, and the notice follows the
+`readable/` entries that passed their own checks (T6). `readable` is a **directory** of the
+layout: a regular file named `readable` at the container root (directory or zip form) is
+not a `readable/` entry but an entry outside the layout, `E_CONTAINER_ENTRY` (invalid), and
+it does not trigger the notice [S2-FIX1/T8] decided by principle (Inceptless decision
+2026-11-15 #13).
 
 ### 11.9 Zip form
 
@@ -3419,9 +3436,9 @@ limitation [S2/F42] decided by principle (Inceptless decision 2026-11-15 #8; S2)
 | `L_PREVIOUS_CONTENT_UNVERIFIED` | `--previous` was supplied, the previous-manifest-chain stage (§14.5 step (10)) ran, and the supplied previous's manifest signature verified under §11.5 (in the target container's verification context). This is the only criterion: it does not depend on the later checks of that stage (embedded manifest, digest comparison); it is not reported when no `--previous` was supplied, when the container pipeline stopped before step (10), or when the previous could not be read or verified (V3, W5) |
 | `L_PREVIOUS_SIG_UNVERIFIED` | `previous_manifest` is non-null and the embedded previous manifest's own signature was not re-verified; this is reported even when a later container check fails, and is not reported when the manifest could not be parsed so that the previous manifest is not reachable. When a supplied `--previous` container's manifest signature verifies, that previous manifest's signature counts as re-verified and this identifier is **not** reported for it; `L_PREVIOUS_CONTENT_UNVERIFIED` is reported instead (V3) |
 | `L_TSA_TRUST_UNVERIFIED` | at least one listed receipt is `present-unverified`: its structure and CMS signature pass, but it is not verified-and-trusted (no matching anchor, or its accuracy is unusable evidence per §12.2 check 13). A receipt rejected by a structural, format or CMS check reports its error code and does not by itself trigger this identifier (U7) |
-| `L_ERASED_PLACEHOLDER` | the verified input (container or record target) contains a `weave.erased` placeholder |
+| `L_ERASED_PLACEHOLDER` | the verified input (container or record target) contains a `weave.erased` placeholder; for a container, among the records that are verified — when the container pipeline stops before the per-record checks (`records: []`), no record is verified and it is not reported (S2-FIX1, §14.5) |
 | `L_ERASED_STANDALONE` | the target is a single `weave.erased` record with no container context, so the §10.3 cross-checks could not be applied |
-| `L_LABELS_ARE_CLAIMS` | the record target, or at least one record of the container, carries a `labels` member |
+| `L_LABELS_ARE_CLAIMS` | the record target, or at least one record of the container, carries a `labels` member; for a container, among the records that are verified, as for `L_ERASED_PLACEHOLDER` (S2-FIX1) |
 | `L_UNKNOWN_KIND_OPAQUE` | at least one record has an unregistered kind and final verdict `valid` (the same condition as `N_KIND_UNKNOWN_OPAQUE`) |
 | `L_LABEL_PROPAGATION_UNCHECKED` | at least one derivation reference could not be resolved (the same condition as `N_LABEL_PROPAGATION_UNCHECKED`) |
 
