@@ -257,7 +257,7 @@ def validate_grant_chain(
         # grant's own time must make grant/ancestor-revoked-before-record fail.
         ancestor_time = at_time
         _check_delegation(grant, parent, context, ancestor_time)
-        grant = parent
+        grant, at_time = parent, ancestor_time
         links += 1
     if links > MAX_CHAIN_DEPTH:
         raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is too deep")
