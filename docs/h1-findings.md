@@ -2046,7 +2046,7 @@ the gate until the H1 follow-up empties it.
 
 ## H1-S2 follow-up (decision 2026-11-15 #20)
 
-The Rust verifier follows every "Rust to follow" row of the two tables above, and the
+The Rust verifier follows every "Rust to follow" row of the three tables above, and the
 three deviations that review A (low-1) found by differential fuzzing without a vector.
 Each row names where the rule now lives.
 
@@ -2060,7 +2060,11 @@ Each row names where the rule now lives.
 | F69-3 | §5.4 | `check_actor`: `grant_resolve`, grantee, kind/action, then `grant_usable_at` |
 | Q4 (F64) | §12.2 check 10 | `rsa_key_within_bounds`, `ecdsa_signature_within_bounds`: explicit checks on the decoded `RSAPublicKey` and `Ecdsa-Sig-Value`, before the `rsa`/`p256`/`p384` crates are called; unit tests at each bound |
 | T3 (F57, F66) | §12.2 1a | `der::check_primitive_content` by tag number: REAL (`check_real`), RELATIVE-OID, TIME/DURATION, ESC in 7/20/21/25/27, UniversalString/BMPString units, UTF-8 for 31–33/35/36 |
-| T8 (`readable`) | §11.8 | zip enumeration: no `N_READABLE_PRESENT` when the step-(1) codes include `E_CONTAINER_ZIP` |
+| T8, S2-FIX2/U7 (`readable`) | §11.8 | no `N_READABLE_PRESENT` when the archive fails in phases 1–4 (`zip::open`); a member failure after enumeration (CRC-32, decompression) keeps it |
+| S2-FIX2/U1 | erasure kind page | the program/device `body.basis` gets `grant_usable_at` after the coverage, like an agent's grant |
+| S2-FIX2/U2 (Q6) | §5.5.2 step 1, §5.4 | `grant_chain_check` and `grant_resolve`: a parent or cited grant that is present but itself invalid (`reference_target_invalid`) is `E_GRANT_GRANTER`, otherwise `E_GRANT_UNRESOLVED` |
+| S2-FIX2/U4 | §12.2 1a | no ESC in 12, 18, 19, 22, 26; `check_iso2022` for 7, 20, 21, 25, 27 (complete escape sequences, no announcer, no re-designation of an entry in force, smallest G set, from the Table 3 designations); 31–33, 35, 36 rejected with 14 and 34 |
+| S2-FIX2/U5 | §11.3 | `check_manifest_signatures`: the first invalid entry (equation or §9.4) decides before any unverifiable entry |
 | anchor bundle (review A medium-1 ②) | §14.1, §12.2 1e | `load_trust_anchors`: framing (`der::check_framing`) instead of 1a over the whole certificate; the walk applies the 1c canonical-content rules to its typed primitives (`der::check_typed_content`) and 1a to every `extnValue` |
 | review A low-1, 33-level array | §1.9, §13 | `json::parse_object` judges "top-level value not an object" after the value, so the depth violation is reported (`tests/s2_followup.rs`) |
 | review A low-1, top-level 2^64 | §1.6, §1.9 | the same change: `E_JSON_NUMBER_RANGE` at the token (`tests/s2_followup.rs`) |
