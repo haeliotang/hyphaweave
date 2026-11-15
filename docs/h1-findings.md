@@ -2206,12 +2206,14 @@ key take part in the predicate; spec-ambiguous, a sentence would settle it.
 refs[1] duplicates refs[0] (same rel and target origin/id/digest)" (2 problems) — the
 schema self-check still treats two `refs` entries that differ only in `kind` as
 duplicates, the reading S2-FIX3/F76 withdrew. Every other step of the Python job exits 0.
-`tools/` is outside this branch's remit, so it is left to the S2 workstream.
+`tools/` is outside this branch's remit, so it was left to the S2 workstream, which fixed
+it in `772a8e4` (merged here as `0ee3b51`); the Python job then passed all 16 steps.
 
 ## H1-S2 gate results
 
-Recorded 2026-11-16 on branch `r2/rust-s2`. Code at `e7d2b77`, after merging `origin/main`
-`3712151` and `s2/spec-revision` up to `23fc0f6` (S2-FIX3; 716 main cases, 202 frozen).
+Recorded 2026-11-16 on branch `r2/rust-s2`, head `0ee3b51` (Rust code as at `e7d2b77`), after
+merging `origin/main` `3712151` and `s2/spec-revision` up to `772a8e4` (S2-FIX3 and its
+schema-check fix; 716 main cases, 202 frozen).
 The reference verifier ran only as a black box, installed non-editable from this branch's
 `verifiers/python`. `CARGO_TARGET_DIR` was outside the repository, so the crash-fuzz
 `--binary` follows it and gate 3 gets `--rust-binary`/`--python-cli`; the Python job used
@@ -2221,7 +2223,7 @@ same way (684 and 689 main cases; gate 3 886 and 891 identical).
 
 | gate | result |
 |---|---|
-| 1. CI, both jobs, from the repository root | Python job (on `664e4bf`, the Python, tools and vectors of `23fc0f6`): 15 of 16 steps exit 0 — generators `--check`, pytest 419 passed 1 skipped, vectors 716/716, SHA256SUMS and `CHECK_FROZEN: PASS`, frozen 202/202, external, ablation (331 mutations, 296 killed, 26 documented equivalent, 0 unpinned, 0 catalogue errors), byte-flip (432,421 mutants, 0 survivors), crash fuzz (1,956 mutants, 0 crashes), spec examples, REUSE 3.3; **`check_schemas.py` exits 1** on two S2-FIX3 vectors (see "Python job step red at `23fc0f6`" above; a `tools/` matter, not changed here). Rust job (on `e7d2b77`): fmt, clippy all targets, clippy library, `cargo test --workspace` (17 test binaries, 120 passed, 0 failed, 3 ignored), both `vectors` runs, `cargo deny check`, `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz, gate 3: every step exit 0 |
+| 1. CI, both jobs, from the repository root (on `0ee3b51`) | Python job: all 16 steps exit 0 — generators `--check`, pytest 419 passed 1 skipped, vectors 716/716, SHA256SUMS and `CHECK_FROZEN: PASS`, frozen 202/202, schemas, external, ablation (331 mutations, 296 killed, 26 documented equivalent, 0 unpinned, 0 catalogue errors), byte-flip (432,421 mutants, 0 survivors), crash fuzz (1,956 mutants, 0 crashes), spec examples, REUSE 3.3 (at `664e4bf`, before `772a8e4`, the schema step had exited 1, see above). Rust job: fmt, clippy all targets, clippy library, `cargo test --workspace` (17 test binaries, 120 passed, 0 failed, 3 ignored), both `vectors` runs, `cargo deny check`, `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz, gate 3: every step exit 0 |
 | 2. vectors | Rust 716/716 main and 202/202 frozen |
 | 3. two-implementation comparison | allow list empty; 918 cases (716 + 202), 918 byte-identical, PASS |
 | 4. red checks | every change class removed on its own turns red and is restored (`cmp` equal, then `touch`): F61-3, Q2 (declaration, rotation, second order, cosignature cycle), T2 (code order; `N_KEY_UNDECLARED` through gate 3), Q1, Q3 (grant, declaration), F69-3, Q4 (RSA call site; ECDSA function by its unit test), T3, the anchor walk, review A low-1, S2-FIX2 (U1, U2, U4, U5, U7), S2-FIX2b, S2-FIX3 (F72 any non-passing cosignature, F74 pre-check and body code, F78, F80, F81) and the differential-fuzzing fixes. Not red because nothing reaches them: the step-5 deferral of a consent revocation (Q3), the ECDSA bound at the P-256 call site (the curve crate rejects the same signatures) and F72's "never keeps itself trusted" |
