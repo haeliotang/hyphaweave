@@ -2104,12 +2104,19 @@ members:
   that fails the equation is `E_MANIFEST_SIG_INVALID` even if another entry verifies
   [W10/L5; `docs/open-questions.md` §6 entry 27] decided by principle (Inceptless decision
   2026-11-11 #16; W10). Invalid beats unverifiable across the entries: every `ed25519`
-  entry is judged, and when any entry of a required key fails the equation the manifest
-  signature is `E_MANIFEST_SIG_INVALID`, whatever the array order and even when another
-  entry's key is undeclared; `E_KEY_UNKNOWN` is reported only when no entry is invalid
-  (the first-failing-entry rule of W10 is withdrawn, so an invented key id that sorts first
-  cannot turn a forged signature into an unverifiable one) [S2-FIX2/U5] decided by
-  principle (Inceptless decision 2026-11-15 #22; as S2-FIX1 T2 for record signatures). A **required key** for the manifest signature is a key that resolves
+  entry is judged, and the manifest signature is invalid when any entry of a required key
+  is invalid, whatever the array order and even when another entry's key is undeclared —
+  `E_MANIFEST_SIG_INVALID` when the entry fails the equation (step (5) decides this before
+  any §9.4 effect), otherwise the §9.4 code (`E_KEY_REVOKED`, `E_KEY_COMPROMISED`,
+  `E_KEY_EXPIRED`) when the §9.4 outcome of the entry's key at the manifest's `created_at`
+  is invalid, reported where a single-entry manifest signature reports it; `E_KEY_UNKNOWN`
+  is reported only when no entry is invalid in either way, and an entry whose §9.4 outcome
+  is `unverifiable` (`E_TS_UNTRUSTED`) leaves `E_KEY_UNKNOWN` as the code. The
+  first-failing-entry rule of W10 is withdrawn, so an invented key id that sorts first
+  cannot turn a forged signature, or a signature by a retired or compromised key, into an
+  unverifiable one [S2-FIX2/U5] decided by principle (Inceptless decision 2026-11-15 #22;
+  as S2-FIX1 T2 for record signatures; the §9.4 half by Inceptless decision 2026-11-15
+  #32). A **required key** for the manifest signature is a key that resolves
   in the verification context through a `weave.key.declared` or `weave.key.rotated` record;
   it does not have to be trusted for the cryptographic equation, which is evaluated before
   trust (§9.4). A **declared but untrusted** signing key therefore does not make the
@@ -3862,7 +3869,7 @@ changes wording only). The founder can overturn the items decided by principle.
 | S2-FIX2/U1 | a program's or device's `body.basis` grant chain is judged at the erasure's `recorded_at`, like an agent's `actor.grant` (expired/revoked → the grant codes) | `weave.erasure.md`, registry |
 | S2-FIX2/U2 (Q6) | §5.5.2 step 1 in two tiers: a parent or cited grant present but itself invalid → `E_GRANT_GRANTER` (invalid); absent or present but not valid otherwise → `E_GRANT_UNRESOLVED`; an invalid link beyond the depth bound now reaches the citing record as invalid | §5.4, §5.5.2, `weave.grant.md`, registry |
 | S2-FIX2/U4 | 1a: no ESC in NumericString, PrintableString, IA5String, VisibleString, UTF8String; the ISO 2022 register types judged by §11.4 and §8.23.5.4 from the Table 3 defaults instead of rejecting every ESC; DATE, TIME-OF-DAY, DATE-TIME, OID-IRI, RELATIVE-OID-IRI rejected with TIME and DURATION (stricter than X.690) | §12.2, registry |
-| S2-FIX2/U5 | every manifest signature entry is judged; an entry of a required key that fails the equation decides `E_MANIFEST_SIG_INVALID` before an undeclared key's `E_KEY_UNKNOWN`, whatever the order | §11.3, registry |
+| S2-FIX2/U5 | every manifest signature entry is judged; an entry of a required key that fails the equation decides `E_MANIFEST_SIG_INVALID` before an undeclared key's `E_KEY_UNKNOWN`, whatever the order; so does an invalid §9.4 outcome of a verified entry's key (its §9.4 code; decision 2026-11-15 #32) | §11.3, registry |
 | S2-FIX2/U6 | §11.5 W1 rule 1 states the verdict rule of X5 as stricter than §5.3 instead of "as in §5.3" (no change of behaviour) | §5.3, §11.5 |
 | S2-FIX2/U7 | `N_READABLE_PRESENT` is withheld only when the archive fails in phases 1–4 of the zip check order; a member-level failure after the entries were enumerated still reports it | §11.8, registry |
 
