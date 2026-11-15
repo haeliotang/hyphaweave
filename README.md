@@ -31,14 +31,19 @@ Read this before using anything in this repository:
   specification, schemas, vectors and the Python verifier; it does not perform
   the round trips.
 - **Two implementations: the Python reference verifier and the Rust verifier;
-  the Rust verifier has caught up with revision 3.** The Python reference
-  verifier lives in `verifiers/python/`; the second, independent implementation
-  (milestone H1, `verifiers/rust/`) was written from the specification and the
-  conformance vectors only, and its revision H1-FIX1 implements revision 3 of
-  the specification and the S1 rounds that followed it: it passes every current
-  vector and the candidate regression set. The revised Rust verifier has not
-  itself been re-reviewed yet, and passing the same vectors is necessary but not
-  sufficient evidence that the format is implementable from the text alone.
+  the Rust verifier has not yet caught up with the S2 round.** The Python
+  reference verifier lives in `verifiers/python/`; the second, independent
+  implementation (milestone H1, `verifiers/rust/`) was written from the
+  specification and the conformance vectors only. Its revisions H1-FIX1 to
+  H1-FIX2B implement revision 3 of the specification and the S1 rounds, and its
+  findings (`docs/h1-findings.md`) led to the S2 round of revision 3 (decision
+  2026-11-15 #8). The Python verifier and the vectors implement the S2 round; the
+  Rust verifier does not yet: on this snapshot it passes the candidate regression
+  set and every main vector except the two S2 rotation key-id cases
+  (`key-lifecycle/rotation-old-key-malformed`, `rotation-new-key-wrong-type`), and
+  its gate-3 allow list still lists the 37 report differences that the S2 Python
+  corrections removed. Passing the same vectors is necessary but not sufficient
+  evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
   J1/J2 acceptance cases and on a second implementation that conforms to the
@@ -51,13 +56,17 @@ Read this before using anything in this repository:
 - **Revised after review.** This snapshot includes H0 revision 1 (decision
   2026-11-10 #34), revision 2 (decision 2026-11-10 #42) and revision 3 (decision
   2026-11-11 #2) with its five follow-up rounds S1-FIX1 to S1-FIX5 (decisions
-  2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1, #2 and #3). Independent reviews found wire-semantics
+  2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1, #2 and #3) and the S2 round
+  (decision 2026-11-15 #8). Independent reviews found wire-semantics
   defects, and the revisions changed the format rules, the error-code registry,
   the trust-root model, the resource limits, the verifier and the vectors.
   Revision 3 reacts to the review of the second (Rust) implementation, which
   ran against the earlier text on its own branch; the S1 rounds then closed the
   defects that further reviews found in the revised text and in the Python
-  verifier. The regression set is a **candidate**
+  verifier, and the S2 round closed the ambiguities and Python defects that the
+  second implementation recorded (among them a security defect: a key
+  declaration signed by a compromised key was accepted when the only receipt
+  that could rescue it failed). The regression set is a **candidate**
   (`vectors/frozen/v0.1-candidate/`); official freeze begins only after J1/J2
   acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
 

@@ -1977,6 +1977,49 @@ rotation's own key material counts as declared).
   as §14.7 and ruling R3 require. Review A's runs confirm the hook is inert
   without the switch.
 
+## S2 dispositions (decision 2026-11-15 #8)
+
+The S2 round of specification revision 3 settled the findings below in the
+specification (rules tagged `[S2]`, `docs/open-questions.md` §7) and in the Python
+reference verifier. "Python corrected" means the reference verifier was wrong
+against the text and now follows it; "spec sentence" means the text admitted two
+readings and the more conservative one was written; "Rust to follow" names what the
+H1 follow-up has to change. Every row has a vector unless it says otherwise.
+
+| finding | disposition | Rust to follow |
+|---|---|---|
+| F38, F61-1 | spec sentence (§9.4, §5.3): every signature of a declaration or rotation is judged under §9.4 for its verdict; Python corrected (the self-signature exemption was the F61-1 security defect) | none (already this reading) |
+| F39 | spec sentence: `E_KEY_PUBLIC_KEY` precedes step (4), `sigs` is `[]`; Python corrected | none |
+| F40 | Python corrected (§14.6 was unique) | none |
+| F42 | records: Python corrected; manifest: spec sentence (a failed equation adds no TOFU, both agree) | none |
+| F44 | tier a: Python corrected; tier b: spec sentence (no identity, `missing`) | none observed |
+| F45, F67 (actor) | Python corrected | none |
+| F46 | Python corrected; §4.4 step 5 reworded to the required signer (frozen `sig/unknown-alg`) | none |
+| F47 | open for the founder (text unchanged) | — |
+| F48 | spec sentence: the §10.3 rules are independent; Python corrected | none |
+| F49, F50, F51, F52, F54, F56 | Python corrected | none |
+| F55 | second part: spec sentence (U8), Python corrected; first part (orders in steps (7)–(9)): open for the founder | — |
+| F57, F66 | spec sentence (1a: tag 0, ENUMERATED, constructed-only; list closed); Python corrected | none |
+| F58 | vectors (both already agreed) | none |
+| F59 | vectors (`Extension.critical` FALSE in the signer certificate and in TSTInfo; chain-head `renews`) | none |
+| F60 | spec sentence (`E_JSON_SIZE` in the listing phase); Python corrected | none |
+| F61-2, F67 (crashes) | Python corrected; inputs in the crash corpus | none |
+| F61-3 | spec sentence: key ids are checked as body schema **before** the key-material rule and before key resolution | **yes**: a malformed `old_key` currently ends in key resolution (`E_KEY_UNKNOWN`) and the `sigs` list is reported; `key-lifecycle/rotation-old-key-malformed`, `rotation-new-key-wrong-type` |
+| F62, F63 | spec sentence (1e and `--tsa-trust` by the module rules); Python corrected | none |
+| F64 | open for the founder (check-10 bounds) | — |
+| F65 | vectors (P-384) | none |
+| F67 (`sigs` member type) | Python corrected | none |
+| F68 | spec sentence (step 6 covers the whole chain before step 7); open point (steps 1–5 beyond the bound) for the founder | none for the decided part |
+| F69-1, F69-2 | open for the founder | — |
+| F69-3 | spec sentence: the §5.4 list is the order (Python's order) | **yes**: grantee before window (`grant/grantee-mismatch` with a late `recorded_at`; no committed vector reaches it) |
+| F69-4 | spec sentence: a rotation's key material declares its keys (§4.4) | none |
+| signature entries | spec sentence: step (4) over every entry, every entry judged (the Rust reading); Python corrected | none |
+
+Gate 3 after S2: the 37 allow-listed differences are gone (both reports are
+byte-identical on every committed case the Rust verifier passes), so the allow
+list in `verifiers/rust/scripts/gate3_known_differences.json` is stale and fails
+the gate until the H1 follow-up empties it.
+
 ## H1-FIX2B gate results
 
 Recorded 2026-11-15 on branch `h1/rust-verifier`, code at `97f56df`

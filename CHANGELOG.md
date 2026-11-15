@@ -6,6 +6,93 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round of revision 3 — 2026-11-15 — DRAFT, UNRELEASED
+
+Decision 2026-11-15 #8: the specification, the Python reference verifier and the
+vectors close the findings of the second implementation (`docs/h1-findings.md`,
+F38–F69). Every rule below is decided by principle (the more conservative reading)
+and recorded in `docs/open-questions.md` §7; five questions are left to the founder
+(§7.2) and their text is unchanged.
+
+**Version numbering.** The specification stays at revision 3: by the rule now
+written in §0.3 (and followed by the S1 rounds), a revision is opened by one
+decision's rulings and later decisions that close findings are rounds of it. The
+error-code registry numbers its own revisions per decision; this round is registry
+revision 7. The `format` identifier is unchanged.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **Signatures of key-lifecycle records** (F38, F61-1; security): §9.4 judges every
+  signature of a `weave.key.declared` or `weave.key.rotated` record — the
+  self-signature and the cosignatures, a rotation's old-key and new-key signatures —
+  for that record's verdict. A declaration self-signed by a compromised key is
+  rescued only by a verified, trusted, usable receipt; when the receipt fails
+  (`E_TS_SCHEMA`, `E_TS_CMS`, `E_TS_IMPRINT`), is untrusted or unusable, the
+  declaration is `unverifiable` `E_TS_UNTRUSTED` (it used to be `valid`). A
+  declaration recorded before its own `valid_from` is `E_KEY_EXPIRED`; one whose
+  cosigner was retired is `E_KEY_REVOKED`. The record still supplies its key's
+  material, class and window (§5.3).
+- **Signature entries** (§14.5, §4.4 step 2): step (4) resolves every `ed25519`
+  entry before any equation, so an unresolvable key anywhere is `E_KEY_UNKNOWN`;
+  every entry is judged and reports its own `sigs[].state`; the first failing entry
+  decides. A signature whose key state fails §9.4 is `unverified` (F52).
+- **`E_KEY_PUBLIC_KEY` before key resolution** (F39, F50): `sigs` is `[]`, and the
+  code wins over any other body defect.
+- **§4.4 step 5** (F46): decided by the required signer key (as the frozen vector
+  `sig/unknown-alg` already pinned); it applies to the signer-constrained kinds; a
+  rotation's explicit key material declares its keys (F69-4).
+- **Envelope sub-order** (F45, F67): the agent-only actor members are decided in the
+  presence phase; a `sigs` entry member of the wrong JSON type is `E_ENV_SIGS`
+  before any member's grammar.
+- **Rotation key ids** (F61-3): a malformed or missing `new_key`/`old_key` is
+  `E_KIND_BODY_SCHEMA`, decided before the key-material rule and before key
+  resolution.
+- **References** (F44, F58): a structurally failed record with a well-formed `origin`
+  and `id` is present (`unverifiable`); a record whose own `origin` or `id` is
+  malformed has no identity (`missing`).
+- **TOFU** (F42): a record signature check is context-trusted even if its equation
+  fails; a failed manifest equation adds no `L_KEY_TRUST_TOFU`.
+- **Erasure** (F48): the §10.3 rules are evaluated independently and reported
+  together.
+- **Containers**: an unlisted `.tsr` in `signatures/` is `E_TS_FILE` at any level
+  (F54); an L1 manifest that lists timestamps is `E_MANIFEST_LEVEL` (F56); an
+  unlisted or misnamed oversize `records/` file reports `E_MANIFEST_RECORD_EXTRA` and
+  `E_JSON_SIZE` (F55); a `records/` file nested above `MAX_JSON_DEPTH` is `E_JSON_SIZE`
+  in the listing phase (F60); a zip's entry checks run for every entry before any
+  member is decompressed (F49); a file target that is not a zip still reports the
+  archive identity (F40).
+- **Timestamps**: 1a rejects universal tag 0, a non-minimal ENUMERATED and the
+  primitive form of EXTERNAL, EMBEDDED PDV and CHARACTER STRING (F57, F66); 1e
+  judges the signer certificate by the RFC 5280 module and its version constraints,
+  open types included, never by a parsing library, and `--tsa-trust` anchors are
+  judged by the same rule (F62, F63).
+- **Order**: §5.5.2 step 6 covers the whole chain before the depth bound (F68); the
+  §5.4 coverage list is the evaluation order (F69-3).
+- **Crashes** (F51, F61-2, F67): lifecycle records whose body fails its kind schema
+  (a missing `key`, `key_type` or `effective_at`, or a malformed `effective_at`) no
+  longer crash the reference verifier.
+
+### Vectors, tools and tests
+
+- **Vectors**: 76 new main cases (498 → 574), among them the A1 rescue forms
+  (`key-lifecycle/declaration-compromised-*`), the H1 requests Y1 (identity), Y2
+  (`Extension.critical` FALSE, chain-head `renews`), Z1 (root revoked beyond the
+  depth bound), P-384 (`integrity-levels/l2-ts-signer-p384-*`, deterministic RFC 6979
+  ECDSA) and the three certificate-version shapes. The frozen candidate set is
+  unchanged (202 cases).
+- **Crash corpus**: the eight record-body crash inputs (F51, F61-2, F67) join
+  `tools/crash_corpus/` (154 inputs).
+- **`tools/crash_fuzz.py`**: exit code `3` (the test hook, never enabled by the gate)
+  is now a failure; the accepted set is `{0, 1, 2}`, as for the Rust gate.
+- **Tests**: `--tsa-trust` anchor shapes (F62, F63) in
+  `verifiers/python/tests/test_s2.py`.
+
+### Not yet followed by the Rust verifier
+
+The Rust verifier was not changed in this round. It fails the two rotation key-id
+vectors (F61-3), and its gate-3 allow list (37 entries) is stale: the S2 Python
+corrections made all 37 reports identical. The H1 follow-up adopts the S2 rules.
+
 ## H1-FIX2B — 2026-11-15 — DRAFT, UNRELEASED
 
 Supplement to revision 2 (decision 2026-11-15 #6, rulings Z1–Z4), after the
