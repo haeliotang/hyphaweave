@@ -2112,6 +2112,131 @@ def _build_s2_catalogue() -> None:
              "            error=structure_error.code,\n            input_sha256=input_sha,\n"
              "            input_size=archive_size,\n            is_zip=True,\n",
              ("container/readable-reported-after-member-crc-failure",)),
+        # ---------------------------------------------------- S2-FIX3 (2026-11-16 #1)
+        _lit("fix3-f72-nonsubject-flag", "verifier.py", "fix3.f72.material",
+             "F72: let a declaration whose cosignature did not pass still supply its "
+             "structural material (cosigner lookup, owner, trust is handed on)",
+             "    view.nonsubject_signature_failed = any(\n",
+             "    view.nonsubject_signature_failed = False and any(\n",
+             (_KL + "declaration-cosigner-retired-trust-not-handed-on",
+              _KL + "declaration-cosigner-retired-trust-not-handed-on-twice")),
+        _lit("fix3-f72-material-registration", "verifier.py", "fix3.f72.material",
+             "F72: register the structural material of a declaration whose cosignature "
+             "did not pass",
+             "        if view.nonsubject_signature_failed:\n            return\n",
+             "        if False:\n            return\n",
+             (_KL + "declaration-cosigner-retired-trust-not-handed-on",
+              _KL + "declaration-cosigner-retired-trust-not-handed-on-twice")),
+        _lit("fix3-f72-self-trust", "keys.py", "fix3.f72.self-trust",
+             "F72: let a declaration keep itself trusted through its own earlier verdict",
+             "            if declared_key in trusted and context.trusted_by_another_record(\n"
+             "                declared_key, record_digest, source\n            ):\n",
+             "            if declared_key in trusted:\n",
+             (_KL + "declaration-cosigner-retired-trust-not-handed-on-twice",),
+             equivalent_reason="defence in depth: with the F72 material rule every transient "
+             "trust the committed vectors can build is withdrawn together with the cosigner's "
+             "material, so the record already fails at key resolution (§14.5 step (4)); "
+             "pinned by verifiers/python/tests/test_s2_fix3.py::"
+             "test_a_declaration_never_keeps_itself_trusted"),
+        _lit("fix3-f73-owner-structural", "keys.py", "fix3.f73.owner",
+             "F73: resolve an owner through a declaration that fails the structural group",
+             "        owner_material = context.owner_declaration(owner)\n",
+             "        owner_material = context.declaration_material(owner)\n",
+             (_KL + "owner-declaration-sigs-absent",)),
+        _lit("fix3-f74-missing-new-public-key", "keys.py", "fix3.f74.rotation",
+             "F74: let a rotation without new_public_key reach the signature layer",
+             "    new_key = body.get(\"new_key\")\n    try:\n",
+             "    new_key = body.get(\"new_key\")\n    if \"new_public_key\" not in body:\n"
+             "        return b\"\", None\n    try:\n",
+             (_KL + "rotation-new-public-key-missing", _KL + "rotation-new-public-key-renamed")),
+        _lit("fix3-f75-layout-beside-member", "container.py", "fix3.f75.step1",
+             "F75: report only the member read failure, not the layout violation beside it",
+             "        errors.extend(container_input.extra_errors)\n",
+             "        pass\n",
+             ("container/readable-root-regular-file-zip-member-crc",)),
+        _lit("fix3-f76-refs-whole-value", "refs.py", "fix3.f76.refs",
+             "F76: compare refs entries by rel, origin, id and digest only",
+             "        identity = json.dumps(raw_entry, sort_keys=True, ensure_ascii=False)\n",
+             "        identity = repr((entry.rel, *entry.ref.subject_key(), entry.ref.digest))\n",
+             ("ref/refs-differ-only-in-kind", "ref/refs-differ-only-in-hint-order")),
+        _lit("fix3-f77-actor-class", "verifier.py", "fix3.f77.actor",
+             "F77: compare actor.type with actor.key's class only through a verified signature",
+             "        actor_class is not None\n",
+             "        False\n",
+             ("actor/agent-with-human-key-unknown-alg-only",)),
+        _lit("fix3-f78-target-labels", "vectors_runner.py", "fix3.f78.limitations",
+             "F78: count a record target's labels only when its envelope passed",
+             "                isinstance(target_view.loaded.value, dict)\n"
+             "                and \"labels\" in target_view.loaded.value\n",
+             "                target_view.envelope is not None\n"
+             "                and target_view.envelope.labels is not None\n",
+             ("labels/labels-on-record-failing-envelope",)),
+        _lit("fix3-f78-target-placeholder", "vectors_runner.py", "fix3.f78.limitations",
+             "F78: count a record target as a placeholder only when it passes §4.5",
+             "            placeholder=verifier.erase.looks_like_placeholder(target_view.loaded.value),\n",
+             "            placeholder=target_view.placeholder is not None,\n",
+             ("erasure/placeholder-malformed-record-target",)),
+        _lit("fix3-f79-valid-revocations", "container.py", "fix3.f79.manifest",
+             "F79: let every revocation record whose body parses affect the manifest "
+             "signature, valid or not",
+             "        if view.verdict == \"valid\" and view.key_revocation is not None:\n",
+             "        envelope = view.envelope\n"
+             "        if (\n"
+             "            view.key_revocation is None\n"
+             "            and envelope is not None\n"
+             "            and envelope.kind == kinds.KIND_REVOKED\n"
+             "        ):\n"
+             "            try:\n"
+             "                body = envelope.body\n"
+             "                state.add_revocation(keys_module.KeyRevocation(\n"
+             "                    key_id=body[\"key\"], reason=body[\"reason\"],\n"
+             "                    effective_at=body[\"effective_at\"],\n"
+             "                    effective_at_ms=keys_module._timestamp_ms(body[\"effective_at\"]),\n"
+             "                    recorded_at=envelope.recorded_at,\n"
+             "                    record_digest=view.digest or \"\"))\n"
+             "            except Exception:\n"
+             "                pass\n"
+             "            continue\n"
+             "        if view.verdict == \"valid\" and view.key_revocation is not None:\n",
+             (_KL + "mutual-revocation-order-a-manifest-after-both",
+              "container/manifest-sig-invalid-compromise-revocation-not-counted",
+              "container/manifest-sig-invalid-compromise-revocation-keeps-unknown-key")),
+        _lit("fix3-f79-step5-before-listing", "container.py", "fix3.f79.manifest",
+             "F79: judge the manifest signature's §9.4 effects only when the records "
+             "listing passes (after step (7))",
+             "    # S2 for the manifest signature: judge it with the manifest timestamp chain.\n"
+             "    try:\n",
+             "    # S2 for the manifest signature: judge it with the manifest timestamp chain.\n"
+             "    if _check_records_listing(manifest, present_listing, container_input):\n"
+             "        manifest_signature_keys = ()\n"
+             "    try:\n",
+             ("container/manifest-sig-compromised-key-before-records-listing",)),
+        _lit("fix3-f80-missing-placeholder", "container.py", "fix3.f80.erasure",
+             "F80: report no §10.3 code for a valid erasure whose placeholder is missing "
+             "or malformed",
+             "        if not matching:\n            found.add(\"E_ERASE_DIGEST_MISMATCH\")\n"
+             "            continue\n",
+             "        if not matching:\n            continue\n",
+             ("erasure/placeholder-malformed-only", "erasure/erasure-without-placeholder")),
+        _lit("fix3-f81-consent-signer", "verifier.py", "fix3.f81.consent",
+             "F81: accept a consent signed by any verified key instead of actor.key",
+             "            raise WeaveError(\"E_CONSENT_VALIDITY\", \"consent valid_from is after valid_until\")\n"
+             "        _require_valid_signer(view, context, envelope.actor_key, \"E_ACTOR_KEY_TYPE_MISMATCH\")\n",
+             "            raise WeaveError(\"E_CONSENT_VALIDITY\", \"consent valid_from is after valid_until\")\n"
+             "        if not view.verified_keys:\n"
+             "            _require_valid_signer(view, context, envelope.actor_key, \"E_ACTOR_KEY_TYPE_MISMATCH\")\n",
+             ("actor/consent-signed-by-other-human-key",)),
+        _lit("fix3-f82-attested-erasure", "container.py", "fix3.f82.erasure",
+             "F82: evaluate §10.3 rule 1 for valid erasure records only",
+             "        if erasure.verdict != \"valid\" and not _attested(erasure):\n",
+             "        if erasure.verdict != \"valid\":\n",
+             ("erasure/placeholder-other-id-attests-unverifiable-erasure",)),
+        _lit("fix3-erasure-structural", "container.py", "fix3.erasure.structural",
+             "S2-FIX3: let a placeholder attest a weave.erasure record that fails the "
+             "structural group (sigs absent, body schema)",
+             "        if not _erasure_record_structural(resolved):\n",
+             "        if resolved.envelope.kind != kinds.KIND_ERASURE:\n",
+             ("erasure/attested-erasure-sigs-absent", "erasure/attested-erasure-body-schema")),
     )
 
 

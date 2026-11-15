@@ -139,6 +139,12 @@ class RecordView:
     #: rule of a signer-constrained kind, held back until every other rule of
     #: the kind's step (7) has passed.
     deferred_signer_error: WeaveError | None = None
+    #: S2-FIX3 F72 (§5.3, Q2): an ``ed25519`` signature other than the subject
+    #: key's did not pass: its key could not be resolved, its §3.4 equation
+    #: failed, or it failed §9.4. Such a declaration supplies no key material
+    #: at all, so its key can neither verify another record's signature nor be
+    #: resolved as an owner, and trust is not handed on through it.
+    nonsubject_signature_failed: bool = False
 
     @property
     def subject_key(self) -> tuple[str, str, str] | None:
@@ -199,6 +205,7 @@ class RecordView:
             None if self.attestation is None else tuple(sorted(self.attestation.items())),
             self.admitted_declaration is not None,
             self.admitted_rotation is not None,
+            self.nonsubject_signature_failed,
         )
 
 
@@ -226,6 +233,9 @@ class Context:
         self.pending_touched = False
         self._index: dict[tuple[str, str, str], list[RecordView]] = {}
         self._declared_material: dict[str, tuple[bytes, str]] = {}
+        self._owner_material: dict[str, tuple[bytes, str]] = {}
+        #: S2-FIX3 F72: which declarations (by digest) put a key in ``trusted``.
+        self._trust_sources: dict[str, set[tuple[str, str]]] = {}
         #: Where a key's governing declaration material came from: ``"keyset"``
         #: or ``"context"`` (S8.10: N_KEY_TOFU covers context declarations only).
         self._material_source: dict[str, str] = {}
@@ -252,6 +262,8 @@ class Context:
         self.grant_state = GrantState()
         self.consent_revocations = {}
         self._declared_material = {}
+        self._owner_material = {}
+        self._trust_sources = {}
         trusted: set[str] = set()
         self._material_source = {}
         self._rebuild_governing_classes()
@@ -267,6 +279,9 @@ class Context:
                     _record_source(self._material_source, declaration.key_id, source)
                     if declaration.key_type in ("human", "organization"):
                         trusted.add(declaration.key_id)
+                        self._trust_sources.setdefault(declaration.key_id, set()).add(
+                            (source, view.digest or "")
+                        )
                 if view.admitted_rotation is not None:
                     self.key_state.add_rotation(view.admitted_rotation)
                     rotation = view.admitted_rotation
@@ -280,6 +295,9 @@ class Context:
                 _record_source(self._material_source, declaration.key_id, source)
                 if declaration.key_type in ("human", "organization"):
                     trusted.add(declaration.key_id)
+                    self._trust_sources.setdefault(declaration.key_id, set()).add(
+                        (source, view.digest or "")
+                    )
             rotation = view.key_rotation
             if rotation is not None:
                 _record_source(self._material_source, rotation.new_key, source)
@@ -288,14 +306,26 @@ class Context:
         self._trusted_human_org = frozenset(trusted)
 
     def _register_declared_material(self, view: RecordView) -> None:
-        """Owner lookup material: any structurally usable declaration, valid or not."""
+        """Owner lookup material: any structurally usable declaration, valid or not.
+
+        S2-FIX3 F72 (§5.3, Q2): a declaration in which a signature other than
+        its subject key's fails §9.4 supplies no material at all, neither for
+        verifying signatures by its key nor for resolving it as an owner.
+        S2-FIX3 F73 (§5.3, §9.1 rule 3): an owner resolves only through a
+        declaration that passes the §14.1 structural group (``sigs`` presence
+        included), the declarations a governing class is taken from.
+        """
         envelope = view.envelope
         if envelope is None or envelope.kind != kinds.KIND_DECLARED:
+            return
+        if view.nonsubject_signature_failed:
             return
         body = envelope.body
         key_id = body.get("key")
         key_type = body.get("key_type")
-        if not isinstance(key_id, str) or key_id in self._declared_material:
+        if not isinstance(key_id, str):
+            return
+        if key_id in self._declared_material and key_id in self._owner_material:
             return
         if key_type not in ("human", "organization", "agent", "program", "device"):
             return
@@ -305,10 +335,16 @@ class Context:
             return
         if encoding.key_id_from_public_key(public_key) != key_id:
             return
-        self._declared_material[key_id] = (public_key, key_type)
+        self._declared_material.setdefault(key_id, (public_key, key_type))
+        if key_id not in self._owner_material and _structural_declaration_class(view) is not None:
+            self._owner_material[key_id] = (public_key, key_type)
 
     def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
         return self._declared_material.get(key_id)
+
+    def owner_declaration(self, key_id: str) -> tuple[bytes, str] | None:
+        """S2-FIX3 F73: an owner's material and class from a structurally valid declaration."""
+        return self._owner_material.get(key_id)
 
     def is_declared_key(self, key_id: str) -> bool:
         return self.key_state.is_declared(key_id)
@@ -316,6 +352,18 @@ class Context:
     def trusted_human_org(self) -> frozenset[str]:
         """Human/organization keys trusted via the keyset and its closure."""
         return self._trusted_human_org
+
+    def trusted_by_another_record(self, key_id: str, record_digest: str, source: str) -> bool:
+        """S2-FIX3 F72 (§5.3): whether a record other than the one judged trusts *key_id*.
+
+        "Already trusted" never comes from the declaration being judged: the
+        fixed point must not keep a declaration valid on the strength of its
+        own verdict in an earlier pass. A record is identified by its source
+        (``keyset`` or ``context``) and digest, so a container copy of a keyset
+        declaration is trusted through the keyset.
+        """
+        own = ("keyset" if source == "keyset" else "context", record_digest)
+        return bool(self._trust_sources.get(key_id, set()) - {own})
 
     def material_source(self, key_id: str) -> str | None:
         """``"keyset"``/``"context"`` for a key's governing material (S8.10)."""
@@ -720,6 +768,14 @@ def _verify_signatures(
         states.append({"key": signature.key, "state": "valid"})
         verified.add(signature.key)
     view.verified_keys = frozenset(verified)
+    # S2-FIX3 F72 (§5.3, Q2): every signature other than the subject key's
+    # counts only when it passes (resolved key, §3.4 equation, §9.4).
+    view.nonsubject_signature_failed = any(
+        signature.is_ed25519
+        and signature.key != subject_key
+        and state["state"] != "valid"
+        for signature, state in zip(envelope.sigs, states)
+    )
     if first_invalid is not None:
         raise first_invalid
     if unknown_key:
@@ -1110,6 +1166,24 @@ def _check_actor_and_authorization(
                     "E_ACTOR_KEY_TYPE_MISMATCH",
                     "a signing key's class is incompatible with actor.type",
                 )
+    # S2-FIX3 F77 (§5.1): actor.type is compared with the class of actor.key
+    # itself, which needs no verified signature by that key; the comparison
+    # is invalid and so precedes the grant coverage of an agent record, whose
+    # outcome may be unverifiable (invalid first). An ed25519 entry by
+    # actor.key was compared in the loop above, in array order.
+    actor_class = context.key_state.key_type(envelope.actor_key)
+    if (
+        actor_class is not None
+        and actor_class != envelope.actor_type
+        and not any(
+            signature.is_ed25519 and signature.key == envelope.actor_key
+            for signature in envelope.sigs
+        )
+    ):
+        raise WeaveError(
+            "E_ACTOR_KEY_TYPE_MISMATCH",
+            "the declared class of actor.key is incompatible with actor.type",
+        )
     if envelope.actor_type == "agent" and envelope.kind != kinds.KIND_GRANT:
         # Delegated weave.grant records are governed by the delegation rules;
         # every other agent record (any stage) needs grant coverage (M-3).
@@ -1200,6 +1274,7 @@ def _attempt_record_pass(view: RecordView, context: Context, *, own_effects: boo
     view.grant_revocation = None
     view.consent_revocation = None
     view.deferred_signer_error = None
+    view.nonsubject_signature_failed = False
     try:
         value = view.loaded.value
         if value is None:

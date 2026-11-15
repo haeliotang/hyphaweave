@@ -66,8 +66,15 @@ class _DeclaredContext:
     def declaration_material(self, key_id: str):
         return self._material
 
+    def owner_declaration(self, key_id: str):
+        return self._material
+
     def trusted_human_org(self) -> frozenset[str]:
         return self._trusted
+
+    def trusted_by_another_record(self, key_id: str, record_digest: str, source: str) -> bool:
+        # The trusted keys of this fake come from records other than the one judged.
+        return key_id in self._trusted
 
     def is_declared_key(self, key_id: str) -> bool:
         return self._material is not None

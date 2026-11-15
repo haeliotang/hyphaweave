@@ -4171,6 +4171,203 @@ declare(
 )
 
 
+
+# ---------------------------------------------------------------------------
+# S2-FIX3 (decision 2026-11-16 #1): differences found by the H1-S2 differential
+# fuzzing (h1-findings F70-F82). Every expected conclusion is hand-written from
+# the specification text.
+# ---------------------------------------------------------------------------
+
+declare(
+    "jcs",
+    "top-level-array-depth-33",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_SIZE",),
+    build=lambda: raw(b"[" * 33 + b"]" * 33 + b"\n"),
+    records=({"id": None, "kind_known": None, "refs": []},),
+    notes="S2-FIX3 F70 (§1.9, §13): a top-level array nested 33 levels deep. 'Top-level "
+    "value not an object' is a property of the whole value, judged after it, so the "
+    "first violation in byte order is the depth violation at the 33rd '[': E_JSON_SIZE, "
+    "not E_JSON_INVALID.",
+)
+
+declare(
+    "jcs",
+    "top-level-integer-above-range",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_NUMBER_RANGE",),
+    build=lambda: raw(b"18446744073709551616\n"),
+    records=({"id": None, "kind_known": None, "refs": []},),
+    notes="S2-FIX3 F70 (§1.6, §1.9): the whole input is the integer 2^64. The number class "
+    "is decided at its token in the stage-one pass and 'top-level value not an object' "
+    "only after the value: E_JSON_NUMBER_RANGE, not E_JSON_INVALID.",
+)
+
+declare(
+    "jcs",
+    "top-level-array-shallow",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_INVALID",),
+    build=lambda: raw(b"[" * 32 + b"]" * 32 + b"\n"),
+    records=({"id": None, "kind_known": None, "refs": []},),
+    notes="S2-FIX3 F70 (§1.9): control for top-level-array-depth-33: 32 levels are within "
+    "MAX_JSON_DEPTH and the value has no other defect, so the top-level value that is "
+    "not an object decides: E_JSON_INVALID.",
+)
+
+
+def _fix3_ref_pair(first_edit, second_edit) -> list[dict[str, Any]]:
+    first = json.loads(json.dumps(_missing_ref()))
+    second = json.loads(json.dumps(_missing_ref()))
+    first_edit(first["ref"])
+    second_edit(second["ref"])
+    return [first, second]
+
+
+def _fix3_drop_kind(reference: dict[str, Any]) -> None:
+    reference.pop("kind", None)
+
+
+def _fix3_keep(reference: dict[str, Any]) -> None:
+    return None
+
+
+def _fix3_hints(*hints: str):
+    def edit(reference: dict[str, Any]) -> None:
+        reference["hints"] = list(hints)
+
+    return edit
+
+
+declare(
+    "ref",
+    "refs-differ-only-in-kind",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(recordlib.note("ref-fix3-kind", refs=_fix3_ref_pair(_fix3_drop_kind, _fix3_keep))),
+    notices=("N_KIND_UNKNOWN_OPAQUE", "N_REF_MISSING"),
+    notes="S2-FIX3 F76 (§6.1): two refs entries with the same rel, origin, id and digest; "
+    "the first reference object has no kind member, the second claims example.note. "
+    "Duplicates repeat an identical (rel, ref) pair, the reference object compared as a "
+    "whole JSON value, so these are not duplicates: no E_ENV_REFS (both resolve as missing).",
+)
+
+declare(
+    "ref",
+    "refs-differ-only-in-hint-order",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(
+        recordlib.note(
+            "ref-fix3-hints",
+            refs=_fix3_ref_pair(
+                _fix3_hints("https://a.example/x", "https://b.example/y"),
+                _fix3_hints("https://b.example/y", "https://a.example/x"),
+            ),
+        )
+    ),
+    notices=("N_KIND_UNKNOWN_OPAQUE", "N_REF_MISSING"),
+    notes="S2-FIX3 F76 (§6.1): two refs entries equal but for the order of their hints "
+    "arrays. Arrays are ordered JSON values, so the reference objects are not identical "
+    "and the entries are not duplicates: no E_ENV_REFS (control: ref/duplicate-refs).",
+)
+
+declare(
+    "actor",
+    "agent-with-human-key-unknown-alg-only",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ACTOR_KEY_TYPE_MISMATCH",),
+    build=lambda: rec(
+        {
+            **(
+                lambda signed: {
+                    **signed,
+                    "sigs": [{**entry, "alg": "x-unknown-alg"} for entry in signed["sigs"]],
+                }
+            )(
+                recordlib.signed(
+                    recordlib.note(
+                        "actor-fix3-17",
+                        actor_value={
+                            "type": "agent",
+                            "key": _kid("human-1"),
+                            "model": "example/model@1.2.3",
+                            "on_behalf_of": _kid("human-1"),
+                            "grant": recordlib.make_ref(_kid("human-1"), "g", MISSING_DIGEST),
+                            "idempotency_key": "idem-1",
+                        },
+                    ),
+                    "human-1",
+                )
+            )
+        }
+    ),
+    records=({"id": "actor-fix3-17", "sigs": [{"key": _kid("human-1"), "state": "ignored"}]},),
+    args=("--keys", "@keyset"),
+    notes="S2-FIX3 F77 (§5.1, §14.5): actor/agent-with-human-key with its only signature "
+    "entry's alg changed to an unknown algorithm (ignored, §3.6). actor.type agent is "
+    "compared with the class of actor.key (human-1, declared human), which needs no "
+    "verified signature: E_ACTOR_KEY_TYPE_MISMATCH (invalid), before the agent's grant "
+    "coverage, whose outcome here would be unverifiable E_GRANT_UNRESOLVED (invalid first).",
+)
+
+
+def _fix3_consent_signed_by_other_human() -> dict[str, Any]:
+    granted = consent_grant("consent-fix3-other-signer")
+    unsigned = {key: value for key, value in granted.items() if key != "sigs"}
+    return recordlib.signed(unsigned, "human-2")
+
+
+declare(
+    "actor",
+    "consent-signed-by-other-human-key",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ACTOR_KEY_TYPE_MISMATCH",),
+    build=lambda: rec(_fix3_consent_signed_by_other_human()),
+    records=(
+        {
+            "id": "consent-fix3-other-signer",
+            "sigs": [{"key": _kid("human-2"), "state": "valid"}],
+        },
+    ),
+    args=("--keys", "@keyset"),
+    notes="S2-FIX3 F81 (weave.consent.granted signer rule, §4.4 steps 3-5): a consent whose "
+    "actor is human-1 but whose only signature is a valid one by human-2, another human "
+    "key. The required signer of the consent kind is actor.key (§4.4: 'actor.key for an "
+    "ordinary kind'; the kind page names no other signer), so the required "
+    "human/organization signer is missing and the kind's dedicated code applies: "
+    "E_ACTOR_KEY_TYPE_MISMATCH (invalid); a signature by some other human key does not "
+    "satisfy it.",
+)
+
+declare(
+    "labels",
+    "labels-on-record-failing-envelope",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_SENSITIVITY",),
+    build=lambda: rec(with_field(recordlib.note("labels-fix3-1"), "labels", {"sensitivity": "nope"})),
+    limitations=("L_LABELS_ARE_CLAIMS", "L_OFFLINE_CONTEXT"),
+    notes="S2-FIX3 F78 (§14.9, the S2 reading of F37): a record target carrying a labels "
+    "member whose sensitivity is outside the vocabulary (E_ENV_SENSITIVITY, check (2)). "
+    "L_LABELS_ARE_CLAIMS is a fact about the record as parsed: it carries a labels member, "
+    "whether or not the envelope then passes, the same reading as for the records of a "
+    "container.",
+)
+
 # === END CASE SECTIONS ===
 
 

@@ -22,7 +22,9 @@ revoked consent at or after the revocation's effective time are invalid
 - `actor.type` **MUST** be `human` or `organization`; a non-human/organization signer is
   `E_ACTOR_KEY_TYPE_MISMATCH` (parent specification §5.1/Q30). If `sigs` is non-empty but the
   required human/organization signer is missing or wrong, that code is reported instead of
-  `E_SIG_REQUIRED`.
+  `E_SIG_REQUIRED`. The required signer is `actor.key` (parent specification §4.4): a valid
+  signature by another human or organization key does not satisfy the rule
+  [S2-FIX3/F81] decided by principle (Inceptless decision 2026-11-16 #1).
 - `sigs` **MUST** be present unless... (it is required: `stage == accepted`); missing or
   empty `sigs` is `E_SIG_REQUIRED`.
 - `salt`, `refs` and `labels` follow the parent specification.

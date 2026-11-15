@@ -273,6 +273,12 @@ deeper than the value that contains it, and a scalar is a leaf value at its own 
 depth above `MAX_JSON_DEPTH` is `E_JSON_SIZE` and, like any size violation, is an invalid
 outcome, never a crash [S3] decided (Inceptless decision 2026-11-11 #2; S3).
 
+**"Top-level value not an object" is a property of the whole value.** It is decided after
+the top-level value has been read, so any violation inside that value comes first in byte
+order: `[[…]]` nested 33 levels deep is `E_JSON_SIZE` and the input `18446744073709551616`
+is `E_JSON_NUMBER_RANGE`, while a well-formed array or scalar at the top level is
+`E_JSON_INVALID` [S2-FIX3/F70] decided by principle (Inceptless decision 2026-11-16 #1).
+
 **UTF-8 validity is a whole-input precondition.** An input that is not valid UTF-8 is
 `E_JSON_INVALID` regardless of any structural violation (for example a depth violation) at a
 lower byte offset: UTF-8 decoding precedes the per-position classification of the table
@@ -802,7 +808,11 @@ apply to the normal envelope only and are not used for `weave.erased` [Q15] deci
 `actor.key`: a key declared `human` may only be the actor key of records with `actor.type ==
 "human"`, an `organization` key only of `organization` records, an `agent` key only of
 `agent` records, and `program`/`device` likewise. A violation is
-`E_ACTOR_KEY_TYPE_MISMATCH` (invalid) [E2][§8].
+`E_ACTOR_KEY_TYPE_MISMATCH` (invalid) [E2][§8]. The comparison needs the declared class of
+`actor.key` only, not a verified signature by it: an `agent` record whose `actor.key` is
+declared `human` is `E_ACTOR_KEY_TYPE_MISMATCH` even when its only signature entries use an
+unknown algorithm, and, being invalid, the outcome precedes the record's grant coverage
+(§5.4), whose outcome may be `unverifiable` [S2-FIX3/F77] decided by principle (Inceptless decision 2026-11-16 #1).
 
 For ordinary (non-special) kinds, `actor.type` **MUST** additionally be compatible with
 every signing key declared in the verification context, again with
@@ -957,7 +967,16 @@ subject key is `unverifiable` `E_KEY_UNKNOWN` unless another record supplies tha
 whose signature does not pass §9.4 therefore never hands material or trust to another key;
 in particular a rotation whose old-key signature fails §9.4 never supplies key material
 (the previous-manifest link of §11.5 applies the stricter verdict rule of X5) [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #18;
-Q2). This is declaration resolution, not root selection [Q12] decided (Inceptless decision
+Q2). A signature counts in this sense only when its key resolves, its §3.4 equation holds
+and it passes §9.4: a declaration with another signature whose key cannot be resolved,
+whose equation fails or which fails §9.4 supplies no material **of any kind** — neither the
+material that verifies its key's signatures on other records, nor the material a
+cosignature on another declaration is verified against, nor an owner for §9.1 rule 3. Trust
+is therefore never handed on through such a declaration: a declaration whose trusting
+cosignature is made by its key is not trusted through it, and neither is any declaration
+further down that chain.
+"Already trusted" means trusted through a record other than the declaration being judged;
+a declaration never keeps itself trusted [S2-FIX3/F72] decided by principle (Inceptless decision 2026-11-16 #1). This is declaration resolution, not root selection [Q12] decided (Inceptless decision
 2026-11-10 #34; Q12).
 
 ### 5.4 Agent authorisation: every agent record needs a covering grant
@@ -1222,7 +1241,10 @@ does not have a digest for an existing internal reference must compute one when 
 
 In `refs[]` entries, the entry object is exactly `{"rel":<rel>,"ref":<reference object>}`;
 duplicate entries are rejected (`E_ENV_REFS`). Two entries are duplicates when they repeat
-an identical `(rel, ref)` pair.
+an identical `(rel, ref)` pair: the same `rel` and two reference objects equal as JSON
+values — the same members with the same values, `kind` and `hints` included, `hints` in
+the same order. Entries that differ only in a reference's `kind` claim or in its `hints`
+are not duplicates [S2-FIX3/F76] decided by principle (Inceptless decision 2026-11-16 #1).
 
 ### 6.2 `rel` — closed vocabulary
 
@@ -1602,7 +1624,10 @@ Semantic rules:
    otherwise valid (it only identifies the owning principal), but the owner key must be in
    the trusted set (rule 4): an owner that resolves but is not trusted makes the declaration
    `unverifiable` with `E_KEY_UNTRUSTED` [R2] decided (Inceptless decision 2026-11-10 #42;
-   R2).
+   R2). An owner resolves only through a declaration that passes the §14.1 structural
+   group, the declarations its class is taken from (§5.3), and that supplies material
+   under §5.3: an owner whose only declaration fails that group — for example one without
+   `sigs` — cannot be resolved, `E_KEY_UNKNOWN` [S2-FIX3/F73] decided by principle (Inceptless decision 2026-11-16 #1).
 4. **Cosignature and trust roots.** A declaration is trusted as follows:
    - **Keyset declarations (local trust input).** A `weave.key.declared` record supplied
      through `--keys` whose `key_type` is `human` or `organization` and which passes its own
@@ -1677,7 +1702,11 @@ Semantic rules:
    (Inceptless decision 2026-11-10 #34; M-11). This **structural** validation is part of
    the kind body check and runs before signature verification, so it wins over an `E_SIG_*`
    outcome (T13). Curve-point decoding failures during an actual signature check remain the
-   §3.4 codes.
+   §3.4 codes. `new_public_key` is required, so a rotation without it — the member absent,
+   or present only under another name — fails this rule: `E_KEY_ROTATION_KEYS`, decided
+   before key resolution like the other structural defects of the rule, so no signature
+   check runs (`sigs` is `[]`); it is neither the new key's `E_KEY_UNKNOWN` at the signature
+   layer nor `E_KIND_BODY_SCHEMA` after it [S2-FIX3/F74] decided by principle (Inceptless decision 2026-11-16 #1).
 3. The new-key signature is verified against `body.new_public_key`; the old-key signature
    is verified against `body.old_public_key` when present, otherwise against the old key's
    declaration in context. If the needed key material is absent, the record is
@@ -1720,7 +1749,15 @@ for counter-signatures (§5.1) [Q30] decided (Inceptless decision 2026-11-10 #34
 The verifier collects **every** valid revocation in the verification context, including
 `weave.key.revoked` records supplied through the `--keys` keyset and records inside the
 container. The effect is independent of record order and of whether a revocation sits in the
-keyset or in the container [S2] decided (Inceptless decision 2026-11-11 #2; S2). The
+keyset or in the container [S2] decided (Inceptless decision 2026-11-11 #2; S2). A
+revocation record that is not valid — for example one signed by a key that an earlier
+revocation already revoked (§9.5), or one whose signature fails its equation — has no effect
+on any signature, the manifest signature included: for the manifest signature, which
+§14.5 judges at container step (5), the validity of the revocation records is established
+by evaluating the records present in the container first (the listed order governs
+reporting and stopping, not the internal computation order), so its §9.4 outcome is
+reported at step (5), before the level/chain and records-listing stages
+[S2-FIX3/F79] decided by principle (Inceptless decision 2026-11-16 #1). The
 `retired`/`other` family and the `key-compromise` family are evaluated **independently**;
 neither overrides the other (T2):
 
@@ -1933,12 +1970,30 @@ Tacitweave retention-expiry case (automatic discard recorded as an erasure) expr
 
 ### 10.3 Cross-checks in a container
 
-When both the placeholder and its erasure record are present in a container, the three
-rules below are evaluated independently and every violation is reported together, so a
+In a container, the three rules below are evaluated independently and every violation is reported together, so a
 container can carry `E_ERASE_DIGEST_MISMATCH`, `E_ERASE_ATTESTATION` and
 `E_ERASE_CONTRADICTION` at once (§14.5: the failing stage reports every violation it finds).
 A placeholder that fails its own §4.5 structure is an invalid record, not a placeholder, for
-these rules [S2/F48] decided by principle (Inceptless decision 2026-11-15 #8; S2):
+these rules [S2/F48] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+
+Which records the rules see [S2-FIX3] decided by principle (Inceptless decision 2026-11-16 #1):
+
+- a `weave.erasure` record is an erasure record for these rules only when it passes the
+  §14.1 structural group (canonical form, envelope structure, `sigs` presence and format,
+  body schema), as a placeholder only when it passes §4.5: a placeholder whose
+  `attestation` names an erasure record that fails the group — for example one whose
+  `sigs` is absent — does not resolve to its erasure record (rule 2, `E_ERASE_ATTESTATION`);
+- rule 1 is evaluated for every erasure record that is valid and for every erasure record
+  that a placeholder's `attestation` names, whatever that record's own verdict. A valid
+  erasure record whose erased identity has no placeholder in the container — none at all,
+  or only one that fails §4.5 — has a missing placeholder (`E_ERASE_DIGEST_MISMATCH`)
+  [S2-FIX3/F80]; and an erasure record named by a placeholder whose own `origin` or `id`
+  differs from the erasure's `erased` reference breaks rule 1 for that erasure record
+  (`E_ERASE_DIGEST_MISMATCH`), also when the erasure record is itself not valid (for
+  example `unverifiable` through its authorising grant) [S2-FIX3/F82]. An erasure record
+  that is not valid and that no placeholder names is judged by its own verdict only.
+
+The rules:
 
 1. the erasure record's `erased` reference MUST resolve to a `weave.erased` placeholder in
    the same container with the same `origin` and `id` whose `digest` member equals
@@ -2469,7 +2524,12 @@ first phase that fails decides the code:
 
 Only after these phases are entry paths, symbolic links and duplicate names judged
 (`E_CONTAINER_ENTRY`) and is any content decompressed [W7] decided (Inceptless decision
-2026-11-11 #16; W7). Rules 1–4 and this order apply to **every** entry of the archive and
+2026-11-11 #16; W7). An entry-check failure (path, symbolic link, duplicate name) stops
+before any member is read. Otherwise the entries are enumerated, and the layout of §11.1
+(an entry outside it, such as a root regular file named `readable`, is
+`E_CONTAINER_ENTRY`) and a member that fails as it is read (a CRC-32 mismatch or a
+decompression failure, `E_CONTAINER_ZIP`) are independent violations of the same container
+step (1): both are reported together [S2-FIX3/F75] decided by principle (Inceptless decision 2026-11-16 #1). Rules 1–4 and this order apply to **every** entry of the archive and
 to a supplied previous zip exactly as to a target zip (§11.5, W2). Each entry is then
 decompressed under a bounded output cap; decompressed output MUST NOT exceed the declared
 uncompressed size. **Decompression is a structural operation that never
@@ -3010,7 +3070,12 @@ switch of §14.7 and takes effect only for the test-only check-skip hook.
   anchor "decodes as an X.509 certificate" under exactly the rules of §12.2 1e — the module
   walk with the 1b/1c rules, the version constraints, and the 1a rules for every
   `extnValue` — so a certificate that 1e would reject as a signer certificate is also
-  rejected as an anchor, and one that 1e accepts is accepted [S2/F62/F63] decided by principle (Inceptless decision 2026-11-15 #8; S2). On
+  rejected as an anchor, and one that 1e accepts is accepted [S2/F62/F63] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+  The 1c rules of the walk include the canonical content of every typed primitive (a
+  minimal INTEGER such as `serialNumber`, a BIT STRING whose unused bits are zero, a
+  BOOLEAN such as `critical` encoded `0xFF`, the time forms); an open type
+  (`AttributeTypeAndValue.value`, an algorithm's `parameters`) is judged by its framing
+  only [S2-FIX3/F71] decided by principle (Inceptless decision 2026-11-16 #1). On
   `container` it supplies the anchors for that container. On `vectors` it supplies a default anchor for every case that
   does not name its own `--tsa-trust` in its `expected.json` `args`; per-case arguments
   replace the caller-supplied value for that case. `--keys` and `--previous` are not
@@ -3138,7 +3203,10 @@ Two documented ordering exceptions live inside the kind checks:
   rule 2, T13). That structural check first requires `new_key` and `old_key` to be present
   key ids (§2.5): a missing or malformed key id, or one of another JSON type, is
   `E_KIND_BODY_SCHEMA`, decided before the key-material rule (which compares a public key
-  with a well-formed key id) and before key resolution [S2/F61-3] decided by principle (Inceptless decision 2026-11-15 #8; S2). Curve-point decoding failures during an actual signature check remain
+  with a well-formed key id) and before key resolution [S2/F61-3] decided by principle (Inceptless decision 2026-11-15 #8; S2). The
+  key-material rule itself is decided before key resolution as well, a missing
+  `new_public_key` included (§9.2 rule 2), so no signature check runs (`sigs` is `[]`)
+  [S2-FIX3/F74] decided by principle (Inceptless decision 2026-11-16 #1). Curve-point decoding failures during an actual signature check remain
   `E_SIG_*` (§3.4).
 
 Within step (2) the envelope sub-order is: required top-level members in §4.1 table order
@@ -3185,7 +3253,9 @@ the same step is not reported for it, as for any check that is not run after the
 failure [S2-FIX1/Q3] decided (Inceptless decision 2026-11-15 #18; Q3).
 
 Per container: (1) entry enumeration/safety; (2) manifest parse/canonical form;
-(3) manifest structure; (4) manifest digest; (5) manifest signature; (6) level/chain
+(3) manifest structure; (4) manifest digest; (5) manifest signature (its §3.4 equations
+and the §9.4 effects on its keys, judged with the valid revocations only, S2-FIX3/F79);
+(6) level/chain
 structure completeness; (7) records listing and per-record verification; (8) cross-record
 state rules (key lifecycle, grants, consents, erasure, label propagation); (9) blobs;
 (10) previous-manifest chain; (11) timestamps; (12) aggregation and report.
@@ -3340,8 +3410,10 @@ Report rules:
   the signature and its key state both pass. Every entry is judged and reports its own state,
   also after an earlier entry failed (§4.4 step 2, §14.5); an entry whose key cannot be
   resolved is `unverified`. When the record stops
-  before the signature layer — at steps (1)–(3), or at the `E_KEY_PUBLIC_KEY` decision that
-  precedes step (4) for a declaration — no signature check ran and `sigs` is `[]`
+  before the signature layer — at steps (1)–(3), at the `E_KEY_PUBLIC_KEY` decision that
+  precedes step (4) for a declaration, or at the structural key checks that precede it for
+  a rotation (`E_KIND_BODY_SCHEMA` for a key id, `E_KEY_ROTATION_KEYS` for the key
+  material, S2-FIX3/F74) — no signature check ran and `sigs` is `[]`
   [S2/F39/F52] decided by principle (Inceptless decision 2026-11-15 #8; S2) [S8⑩][S16/F12] decided (Inceptless decision
   2026-11-11 #2; S8/F12).
 - `refs[]` reports the reference resolutions established so far when a later reference or
@@ -3397,7 +3469,10 @@ Report rules:
     SHA-256 of the **raw `manifest.json`
     bytes** and `input.size` is their byte size. A later failure (for example an oversized
     record file, or an oversize `.tsr`) is not tier (b): once the manifest is valid the
-    identity is tier (a), and the §14.5/T16 report shape applies. **(c)** When
+    identity is tier (a), and the §14.5/T16 report shape applies. Entry names are
+    compared exactly, octet by octet: on a case-insensitive file system a root file
+    `Manifest.json` is not `manifest.json` (it is an entry outside the layout) and leaves
+    the manifest absent [S2-FIX3/F78] decided by principle (Inceptless decision 2026-11-16 #1). **(c)** When
     `manifest.json` is absent,
     unreadable, or above `MAX_MANIFEST_BYTES`, both are `null`; a directory-snapshot hash is
     never reported.
@@ -3495,9 +3570,9 @@ limitation [S2/F42] decided by principle (Inceptless decision 2026-11-15 #8; S2)
 | `L_PREVIOUS_CONTENT_UNVERIFIED` | `--previous` was supplied, the previous-manifest-chain stage (§14.5 step (10)) ran, and the supplied previous's manifest signature verified under §11.5 (in the target container's verification context). This is the only criterion: it does not depend on the later checks of that stage (embedded manifest, digest comparison); it is not reported when no `--previous` was supplied, when the container pipeline stopped before step (10), or when the previous could not be read or verified (V3, W5) |
 | `L_PREVIOUS_SIG_UNVERIFIED` | `previous_manifest` is non-null and the embedded previous manifest's own signature was not re-verified; this is reported even when a later container check fails, and is not reported when the manifest could not be parsed so that the previous manifest is not reachable. When a supplied `--previous` container's manifest signature verifies, that previous manifest's signature counts as re-verified and this identifier is **not** reported for it; `L_PREVIOUS_CONTENT_UNVERIFIED` is reported instead (V3) |
 | `L_TSA_TRUST_UNVERIFIED` | at least one listed receipt is `present-unverified`: its structure and CMS signature pass, but it is not verified-and-trusted (no matching anchor, or its accuracy is unusable evidence per §12.2 check 13). A receipt rejected by a structural, format or CMS check reports its error code and does not by itself trigger this identifier (U7) |
-| `L_ERASED_PLACEHOLDER` | the verified input (container or record target) contains a `weave.erased` placeholder; for a container, among the records that are verified — when the container pipeline stops before the per-record checks (`records: []`), no record is verified and it is not reported (S2-FIX1, §14.5) |
-| `L_ERASED_STANDALONE` | the target is a single `weave.erased` record with no container context, so the §10.3 cross-checks could not be applied |
-| `L_LABELS_ARE_CLAIMS` | the record target, or at least one record of the container, carries a `labels` member; for a container, among the records that are verified, as for `L_ERASED_PLACEHOLDER` (S2-FIX1) |
+| `L_ERASED_PLACEHOLDER` | the verified input (container or record target) contains a `weave.erased` placeholder; for a container, among the records that are verified — when the container pipeline stops before the per-record checks (`records: []`), no record is verified and it is not reported (S2-FIX1, §14.5). The fact is about the record as parsed: a JSON object whose `kind` is `weave.erased`, whether or not it passes §4.5 (S2-FIX3/F78) |
+| `L_ERASED_STANDALONE` | the target is a single `weave.erased` record with no container context, so the §10.3 cross-checks could not be applied (a JSON object whose `kind` is `weave.erased`, whether or not it passes §4.5, S2-FIX3/F78) |
+| `L_LABELS_ARE_CLAIMS` | the record target, or at least one record of the container, carries a `labels` member; for a container, among the records that are verified, as for `L_ERASED_PLACEHOLDER` (S2-FIX1). The fact is about the record as parsed: a JSON object with a top-level `labels` member, whether or not its envelope then passes (an `E_ENV_LABELS` or `E_ENV_SENSITIVITY` record carries one), the same for a record target and for the records of a container (S2-FIX3/F78) |
 | `L_UNKNOWN_KIND_OPAQUE` | at least one record has an unregistered kind and final verdict `valid` (the same condition as `N_KIND_UNKNOWN_OPAQUE`) |
 | `L_LABEL_PROPAGATION_UNCHECKED` | at least one derivation reference could not be resolved (the same condition as `N_LABEL_PROPAGATION_UNCHECKED`) |
 
@@ -3872,6 +3947,26 @@ changes wording only). The founder can overturn the items decided by principle.
 | S2-FIX2/U5 | every manifest signature entry is judged; an entry of a required key that fails the equation decides `E_MANIFEST_SIG_INVALID` before an undeclared key's `E_KEY_UNKNOWN`, whatever the order; so does an invalid §9.4 outcome of a verified entry's key (its §9.4 code; decision 2026-11-15 #32) | §11.3, registry |
 | S2-FIX2/U6 | §11.5 W1 rule 1 states the verdict rule of X5 as stricter than §5.3 instead of "as in §5.3" (no change of behaviour) | §5.3, §11.5 |
 | S2-FIX2/U7 | `N_READABLE_PRESENT` is withheld only when the archive fails in phases 1–4 of the zip check order; a member-level failure after the entries were enumerated still reports it | §11.8, registry |
+
+The following rows are fixed by Inceptless decision **2026-11-16 #1** (S2-FIX3, the third
+revision of the S2 round): the differences the H1-S2 differential fuzzing found between the
+two verifiers (`docs/h1-findings.md` F70–F82), each **decided by principle** (invalid first,
+the specification's own text); the founder can overturn them.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S2-FIX3/F70 | "top-level value not an object" is decided after the value: a depth or number violation inside it comes first | §1.9 |
+| S2-FIX3/F71 | the 1c rules of an anchor's module walk include the canonical content of every typed primitive; open types are judged by framing | §14.1 |
+| S2-FIX3/F72 | a declaration with another signature that does not pass (unresolved key, failed equation, failed §9.4) supplies no material of any kind, so trust is not handed on through it; a declaration never keeps itself trusted | §5.3, `weave.key.declared.md` |
+| S2-FIX3/F73 | an owner resolves only through a declaration that passes the §14.1 structural group; otherwise `E_KEY_UNKNOWN` | §9.1, registry |
+| S2-FIX3/F74 | a rotation without `new_public_key` is `E_KEY_ROTATION_KEYS` before key resolution, `sigs` `[]` | §9.2, §14.5, §14.6, `weave.key.rotated.md`, registry |
+| S2-FIX3/F75 | a layout violation and a member read failure of container step (1) are reported together | §11.9, registry |
+| S2-FIX3/F76 | `refs` duplicates compare the reference objects as whole JSON values (`kind`, `hints` included) | §6.1, registry |
+| S2-FIX3/F77 | `actor.type` against the class of `actor.key` needs no verified signature and precedes the grant coverage | §5.1, registry |
+| S2-FIX3/F78 | `L_LABELS_ARE_CLAIMS` and `L_ERASED_*` are facts about the records as parsed, for record targets and containers alike; entry names are compared exactly (`Manifest.json` is not `manifest.json`) | §14.6, §14.9, registry |
+| S2-FIX3/F79 | only valid revocations affect the manifest signature; its §9.4 outcome is reported at step (5), before the level/chain and records-listing stages | §9.4, §14.5 |
+| S2-FIX3/F80, F82 (and the `sigs`-absent erasure record) | §10.3 sees only erasure records that pass the structural group; rule 1 for every valid erasure record (a missing or malformed placeholder is `E_ERASE_DIGEST_MISMATCH`) and for every erasure record a placeholder names, whatever its verdict | §10.3, `weave.erasure.md`, registry |
+| S2-FIX3/F81 | the required signer of a consent record is `actor.key`; another human key's signature does not satisfy it | `weave.consent.granted.md`, `weave.consent.revoked.md` |
 
 ### A.2 PROVISIONAL implementation shapes
 
