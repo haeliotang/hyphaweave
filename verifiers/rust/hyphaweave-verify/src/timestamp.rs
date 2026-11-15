@@ -137,6 +137,10 @@ pub struct ChainEvidence {
     pub chain_error: Option<Code>,
     /// True only when every receipt is verified, trusted and usable.
     pub anchor_verified: bool,
+    /// True when `receipts` holds only the outcome that carries the
+    /// `E_TS_FILE` of an unlisted `.tsr` while no receipt is listed (S2/F54):
+    /// there is then no timestamp evidence at all for §9.4.
+    pub none_listed: bool,
 }
 
 /// The three §9.4 outcomes of the compromise rescue rule.
@@ -160,6 +164,7 @@ impl ChainEvidence {
             receipts: Vec::new(),
             chain_error: None,
             anchor_verified: false,
+            none_listed: false,
         }
     }
 
@@ -174,7 +179,7 @@ impl ChainEvidence {
     /// checked fixed-width arithmetic (S11, T3). An overflow never rescues.
     #[must_use]
     pub fn rescue(&self, t_ms: i64) -> Rescue {
-        if self.receipts.is_empty() {
+        if self.receipts.is_empty() || self.none_listed {
             return Rescue::Fails;
         }
         let Some(boundary) = t_ms.checked_mul(1_000) else {
@@ -262,6 +267,7 @@ pub fn verify_chain(
                 .collect(),
             chain_error: None,
             anchor_verified: false,
+            none_listed: false,
         };
     }
     // (2) Chain shape (check 14), from the array alone.
@@ -278,6 +284,7 @@ pub fn verify_chain(
                 .collect(),
             chain_error: Some(code),
             anchor_verified: false,
+            none_listed: false,
         };
     }
     // (3) Per receipt, in chain order (check 14 pinned the attestation order
@@ -306,6 +313,7 @@ pub fn verify_chain(
         receipts,
         chain_error: None,
         anchor_verified,
+        none_listed: false,
     }
 }
 
@@ -1878,6 +1886,7 @@ mod tests {
             receipts,
             chain_error: None,
             anchor_verified: false,
+            none_listed: false,
         };
         assert_eq!(ChainEvidence::none().rescue(1_000), Rescue::Fails);
         let verified = evidence(vec![receipt(ReceiptState::Verified, 1_000, Some(0))]);

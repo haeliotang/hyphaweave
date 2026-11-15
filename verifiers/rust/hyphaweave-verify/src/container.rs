@@ -964,6 +964,7 @@ fn apply_receipt_inventory(
         receipts,
         chain_error: None,
         anchor_verified: false,
+        none_listed: listed.is_empty(),
     };
 }
 

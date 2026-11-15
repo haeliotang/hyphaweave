@@ -2247,7 +2247,11 @@ impl World {
                             .or_default()
                             .push(index);
                     }
-                    if record.kind() == "weave.erasure" {
+                    // §10.3 with S2/F48 read symmetrically: an erasure record
+                    // that fails the structural group of §14.1 (envelope,
+                    // `sigs` presence and format, body schema) is an invalid
+                    // record, not "its erasure record".
+                    if record.kind() == "weave.erasure" && structural_error(&record).is_none() {
                         erasure_slots.push(index);
                     }
                 }
@@ -2383,7 +2387,9 @@ impl World {
             // E_ERASE_DIGEST_MISMATCH.
             let mut resolved_ok = false;
             if let Some(target) = self.identity_match(&placeholder.attestation) {
-                if self.slots[target].kind() == Some("weave.erasure") {
+                if self.slots[target].kind() == Some("weave.erasure")
+                    && erasure_slots.contains(&target)
+                {
                     resolved_ok = true;
                 }
             }
