@@ -9,9 +9,10 @@ draft and may be replaced before the first public release.
 ## H1-S2 (Rust follow-up of the S2 round) — 2026-11-15 — DRAFT, UNRELEASED
 
 Decision 2026-11-15 #20: the Rust verifier follows the S2 round of revision 3 and its
-revision S2-FIX1. No specification, schema, vector or Python change. Both
-implementations now follow revision 3 including S2: each passes the 656 main and the 202
-candidate regression vectors, and the gate-3 allow list is empty.
+revisions S2-FIX1 and S2-FIX2 (decisions 2026-11-15 #8, #18 and #22). No specification,
+schema, vector or Python change. Both implementations now follow revision 3 including S2:
+each passes the 684 main and the 202 candidate regression vectors, and the gate-3 allow
+list is empty.
 
 ### Changed (Rust verifier)
 
@@ -23,8 +24,14 @@ candidate regression vectors, and the gate-3 allow list is empty.
   fails supplies none.
 - **Signature entries** (§4.4 step 2, §14.5; S2-FIX1/T2): invalid first — an invalid entry
   decides before an unresolved key's `E_KEY_UNKNOWN`.
-- **Erasure actor** (kind page; S2-FIX1/Q1): a present but invalid authorising grant is
-  `E_ERASE_ACTOR`; the lookup, the coverage and the chain validity follow in that order.
+- **Erasure actor** (kind page; S2-FIX1/Q1, S2-FIX2/U1): a present but invalid
+  authorising grant is `E_ERASE_ACTOR`; the lookup, the coverage and the chain validity
+  follow in that order, for an agent's grant and a program's or device's basis alike.
+- **Grant chain step 1** (§5.5.2, §5.4; S2-FIX2/U2, Q6): a parent or cited grant record
+  that is present but itself invalid is `E_GRANT_GRANTER`; one that cannot be
+  established stays `E_GRANT_UNRESOLVED`.
+- **Manifest signature entries** (§11.3; S2-FIX2/U5): invalid first, as for record
+  signatures.
 - **Step (7) order** (§4.4 step 5, §14.5; S2-FIX1/Q3): for a signer-constrained kind the
   step-5 outcome is reported after the kind's other rules (delegated-grant chain,
   declaration owner and class, consent-revocation target).
@@ -33,24 +40,91 @@ candidate regression vectors, and the gate-3 allow list is empty.
 - **Check 10 bounds** (§12.2; S2-FIX1/Q4): RSA modulus 2,048–8,192 bits, odd
   65,537 ≤ `e` < 2^256, strict-DER `Ecdsa-Sig-Value` with `r`, `s` in [1, n − 1], checked
   explicitly (`E_TS_CMS`).
-- **1a by universal tag number** (§12.2; S2-FIX1/T3): REAL, RELATIVE-OID, TIME and
-  DURATION rejected, ISO 2022 strings without ESC, whole UniversalString/BMPString units,
-  UTF-8 content of DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI.
+- **1a by universal tag number** (§12.2; S2-FIX1/T3, S2-FIX2/U4): REAL, RELATIVE-OID;
+  TIME, DURATION, DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI rejected; no
+  ESC in NumericString, PrintableString, IA5String, VisibleString and UTF8String; the
+  ISO 2022 register types judged by §11.4 and §8.23.5.4 from the Table 3 designations;
+  whole UniversalString/BMPString units.
 - **`--tsa-trust` anchors** (§14.1, §12.2 1e; S2/F62, F63): an anchor is judged by the
   module walk, the typed primitives' canonical content, the version constraints and 1a on
   every `extnValue`; open types only by framing (a non-UTF-8 subject no longer stops the
   `vectors` run).
-- **`N_READABLE_PRESENT`** (§11.8; S2-FIX1/T8): not reported after a zip-structure failure.
+- **`N_READABLE_PRESENT`** (§11.8; S2-FIX1/T8, S2-FIX2/U7): withheld only when the
+  archive fails in phases 1–4 of the zip check order.
 - **Review A low-1** (no vector; tests in `tests/s2_followup.rs`): a 33-level array is
   `E_JSON_SIZE` and a top-level `18446744073709551616` is `E_JSON_NUMBER_RANGE` (the
   top-level shape is judged after the value); a keyset declaration that fails its own
   checks supplies no key material (§14.1), and keyset material is preferred for the TOFU
   predicate.
+- **Differential fuzzing** (no vector; tests in `tests/s2_followup.rs`,
+  `docs/h1-findings.md` F73–F81): §10.3 applies only with a placeholder present, and a
+  structurally failed erasure record is not the attested record (S2/F48 read
+  symmetrically); a placeholder `format` of another JSON type is `E_KIND_BODY_SCHEMA`;
+  an unlisted `.tsr` with no listed receipt leaves no timestamp evidence for §9.4; trust
+  is not handed on through a declaration that supplies no material (Q2).
 - **Gate 3**: `verifiers/rust/scripts/gate3_known_differences.json` is empty again.
+
+## S2 round, revision 2 (S2-FIX2) — 2026-11-15 — DRAFT, UNRELEASED
+
+Decision 2026-11-15 #22: the founder's ruling Q6 and the items of the narrow review of
+S2-FIX1 (U1, U3–U7, decided by principle; the founder can overturn them). The
+specification stays at revision 3 and the registry at revision 7, which now folds
+decisions #8, #18 and #22 (§0.3). The `format` identifier is unchanged; no error code is
+added.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **Grant chain step 1 in two tiers (Q6).** A parent grant, or a record's cited grant,
+  that is present but itself invalid makes the child invalid `E_GRANT_GRANTER`; absent or
+  present but not valid for another reason stays `E_GRANT_UNRESOLVED` (unverifiable).
+  Together with the S2-FIX1 Q5 walk, an invalid link beyond the depth bound now reaches
+  the citing record as invalid. This changes ordinary agent records; no conclusion of the
+  frozen candidate set changes.
+- **Erasure basis chain (U1).** A program's or device's `body.basis` grant is judged at
+  the erasure's `recorded_at` like an agent's `actor.grant`: an expired or revoked basis
+  gives `E_GRANT_EXPIRED` / `E_GRANT_REVOKED` (it was `valid`).
+- **1a string and date types (U4).** No ESC octet in NumericString, PrintableString,
+  IA5String, VisibleString (X.690 §8.23.5.3, Table 3) and UTF8String (§8.23.10). The
+  ISO 2022 register types (ObjectDescriptor, Teletex, Videotex, Graphic, General) are
+  judged by §11.4 and §8.23.5.4 from the Table 3 defaults instead of rejecting every ESC:
+  a necessary designation is valid, a re-designation of an entry in force, a designation
+  into a larger G set than needed, an announcer or an incomplete escape sequence is
+  `E_TS_SCHEMA`. DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI are rejected
+  with TIME and DURATION (stricter than X.690, decided by principle).
+- **Manifest signature entries (U5).** Every entry is judged; an entry of a required key
+  that fails the equation is `E_MANIFEST_SIG_INVALID` even beside an undeclared key,
+  whatever the order (an undeclared key id that sorts first used to turn a forged
+  signature into `E_KEY_UNKNOWN`).
+- **`N_READABLE_PRESENT` (U7).** Withheld only when the archive fails in phases 1–4 of
+  the zip check order; a member that fails as it is read after the entries were
+  enumerated (CRC-32, decompression) keeps the notice.
+- **Wording (U6, U3).** §11.5 rule 1 states the X5 verdict rule as stricter than §5.3
+  (no change of behaviour); S2-FIX1 is cited as decision 2026-11-15 #18 everywhere (it
+  was cited as #13).
+
+### Vectors, tools and tests
+
+- **Vectors**: 31 new main cases and 3 replaced (656 → 684): U1 3, U2 5, U4 16 (and
+  `l2-ts-der-1a-date-utf8` / `oid-iri-utf8` replaced by `-date-rejected` /
+  `-oid-iri-rejected`), U5 3, U7 1 (and `readable-not-reported-after-zip-structure-failure`
+  replaced by `readable-reported-after-member-crc-failure`). Changed expectations:
+  `grant/chain-depth-9-root-not-transferable` and `chain-depth-9-first-link-exceeds` (the
+  grants above the invalid link and the note are `E_GRANT_GRANTER`). The frozen candidate
+  set is unchanged (202 cases).
+- **Ablation catalogue**: 16 S2-FIX2 entries in `tools/anti_verification.py`; five
+  anchors retargeted to the new code.
+- **Tests**: `verifiers/python/tests/test_s2_fix2.py` (ISO 2022 escape sequences).
+
+### Not yet followed by the Rust verifier
+
+The Rust verifier was not changed. Of the S2-FIX2 vectors it fails 20 (U2 5, two of them
+the changed S2-FIX1 cases; U4 14; U5 1); it already passes the U1 and U7 cases and the U4 controls. With the 37 earlier
+failures it fails 57 of the 684 main vectors, and the anchor-bundle case still stops its
+whole `vectors` run with a usage error.
 
 ## S2 round, revision 1 (S2-FIX1) — 2026-11-15 — DRAFT, UNRELEASED
 
-Decision 2026-11-15 #13: the founder's rulings Q1–Q5 on the questions the S2 round left
+Decision 2026-11-15 #18: the founder's rulings Q1–Q5 on the questions the S2 round left
 open, and the corrections from the two reviews of the S2 round (T1–T8). The
 specification stays at revision 3; the registry stays at revision 7, which carries both
 decisions of the S2 round (§0.3). The `format` identifier is unchanged.
@@ -125,7 +199,7 @@ Decision 2026-11-15 #8: the specification, the Python reference verifier and the
 vectors close the findings of the second implementation (`docs/h1-findings.md`,
 F38–F69). Every rule below is decided by principle and recorded in
 `docs/open-questions.md` §7; five questions were left to the founder (§7.2, since ruled by
-decision 2026-11-15 #13). *Correction (S2-FIX1):* not every rule took the more
+decision 2026-11-15 #18). *Correction (S2-FIX1):* not every rule took the more
 conservative reading — the signature-entry rule and the closed 1a list were the wider
 readings, and F61-3 and F69-3 were new rules rather than what the text already said; see
 the S2-FIX1 section above.

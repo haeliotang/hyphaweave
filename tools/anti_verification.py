@@ -596,13 +596,16 @@ def _build_catalogue() -> None:
            ("container/manifest-unsigned",)),
         _m("container-manifest-signature", "container.py", "container.manifest.signature",
            "accept a manifest signature that does not verify",
-           r'raise WeaveError\(\n\s*"E_MANIFEST_SIG_INVALID", "manifest signature does not verify"\n\s*\) from error',
-           'pass  # ablation: manifest signature verification disabled',
+           # retargeted by S2-FIX2 U5 (every entry is judged, the first invalid one raised last)
+           r'            if first_invalid is None:\n                first_invalid = WeaveError\(\n'
+           r'                    "E_MANIFEST_SIG_INVALID", "manifest signature does not verify"\n'
+           r'                \)\n                first_invalid\.__cause__ = error\n            continue\n',
+           '            pass  # ablation: manifest signature verification disabled\n',
            ("container/manifest-sig-invalid",)),
         _m("container-manifest-cross-purpose-domain", "container.py", "container.manifest.domain-separation",
            "accept a manifest signature made over the record domain prefix",
-           r'        try:\n            from \. import ed25519\n\n            ed25519\.verify_signature\(material, message, signature\.raw\)\n        except WeaveError as error:',
-           '        try:\n            from . import ed25519\n\n            try:\n                ed25519.verify_signature(material, message, signature.raw)\n            except WeaveError:\n                ed25519.verify_signature(\n                    material, encoding.record_sig_message(manifest_digest), signature.raw\n                )\n        except WeaveError as error:',
+           r'        try:\n            ed25519\.verify_signature\(material, message, signature\.raw\)\n        except WeaveError as error:',
+           '        try:\n            try:\n                ed25519.verify_signature(material, message, signature.raw)\n            except WeaveError:\n                ed25519.verify_signature(\n                    material, encoding.record_sig_message(manifest_digest), signature.raw\n                )\n        except WeaveError as error:',
            ("container/manifest-sig-record-prefix",), review_a_survivor=True),
         _m("container-previous-origin", "container.py", "container.chain.origin",
            "accept a previous manifest from a different origin",
@@ -1690,7 +1693,7 @@ _IL = "integrity-levels/"
 
 
 def _build_s2_catalogue() -> None:
-    """S2 (decision 2026-11-15 #8) and S2-FIX1 (decision 2026-11-15 #13) corrections.
+    """S2 (#8), S2-FIX1 (#18) and S2-FIX2 (#22) corrections (decisions of 2026-11-15).
 
     The S2 ablations were first run from an out-of-tree script (review A low-2); they
     are catalogue entries now, so the CI ablation gate keeps them pinned.
@@ -1824,7 +1827,7 @@ def _build_s2_catalogue() -> None:
              '        if placeholder.digest != reference.digest:\n'
              '            found.add("E_ERASE_DIGEST_MISMATCH")\n            return sorted(found)',
              ("erasure/cross-checks-reported-independently",)),
-        # ------------------------------------------------------------ S2-FIX1 (#13)
+        # ------------------------------------------------------------ S2-FIX1 (#18)
         _lit("fix1-q2-subject-key-only", "verifier.py", "fix1.q2.subject-only",
              "Q2/T1: exempt every body-supplied signature (cosignature, old key) from §9.4 "
              "when admission is decided",
@@ -1874,9 +1877,9 @@ def _build_s2_catalogue() -> None:
         _lit("fix1-q3-erasure-signer-before-lookup", "verifier.py", "fix1.q3.erasure-order",
              "Q1/Q3: look the erasure basis up before the signer rule",
              "    signer_check()\n    reference = refs.validate_reference(basis)\n"
-             "    target_envelope, _digest = _erasure_grant_envelope(reference, context)\n",
+             "    target_envelope, basis_digest = _erasure_grant_envelope(reference, context)\n",
              "    reference = refs.validate_reference(basis)\n"
-             "    target_envelope, _digest = _erasure_grant_envelope(reference, context)\n"
+             "    target_envelope, basis_digest = _erasure_grant_envelope(reference, context)\n"
              "    signer_check()\n",
              ("erasure/actor-program-signer-rule-before-basis-lookup",)),
         _lit("fix1-q3-step5-deferred", "verifier.py", "fix1.q3.step5",
@@ -1948,10 +1951,10 @@ def _build_s2_catalogue() -> None:
              (_IL + "l2-ts-der-1a-relative-oid-nonminimal", _IL + "l2-ts-der-1a-relative-oid-truncated",
               _IL + "l2-ts-der-1a-relative-oid-empty")),
         _lit("fix1-t3-utf8-types", "timestamps.py", "fix1.t3.utf8",
-             "T3: check UTF-8 contents for UTF8String only",
-             "_DER_UTF8_UNIVERSAL = frozenset({12, 31, 32, 33, 35, 36})",
+             "T3 (retargeted by S2-FIX2 U4): skip the UTF-8 check of UTF8String",
              "_DER_UTF8_UNIVERSAL = frozenset({12})",
-             (_IL + "l2-ts-der-1a-date-not-utf8", _IL + "l2-ts-der-1a-relative-oid-iri-not-utf8")),
+             "_DER_UTF8_UNIVERSAL = frozenset()",
+             (_IL + "l2-ts-der-1a-utf8-string-not-utf8",)),
         _lit("fix1-t3-primitive-only", "timestamps.py", "fix1.t3.primitive",
              "T3: let ObjectDescriptor and the date/time/IRI types use the constructed form",
              "    {1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,\n"
@@ -1960,8 +1963,8 @@ def _build_s2_catalogue() -> None:
              (_IL + "l2-ts-der-1a-object-descriptor-constructed", _IL + "l2-ts-der-1a-date-time-constructed")),
         _lit("fix1-t3-time-duration", "timestamps.py", "fix1.t3.time",
              "T3: accept TIME and DURATION values",
-             "_DER_REJECTED_UNIVERSAL = frozenset({14, 34})",
-             "_DER_REJECTED_UNIVERSAL = frozenset()",
+             "_DER_REJECTED_UNIVERSAL = frozenset({14, 31, 32, 33, 34, 35, 36})",
+             "_DER_REJECTED_UNIVERSAL = frozenset({31, 32, 33, 35, 36})",
              (_IL + "l2-ts-der-1a-time-rejected", _IL + "l2-ts-der-1a-duration-rejected")),
         _lit("fix1-t3-string-units", "timestamps.py", "fix1.t3.units",
              "T3: accept partial UniversalString and BMPString code units",
@@ -1996,6 +1999,98 @@ def _build_s2_catalogue() -> None:
              "    finish_flags[\"placeholder_seen\"] = finish_flags[\"labels_seen\"] = True\n",
              ("container/erased-placeholder-limitation-not-reported-after-listing-failure",
               "container/labels-limitation-not-reported-after-listing-failure")),
+        # ------------------------------------------------------------ S2-FIX2 (#22)
+        _lit("fix2-u1-basis-chain", "verifier.py", "fix2.u1.basis-chain",
+             "U1: do not judge a program/device erasure basis grant's chain at recorded_at",
+             "        validate_grant_chain(\n"
+             "            basis_grant, context, envelope.recorded_at, depth=0, seen=frozenset()\n"
+             "        )\n",
+             "        pass\n",
+             ("erasure/actor-program-basis-expired", "erasure/actor-program-basis-revoked",
+              "erasure/actor-device-basis-expired")),
+        _lit("fix2-u1-basis-chain-codes", "verifier.py", "fix2.u1.basis-chain",
+             "U1: wrap a basis grant's window/revocation codes into E_ERASE_ACTOR",
+             "        if error.code in _GRANT_ESTABLISHMENT_CODES:\n            raise\n",
+             "        if False:\n            raise\n",
+             ("erasure/actor-program-basis-expired", "erasure/actor-program-basis-revoked",
+              "erasure/actor-device-basis-expired")),
+        _lit("fix2-u2-first-tier", "grants.py", "fix2.u2.step1",
+             "U2/Q6: report a present but invalid parent or cited grant as E_GRANT_UNRESOLVED",
+             '    if target is not None and target.verdict == "invalid":\n',
+             "    if False:\n",
+             ("grant/agent-record-cited-grant-present-invalid", "grant/sub-grant-parent-present-invalid",
+              "grant/chain-depth-10-root-present-invalid", "grant/chain-depth-9-root-not-transferable",
+              "grant/chain-depth-9-first-link-exceeds")),
+        _lit("fix2-u2-second-tier", "grants.py", "fix2.u2.step1",
+             "U2/Q6: report every present parent that is not valid as E_GRANT_GRANTER",
+             '    if target is not None and target.verdict == "invalid":\n',
+             "    if target is not None:\n",
+             ("grant/sub-grant-parent-present-unverifiable",)),
+        _lit("fix2-u4-no-escape-types", "timestamps.py", "fix2.u4.no-escape",
+             "U4: accept ESC in NumericString, PrintableString, IA5String and VisibleString",
+             "        elif tag_number in _DER_NO_ESCAPE_UNIVERSAL and 0x1B in data[position:content_end]:\n",
+             "        elif False:\n",
+             tuple(_IL + "l2-ts-der-1a-%s-string-escape" % name
+                   for name in ("printable", "ia5", "visible", "numeric"))),
+        _lit("fix2-u4-utf8-escape", "timestamps.py", "fix2.u4.no-escape",
+             "U4: accept ESC in a UTF8String",
+             "            if 0x1B in data[position:content_end]:\n"
+             "                raise _DerViolation(\"an escape sequence in a UTF8String (X.690 §8.23.10)\")\n",
+             "",
+             (_IL + "l2-ts-der-1a-utf8-string-escape",)),
+        _lit("fix2-u4-iso2022-reject-all", "timestamps.py", "fix2.u4.iso2022",
+             "U4: reject every ESC octet in the ISO 2022 register types again (S2-FIX1 reading)",
+             "            _check_der_iso2022(tag_number, data[position:content_end])\n",
+             "            raise _DerViolation(\"ablation\")\n",
+             (_IL + "l2-ts-der-1a-teletex-string-designation",
+              _IL + "l2-ts-der-1a-general-string-designation-switch")),
+        _lit("fix2-u4-iso2022-redundant", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept the designation of an entry already designated",
+             "        if (size, entry) in designated.values():\n",
+             "        if False:\n",
+             (_IL + "l2-ts-der-1a-teletex-string-redundant-designation",
+              _IL + "l2-ts-der-1a-object-descriptor-escape", _IL + "l2-ts-der-1a-general-string-escape")),
+        _lit("fix2-u4-iso2022-smallest-set", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept a designation into a G set other than the smallest one",
+             '        if target.startswith("G") and target != _ISO2022_SMALLEST_G[size]:\n',
+             "        if False:\n",
+             (_IL + "l2-ts-der-1a-teletex-string-not-smallest-set",)),
+        _lit("fix2-u4-iso2022-announcer", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept an ISO 2022 announcer",
+             "        if sequence[1] == 0x20:\n",
+             "        if False:\n",
+             (_IL + "l2-ts-der-1a-graphic-string-announcer",)),
+        _lit("fix2-u4-iso2022-incomplete", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept an incomplete escape sequence",
+             '            raise _DerViolation("an incomplete ISO 2022 escape sequence")\n',
+             "            return\n",
+             (_IL + "l2-ts-der-1a-teletex-string-incomplete-escape",)),
+        _lit("fix2-u4-dates-rejected", "timestamps.py", "fix2.u4.dates",
+             "U4: accept DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI values",
+             "_DER_REJECTED_UNIVERSAL = frozenset({14, 31, 32, 33, 34, 35, 36})",
+             "_DER_REJECTED_UNIVERSAL = frozenset({14, 34})",
+             tuple(_IL + "l2-ts-der-1a-%s-rejected" % name for name in (
+                 "date", "time-of-day", "date-time", "oid-iri", "relative-oid-iri"))),
+        _lit("fix2-u5-manifest-first-failing-entry", "container.py", "fix2.u5.manifest-sig",
+             "U5: let an undeclared manifest signature key decide at its array position",
+             "        if material is None:\n            unknown_key = True\n            continue\n",
+             "        if material is None:\n            raise WeaveError(\"E_KEY_UNKNOWN\", \"ablation\")\n",
+             ("container/manifest-sig-invalid-beats-unknown-key",)),
+        _lit("fix2-u5-manifest-unknown-dropped", "container.py", "fix2.u5.manifest-sig",
+             "U5: ignore an undeclared manifest signature key beside a verified entry",
+             "    if unknown_key:\n        raise WeaveError(\n"
+             "            \"E_KEY_UNKNOWN\", \"manifest signature key is not declared in the context\"\n",
+             "    if False:\n        raise WeaveError(\n"
+             "            \"E_KEY_UNKNOWN\", \"manifest signature key is not declared in the context\"\n",
+             ("container/manifest-sig-unknown-key-beside-valid-entry",)),
+        _lit("fix2-u7-member-failure-notice", "container.py", "fix2.u7.readable",
+             "U7: drop N_READABLE_PRESENT after a member-level zip failure (S2-FIX1 reading)",
+             "            error=structure_error.code,\n            input_sha256=input_sha,\n"
+             "            input_size=archive_size,\n            is_zip=True,\n"
+             "            readable_present=readable_present,\n",
+             "            error=structure_error.code,\n            input_sha256=input_sha,\n"
+             "            input_size=archive_size,\n            is_zip=True,\n",
+             ("container/readable-reported-after-member-crc-failure",)),
     )
 
 

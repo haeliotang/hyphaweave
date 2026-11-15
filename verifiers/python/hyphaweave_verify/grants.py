@@ -147,6 +147,21 @@ def _as_grant(envelope: Envelope, digest: str) -> GrantRecord:
     return grant_record_from_envelope(envelope, digest)
 
 
+def _raise_unestablished(resolution: Resolution, what: str) -> None:
+    """§5.5.2 step 1 in two tiers (S2-FIX2 U2, decision 2026-11-15 #22; Q6).
+
+    A grant record that is **present but itself invalid** is not an
+    authorising grant: ``E_GRANT_GRANTER`` (invalid), the same shape as the
+    erasure basis tier of S2-FIX1 Q1. A grant that is absent, pending or
+    present but not valid for another reason (for example unverifiable) cannot
+    be established: ``E_GRANT_UNRESOLVED`` (unverifiable).
+    """
+    target = resolution.target
+    if target is not None and target.verdict == "invalid":
+        raise WeaveError("E_GRANT_GRANTER", "%s is present but itself invalid" % what)
+    raise WeaveError("E_GRANT_UNRESOLVED", "%s cannot be resolved" % what)
+
+
 def _resolve_grant(
     reference: Reference | None, context: GrantContext
 ) -> tuple[GrantRecord, str]:
@@ -155,7 +170,7 @@ def _resolve_grant(
         raise WeaveError("E_GRANT_UNRESOLVED", "no grant reference")
     resolution = context.resolve(reference)
     if resolution.state != refs.FOUND or resolution.target is None:
-        raise WeaveError("E_GRANT_UNRESOLVED", "grant cannot be resolved")
+        _raise_unestablished(resolution, "parent grant")
     target = resolution.target
     digest = target.computed_digest or ""
     record = getattr(target.record, "envelope", None)
@@ -411,7 +426,7 @@ def check_agent_authorization(envelope: Envelope, context: GrantContext) -> None
         )
     resolution = context.resolve(reference)
     if resolution.state != refs.FOUND or resolution.target is None:
-        raise WeaveError("E_GRANT_UNRESOLVED", "cited authorisation cannot be resolved")
+        _raise_unestablished(resolution, "cited authorisation")
     target = resolution.target
     if target.kind != kinds.KIND_GRANT:
         raise WeaveError("E_GRANT_GRANTER", "cited authorisation is not a grant record")

@@ -17,7 +17,7 @@ class error code (R5), and the `genTime` cross-reference (R6). Revision 3 carrie
 rounds (Inceptless decisions 2026-11-11 #5 to 2026-11-12 #3) and the **S2 round**
 (Inceptless decision 2026-11-15 #8), which closes the findings of the second
 implementation (H1 findings F38–F69) by the rules marked `[S2]`, together with its first
-revision (Inceptless decision 2026-11-15 #13, the founder's rulings Q1–Q5 and the review
+revision (Inceptless decision 2026-11-15 #18, the founder's rulings Q1–Q5 and the review
 items of the S2 round, marked `[S2-FIX1]`); like the S1 rounds, it implements rulings of a
 later decision inside revision 3 (§0.3).
 **Editors:** Inceptless.
@@ -109,10 +109,10 @@ Appendix A. The error-code registry (`spec/error-codes.md`) numbers its own revi
 its own convention: a decision that opens a specification revision or a round opens a
 registry revision, and later decisions that only revise that round are folded into the same
 registry revision (registry revision 6 carries decisions 2026-11-12 #1, #2 and #3; registry
-revision 7 carries decisions 2026-11-15 #8 and #13). Neither changes the `format`
+revision 7 carries decisions 2026-11-15 #8, #18 and #22). Neither changes the `format`
 identifier [S2] decided by principle (Inceptless decision 2026-11-15 #8; S2); the
 registry-numbering sentence is corrected to the registry's own history [S2-FIX1/T7] decided
-by principle (Inceptless decision 2026-11-15 #13).
+by principle (Inceptless decision 2026-11-15 #18).
 
 ### 0.4 Normative references
 
@@ -712,7 +712,7 @@ container-signed as a batch, but authorisation, key, consent and erasure records
    `E_SIG_*` code. This holds even when another entry names a key that cannot be resolved
    (§14.5 step (4)): an invalid outcome of one entry is never lowered to `unverifiable`
    `E_KEY_UNKNOWN` by another entry [S2-FIX1/T2] decided by principle (Inceptless decision
-   2026-11-15 #13; invalid beats unverifiable).
+   2026-11-15 #18; invalid beats unverifiable).
 3. If at least one `ed25519` signature by the required signer verifies, the obligation is
    satisfied (additional valid signatures are evidence, not errors).
 4. Otherwise, if at least one **known-algorithm** signature exists whose key is declared
@@ -737,12 +737,12 @@ container-signed as a batch, but authorisation, key, consent and erasure records
    has already made the record `unverifiable` `E_KEY_UNKNOWN` there (unless an entry is
    invalid, step 2), so at step 5 every remaining entry has an unknown algorithm, and the
    `E_KEY_UNKNOWN` of step 5 is about the required signer key, not about an entry's key
-   [S2-FIX1/T7] decided by principle (Inceptless decision 2026-11-15 #13). For the seven
+   [S2-FIX1/T7] decided by principle (Inceptless decision 2026-11-15 #18). For the seven
    signer-constrained kinds the step-5 outcome is reported only after every other rule of
    that kind's step (7) has passed: an invalid outcome of the kind's other rules (or an
    `unverifiable` one, such as a grant-chain code) is reported instead, and the step-5 code
    only when none applies. The dedicated signer code of step 4 (invalid) stays where the
-   kind's signer rule sits (§14.5) [S2-FIX1/Q3] decided (Inceptless decision 2026-11-15 #13;
+   kind's signer rule sits (§14.5) [S2-FIX1/Q3] decided (Inceptless decision 2026-11-15 #18;
    Q3).
 
 The seven dedicated signer codes are: `E_KEY_DECLARED_NOT_SELF_SIGNED` (declared),
@@ -955,8 +955,8 @@ semantically valid in this sense, so it supplies no key material (neither the su
 nor any other key's), governs no window and establishes no trust, and a signature by its
 subject key is `unverifiable` `E_KEY_UNKNOWN` unless another record supplies that key. A key
 whose signature does not pass §9.4 therefore never hands material or trust to another key;
-in particular an invalid rotation never supplies key material through a failed old-key
-signature, as X5 states for §11.5 [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #13;
+in particular a rotation whose old-key signature fails §9.4 never supplies key material
+(the previous-manifest link of §11.5 applies the stricter verdict rule of X5) [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #18;
 Q2). This is declaration resolution, not root selection [Q12] decided (Inceptless decision
 2026-11-10 #34; Q12).
 
@@ -973,7 +973,11 @@ revocation state (unverifiable) [S2/F69] decided by principle (Inceptless decisi
 
 - `actor.grant` MUST resolve to a valid `weave.grant` record with `action == "grant"`
   (`E_GRANT_UNRESOLVED` → unverifiable when the target is not in the context; if it
-  resolves to a record with `action == "revoke"` the code is `E_GRANT_GRANTER`, invalid);
+  resolves to a record with `action == "revoke"` the code is `E_GRANT_GRANTER`, invalid).
+  The two tiers of §5.5.2 step 1 apply to the cited grant: a cited grant record that is
+  present but whose own verdict is invalid is `E_GRANT_GRANTER` (invalid); one that is
+  present but not valid for any other reason is `E_GRANT_UNRESOLVED` (unverifiable)
+  [S2-FIX2/U2] decided (Inceptless decision 2026-11-15 #22; Q6);
 - the grant's `grant.grantee.key` MUST equal `actor.key` (`E_GRANT_GRANTEE_MISMATCH`,
   invalid);
 - the grant's `grant.kinds` MUST contain the record's `kind`, and its `grant.actions` MUST
@@ -1065,9 +1069,14 @@ first failing check determines the error [S3][Q10] decided (Inceptless decision 
 #34; S3/Q10); the exact precedence between the chain codes is an implementation shape
 (PROVISIONAL, Appendix A P5):
 
-1. **Resolve.** If the parent reference cannot be resolved in the context, or resolves to a
-   record whose own verdict is **invalid or unverifiable**, the sub-grant is `unverifiable`
-   with `E_GRANT_UNRESOLVED` (T17/A-L5).
+1. **Resolve.** Step 1 has two tiers. If the parent reference resolves to a record that is
+   **present but whose own verdict is invalid**, the parent is not an authorising grant: the
+   sub-grant is invalid with `E_GRANT_GRANTER` (step 1 has no code of its own for this tier,
+   so it takes the code of step 2, in the same shape as the two tiers of an erasure's
+   authorising grant, [S2-FIX1/Q1]). If the parent reference cannot be resolved in the
+   context, or resolves to a record whose own verdict is not `valid` for any other reason
+   (for example `unverifiable`), the parent cannot be established: the sub-grant is
+   `unverifiable` with `E_GRANT_UNRESOLVED` (T17/A-L5) [S2-FIX2/U2] decided (Inceptless decision 2026-11-15 #22; Q6).
 2. **Authorising action and capability.** If the resolved parent's `action` is not `grant`
    (for example it is a revocation record), or its `kinds` does not contain `weave.grant`,
    or its `actions` does not contain `grant`, the parent does not authorise delegation of
@@ -1107,12 +1116,14 @@ first failing check determines the error [S3][Q10] decided (Inceptless decision 
    detection (a cycle is `E_GRANT_UNRESOLVED`), and step 7 is decided after it, so an
    invalid outcome of steps 2–5 on any link, or an unverifiable outcome of step 1 or 6, is
    reported instead of the depth code. The length of the walk is bounded by the number of
-   records in the verification context (each grant is visited once). Because step 1
-   requires every resolved parent to be a **valid** record, a step-2 to step-5 failure on a
-   link makes that link's child record itself invalid, and every record above it then fails
-   step 1; a failure beyond the bound therefore reaches a record that cites the chain as
-   `E_GRANT_UNRESOLVED` from its first link [S2-FIX1/Q5] decided (Inceptless decision
-   2026-11-15 #13; Q5).
+   records in the verification context (each grant is visited once). A step-2 to step-5
+   failure on a link makes that link's child record itself invalid, and by the first tier of
+   step 1 every record above it is then invalid `E_GRANT_GRANTER` (its parent is present but
+   itself invalid); a failure beyond the bound therefore reaches a record that cites the
+   chain as an invalid outcome at its first link, before the depth code of step 7, so an
+   invalid link beyond the bound is never reported as the unverifiable `E_GRANT_UNRESOLVED`
+   [S2-FIX1/Q5] decided (Inceptless decision 2026-11-15 #18; Q5) [S2-FIX2/U2] decided
+   (Inceptless decision 2026-11-15 #22; Q6).
 
    When the record being verified is itself a `weave.grant`, its **own** validity window and
    its own revocation are not compared against its own `recorded_at`: the grant is the
@@ -1739,7 +1750,7 @@ decides the record's verdict [S2/F38/F61-1] decided by principle (Inceptless dec
 is decided by §5.3: without the §9.4 effects on the subject key's own signature only, and
 with them on every other signature, so a cosignature or an old-key signature that fails
 §9.4 leaves the record without any of those [S2-FIX1/Q2] decided (Inceptless decision
-2026-11-15 #13; Q2).
+2026-11-15 #18; Q2).
 
 Let `T` be the claimed `effective_at` of a revocation of a key. Effects on signatures made
 by that key (the signature's claimed `recorded_at`; for a manifest signature the manifest's
@@ -2090,10 +2101,15 @@ members:
   2026-11-10 #34; Q13). **Every** `ed25519` entry is checked, not only one: when several
   `ed25519` entries are present, an entry whose key is not a required key makes the manifest
   signature `unverifiable` (`E_KEY_UNKNOWN`) even if another entry verifies, and an entry
-  that fails the equation is `E_MANIFEST_SIG_INVALID` even if another entry verifies; the
-  entries are judged in array order and the first failing entry decides the code
+  that fails the equation is `E_MANIFEST_SIG_INVALID` even if another entry verifies
   [W10/L5; `docs/open-questions.md` §6 entry 27] decided by principle (Inceptless decision
-  2026-11-11 #16; W10). A **required key** for the manifest signature is a key that resolves
+  2026-11-11 #16; W10). Invalid beats unverifiable across the entries: every `ed25519`
+  entry is judged, and when any entry of a required key fails the equation the manifest
+  signature is `E_MANIFEST_SIG_INVALID`, whatever the array order and even when another
+  entry's key is undeclared; `E_KEY_UNKNOWN` is reported only when no entry is invalid
+  (the first-failing-entry rule of W10 is withdrawn, so an invented key id that sorts first
+  cannot turn a forged signature into an unverifiable one) [S2-FIX2/U5] decided by
+  principle (Inceptless decision 2026-11-15 #22; as S2-FIX1 T2 for record signatures). A **required key** for the manifest signature is a key that resolves
   in the verification context through a `weave.key.declared` or `weave.key.rotated` record;
   it does not have to be trusted for the cryptographic equation, which is evaluated before
   trust (§9.4). A **declared but untrusted** signing key therefore does not make the
@@ -2198,10 +2214,16 @@ target per-case layout remains implementation-defined (Appendix A P7)
        keyset or of the target container), and the signature verifies over the §2.4
        manifest signature message with that key material — so a key rotated away since the
        previous container was exported still links when the target carries the rotation or
-       the old declaration. The record verdicts are known at this step, and, as in §5.3, a
-       `weave.key.rotated` record that is not valid supplies **no** key material: neither
-       its `old_public_key` nor its `new_public_key` counts here [X5; decision 2026-11-12
-       #1];
+       the old declaration. The record verdicts are known at this step, and here the
+       rotation's **verdict** decides: a `weave.key.rotated` record whose verdict is not
+       `valid` supplies **no** key material, neither its `old_public_key` nor its
+       `new_public_key` counts here [X5; decision 2026-11-12 #1]. This is stricter than the
+       key-material rule of §5.3, which leaves out the §9.4 effects on the subject key's own
+       signature (so a rotation that is invalid only through the §9.4 effects on its
+       `new_key`'s signature still supplies material for the target's records, but not for
+       this link); the wording is
+       aligned with §5.3 without changing the rule [S2-FIX2/U6] decided by principle
+       (Inceptless decision 2026-11-15 #22);
     2. its key is **trusted in the target's final trust closure** (§5.3): it has a valid
        `weave.key.declared` record in the target verification context (a keyset root; an
        `agent`/`program`/`device` declaration of the keyset that is trusted through its
@@ -2217,7 +2239,7 @@ target per-case layout remains implementation-defined (Appendix A P7)
        for a link to be proved and it cannot be. A recipient that checks chain continuity
        should supply its keyset, and should supply as `--previous` only a container it has
        itself received and accepted earlier, never one taken from the same untrusted source
-       as the target [S2-FIX1/T8] decided by principle (Inceptless decision 2026-11-15 #13);
+       as the target [S2-FIX1/T8] decided by principle (Inceptless decision 2026-11-15 #18);
     3. its key passes the §9.4 validity-window and revocation rules **at the previous
        manifest's claimed `created_at`**, evaluated with the target context's valid
        declarations and revocations: a validity window that excludes that instant breaks the
@@ -2333,16 +2355,22 @@ MUST report the informational notice `N_READABLE_PRESENT` if and only if an enum
 container contains a `readable/` entry, including when a later container check fails; if
 entry enumeration itself fails before a `readable/` entry is observed, the notice is not
 reported [Q19] decided (Inceptless decision 2026-11-11 #2; S16 report-construction rule;
-2026-11-10 #34; Q19; T12). A zip archive whose structure fails (`E_CONTAINER_ZIP`, §11.9
-rules 1–3 and 5, a member CRC included) has no enumerated entries: the container stops at
-step (1) and the later checks are not run (§14.5), so the notice is not reported even when
-a `readable/` entry was listed in its central directory; an archive whose structure holds
-but whose entry checks fail (`E_CONTAINER_ENTRY`) was enumerated, and the notice follows the
-`readable/` entries that passed their own checks (T6). `readable` is a **directory** of the
+2026-11-10 #34; Q19; T12). A zip archive that fails in phases 1–4 of the §11.9 check
+order (its end-of-central-directory record or central directory cannot be read, a §13
+limit, or another structural rule: `E_CONTAINER_ZIP` or `E_CONTAINER_SIZE`) has no
+enumerated entries, because entries are enumerated by the entry checks that follow those
+phases: the notice is not reported even when a `readable/` entry was listed in its central
+directory. Once the phases have passed and the entries have been enumerated, the notice
+follows the `readable/` entries that passed their own checks (T6), whatever fails
+afterwards: an archive whose entry checks fail (`E_CONTAINER_ENTRY`), or one in which a
+member then fails as it is read (a CRC-32 mismatch, a decompression failure, the
+actual-size total of §13), still reports it. This narrows S2-FIX1's reading, under which
+every `E_CONTAINER_ZIP` (a member CRC included) suppressed the notice [S2-FIX2/U7] decided
+by principle (Inceptless decision 2026-11-15 #22). `readable` is a **directory** of the
 layout: a regular file named `readable` at the container root (directory or zip form) is
 not a `readable/` entry but an entry outside the layout, `E_CONTAINER_ENTRY` (invalid), and
 it does not trigger the notice [S2-FIX1/T8] decided by principle (Inceptless decision
-2026-11-15 #13).
+2026-11-15 #18).
 
 ### 11.9 Zip form
 
@@ -2498,7 +2526,7 @@ while re-encoding `signed_attrs` for signature verification — is reported as c
 | 7 | The signer certificate is included in the token's `SignedData.certificates` (a receipt whose token does not carry its signer certificate is rejected even if `--tsa-trust` contains that certificate). | `E_TS_CMS` |
 | 8 | The signed attributes carry ESS `signingCertificateV2` matching the signer certificate. A v1-only `signingCertificate` or a missing ESS attribute is rejected. | `E_TS_CMS` |
 | 9 | The signed attributes' `messageDigest` equals `SHA-256(eContent)`. | `E_TS_CMS` |
-| 10 | The CMS signature verifies over `DER(SET OF SignedAttributes)` with the signer certificate's public key, within these bounds: an RSA key has a modulus of 2,048 to 8,192 bits and an odd public exponent `e` with 65,537 ≤ `e` < 2^256; an ECDSA signature value (`Ecdsa-Sig-Value`, RFC 5480 / RFC 5758) is one DER SEQUENCE of exactly two INTEGERs `r` and `s`, each positive and in its shortest encoding, each in [1, `n` − 1] for the order `n` of the key's curve, with no octet after the SEQUENCE. A key or signature outside these bounds fails the check like a signature that does not verify [S2-FIX1/Q4] decided (Inceptless decision 2026-11-15 #13; Q4). | `E_TS_CMS` |
+| 10 | The CMS signature verifies over `DER(SET OF SignedAttributes)` with the signer certificate's public key, within these bounds: an RSA key has a modulus of 2,048 to 8,192 bits and an odd public exponent `e` with 65,537 ≤ `e` < 2^256; an ECDSA signature value (`Ecdsa-Sig-Value`, RFC 5480 / RFC 5758) is one DER SEQUENCE of exactly two INTEGERs `r` and `s`, each positive and in its shortest encoding, each in [1, `n` − 1] for the order `n` of the key's curve, with no octet after the SEQUENCE. A key or signature outside these bounds fails the check like a signature that does not verify [S2-FIX1/Q4] decided (Inceptless decision 2026-11-15 #18; Q4). | `E_TS_CMS` |
 | 11 | The signer certificate has the `id-kp-timeStamping` extended key usage; if a KeyUsage extension is present it contains `digitalSignature`. | `E_TS_CERT` |
 | 12 | The signer certificate's validity window contains `genTime` (not the current wall clock). | `E_TS_CERT` |
 | 13 | `genTime` is a valid GeneralizedTime and is converted to an integer number of milliseconds since the Unix epoch by truncating (flooring) any sub-millisecond digits. If the TSTInfo carries an `accuracy` field: `seconds`, when present, is a non-negative integer; `milliseconds` and `microseconds`, when present and explicitly encoded, are integers in 1–999; an absent component counts as 0. Malformed DER, a present component outside 1–999 (an explicit `0` included), negative or non-integer components are **format errors** → `E_TS_SCHEMA`. The components are converted to integer microseconds (`seconds × 10⁶ + milliseconds × 10³ + microseconds`) with **checked fixed-width arithmetic**; an absent `accuracy` field means `accuracy_us = 0`. A total above `MAX_TS_ACCURACY` (§13) or an arithmetic overflow in the conversion is **not** a format error: the receipt is **unusable evidence** (see below). Both values are retained for the §9.4 compromise rule. | `E_TS_SCHEMA` (format errors) / `E_TS_UNTRUSTED` (unusable-accuracy sub-case, unverifiable) |
@@ -2519,7 +2547,7 @@ structure failure anywhere in the receipt is never reported under a later check'
   time types) uses the constructed form; BOOLEAN is `0x00` or `0xFF`; INTEGER has no
   redundant leading `0x00`/`0xFF` octet; a BIT STRING's unused-bit count is 0–7 (0 when
   it has no content octets) and its unused bits are zero; NULL is empty; OBJECT IDENTIFIER sub-identifiers are minimal; a UTF8String is
-  well-formed UTF-8; UTCTime is `YYMMDDHHMMSSZ` and GeneralizedTime is `YYYYMMDDHHMMSS`,
+  well-formed UTF-8 without an escape sequence; UTCTime is `YYMMDDHHMMSSZ` and GeneralizedTime is `YYYYMMDDHHMMSS`,
   optionally followed by `.` and one or more fractional digits whose last digit is not `0`,
   then `Z` (X.690 §11.7–§11.8: any number of fractional digits, no trailing zero, no empty
   fraction), each form matched against the **whole** content octets, so a trailing line
@@ -2567,33 +2595,57 @@ structure failure anywhere in the receipt is never reported under a later check'
     followed by `.E`, the exponent `+0` or without PLUS SIGN or leading zero (§11.3.2.2–6).
     Special values (bits 8–7 `01`): exactly one content octet, `0x40`–`0x43` (§8.5.9);
     the other values are reserved.
-  - **12 UTF8String** — primitive (§10.2); well-formed UTF-8 (§8.23.10).
+  - **12 UTF8String** — primitive (§10.2); well-formed UTF-8 that contains no ESC (`0x1B`)
+    octet: §8.23.10 allows no escape sequence in a UTF8String.
   - **13 RELATIVE-OID** — primitive; at least one sub-identifier, each in the fewest octets
     and complete, as for 6 (§8.20).
-  - **14 TIME, 34 DURATION** — rejected wherever they occur. Their DER form is the canonical
-    value notation of §11.9, which needs an ISO 8601 interval and duration parser that this
-    profile does not define; neither type occurs in the RFC 3161, RFC 5652 or RFC 5280
-    modules, so the conservative reading rejects them.
+  - **14 TIME, 34 DURATION, 31 DATE, 32 TIME-OF-DAY, 33 DATE-TIME, 35 OID-IRI,
+    36 RELATIVE-OID-IRI** — rejected wherever they occur. The DER form of TIME and DURATION
+    is the canonical value notation of §11.9, which needs an ISO 8601 interval and duration
+    parser that this profile does not define; the contents of DATE, TIME-OF-DAY and
+    DATE-TIME (§8.26) and of OID-IRI and RELATIVE-OID-IRI (§8.21.2, §8.22.2) are the UTF-8
+    encoding of a value notation that this profile does not judge either. None of these
+    types occurs in the RFC 3161, RFC 5652 or RFC 5280 modules, so the profile rejects them
+    as a class. This is stricter than X.690, which admits their well-formed values; it is a
+    conservative reading decided by principle, not an X.690 rule [S2-FIX2/U4] decided by
+    principle (Inceptless decision 2026-11-15 #22).
   - **18 NumericString, 19 PrintableString, 22 IA5String, 26 VisibleString** — primitive
-    (§10.2).
+    (§10.2); the content contains no ESC (`0x1B`) octet: these types allow no explicit
+    escape sequence (§8.23.5.3, Table 3).
   - **20 TeletexString, 21 VideotexString, 25 GraphicString, 27 GeneralString** (and 7) —
-    primitive (§10.2); these are defined by reference to the ISO 2022 register, and §11.4
-    restricts their escape sequences to designations that are not already in force. 1a
-    judges §11.4 conservatively: the content contains no ESC (`0x1B`) octet, so the default
-    designations of §8.23.5.2 hold throughout.
+    primitive (§10.2); these are defined by reference to the ISO 2022 register and allow
+    escape sequences (Table 3). 1a judges what §11.4 and §8.23.5.4 fix in the octets,
+    starting from the designations Table 3 assumes for the type (§8.23.5.2; G0 6 for
+    ObjectDescriptor, GraphicString and GeneralString, G0 102 for TeletexString and
+    VideotexString, and their C0/C1 entries): every ESC octet begins a complete ISO/IEC 2022
+    escape sequence (zero or more intermediate octets `0x20`–`0x2F`, then one final octet
+    `0x30`–`0x7E`); no announcer (`ESC 2/0 F`, §8.23.5.4); and a designating escape
+    sequence (`ESC 2/8`–`2/11`, `2/13`–`2/15`, `ESC 2/4 …`, `ESC 2/1`, `ESC 2/2`) neither
+    names a register entry that is currently designated as G0, G1, G2, G3, C0 or C1 — a
+    re-designation of an entry already in force is a violation — nor designates into a G set
+    other than the smallest numbered one that has an escape sequence for the entry's class
+    (G0 for a 94-character set, G1 for a 96-character set) (§11.4). Whether a designation or
+    another escape sequence (an invocation, for example) is needed for the characters that
+    follow, and whether its register entry is among those the type is defined by
+    (§8.23.5.1), depends on the register entries and is not judged by 1a. S2-FIX1's reading,
+    which rejected every ESC octet in these types, is withdrawn: a necessary designation
+    (for example registration 6 into G0 of a TeletexString) is valid [S2-FIX2/U4] decided by
+    principle (Inceptless decision 2026-11-15 #22).
   - **23 UTCTime, 24 GeneralizedTime** — primitive; the whole-content forms above (§11.7,
     §11.8).
   - **28 UniversalString** — primitive; whole 4-octet units (§8.23.7). **30 BMPString** —
     primitive; whole 2-octet units (§8.23.8).
-  - **31 DATE, 32 TIME-OF-DAY, 33 DATE-TIME, 35 OID-IRI, 36 RELATIVE-OID-IRI** — primitive;
-    well-formed UTF-8 content (§8.26, §8.21.2, §8.22.2).
+  - **31 DATE, 32 TIME-OF-DAY, 33 DATE-TIME, 35 OID-IRI, 36 RELATIVE-OID-IRI** — primitive
+    (§10.2), and rejected with 14 and 34 above.
   - **16 SEQUENCE, 17 SET** — constructed only; a universal SET is a SET OF in DER order, as
     above.
   - **15 and 37 or more** — reserved by X.680 for later editions; no DER rule exists for
     them, so only the framing rules apply, as for a type the verifier does not know (X1).
   Which characters a restricted string type admits (X.680 §41) is a property of the abstract
   value, not an X.690 encoding rule, and is not judged by 1a beyond the rules listed above
-  [S2-FIX1/T3] decided by principle (Inceptless decision 2026-11-15 #13; X.690 in full).
+  (the escape-sequence rules of 12, 18, 19, 22 and 26 and of the ISO 2022 register types are
+  X.690 encoding rules, §8.23.5 and §8.23.10, and are judged)
+  [S2-FIX1/T3] decided by principle (Inceptless decision 2026-11-15 #18; X.690 in full).
 - **1b — schema decoding.** The file decodes as an RFC 3161 `TimeStampResp` against the
   module definitions of RFC 3161, RFC 5652, RFC 5280 and RFC 5035/RFC 5816 (ESS), with the
   open types listed under 1c.
@@ -3062,7 +3114,7 @@ then chosen invalid-first: the first entry, in array order, with an invalid outc
 `unverifiable` `E_KEY_UNKNOWN`, and only then the first unverifiable §9.4 outcome (for
 example `E_TS_UNTRUSTED`). A known-key signature that fails its equation therefore makes
 the record invalid `E_SIG_INVALID` even when another entry's key cannot be resolved (§4.4
-step 2) [S2-FIX1/T2] decided by principle (Inceptless decision 2026-11-15 #13; invalid beats
+step 2) [S2-FIX1/T2] decided by principle (Inceptless decision 2026-11-15 #18; invalid beats
 unverifiable).
 
 Two documented ordering exceptions live inside the kind checks:
@@ -3123,7 +3175,7 @@ other rule of the kind's step (7) passes, so an invalid outcome (or an `unverifi
 grant-chain or trust outcome) of another rule is reported instead. A record that fails a
 check of step (9) reports only that outcome: the notice `N_LABEL_PROPAGATION_UNCHECKED` of
 the same step is not reported for it, as for any check that is not run after the first
-failure [S2-FIX1/Q3] decided (Inceptless decision 2026-11-15 #13; Q3).
+failure [S2-FIX1/Q3] decided (Inceptless decision 2026-11-15 #18; Q3).
 
 Per container: (1) entry enumeration/safety; (2) manifest parse/canonical form;
 (3) manifest structure; (4) manifest digest; (5) manifest signature; (6) level/chain
@@ -3781,7 +3833,7 @@ Questions the principle does not settle are listed there as open, for the founde
 | S2/F68 | §5.5.2 step 6 covers the whole chain, links beyond the depth bound included, before step 7 | §5.5.2 |
 | S2/F69 | the §5.4 coverage list is the evaluation order | §5.4 |
 
-The following rows are fixed by Inceptless decision **2026-11-15 #13** (S2-FIX1, the first
+The following rows are fixed by Inceptless decision **2026-11-15 #18** (S2-FIX1, the first
 revision of the S2 round): the founder's rulings Q1–Q5 on the questions §7.2 of
 `docs/open-questions.md` left open (**decided**), and the review items T1–T8, each
 **decided by principle** ("invalid beats unverifiable", or the more conservative reading)
@@ -3795,9 +3847,24 @@ and recorded in `docs/open-questions.md` §7.3.
 | S2-FIX1/Q4 | check 10: RSA modulus 2,048–8,192 bits, odd `e` with 65,537 ≤ `e` < 2^256; ECDSA `Ecdsa-Sig-Value` strict DER, `r`, `s` in [1, `n` − 1] | §12.2, registry |
 | S2-FIX1/Q5 | §5.5.2 steps 1–5 are walked beyond the depth bound too; the walk is limited only by cycle detection | §5.5.2, `weave.grant.md` |
 | S2-FIX1/T2 | across signature entries an invalid outcome decides before an unresolved key's `E_KEY_UNKNOWN` | §4.4, §14.5 |
-| S2-FIX1/T3 | 1a is X.690 for every universal tag number, listed tag by tag (REAL, RELATIVE-OID, primitive-only and constructed-only types, string units, §11.4 conservatively, TIME and DURATION rejected) | §12.2, registry |
+| S2-FIX1/T3 | 1a is X.690 for every universal tag number, listed tag by tag (REAL, RELATIVE-OID, primitive-only and constructed-only types, string units, §11.4 conservatively, TIME and DURATION rejected; the string and date rules revised by S2-FIX2/U4) | §12.2, registry |
 | S2-FIX1/T7 | §0.3 registry numbering follows the registry's own history; §4.4 step 5 is reached only after §14.5 step (4) | §0.3, §4.4 |
-| S2-FIX1/T8 | a root regular file named `readable` is `E_CONTAINER_ENTRY`; no `N_READABLE_PRESENT` after a zip-structure failure; `L_ERASED_PLACEHOLDER` and `L_LABELS_ARE_CLAIMS` only for verified records; §11.5 W1 rule 2 with no trust root keeps `E_MANIFEST_CHAIN`, with advice to recipients | §11.5, §11.8, §14.9, registry |
+| S2-FIX1/T8 | a root regular file named `readable` is `E_CONTAINER_ENTRY`; no `N_READABLE_PRESENT` after a zip-structure failure (narrowed by S2-FIX2/U7); `L_ERASED_PLACEHOLDER` and `L_LABELS_ARE_CLAIMS` only for verified records; §11.5 W1 rule 2 with no trust root keeps `E_MANIFEST_CHAIN`, with advice to recipients | §11.5, §11.8, §14.9, registry |
+
+The following rows are fixed by Inceptless decision **2026-11-15 #22** (S2-FIX2, the second
+revision of the S2 round): the founder's ruling Q6 (**decided**) and the narrow review's
+items U1 and U3–U7, each **decided by principle** (U1 completes Q1; U5 applies the T2
+principle to the manifest signature; U4 and U7 correct S2-FIX1's T3 and T8 readings; U6
+changes wording only). The founder can overturn the items decided by principle.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S2-FIX2/U1 | a program's or device's `body.basis` grant chain is judged at the erasure's `recorded_at`, like an agent's `actor.grant` (expired/revoked → the grant codes) | `weave.erasure.md`, registry |
+| S2-FIX2/U2 (Q6) | §5.5.2 step 1 in two tiers: a parent or cited grant present but itself invalid → `E_GRANT_GRANTER` (invalid); absent or present but not valid otherwise → `E_GRANT_UNRESOLVED`; an invalid link beyond the depth bound now reaches the citing record as invalid | §5.4, §5.5.2, `weave.grant.md`, registry |
+| S2-FIX2/U4 | 1a: no ESC in NumericString, PrintableString, IA5String, VisibleString, UTF8String; the ISO 2022 register types judged by §11.4 and §8.23.5.4 from the Table 3 defaults instead of rejecting every ESC; DATE, TIME-OF-DAY, DATE-TIME, OID-IRI, RELATIVE-OID-IRI rejected with TIME and DURATION (stricter than X.690) | §12.2, registry |
+| S2-FIX2/U5 | every manifest signature entry is judged; an entry of a required key that fails the equation decides `E_MANIFEST_SIG_INVALID` before an undeclared key's `E_KEY_UNKNOWN`, whatever the order | §11.3, registry |
+| S2-FIX2/U6 | §11.5 W1 rule 1 states the verdict rule of X5 as stricter than §5.3 instead of "as in §5.3" (no change of behaviour) | §5.3, §11.5 |
+| S2-FIX2/U7 | `N_READABLE_PRESENT` is withheld only when the archive fails in phases 1–4 of the zip check order; a member-level failure after the entries were enumerated still reports it | §11.8, registry |
 
 ### A.2 PROVISIONAL implementation shapes
 

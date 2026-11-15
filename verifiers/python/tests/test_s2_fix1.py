@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com>
 # SPDX-License-Identifier: Apache-2.0
-"""S2-FIX1 (decision 2026-11-15 #13): rules that a conformance vector cannot express.
+"""S2-FIX1 (decision 2026-11-15 #18): rules that a conformance vector cannot express.
 
 Usage errors (exit 2, no report) have no place in the vector expectation schema, so
 the S2-FIX1 shapes that end in a usage error are pinned here.

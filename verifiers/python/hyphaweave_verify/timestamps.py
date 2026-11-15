@@ -709,17 +709,43 @@ _DER_PRIMITIVE_UNIVERSAL = frozenset(
     {1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
      30, 31, 32, 33, 34, 35, 36}
 )
-#: S2-FIX1 T3: contents defined as UTF-8 by X.690 (UTF8String §8.23.10; DATE,
-#: TIME-OF-DAY, DATE-TIME §8.26; OID-IRI §8.21.2; RELATIVE-OID-IRI §8.22.2).
-_DER_UTF8_UNIVERSAL = frozenset({12, 31, 32, 33, 35, 36})
+#: S2-FIX1 T3: contents defined as UTF-8 by X.690 (UTF8String §8.23.10). DATE,
+#: TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI are rejected instead
+#: (S2-FIX2 U4).
+_DER_UTF8_UNIVERSAL = frozenset({12})
+#: S2-FIX2 U4: the types that carry no explicit escape sequence: NumericString,
+#: PrintableString, IA5String, VisibleString (X.690 §8.23.5.3, Table 3 "No") and
+#: UTF8String (§8.23.10). Their content contains no ESC (0x1B) octet.
+_DER_NO_ESCAPE_UNIVERSAL = frozenset({12, 18, 19, 22, 26})
 #: S2-FIX1 T3: the ISO 2022 register types under X.690 §11.4 (ObjectDescriptor,
-#: TeletexString, VideotexString, GraphicString, GeneralString); 1a judges §11.4
-#: conservatively: no ESC (0x1B) octet, so the default designations hold.
+#: TeletexString, VideotexString, GraphicString, GeneralString). S2-FIX2 U4: their
+#: escape sequences are judged by §11.4 and §8.23.5.4 as far as the octets fix
+#: them (:func:`_check_der_iso2022`), no longer rejected as a whole.
 _DER_ISO2022_UNIVERSAL = frozenset({7, 20, 21, 25, 27})
 #: S2-FIX1 T3: TIME (14) and DURATION (34): the §11.9 canonical form needs an
 #: ISO 8601 interval/duration parser this profile does not define; 1a rejects them
-#: (conservative; no module of check 1 uses them).
-_DER_REJECTED_UNIVERSAL = frozenset({14, 34})
+#: (conservative; no module of check 1 uses them). S2-FIX2 U4: DATE (31),
+#: TIME-OF-DAY (32), DATE-TIME (33), OID-IRI (35) and RELATIVE-OID-IRI (36) are
+#: rejected on the same footing (their value notations are not judged either).
+_DER_REJECTED_UNIVERSAL = frozenset({14, 31, 32, 33, 34, 35, 36})
+#: S2-FIX2 U4: the default designations of X.690 Table 3 (§8.23.5.2) per ISO 2022
+#: register type, as (set class, final octets) of the G0, C0 and C1 sets.
+_ISO2022_DEFAULTS: dict[int, dict[str, tuple[str, bytes]]] = {
+    7: {"G0": ("94", b"B")},  # ObjectDescriptor is a GraphicString
+    20: {"G0": ("94", b"u"), "C0": ("C0", b"E"), "C1": ("C1", b"H")},  # TeletexString
+    21: {"G0": ("94", b"u"), "C0": ("C0", b"@"), "C1": ("C1", b"A")},  # VideotexString
+    25: {"G0": ("94", b"B")},  # GraphicString
+    27: {"G0": ("94", b"B"), "C0": ("C0", b"@")},  # GeneralString
+}
+#: ISO/IEC 2022 designation intermediates: the G set they designate into and the
+#: class of the designated set (94 or 96 graphic characters).
+_ISO2022_G_SINGLE = {0x28: ("G0", "94"), 0x29: ("G1", "94"), 0x2A: ("G2", "94"),
+                     0x2B: ("G3", "94"), 0x2D: ("G1", "96"), 0x2E: ("G2", "96"),
+                     0x2F: ("G3", "96")}
+#: The smallest numbered G set for which a designating escape sequence exists, per
+#: set class (§11.4: "into the smallest numbered G or C set"): a 94-character set
+#: has a G0 sequence, a 96-character set none (its smallest is G1).
+_ISO2022_SMALLEST_G = {"94": "G0", "96": "G1", "94n": "G0", "96n": "G1"}
 _DER_REAL_NR3 = re.compile(rb"-?[1-9](?:[0-9]*[1-9])?\.E(?:\+0|-?[1-9][0-9]*)")
 #: S2/F66: EXTERNAL (8, X.690 §8.18), EMBEDDED PDV (11, §8.19) and the
 #: unrestricted CHARACTER STRING (29, §8.21) are SEQUENCE-based and always use
@@ -865,24 +891,98 @@ def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
                 data[position:content_end].decode("utf-8")
             except UnicodeDecodeError as error:
                 raise _DerViolation("UTF-8 content is not valid UTF-8") from error
+            if 0x1B in data[position:content_end]:
+                raise _DerViolation("an escape sequence in a UTF8String (X.690 §8.23.10)")
+        elif tag_number in _DER_NO_ESCAPE_UNIVERSAL and 0x1B in data[position:content_end]:
+            raise _DerViolation("an escape sequence in a string type that allows none")
         elif tag_number == 9:
             _check_der_real(data, position, content_end)
         elif tag_number == 13:
             _check_der_oid(data, position, content_end, "RELATIVE-OID")
         elif tag_number in _DER_REJECTED_UNIVERSAL:
-            raise _DerViolation("TIME and DURATION values are not accepted (§12.2 1a)")
+            raise _DerViolation(
+                "TIME, DURATION, DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and "
+                "RELATIVE-OID-IRI values are not accepted (§12.2 1a)"
+            )
         elif tag_number == 28 and length % 4:
             raise _DerViolation("UniversalString is not whole 4-octet units")
         elif tag_number == 30 and length % 2:
             raise _DerViolation("BMPString is not whole 2-octet units")
         elif tag_number in _DER_ISO2022_UNIVERSAL and 0x1B in data[position:content_end]:
-            raise _DerViolation("an escape sequence in an ISO 2022 string type")
+            _check_der_iso2022(tag_number, data[position:content_end])
     if constructed:
         if tag_class == 0 and tag_number == 17:
             _scan_set_of(data, position, content_end, depth + 1)
         else:
             _scan_der(data, position, content_end, depth + 1)
     return content_end
+
+
+def _iso2022_designation(sequence: bytes) -> tuple[str, str, bytes] | None:
+    """Return ``(set, class, entry)`` when *sequence* (``ESC I... F``) designates.
+
+    ISO/IEC 2022 designations: ``ESC 2/8..2/11 [I] F`` (94-set into G0..G3),
+    ``ESC 2/13..2/15 [I] F`` (96-set into G1..G3), ``ESC 2/4 F`` with F in
+    4/0..4/2 (94^n-set into G0), ``ESC 2/4 2/8..2/11 [I] F`` and
+    ``ESC 2/4 2/13..2/15 [I] F`` (94^n / 96^n), ``ESC 2/1 F`` (C0) and
+    ``ESC 2/2 F`` (C1). ``entry`` identifies the register entry: the octets
+    after the set-selecting intermediate, the final octet included.
+    """
+    intermediates = sequence[1:]
+    first = intermediates[0]
+    if first == 0x21:
+        return "C0", "C0", intermediates[1:]
+    if first == 0x22:
+        return "C1", "C1", intermediates[1:]
+    if first in _ISO2022_G_SINGLE:
+        target, size = _ISO2022_G_SINGLE[first]
+        return target, size, intermediates[1:]
+    if first == 0x24:
+        if len(intermediates) == 2:
+            return "G0", "94n", intermediates[1:]
+        second = intermediates[1]
+        if second in _ISO2022_G_SINGLE:
+            target, size = _ISO2022_G_SINGLE[second]
+            return target, size + "n", intermediates[2:]
+    return None
+
+
+def _check_der_iso2022(tag_number: int, content: bytes) -> None:
+    """S2-FIX2 U4: the escape sequences of an ISO 2022 register type.
+
+    Judged from the octets alone, starting from the Table 3 defaults
+    (§8.23.5.2): every ESC (0x1B) begins a complete escape sequence (ISO/IEC
+    2022: zero or more intermediates 2/0..2/15, then one final octet 3/0..7/14); no announcer
+    (``ESC 2/0 F``, §8.23.5.4); a designation never names a register entry that
+    is already designated as G0, G1, G2, G3, C0 or C1, and it designates into the
+    smallest numbered G set that has an escape sequence for the entry's class
+    (§11.4). Other escape sequences (invocations, for example) are not judged:
+    whether one is needed depends on the characters, which 1a does not map.
+    """
+    designated: dict[str, tuple[str, bytes]] = dict(_ISO2022_DEFAULTS[tag_number])
+    position = 0
+    while True:
+        position = content.find(b"\x1b", position)
+        if position < 0:
+            return
+        cursor = position + 1
+        while cursor < len(content) and 0x20 <= content[cursor] <= 0x2F:
+            cursor += 1
+        if cursor >= len(content) or not 0x30 <= content[cursor] <= 0x7E:
+            raise _DerViolation("an incomplete ISO 2022 escape sequence")
+        sequence = content[position : cursor + 1]
+        position = cursor + 1
+        if sequence[1] == 0x20:
+            raise _DerViolation("an ISO 2022 announcer (X.690 §8.23.5.4)")
+        designation = _iso2022_designation(sequence)
+        if designation is None:
+            continue
+        target, size, entry = designation
+        if (size, entry) in designated.values():
+            raise _DerViolation("an ISO 2022 designation of an entry already designated (§11.4)")
+        if target.startswith("G") and target != _ISO2022_SMALLEST_G[size]:
+            raise _DerViolation("an ISO 2022 designation not into the smallest G set (§11.4)")
+        designated[target] = (size, entry)
 
 
 def _scan_set_of(data: bytes, start: int, end: int, depth: int) -> None:

@@ -61,7 +61,7 @@ remains usable for existing records and must be revoked separately (usually with
    §9.4 leaves the new key's material in place, so its later signatures are judged under its
    own lifecycle, while an old-key signature that fails §9.4 makes the rotation supply no
    material at all, so a signature by the new key is `E_KEY_UNKNOWN` unless another record
-   supplies it [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #13; Q2).
+   supplies it [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #18; Q2).
 4. **Effect.** The rotation is evidence of succession; it does not revoke the old key and
    does not by itself give the new key a class (a separate declaration publishes that).
    A rotation to a key of a different class is not supported: the new key's signature must

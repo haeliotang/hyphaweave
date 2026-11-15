@@ -2015,7 +2015,7 @@ H1 follow-up has to change. Every row has a vector unless it says otherwise.
 | F69-4 | spec sentence: a rotation's key material declares its keys (§4.4) | none |
 | signature entries | spec sentence: step (4) over every entry, every entry judged (the Rust reading); Python corrected | none |
 
-### S2-FIX1 dispositions (decision 2026-11-15 #13)
+### S2-FIX1 dispositions (decision 2026-11-15 #18)
 
 | finding | disposition | Rust to follow |
 |---|---|---|
@@ -2028,6 +2028,16 @@ H1 follow-up has to change. Every row has a vector unless it says otherwise.
 | F57, F66 (1a list) | S2-FIX1 T3: X.690 tag by tag | **yes**: 21 of the `integrity-levels/l2-ts-der-1a-*` cases |
 | F59 (CRL) | vectors `integrity-levels/l2-ts-crl-extension-critical-*` | none |
 | F69-4 | vector `key-lifecycle/rotation-own-material-declares-its-keys` | none |
+
+### S2-FIX2 dispositions (decision 2026-11-15 #22)
+
+| finding | disposition | Rust to follow |
+|---|---|---|
+| F68 open point, observability (narrow review medium-3) | founder ruling Q6: §5.5.2 step 1 in two tiers; a present but invalid parent or cited grant is `E_GRANT_GRANTER` | **yes**: `grant/agent-record-cited-grant-present-invalid`, `sub-grant-parent-present-invalid`, `chain-depth-10-root-present-invalid`, and the changed `chain-depth-9-root-not-transferable`, `chain-depth-9-first-link-exceeds` |
+| F47, program/device half (narrow review high-1) | S2-FIX2 U1: the basis chain is judged at the erasure's `recorded_at` | none (the Rust verifier already passes `erasure/actor-program-basis-*`, `actor-device-basis-expired`) |
+| F57, F66 (1a strings and dates; narrow review medium-2) | S2-FIX2 U4: no ESC in the five no-escape types; §11.4 judged for the ISO 2022 types; DATE and the IRI types rejected | **yes**: 14 of the new `integrity-levels/l2-ts-der-1a-*` cases |
+| manifest signature entries (narrow review section 6) | S2-FIX2 U5: invalid first | **yes**: `container/manifest-sig-invalid-beats-unknown-key` |
+| `N_READABLE_PRESENT` after a member failure (narrow review low-5) | S2-FIX2 U7: reported once the entries were enumerated | none (the Rust verifier passes `container/readable-reported-after-member-crc-failure`) |
 
 Gate 3 after S2: the 37 allow-listed differences are gone (both reports are
 byte-identical on every committed case the Rust verifier passes), so the allow

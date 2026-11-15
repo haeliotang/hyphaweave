@@ -1011,7 +1011,9 @@ def _check_erasure_actor(
     authorising grant: present but itself invalid, or not covering the
     erasure, is ``E_ERASE_ACTOR`` (invalid); a grant that cannot be
     established (absent, outside its window, revoked, chain too deep) gives the
-    grant codes (unverifiable), the chain being judged last.
+    grant codes (unverifiable), the chain being judged last for every
+    authorising grant, an agent's ``actor.grant`` and a program's or device's
+    ``body.basis`` alike (S2-FIX2 U1).
     """
     actor_type = envelope.actor_type
     if actor_type in ("human", "organization"):
@@ -1047,12 +1049,25 @@ def _check_erasure_actor(
         raise WeaveError("E_ERASE_ACTOR", "program/device erasure requires a basis grant")
     signer_check()
     reference = refs.validate_reference(basis)
-    target_envelope, _digest = _erasure_grant_envelope(reference, context)
-    grant_body = target_envelope.body["grant"]
-    if grant_body["grantee"]["key"] != envelope.actor_key:
+    target_envelope, basis_digest = _erasure_grant_envelope(reference, context)
+    basis_grant = grant_record_from_envelope(target_envelope, basis_digest)
+    if basis_grant.grantee_key != envelope.actor_key:
         raise WeaveError("E_ERASE_ACTOR", "basis grant is not for this actor")
-    if "erase" not in grant_body["actions"] or "weave.erasure" not in grant_body["kinds"]:
+    if "erase" not in basis_grant.actions or kinds.KIND_ERASURE not in basis_grant.kind_names:
         raise WeaveError("E_ERASE_ACTOR", "basis grant does not allow erase")
+    # S2-FIX2 U1 (decision 2026-11-15 #22): the basis grant's chain is judged at
+    # the erasure's recorded_at last, exactly like an agent's actor.grant: a basis
+    # outside its window or revoked cannot be established (unverifiable).
+    try:
+        validate_grant_chain(
+            basis_grant, context, envelope.recorded_at, depth=0, seen=frozenset()
+        )
+    except WeaveError as error:
+        if error.code in _GRANT_ESTABLISHMENT_CODES:
+            raise
+        raise WeaveError(
+            "E_ERASE_ACTOR", "program/device erasure is not covered by an erase grant"
+        ) from error
 
 
 # ---------------------------------------------------------------------------

@@ -458,6 +458,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
                         return ContainerInput(
                             files={}, error="E_CONTAINER_SIZE",
                             input_sha256=input_sha, input_size=archive_size, is_zip=True,
+                            readable_present=readable_present,
                         )
                     continue
                 data = zipread.read_entry_data(handle, entry)
@@ -467,6 +468,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
                     return ContainerInput(
                         files={}, error="E_CONTAINER_SIZE",
                         input_sha256=input_sha, input_size=archive_size, is_zip=True,
+                        readable_present=readable_present,
                     )
     except zipread.ZipLimitError:
         # V7/L7: the §13 limits are size errors, not structural zip errors.
@@ -478,12 +480,17 @@ def _read_zip_container(path: Path) -> ContainerInput:
             is_zip=True,
         )
     except zipread.ZipStructureError as structure_error:
+        # S2-FIX2 U7 (§11.8, §14.6): a failure of phases 1-4 of the zip check
+        # order leaves no entry observed (``readable_present`` is still false);
+        # a member-level failure after the entries were enumerated (CRC-32,
+        # decompression) still reports an observed readable/ entry.
         return ContainerInput(
             files={},
             error=structure_error.code,
             input_sha256=input_sha,
             input_size=archive_size,
             is_zip=True,
+            readable_present=readable_present,
         )
     except (OSError, ValueError, EOFError, zlib.error):  # pragma: no cover
         return ContainerInput(
@@ -1248,21 +1255,37 @@ def _verify_manifest_signatures(
             "E_SIG_UNVERIFIABLE",
             "manifest attestation has no known-algorithm signature",
         )
+    # S2-FIX2 U5 (§11.3, decision 2026-11-15 #22 by principle, as T2 for records):
+    # every ed25519 entry is judged; an entry of a declared key that fails the
+    # equation is E_MANIFEST_SIG_INVALID even when another entry's key is
+    # undeclared, so an invented key id sorted first cannot turn a forged
+    # signature into an unverifiable one. E_KEY_UNKNOWN only when no entry is
+    # invalid.
+    from . import ed25519
+
+    first_invalid: WeaveError | None = None
+    unknown_key = False
     for signature in known:
         material = candidates.get(signature.key)
         if material is None:
-            raise WeaveError(
-                "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
-            )
+            unknown_key = True
+            continue
         try:
-            from . import ed25519
-
             ed25519.verify_signature(material, message, signature.raw)
         except WeaveError as error:
-            raise WeaveError(
-                "E_MANIFEST_SIG_INVALID", "manifest signature does not verify"
-            ) from error
+            if first_invalid is None:
+                first_invalid = WeaveError(
+                    "E_MANIFEST_SIG_INVALID", "manifest signature does not verify"
+                )
+                first_invalid.__cause__ = error
+            continue
         signer_keys.append(signature.key)
+    if first_invalid is not None:
+        raise first_invalid
+    if unknown_key:
+        raise WeaveError(
+            "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
+        )
     return tuple(signer_keys)
 
 
