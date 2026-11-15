@@ -13608,6 +13608,261 @@ for _name, _identifier, _content, _verdict, _why in (
     )
 
 
+# -- Q4 (F64): the check-10 key and signature-encoding bounds ---------------------
+#    RSA modulus 2048-8192 bits; public exponent odd, 65537 <= e < 2^256; ECDSA
+#    Ecdsa-Sig-Value a DER SEQUENCE of two minimal positive INTEGERs in [1, n-1].
+
+_FIX1_RSA: dict[tuple[int, int], Any] = {}
+_FIX1_SMALL_PRIMES = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71)
+
+
+def _fix1_probable_prime(candidate: int) -> bool:
+    """Deterministic Miller-Rabin with the first twenty primes as bases."""
+    for prime in _FIX1_SMALL_PRIMES:
+        if candidate % prime == 0:
+            return candidate == prime
+    exponent, rounds = candidate - 1, 0
+    while exponent % 2 == 0:
+        exponent //= 2
+        rounds += 1
+    for base in _FIX1_SMALL_PRIMES:
+        value = pow(base, exponent, candidate)
+        if value in (1, candidate - 1):
+            continue
+        for _ in range(rounds - 1):
+            value = value * value % candidate
+            if value == candidate - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def _fix1_prime(label: bytes, bits: int, public_exponent: int) -> int:
+    """A deterministic prime of exactly *bits* bits from SHA-512 expansion of *label*."""
+    counter = 0
+    while True:
+        stream = b""
+        block = 0
+        while len(stream) * 8 < bits:
+            stream += hashlib.sha512(label + counter.to_bytes(4, "big") + bytes([block])).digest()
+            block += 1
+        candidate = int.from_bytes(stream, "big") >> (len(stream) * 8 - bits)
+        candidate |= (3 << (bits - 2)) | 1
+        while True:
+            if _fix1_probable_prime(candidate):
+                if _gcd(candidate - 1, public_exponent) == 1:
+                    return candidate
+                break
+            candidate += 2
+            if candidate.bit_length() != bits:
+                break
+        counter += 1
+
+
+def _gcd(a: int, b: int) -> int:
+    while b:
+        a, b = b, a % b
+    return a
+
+
+def _fix1_rsa_key(bits: int, public_exponent: int) -> Any:
+    from cryptography.hazmat.primitives.asymmetric import rsa as crypto_rsa
+
+    cached = _FIX1_RSA.get((bits, public_exponent))
+    if cached is not None:
+        return cached
+    label = b"weave-record/1/test-tsa-rsa/%d/%d/" % (bits, public_exponent)
+    p = _fix1_prime(label + b"p", bits // 2, public_exponent)
+    q = _fix1_prime(label + b"q", bits // 2, public_exponent)
+    if p < q:
+        p, q = q, p
+    phi = (p - 1) * (q - 1)
+    d = pow(public_exponent, -1, phi // _gcd(p - 1, q - 1))
+    key = crypto_rsa.RSAPrivateNumbers(
+        p=p, q=q, d=d, dmp1=d % (p - 1), dmq1=d % (q - 1), iqmp=pow(q, -1, p),
+        public_numbers=crypto_rsa.RSAPublicNumbers(public_exponent, p * q),
+    ).private_key(unsafe_skip_rsa_key_validation=True)
+    _FIX1_RSA[(bits, public_exponent)] = key
+    return key
+
+
+def _fix1_rsa_sign(key: Any, message: bytes) -> bytes:
+    return key.sign(message, crypto_padding.PKCS1v15(), crypto_hashes.SHA256())
+
+
+_FIX1_RSA_CERTIFICATES: dict[tuple[int, int], bytes] = {}
+
+
+def _fix1_rsa_certificate(bits: int, public_exponent: int) -> bytes:
+    """A deterministic self-signed timeStamping certificate for that RSA key."""
+    cached = _FIX1_RSA_CERTIFICATES.get((bits, public_exponent))
+    if cached is not None:
+        return cached
+    key = _fix1_rsa_key(bits, public_exponent)
+    spki = key.public_key().public_bytes(
+        crypto_serialization.Encoding.DER,
+        crypto_serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    name = asn1_x509.Name.build(
+        {"common_name": "Hyphaweave S2-FIX1 test TSA RSA-%d e=%d (test only)" % (bits, public_exponent)}
+    )
+    tbs = asn1_x509.TbsCertificate()
+    tbs["version"] = "v3"
+    tbs["serial_number"] = 8000 + bits % 1000
+    tbs["signature"] = {"algorithm": "sha256_rsa", "parameters": None}
+    tbs["issuer"] = name
+    validity = asn1_x509.Validity()
+    validity["not_before"] = asn1_x509.Time(
+        {"utc_time": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)}
+    )
+    validity["not_after"] = asn1_x509.Time(
+        {"general_time": datetime.datetime(2126, 1, 1, tzinfo=datetime.timezone.utc)}
+    )
+    tbs["validity"] = validity
+    tbs["subject"] = name
+    tbs["subject_public_key_info"] = asn1_x509.PublicKeyInfo.load(spki)
+    tbs["extensions"] = [
+        asn1_x509.Extension({"extn_id": "key_usage", "critical": True,
+                             "extn_value": asn1_x509.KeyUsage({"digital_signature"})}),
+        asn1_x509.Extension({"extn_id": "extended_key_usage", "critical": True,
+                             "extn_value": asn1_x509.ExtKeyUsageSyntax(["time_stamping"])}),
+    ]
+    certificate = asn1_x509.Certificate()
+    certificate["tbs_certificate"] = tbs
+    certificate["signature_algorithm"] = {"algorithm": "sha256_rsa", "parameters": None}
+    certificate["signature_value"] = _fix1_rsa_sign(key, tbs.dump())
+    _FIX1_RSA_CERTIFICATES[(bits, public_exponent)] = certificate.dump()
+    return _FIX1_RSA_CERTIFICATES[(bits, public_exponent)]
+
+
+def _fix1_rsa_files(case_dir: Path, bits: int, public_exponent: int) -> dict[str, bytes]:
+    certificate = _fix1_rsa_certificate(bits, public_exponent)
+    key = _fix1_rsa_key(bits, public_exponent)
+
+    def factory(imprint: bytes) -> bytes:
+        tree = _der_tree(_crafted_tsr(imprint, certificate_der=certificate))
+        _x1_resign(tree, sign=lambda message: _fix1_rsa_sign(key, message))
+        return _der_encode(tree)
+
+    files = _crafted_l2_files(case_dir, tsr_factory=factory, trust_name=None)
+    files[TSA_CERT_NAME] = _s2_pem(certificate)
+    return files
+
+
+def _fix1_ecdsa_signature_edit(edit: Callable[[bytes], bytes]) -> Callable[[bytes], bytes]:
+    """The P-384 receipt (ecdsa-with-SHA384) with its Ecdsa-Sig-Value re-encoded."""
+
+    def factory(imprint: bytes) -> bytes:
+        tree = _der_tree(_s2_p384_tsr(_S2_ECDSA_SHA384)(imprint))
+        signer_info = _w3_signer_info(tree)
+        position = next(
+            index for index, child in enumerate(signer_info.children) if child.tag == 0xA0
+        )
+        signature = next(
+            child for child in signer_info.children[position + 1 :] if child.tag == 0x04
+        )
+        signature.content = edit(signature.content)
+        return _der_encode(tree)
+
+    return factory
+
+
+def _fix1_ecdsa_components(value: bytes) -> tuple[bytes, bytes]:
+    if value[0] != 0x30 or value[1] & 0x80:
+        raise SystemExit("unexpected Ecdsa-Sig-Value shape")
+    body = value[2:]
+    r_length = body[1]
+    r = body[2 : 2 + r_length]
+    rest = body[2 + r_length :]
+    s = rest[2 : 2 + rest[1]]
+    return r, s
+
+
+def _fix1_ecdsa_encode(r: bytes, s: bytes) -> bytes:
+    body = b"\x02" + bytes([len(r)]) + r + b"\x02" + bytes([len(s)]) + s
+    return b"\x30" + bytes([len(body)]) + body
+
+
+def _fix1_ecdsa_r_padded(value: bytes) -> bytes:
+    r, s = _fix1_ecdsa_components(value)
+    return _fix1_ecdsa_encode(b"\x00" + r, s)
+
+
+def _fix1_ecdsa_trailing(value: bytes) -> bytes:
+    return value + b"\x00"
+
+
+def _fix1_ecdsa_s_plus_order(value: bytes) -> bytes:
+    r, s = _fix1_ecdsa_components(value)
+    shifted = int.from_bytes(s, "big") + _S2_P384_ORDER
+    content = shifted.to_bytes((shifted.bit_length() + 8) // 8, "big")
+    return _fix1_ecdsa_encode(r, content)
+
+
+for _name, _bits, _exponent, _verdict, _why in (
+    ("l2-ts-check10-rsa-1024", 1024, 65537, "invalid",
+     "a 1024-bit RSA modulus, below the 2048-bit lower bound"),
+    ("l2-ts-check10-rsa-exponent-3", 2048, 3, "invalid",
+     "a 2048-bit RSA key with public exponent 3, below 65537"),
+    ("l2-ts-check10-rsa-exponent-2-pow-256-plus-1", 2048, (1 << 256) + 1, "invalid",
+     "a 2048-bit RSA key with public exponent 2^256 + 1, at or above the 2^256 limit"),
+    ("l2-ts-check10-rsa-exponent-65539", 2048, 65539, "valid",
+     "a 2048-bit RSA key with public exponent 65539 (odd, inside the bounds; control)"),
+):
+    _expected: dict[str, Any] = dict(
+        args=_S2_L2_ARGS,
+        records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    )
+    if _verdict == "valid":
+        _expected["expected_container"] = {"anchor_verified": True}
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        _verdict,
+        errors=() if _verdict == "valid" else ("E_TS_CMS",),
+        build=lambda case_dir, _bits=_bits, _exponent=_exponent: _fix1_rsa_files(
+            case_dir, _bits, _exponent
+        ),
+        notes="S2-FIX1 Q4 (F64; §12.2 check 10): the receipt's signer is a deterministic "
+        "self-signed timeStamping certificate for " + _why + "; the receipt is "
+        "signed with that key (sha256WithRSAEncryption, RSA PKCS#1 v1.5, a valid "
+        "signature) and the case's trust anchor is that certificate. Check 10 accepts RSA "
+        "moduli of 2048 to 8192 bits and odd public exponents with 65537 <= e < 2^256; "
+        "outside them the signature does not count (E_TS_CMS).",
+        **_expected,
+    )
+
+for _name, _edit, _why in (
+    ("l2-ts-check10-ecdsa-r-nonminimal", _fix1_ecdsa_r_padded,
+     "r is re-encoded with a redundant leading 0x00 octet (not the shortest INTEGER)"),
+    ("l2-ts-check10-ecdsa-trailing-octet", _fix1_ecdsa_trailing,
+     "one 0x00 octet follows the Ecdsa-Sig-Value SEQUENCE"),
+    ("l2-ts-check10-ecdsa-s-plus-order", _fix1_ecdsa_s_plus_order,
+     "s is replaced by s + n (the same value modulo the P-384 order n, outside [1, n - 1])"),
+):
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_TS_CMS",),
+        build=lambda case_dir, _edit=_edit: _s2_p384_files(
+            case_dir, _fix1_ecdsa_signature_edit(_edit)
+        ),
+        args=_S2_L2_ARGS,
+        records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+        notes="S2-FIX1 Q4 (F64; §12.2 check 10): integrity-levels/l2-ts-signer-p384-sha384 "
+        "(a valid ecdsa-with-SHA384 receipt by the deterministic P-384 test TSA) whose "
+        "signature value is changed after signing: " + _why + ". The Ecdsa-Sig-Value must "
+        "be a DER SEQUENCE of two shortest positive INTEGERs r, s in [1, n - 1] with no "
+        "trailing octets (E_TS_CMS).",
+    )
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
