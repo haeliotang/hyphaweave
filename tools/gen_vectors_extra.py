@@ -11595,26 +11595,28 @@ declare(
     "signature-key-resolution-before-equation",
     "container",
     "container",
-    "unverifiable",
-    errors=("E_KEY_UNKNOWN",),
+    "invalid",
+    errors=("E_SIG_INVALID",),
     build=lambda case_dir: _s2_two_signer_files(unknown_second=True),
     args=_S2_ARGS,
     records=(
         {
             "id": "s2-two-signer-note",
-            "verdict": "unverifiable",
-            "errors": ["E_KEY_UNKNOWN"],
+            "verdict": "invalid",
+            "errors": ["E_SIG_INVALID"],
             "sigs": [
                 {"key": derived_key("s2-two-signer-a")[2], "state": "invalid"},
                 {"key": derived_key("s2-two-signer-undeclared")[2], "state": "unverified"},
             ],
         },
     ),
-    notes="S2 (§14.5 steps (4) and (5)): the note's first entry fails the equation and its "
-    "second entry names a key that nothing declares. Key resolution (step (4)) covers every "
-    "entry before any equation (step (5)) decides the record, so the record is "
-    "unverifiable E_KEY_UNKNOWN, not invalid E_SIG_INVALID; every entry still reports its "
-    "state (invalid, unverified).",
+    notes="S2 (§14.5 steps (4) and (5)), expectation corrected by S2-FIX1 T2 (decision "
+    "2026-11-15 #13; §4.4 step 2): the note's first entry is by a declared key and fails "
+    "the equation; its second entry names a key that nothing declares. Key resolution "
+    "(step (4)) covers every entry and every resolved entry is verified, and an invalid "
+    "outcome beats an unverifiable one: a known-key signature that fails the equation makes "
+    "the record invalid E_SIG_INVALID, and an entry by an undeclared key cannot lower it to "
+    "unverifiable E_KEY_UNKNOWN. Every entry still reports its state (invalid, unverified).",
 )
 
 # -- F51 / F61-2 / F67: crash sites of the candidate key state ------------------
@@ -12744,6 +12746,340 @@ for _name, _factory, _verdict, _errors, _why in (
         "certificate. The SignerInfo uses " + _why + ".",
         **_p384_expected,
     )
+
+
+# ---------------------------------------------------------------------------
+# S2-FIX1 (decision 2026-11-15 #13): the founder's rulings Q1-Q5 and the
+# review items T1-T8 of the S2 round. Every expected conclusion below is
+# hand-written from the specification text.
+# ---------------------------------------------------------------------------
+
+# -- T1 / Q2: a signature that fails §9.4 gives no other key material or trust.
+#    Only the signature of the key the record states for itself (a declaration's
+#    body.key, a rotation's new_key) is left out when admission is decided (§5.3).
+
+
+def _fix1_rotation_records(
+    *, compromised: str, recorded_at: str = recordlib.T0
+) -> list[dict[str, Any]]:
+    """A device key declared at T0, rotated at *recorded_at*; *compromised* is
+    ``"old"`` or ``"new"``: that key has a key-compromise revocation at T1."""
+    old_private, old_public, old_id = derived_key("fix1-rotation-old")
+    new_private, new_public, new_id = derived_key("fix1-rotation-new")
+    declaration = _s2_declaration("fix1-rotation-old", record_id="key-declared-fix1-rotation-old")
+    revocation = _s2_revocation(
+        old_id if compromised == "old" else new_id,
+        reason="key-compromise",
+        effective_at=recordlib.T1,
+        record_id="key-revoked-fix1-rotation",
+    )
+    rotation = recordlib.build_record(
+        kind="weave.key.rotated",
+        id="key-rotated-fix1",
+        actor={"type": "device", "key": old_id},
+        body={
+            "new_key": new_id,
+            "new_public_key": keyutil.b64url_encode(new_public),
+            "old_key": old_id,
+            "old_public_key": keyutil.b64url_encode(old_public),
+        },
+        stage="accepted",
+        recorded_at=recorded_at,
+        origin_instance=old_id,
+    )
+    rotation = {
+        **rotation,
+        "sigs": sorted(
+            [
+                _derived_signature(old_private, old_id, rotation),
+                _derived_signature(new_private, new_id, rotation),
+            ],
+            key=lambda entry: entry["key"],
+        ),
+    }
+    note_record = _s2_derived_note("fix1-rotation-new", "fix1-note-by-new-key", recordlib.T3)
+    return [declaration, revocation, rotation, note_record]
+
+
+def _fix1_rotation_expected(compromised: str) -> tuple[dict[str, Any], ...]:
+    records = _fix1_rotation_records(compromised=compromised)
+    rotation, note_record = records[2], records[3]
+    old_id = derived_key("fix1-rotation-old")[2]
+    new_id = derived_key("fix1-rotation-new")[2]
+    if compromised == "old":
+        rotation_states = {old_id: "unverified", new_id: "valid"}
+        note_expected = {
+            "id": "fix1-note-by-new-key",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "sigs": _s2_sigs(note_record, {new_id: "unverified"}),
+        }
+    else:
+        rotation_states = {old_id: "valid", new_id: "unverified"}
+        note_expected = {
+            "id": "fix1-note-by-new-key",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+            "sigs": _s2_sigs(note_record, {new_id: "unverified"}),
+        }
+    declaration_expected: dict[str, Any] = {
+        "id": "key-declared-fix1-rotation-old", "verdict": "valid", "errors": [],
+    }
+    if compromised == "old":
+        # A1 (§9.4 case 3): the old key's own declaration (T0) is self-signed by a key
+        # with a key-compromise revocation and the L0 container has no evidence.
+        declaration_expected = {
+            "id": "key-declared-fix1-rotation-old",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+            "sigs": _s2_sigs(records[0], {old_id: "unverified", kid("human-1"): "valid"}),
+        }
+    return (
+        declaration_expected,
+        {"id": "key-revoked-fix1-rotation", "verdict": "valid", "errors": []},
+        {
+            "id": "key-rotated-fix1",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+            "sigs": _s2_sigs(rotation, rotation_states),
+        },
+        note_expected,
+    )
+
+
+declare(
+    "key-lifecycle",
+    "rotation-old-key-compromised-backdated-note-by-new-key",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: container(_fix1_rotation_records(compromised="old"), level="L0"),
+    args=_S2_ARGS,
+    records=_fix1_rotation_expected("old"),
+    notes="S2-FIX1 T1 (Q2; §5.3, §9.4 case 3): a device key has a valid key-compromise "
+    "revocation effective at T1; a rotation from that old key to a new key claims T0, "
+    "before the compromise, and the L0 container has no timestamp evidence at all (so "
+    "the old key's own declaration is invalid E_KEY_COMPROMISED as well, A1). The "
+    "rotation's old-key signature fails §9.4 (invalid E_KEY_COMPROMISED), and a signature "
+    "that fails §9.4 gives another key neither material nor trust: the rotation supplies "
+    "no new-key material, so a note signed by the new key at T3 is unverifiable "
+    "E_KEY_UNKNOWN (sigs state unverified). Without this a thief holding the old key "
+    "could backdate a rotation to a key of their own and sign valid records with it.",
+)
+
+declare(
+    "key-lifecycle",
+    "rotation-new-key-compromised-note-by-new-key",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED",),
+    build=lambda case_dir: container(_fix1_rotation_records(compromised="new"), level="L0"),
+    args=_S2_ARGS,
+    records=_fix1_rotation_expected("new"),
+    notes="S2-FIX1 T1 (Q2; §5.3, §9.4 case 3): the same L0 container, but the key-compromise "
+    "revocation names the new key. The rotation's new-key signature fails §9.4, so the "
+    "rotation is invalid E_KEY_COMPROMISED; that is the signature of the key the rotation "
+    "states for itself, the one signature left out when admission is decided (§5.3), so "
+    "the rotation still supplies the new key's material and the note signed by the new "
+    "key at T3 is judged under the new key's own lifecycle: invalid E_KEY_COMPROMISED, "
+    "not unverifiable E_KEY_UNKNOWN.",
+)
+
+
+def _fix1_with_note(files_records: list[dict[str, Any]], name: str, note_id: str) -> dict[str, bytes]:
+    return container(files_records + [_s2_derived_note(name, note_id, recordlib.T3)])
+
+
+def _fix1_rotation_retired_records() -> list[dict[str, Any]]:
+    files = _s2_rotation_old_retired_files()
+    return [parse(data) for path, data in sorted(files.items()) if path.startswith("container/records/")]
+
+
+def _fix1_cosigner_retired_records() -> list[dict[str, Any]]:
+    files = _s2_cosigner_retired_files()
+    return [parse(data) for path, data in sorted(files.items()) if path.startswith("container/records/")]
+
+
+declare(
+    "key-lifecycle",
+    "rotation-old-key-retired-note-by-new-key",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: _fix1_with_note(
+        _fix1_rotation_retired_records(), "s2-rotation-new", "fix1-note-by-rotated-in-key"
+    ),
+    args=_S2_ARGS,
+    records=(
+        {"id": "key-rotated-s2-after-retirement", "verdict": "invalid", "errors": ["E_KEY_REVOKED"]},
+        {
+            "id": "fix1-note-by-rotated-in-key",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "sigs": [{"key": derived_key("s2-rotation-new")[2], "state": "unverified"}],
+        },
+    ),
+    notes="S2-FIX1 T1 (Q2; §5.3, §9.4): key-lifecycle/rotation-old-key-retired (a rotation "
+    "recorded at T2 whose old key was retired at T1, invalid E_KEY_REVOKED) plus a note "
+    "signed by the rotated-in key at T3. The old-key signature fails §9.4, so the "
+    "rotation supplies no new-key material: the note is unverifiable E_KEY_UNKNOWN.",
+)
+
+declare(
+    "key-lifecycle",
+    "declaration-cosigner-retired-note-by-device",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: _fix1_with_note(
+        _fix1_cosigner_retired_records(), "s2-cosigned-device", "fix1-note-by-cosigned-device"
+    ),
+    args=_S2_ARGS,
+    records=(
+        {"id": "key-declared-s2-cosigned-device", "verdict": "invalid", "errors": ["E_KEY_REVOKED"]},
+        {
+            "id": "fix1-note-by-cosigned-device",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "sigs": [{"key": derived_key("s2-cosigned-device")[2], "state": "unverified"}],
+        },
+    ),
+    notes="S2-FIX1 T1 (Q2; §5.3, §9.4): key-lifecycle/declaration-cosigner-retired (a device "
+    "declaration recorded at T2 whose owner cosignature is by human-2, retired at T1, "
+    "invalid E_KEY_REVOKED) plus a note signed by the device key at T3. The owner "
+    "cosignature fails §9.4, so the declaration gives the device key neither material nor "
+    "trust: the note is unverifiable E_KEY_UNKNOWN.",
+)
+
+
+def _fix1_owner_compromised_records() -> list[dict[str, Any]]:
+    revocation = recordlib.key_revocation(
+        "human-2", reason="key-compromise", effective_at=recordlib.T1, signer_name="human-1",
+        record_id="key-revoked-fix1-human-2",
+    )
+    declaration = _s2_declaration(
+        "fix1-owner-compromised-device",
+        record_id="key-declared-fix1-owner-compromised-device",
+        owner="human-2",
+        recorded_at=recordlib.T0,
+        cosigners=("human-2",),
+    )
+    return [revocation, declaration]
+
+
+declare(
+    "key-lifecycle",
+    "declaration-cosigner-compromised-note-by-device",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: _fix1_with_note(
+        _fix1_owner_compromised_records(), "fix1-owner-compromised-device",
+        "fix1-note-by-owner-compromised-device",
+    ),
+    args=_S2_ARGS,
+    records=(
+        {"id": "key-revoked-fix1-human-2", "verdict": "valid", "errors": []},
+        {
+            "id": "key-declared-fix1-owner-compromised-device",
+            "verdict": "invalid",
+            "errors": ["E_KEY_COMPROMISED"],
+            "sigs": _s2_sigs(
+                _fix1_owner_compromised_records()[1],
+                {derived_key("fix1-owner-compromised-device")[2]: "valid",
+                 kid("human-2"): "unverified"},
+            ),
+        },
+        {
+            "id": "fix1-note-by-owner-compromised-device",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "sigs": [{"key": derived_key("fix1-owner-compromised-device")[2], "state": "unverified"}],
+        },
+    ),
+    notes="S2-FIX1 T1 (Q2; §5.3, §9.4 case 3): human-2 has a valid key-compromise "
+    "revocation effective at T1. A new device declaration owned by human-2 claims T0 and "
+    "carries human-2's owner cosignature; the L0 container has no timestamp evidence. The "
+    "cosignature fails §9.4 (invalid E_KEY_COMPROMISED), so the declaration gives the "
+    "device key neither material nor trust, and a note signed by the device at T3 is "
+    "unverifiable E_KEY_UNKNOWN. Without this a thief holding human-2's key could "
+    "backdate a declaration of a device key of their own.",
+)
+
+
+# -- T2: invalid beats unverifiable across signature entries (§4.4 step 2, §14.5) --
+
+
+def _fix1_revoked_entry_and_unknown_key_files() -> dict[str, bytes]:
+    first_private, _first_public, first_id = derived_key("fix1-retired-signer")
+    second_private, _second_public, second_id = derived_key("fix1-undeclared-signer")
+    declaration = _s2_declaration("fix1-retired-signer", record_id="key-declared-fix1-retired-signer")
+    revocation = _s2_revocation(
+        first_id, reason="retired", effective_at=recordlib.T1,
+        record_id="key-revoked-fix1-retired-signer",
+    )
+    record = recordlib.build_record(
+        kind="example.note",
+        id="fix1-retired-and-undeclared-note",
+        actor={"type": "device", "key": first_id},
+        body={"text": "a retired signer and an undeclared signer"},
+        recorded_at=recordlib.T2,
+        origin_instance=first_id,
+    )
+    record = {
+        **record,
+        "sigs": sorted(
+            [
+                _derived_signature(first_private, first_id, record),
+                _derived_signature(second_private, second_id, record),
+            ],
+            key=lambda entry: entry["key"],
+        ),
+    }
+    return container([declaration, revocation, record])
+
+
+def _fix1_revoked_entry_expected() -> dict[str, Any]:
+    files = _fix1_revoked_entry_and_unknown_key_files()
+    record = next(
+        parse(data) for path, data in files.items()
+        if path.startswith("container/records/")
+        and parse(data).get("id") == "fix1-retired-and-undeclared-note"
+    )
+    return {
+        "id": "fix1-retired-and-undeclared-note",
+        "verdict": "invalid",
+        "errors": ["E_KEY_REVOKED"],
+        "sigs": _s2_sigs(
+            record,
+            {derived_key("fix1-retired-signer")[2]: "unverified",
+             derived_key("fix1-undeclared-signer")[2]: "unverified"},
+        ),
+    }
+
+
+declare(
+    "key-lifecycle",
+    "signature-revoked-entry-beats-unknown-key",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _fix1_revoked_entry_and_unknown_key_files(),
+    args=_S2_ARGS,
+    records=(_fix1_revoked_entry_expected(),),
+    notes="S2-FIX1 T2 (§14.5 steps (4)-(5), §9.4; invalid beats unverifiable): a note "
+    "recorded at T2 carries a good signature by a device key retired at T1 and a good "
+    "signature by a key that nothing declares. The retired key's signature is invalid "
+    "E_KEY_REVOKED under §9.4 (sigs state unverified) and the other entry's key cannot be "
+    "resolved (unverified). The invalid outcome decides the record's code: invalid "
+    "E_KEY_REVOKED, not unverifiable E_KEY_UNKNOWN.",
+)
 
 
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
