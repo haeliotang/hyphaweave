@@ -4117,6 +4117,60 @@ declare(
 )
 
 
+# ---------------------------------------------------------------------------
+# S2-FIX1 T8 (next batch, H1 small-stack recheck L2): a scalar is a level (§13)
+# ---------------------------------------------------------------------------
+
+
+def _depth_scalar_record(scalar_depth: int) -> dict[str, Any]:
+    """`_depth_record` with the scalar 0 as the deepest value, at *scalar_depth*.
+
+    The record object is depth 1, `body` depth 2, each nested array one more, and
+    the scalar inside the innermost array one more again.
+    """
+    record = _depth_record(scalar_depth - 1)
+    unsigned = {name: value for name, value in record.items() if name != "sigs"}
+    body = dict(unsigned["body"])
+    nested: Any = 0
+    for _ in range(scalar_depth - 3):
+        nested = [nested]
+    body["nested"] = nested
+    unsigned["body"] = body
+    unsigned["id"] = "jcs-scalar-depth-%d" % scalar_depth
+    return recordlib.signed(unsigned, "human-1")
+
+
+declare(
+    "jcs",
+    "depth-limit-32-scalar-leaf",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(_depth_scalar_record(32)),
+    args=("--keys", "@keyset"),
+    limitations=("L_OFFLINE_CONTEXT",),
+    notes="S2-FIX1 T8 (§13: a scalar is a leaf value at its own depth): the declaration's "
+    "unknown body member nests arrays down to depth 31 and the scalar 0 sits at depth 32, "
+    "exactly MAX_JSON_DEPTH: valid (control).",
+)
+
+declare(
+    "jcs",
+    "depth-limit-plus-one-scalar-leaf",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_JSON_SIZE",),
+    build=lambda: rec(_depth_scalar_record(33)),
+    records=({"id": None, "kind_known": None, "refs": []},),
+    notes="S2-FIX1 T8 (§13; H1 small-stack recheck L2): the arrays reach depth 32 and the "
+    "scalar 0 inside the innermost array is at depth 33. A scalar is a level of its own, "
+    "so this exceeds MAX_JSON_DEPTH: E_JSON_SIZE. An implementation that measures depth "
+    "only when it opens an object or an array passes jcs/depth-limit-plus-one but not this "
+    "case.",
+)
+
+
 # === END CASE SECTIONS ===
 
 

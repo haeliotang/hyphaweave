@@ -13863,6 +13863,144 @@ for _name, _edit, _why in (
     )
 
 
+# -- T8 / review A low-1: readable/ and the limitations when the pipeline stops ---
+
+
+def _fix1_readable_root_file(zip_form: bool) -> dict[str, bytes]:
+    files = dict(recordlib.build_container(SIMPLE_RECORDS()))
+    files["readable"] = b"a regular file named readable at the container root\n"
+    if zip_form:
+        return {"container.zip": as_zip(files)}
+    return _wrap_internal(files)
+
+
+for _name, _zip_form in (("readable-root-regular-file", False), ("readable-root-regular-file-zip", True)):
+    declare(
+        "container",
+        _name,
+        "container",
+        "container.zip" if _zip_form else "container",
+        "invalid",
+        errors=("E_CONTAINER_ENTRY",),
+        build=lambda case_dir, _zip_form=_zip_form: _fix1_readable_root_file(_zip_form),
+        args=("--keys", "@keyset"),
+        records=[],
+        notices_absent=("N_READABLE_PRESENT",),
+        notes="S2-FIX1 T8 (§11.1, §11.8): the container root holds a regular file named "
+        "`readable`. `readable/` is a directory of the layout; a regular file of that name is "
+        "not a readable/ entry but an entry outside the layout: E_CONTAINER_ENTRY (invalid), "
+        "and no N_READABLE_PRESENT (" + ("zip form" if _zip_form else "directory form") + ").",
+    )
+
+
+def _fix1_readable_then_crc_mismatch() -> bytes:
+    archive = bytearray(_zip_readable_extra("readable/notes.txt"))
+    position = archive.find(b'{"actor"')
+    if position < 0:
+        raise SystemExit("record member data not found in the stored archive")
+    archive[position + 20] ^= 0x01
+    return bytes(archive)
+
+
+declare(
+    "container",
+    "readable-not-reported-after-zip-structure-failure",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: {"container.zip": _fix1_readable_then_crc_mismatch()},
+    args=("--keys", "@keyset"),
+    records=[],
+    notices_absent=("N_READABLE_PRESENT",),
+    notes="S2-FIX1 (review A low-1; §11.8, §11.9, §14.5): the archive has a well-formed "
+    "readable/notes.txt entry and one byte of a record member's stored data is flipped, so "
+    "its CRC fails (§11.9 rule 5): E_CONTAINER_ZIP. An archive whose zip structure fails "
+    "has no enumerated entries and the later checks are not run, so N_READABLE_PRESENT is "
+    "not reported.",
+)
+
+declare(
+    "container",
+    "readable-reported-after-entry-check-failure",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY",),
+    build=lambda case_dir: {
+        "container.zip": _zip_standard(
+            extra=(
+                ("readable/notes.txt", b"x", 3, _STANDARD_ATTR),
+                ("records/link.json", b"x", 3, _SYMLINK_ATTR),
+            )
+        )[0]
+    },
+    args=("--keys", "@keyset"),
+    records=[],
+    notices=("N_READABLE_PRESENT",),
+    notes="S2-FIX1 (review A low-1; §11.8, T6/F32): the archive's zip structure holds; its "
+    "readable/notes.txt entry passes its own entry checks and a records/link.json entry has "
+    "the Unix symlink type (E_CONTAINER_ENTRY). The entries were enumerated and the "
+    "readable/ entry was observed, so N_READABLE_PRESENT is reported (control for "
+    "readable-not-reported-after-zip-structure-failure).",
+)
+
+
+def _fix1_listing_failure(records: list[dict[str, Any]], corrupt_id: str) -> dict[str, bytes]:
+    files = dict(recordlib.build_container(records))
+    target = next(record for record in records if record.get("id") == corrupt_id)
+    path = "records/%s.json" % recordlib.record_digest(target)[len("sha256:"):]
+    files[path] = files[path].replace(b'"accepted"', b'"proposed"', 1)
+    return _wrap_internal(files)
+
+
+def _fix1_erasure_listing_failure() -> dict[str, bytes]:
+    original = erased_original()
+    attestation = erasure_record(original)
+    placeholder = erased_placeholder(original, attestation)
+    return _fix1_listing_failure([placeholder, attestation], attestation["id"])
+
+
+def _fix1_labels_listing_failure() -> dict[str, bytes]:
+    labelled = recordlib.note(
+        "fix1-labelled-note", stage="accepted", labels={"sensitivity": "internal"}
+    )
+    other = recordlib.note("fix1-plain-note", stage="accepted")
+    return _fix1_listing_failure(
+        [recordlib.signed(labelled, "human-1"), recordlib.signed(other, "human-1")],
+        "fix1-plain-note",
+    )
+
+
+for _name, _build, _what in (
+    ("erased-placeholder-limitation-not-reported-after-listing-failure",
+     _fix1_erasure_listing_failure,
+     "a weave.erased placeholder and its erasure record; the erasure record's file is "
+     "changed after sealing (its digest no longer matches the manifest). "
+     "L_ERASED_PLACEHOLDER"),
+    ("labels-limitation-not-reported-after-listing-failure",
+     _fix1_labels_listing_failure,
+     "a note carrying labels and a plain note; the plain note's file is changed after "
+     "sealing. L_LABELS_ARE_CLAIMS"),
+):
+    declare(
+        "container",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_RECORD_DIGEST",),
+        build=lambda case_dir, _build=_build: _build(),
+        args=("--keys", "@keyset"),
+        records=[],
+        limitations=("L_OFFLINE_CONTEXT",),
+        notes="S2-FIX1 (review A low-1; §14.5, §14.9): the container holds " + _what
+        + " describes the records that are verified; the records-listing phase stops the "
+        "container with E_MANIFEST_RECORD_DIGEST and records: [], no record is verified "
+        "and the later checks are not run, so it is not reported.",
+    )
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
