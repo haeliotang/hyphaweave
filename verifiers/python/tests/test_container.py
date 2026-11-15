@@ -464,7 +464,7 @@ def test_erasure_cross_checks_tolerate_a_missing_body_erased() -> None:
         envelope=SimpleNamespace(kind=kinds.KIND_ERASURE, body={}, origin=None),
     )
     # S7.3: an invalid erasure record must never crash the cross-record phase.
-    assert container_module._erasure_cross_checks([fake_view]) is None
+    assert container_module._erasure_cross_checks([fake_view]) == []
 
 
 # ---------------------------------------------------------------------------
