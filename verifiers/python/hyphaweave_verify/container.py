@@ -397,7 +397,11 @@ def _read_zip_container(path: Path) -> ContainerInput:
                     or entry.name in precheck_names
                 ):
                     entry_error = "E_CONTAINER_ENTRY"
+                    precheck_names.add(entry.name)
+                    continue
                 precheck_names.add(entry.name)
+                # §14.6 N_READABLE_PRESENT: only an entry that passed its own
+                # entry checks is an observed readable/ entry (T6, F32).
                 if entry.name == "readable" or entry.name.startswith("readable/"):
                     readable_present = True
             if entry_error is not None:
