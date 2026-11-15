@@ -698,11 +698,29 @@ def _require_der_reencoding(schema, data: bytes, label: str) -> der_schema.WalkC
 # Strict DER enforcement (V2/M3, §12.2 check 1)
 # ---------------------------------------------------------------------------
 
-#: Universal tag numbers whose DER encoding is always primitive (SEQUENCE/SET and
-#: the rarely-used EXTERNAL/EMBEDDED PDV/CHARACTER STRING are constructed).
+#: Universal tag numbers whose DER encoding is always primitive (S2-FIX1 T3, the
+#: §12.2 1a table): BOOLEAN, INTEGER, BIT STRING, OCTET STRING, NULL, OBJECT
+#: IDENTIFIER, ObjectDescriptor (a GraphicString, X.690 §10.2), REAL (§8.5.1),
+#: ENUMERATED (§8.4), UTF8String, RELATIVE-OID (§8.20.1), TIME (§8.26.1.1), the
+#: restricted character string types (§10.2), UTCTime, GeneralizedTime, and DATE,
+#: TIME-OF-DAY, DATE-TIME, DURATION (§8.26), OID-IRI and RELATIVE-OID-IRI (§8.21,
+#: §8.22). SEQUENCE/SET and EXTERNAL/EMBEDDED PDV/CHARACTER STRING are constructed.
 _DER_PRIMITIVE_UNIVERSAL = frozenset(
-    {1, 2, 3, 4, 5, 6, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30}
+    {1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+     30, 31, 32, 33, 34, 35, 36}
 )
+#: S2-FIX1 T3: contents defined as UTF-8 by X.690 (UTF8String §8.23.10; DATE,
+#: TIME-OF-DAY, DATE-TIME §8.26; OID-IRI §8.21.2; RELATIVE-OID-IRI §8.22.2).
+_DER_UTF8_UNIVERSAL = frozenset({12, 31, 32, 33, 35, 36})
+#: S2-FIX1 T3: the ISO 2022 register types under X.690 §11.4 (ObjectDescriptor,
+#: TeletexString, VideotexString, GraphicString, GeneralString); 1a judges §11.4
+#: conservatively: no ESC (0x1B) octet, so the default designations hold.
+_DER_ISO2022_UNIVERSAL = frozenset({7, 20, 21, 25, 27})
+#: S2-FIX1 T3: TIME (14) and DURATION (34): the §11.9 canonical form needs an
+#: ISO 8601 interval/duration parser this profile does not define; 1a rejects them
+#: (conservative; no module of check 1 uses them).
+_DER_REJECTED_UNIVERSAL = frozenset({14, 34})
+_DER_REAL_NR3 = re.compile(rb"-?[1-9](?:[0-9]*[1-9])?\.E(?:\+0|-?[1-9][0-9]*)")
 #: S2/F66: EXTERNAL (8, X.690 §8.18), EMBEDDED PDV (11, §8.19) and the
 #: unrestricted CHARACTER STRING (29, §8.21) are SEQUENCE-based and always use
 #: the constructed form; their primitive form is a 1a violation.
@@ -842,11 +860,23 @@ def _scan_tlv(data: bytes, position: int, end: int, depth: int) -> int:
             pattern = _DER_UTC_TIME if tag_number == 23 else _DER_GENERALIZED_TIME
             if not pattern.fullmatch(text):
                 raise _DerViolation("time value is not canonical DER")
-        elif tag_number == 12:
+        elif tag_number in _DER_UTF8_UNIVERSAL:
             try:
                 data[position:content_end].decode("utf-8")
             except UnicodeDecodeError as error:
-                raise _DerViolation("UTF8String is not valid UTF-8") from error
+                raise _DerViolation("UTF-8 content is not valid UTF-8") from error
+        elif tag_number == 9:
+            _check_der_real(data, position, content_end)
+        elif tag_number == 13:
+            _check_der_oid(data, position, content_end, "RELATIVE-OID")
+        elif tag_number in _DER_REJECTED_UNIVERSAL:
+            raise _DerViolation("TIME and DURATION values are not accepted (§12.2 1a)")
+        elif tag_number == 28 and length % 4:
+            raise _DerViolation("UniversalString is not whole 4-octet units")
+        elif tag_number == 30 and length % 2:
+            raise _DerViolation("BMPString is not whole 2-octet units")
+        elif tag_number in _DER_ISO2022_UNIVERSAL and 0x1B in data[position:content_end]:
+            raise _DerViolation("an escape sequence in an ISO 2022 string type")
     if constructed:
         if tag_class == 0 and tag_number == 17:
             _scan_set_of(data, position, content_end, depth + 1)
@@ -880,19 +910,77 @@ def _check_der_integer(data: bytes, start: int, end: int) -> None:
             raise _DerViolation("INTEGER has a redundant leading 0xFF")
 
 
-def _check_der_oid(data: bytes, start: int, end: int) -> None:
+def _check_der_oid(
+    data: bytes, start: int, end: int, name: str = "OBJECT IDENTIFIER"
+) -> None:
+    """X.690 §8.19.2 / §8.20.2: non-empty, every (sub-)identifier minimal and complete."""
     if end <= start:
-        raise _DerViolation("OBJECT IDENTIFIER is empty")
+        raise _DerViolation("%s is empty" % name)
     component_start = True
     position = start
     while position < end:
         byte = data[position]
         if component_start and byte == 0x80:
-            raise _DerViolation("OBJECT IDENTIFIER is not minimally encoded")
+            raise _DerViolation("%s is not minimally encoded" % name)
         component_start = not byte & 0x80
         if not component_start and position == end - 1:
-            raise _DerViolation("OBJECT IDENTIFIER is truncated")
+            raise _DerViolation("%s is truncated" % name)
         position += 1
+
+
+def _check_der_real(data: bytes, start: int, end: int) -> None:
+    """S2-FIX1 T3: a REAL under X.690 §8.5 and the DER restrictions of §11.3.
+
+    Plus zero has no contents octets (§8.5.2). Binary form (§8.5.7, §11.3.1):
+    base 2, scaling factor 0, the exponent in the fewest octets (formats 00/01/10
+    for one to three octets; the long format 11 only for four or more, its first
+    nine bits not all zeros or all ones), the mantissa N non-zero, odd and without
+    a leading zero octet. Decimal form (§8.5.8, §11.3.2): NR3 only, written
+    ``-?D...D.E`` with neither the first nor the last mantissa digit 0 and the
+    exponent ``+0`` or without a plus sign or leading zero. Special values
+    (§8.5.9): exactly one octet 0x40-0x43.
+    """
+    if end == start:
+        return
+    first = data[start]
+    if first & 0x80:
+        if first & 0x30:
+            raise _DerViolation("REAL binary encoding does not use base 2")
+        if first & 0x0C:
+            raise _DerViolation("REAL binary scaling factor is not zero")
+        exponent_format = first & 0x03
+        position = start + 1
+        if exponent_format < 3:
+            exponent_length = exponent_format + 1
+        else:
+            if position >= end:
+                raise _DerViolation("REAL exponent length octet is missing")
+            exponent_length = data[position]
+            position += 1
+            if exponent_length < 4:
+                raise _DerViolation("REAL long exponent format for a short exponent")
+        if position + exponent_length > end:
+            raise _DerViolation("REAL exponent is truncated")
+        exponent = data[position : position + exponent_length]
+        if exponent_length > 1 and (
+            (exponent[0] == 0x00 and exponent[1] < 0x80)
+            or (exponent[0] == 0xFF and exponent[1] >= 0x80)
+        ):
+            raise _DerViolation("REAL exponent is not in the fewest octets")
+        mantissa = data[position + exponent_length : end]
+        if not mantissa or mantissa[0] == 0x00:
+            raise _DerViolation("REAL mantissa is empty or not in the fewest octets")
+        if not mantissa[-1] & 0x01:
+            raise _DerViolation("REAL mantissa is not odd")
+        return
+    if first & 0x40:
+        if end - start != 1 or first > 0x43:
+            raise _DerViolation("REAL special value is not one of the four defined octets")
+        return
+    if first != 0x03:
+        raise _DerViolation("REAL decimal encoding is not the NR3 form")
+    if not _DER_REAL_NR3.fullmatch(data[start + 1 : end]):
+        raise _DerViolation("REAL NR3 text is not in the DER form of X.690 §11.3.2")
 
 
 def _verify_cms(
