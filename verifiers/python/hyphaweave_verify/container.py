@@ -1910,13 +1910,19 @@ def _cross_record_checks(
 
     # Erasure cross-checks (spec §10.3).
     if not errors:
-        erase_error = _erasure_cross_checks(record_views)
-        if erase_error is not None:
-            errors.append(erase_error)
+        errors.extend(_erasure_cross_checks(record_views))
     return errors, notices
 
 
-def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None:
+def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> list[str]:
+    """§10.3 cross-checks; every rule is evaluated independently (S2/F48).
+
+    §14.5: the failing stage reports every violation it finds, so a container
+    can carry E_ERASE_DIGEST_MISMATCH, E_ERASE_ATTESTATION and
+    E_ERASE_CONTRADICTION together. Only placeholders that pass §4.5 are
+    placeholders here: a malformed one is an invalid record (F69).
+    """
+    found: set[str] = set()
     placeholders = [view for view in record_views if view.placeholder is not None]
     erasures = [
         view
@@ -1945,11 +1951,13 @@ def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None
             and placeholder.placeholder.record_id == reference.id
         ]
         if not matching:
-            return "E_ERASE_DIGEST_MISMATCH"
+            found.add("E_ERASE_DIGEST_MISMATCH")
+            continue
         placeholder = matching[0].placeholder
         assert placeholder is not None
         if placeholder.digest != reference.digest:
-            return "E_ERASE_DIGEST_MISMATCH"
+            found.add("E_ERASE_DIGEST_MISMATCH")
+            continue
         # The placeholder's attestation must resolve back to this erasure record.
         attestation_reference = placeholder.attestation
         target_matches = (
@@ -1959,19 +1967,24 @@ def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None
             and attestation_reference.id == erasure.envelope.record_id  # type: ignore[union-attr]
         )
         if not target_matches:
-            return "E_ERASE_ATTESTATION"
+            found.add("E_ERASE_ATTESTATION")
+            continue
     for placeholder_view in placeholders:
         placeholder = placeholder_view.placeholder
         assert placeholder is not None
         resolved = _find_view(record_views, placeholder.attestation)
         if resolved is None or resolved.envelope is None:
-            return "E_ERASE_ATTESTATION"
+            found.add("E_ERASE_ATTESTATION")
+            continue
         if resolved.envelope.kind != kinds.KIND_ERASURE:
-            return "E_ERASE_ATTESTATION"
+            found.add("E_ERASE_ATTESTATION")
+            continue
         if resolved.digest != placeholder.attestation.digest:
-            return "E_ERASE_ATTESTATION"
+            found.add("E_ERASE_ATTESTATION")
+            continue
         if resolved.envelope.body.get("erased", {}).get("digest") != placeholder.digest:
-            return "E_ERASE_DIGEST_MISMATCH"
+            found.add("E_ERASE_DIGEST_MISMATCH")
+            continue
     # The original live record must not also be present.
     for placeholder_view in placeholders:
         placeholder = placeholder_view.placeholder
@@ -1984,15 +1997,15 @@ def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None
                 and view.envelope.record_id == placeholder.record_id
                 and view.digest == placeholder.digest
             ):
-                return "E_ERASE_CONTRADICTION"
+                found.add("E_ERASE_CONTRADICTION")
     origin_ids = [
         (placeholder_view.placeholder.origin, placeholder_view.placeholder.record_id)
         for placeholder_view in placeholders
         if placeholder_view.placeholder is not None
     ]
     if len(origin_ids) != len(set(origin_ids)):
-        return "E_ERASE_CONTRADICTION"
-    return None
+        found.add("E_ERASE_CONTRADICTION")
+    return sorted(found)
 
 
 def _find_view(
