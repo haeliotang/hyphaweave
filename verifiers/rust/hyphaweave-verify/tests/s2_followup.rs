@@ -585,3 +585,52 @@ fn manifest_lifecycle_failure_beats_an_undeclared_entry() {
     assert_eq!(report.verdict, Verdict::Invalid);
     assert_eq!(container_errors(&report), vec![e::KEY_REVOKED]);
 }
+
+/// §11.3 (S2-FIX2b): an entry that fails the equation decides
+/// `E_MANIFEST_SIG_INVALID` before another entry's invalid §9.4 outcome,
+/// whatever the order: human-1 (retired, first in key order) beside a
+/// human-2 entry whose signature does not verify.
+#[test]
+fn manifest_equation_failure_beats_a_lifecycle_failure() {
+    let mut retire = Object::new();
+    retire.insert("effective_at", "2026-11-01T06:00:00.000Z");
+    retire.insert("key", key_id("human-1"));
+    retire.insert("reason", "retired");
+    let revocation = signed(
+        envelope(
+            "s2-fix2b-retire-human-1",
+            "weave.key.revoked",
+            "human-1",
+            "2026-11-01T06:00:00.000Z",
+            retire,
+        ),
+        &["human-1"],
+    );
+    let mut files = l0_container(&[revocation]);
+    let attestation_path = "signatures/manifest.sig.json".to_owned();
+    let attestation = json::parse_object(&files[&attestation_path]).expect("attestation");
+    let mut entries: Vec<Value> = match attestation.get("signatures") {
+        Some(Value::Array(existing)) => existing.clone(),
+        _ => Vec::new(),
+    };
+    let mut forged = Object::new();
+    forged.insert("alg", "ed25519");
+    forged.insert("key", key_id("human-2"));
+    forged.insert(
+        "value",
+        b64::encode(&ed25519::sign(&seed("human-2"), b"other")),
+    );
+    entries.push(Value::Object(forged));
+    let mut rebuilt = Object::new();
+    for (name, value) in attestation.iter() {
+        if name == "signatures" {
+            rebuilt.insert(name, Value::Array(entries.clone()));
+        } else {
+            rebuilt.insert(name, value.clone());
+        }
+    }
+    files.insert(attestation_path, json::canonical_object_bytes(&rebuilt));
+    let report =
+        verify_container(ContainerInput::Files(files), &keyset_with(None)).expect("container");
+    assert_eq!(container_errors(&report), vec![e::MANIFEST_SIG_INVALID]);
+}
