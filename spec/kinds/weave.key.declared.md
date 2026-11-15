@@ -115,9 +115,13 @@ permitted (additive evolution, K3, parent specification §7.5).
    `valid_until`) is `E_KEY_EXPIRED` (invalid) [Q20] decided (Inceptless decision
    2026-11-10 #34; Q20). This includes the declaration's own self-signature and its
    cosignatures: parent specification §9.4 judges every signature of this record (window,
-   retired revocations, and the key-compromise rescue rule) for this record's verdict, while
-   the declaration still supplies its key's material, class and window (§5.3)
-   [S2/F38/F61-1] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+   retired revocations, and the key-compromise rescue rule) for this record's verdict
+   [S2/F38/F61-1] decided by principle (Inceptless decision 2026-11-15 #8; S2). When only the
+   self-signature (by `body.key`) fails §9.4, the declaration still supplies its key's
+   material, class and window (§5.3); when a cosignature fails §9.4, the declaration supplies
+   no material and establishes no trust, so a signature by the declared key is
+   `E_KEY_UNKNOWN` unless another record supplies the key [S2-FIX1/Q2] decided (Inceptless
+   decision 2026-11-15 #13; Q2).
 6. **Multiple declarations.** The governing class, the governing validity window and the
    declaration-resolution order (smallest claimed `recorded_at`, ties by the
    lexicographically smallest record digest) are defined once in parent specification §5.3;

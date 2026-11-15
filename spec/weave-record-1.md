@@ -16,8 +16,10 @@ compromise-rescue accuracy bound (R3) and its unverifiable/invalid split (R4), t
 class error code (R5), and the `genTime` cross-reference (R6). Revision 3 carries the S1
 rounds (Inceptless decisions 2026-11-11 #5 to 2026-11-12 #3) and the **S2 round**
 (Inceptless decision 2026-11-15 #8), which closes the findings of the second
-implementation (H1 findings F38–F69) by the rules marked `[S2]`; like the S1 rounds, it
-implements rulings of a later decision inside revision 3 (§0.3).
+implementation (H1 findings F38–F69) by the rules marked `[S2]`, together with its first
+revision (Inceptless decision 2026-11-15 #13, the founder's rulings Q1–Q5 and the review
+items of the S2 round, marked `[S2-FIX1]`); like the S1 rounds, it implements rulings of a
+later decision inside revision 3 (§0.3).
 **Editors:** Inceptless.
 **Licence:** this specification text is licensed CC BY 4.0; code and test vectors for the
 format are licensed Apache-2.0.
@@ -103,8 +105,14 @@ A **revision** of this document is the set of rulings of the one decision that o
 (revision 2: decision 2026-11-10 #42; revision 3: decision 2026-11-11 #2); later decisions
 that close findings against the open revision are recorded as **rounds** of that revision
 (the S1 rounds and the S2 round of revision 3), with their rulings tagged and listed in
-Appendix A. The error-code registry (`spec/error-codes.md`) numbers its own revisions, one
-per decision that changes it. Neither changes the `format` identifier [S2] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+Appendix A. The error-code registry (`spec/error-codes.md`) numbers its own revisions by
+its own convention: a decision that opens a specification revision or a round opens a
+registry revision, and later decisions that only revise that round are folded into the same
+registry revision (registry revision 6 carries decisions 2026-11-12 #1, #2 and #3; registry
+revision 7 carries decisions 2026-11-15 #8 and #13). Neither changes the `format`
+identifier [S2] decided by principle (Inceptless decision 2026-11-15 #8; S2); the
+registry-numbering sentence is corrected to the registry's own history [S2-FIX1/T7] decided
+by principle (Inceptless decision 2026-11-15 #13).
 
 ### 0.4 Normative references
 
@@ -701,7 +709,10 @@ container-signed as a batch, but authorisation, key, consent and erasure records
    or an empty array, the record is invalid with `E_SIG_REQUIRED`.
 2. Every `ed25519` signature entry is verified per §3.4; a known-key signature that fails
    the equation (or any other crypto step) makes the record invalid with the corresponding
-   `E_SIG_*` code.
+   `E_SIG_*` code. This holds even when another entry names a key that cannot be resolved
+   (§14.5 step (4)): an invalid outcome of one entry is never lowered to `unverifiable`
+   `E_KEY_UNKNOWN` by another entry [S2-FIX1/T2] decided by principle (Inceptless decision
+   2026-11-15 #13; invalid beats unverifiable).
 3. If at least one `ed25519` signature by the required signer verifies, the obligation is
    satisfied (additional valid signatures are evidence, not errors).
 4. Otherwise, if at least one **known-algorithm** signature exists whose key is declared
@@ -722,6 +733,17 @@ container-signed as a batch, but authorisation, key, consent and erasure records
    signer-constrained kinds exactly as to every other kind: when no known-algorithm
    declared-key signature exists at all, the dedicated signer code of step 4 is **not**
    reported [S2/F46] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+   Step 5 is reached only after §14.5 step (4): an `ed25519` entry whose key is not declared
+   has already made the record `unverifiable` `E_KEY_UNKNOWN` there (unless an entry is
+   invalid, step 2), so at step 5 every remaining entry has an unknown algorithm, and the
+   `E_KEY_UNKNOWN` of step 5 is about the required signer key, not about an entry's key
+   [S2-FIX1/T7] decided by principle (Inceptless decision 2026-11-15 #13). For the seven
+   signer-constrained kinds the step-5 outcome is reported only after every other rule of
+   that kind's step (7) has passed: an invalid outcome of the kind's other rules (or an
+   `unverifiable` one, such as a grant-chain code) is reported instead, and the step-5 code
+   only when none applies. The dedicated signer code of step 4 (invalid) stays where the
+   kind's signer rule sits (§14.5) [S2-FIX1/Q3] decided (Inceptless decision 2026-11-15 #13;
+   Q3).
 
 The seven dedicated signer codes are: `E_KEY_DECLARED_NOT_SELF_SIGNED` (declared),
 `E_KEY_ROTATION_SIGS` (rotated), `E_KEY_REVOKE_SIGNER` (revoked), `E_GRANT_GRANTER`
@@ -919,13 +941,24 @@ validity window, and context declarations cannot change either [S1] decided (Inc
 decision 2026-11-11 #2; S1; T4). Declarations that are not themselves semantically valid
 never govern the window or establish trust. For this purpose, and for the key material a
 `weave.key.declared` or `weave.key.rotated` record supplies, a record is semantically valid
-when it passes every check **other than** the §9.4 effects on its own signatures: §9.4
-judges those signatures for the record's own verdict (§9.4, "Signatures of key-lifecycle
-records"), but a declaration of a key that is later compromised, retired or outside its
-window still states that key's material, class and window, so every signature the key
-makes is judged under that key's lifecycle rather than becoming `E_KEY_UNKNOWN`
-[S2/F38] decided by principle (Inceptless decision 2026-11-15 #8; S2). This is declaration resolution, not root
-selection [Q12] decided (Inceptless decision 2026-11-10 #34; Q12).
+when it passes every check **other than** the §9.4 effects on the signature of its
+**subject key** — the key the record states for itself: `body.key` of a declaration,
+`body.new_key` of a rotation. §9.4 judges that signature for the record's own verdict
+(§9.4, "Signatures of key-lifecycle records"), but a declaration of a key that is later
+compromised, retired or outside its window still states that key's material, class and
+window, so every signature the key makes is judged under that key's lifecycle rather than
+becoming `E_KEY_UNKNOWN` [S2/F38] decided by principle (Inceptless decision 2026-11-15 #8;
+S2). The exemption covers **only** that one signature. Every other signature of the record
+— a declaration's owner cosignature or other cosignatures, a rotation's old-key signature —
+counts only when it passes §9.4: a record in which such a signature fails §9.4 is not
+semantically valid in this sense, so it supplies no key material (neither the subject key's
+nor any other key's), governs no window and establishes no trust, and a signature by its
+subject key is `unverifiable` `E_KEY_UNKNOWN` unless another record supplies that key. A key
+whose signature does not pass §9.4 therefore never hands material or trust to another key;
+in particular an invalid rotation never supplies key material through a failed old-key
+signature, as X5 states for §11.5 [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #13;
+Q2). This is declaration resolution, not root selection [Q12] decided (Inceptless decision
+2026-11-10 #34; Q12).
 
 ### 5.4 Agent authorisation: every agent record needs a covering grant
 
@@ -1690,8 +1723,12 @@ retired at or before its `recorded_at` is `E_KEY_REVOKED`; and a declaration sel
 a key with a valid `key-compromise` revocation is rescued only by a verified, trusted and
 usable receipt under the three cases below — a receipt that fails any check of §12.2, or
 that is untrusted or unusable, cannot rescue it (case 2, `E_TS_UNTRUSTED`). This judgement
-decides the record's verdict only; whether the record supplies key material, a class and a
-window is decided without it (§5.3) [S2/F38/F61-1] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+decides the record's verdict [S2/F38/F61-1] decided by principle (Inceptless decision
+2026-11-15 #8; S2). Whether the record supplies key material, a class, a window and trust
+is decided by §5.3: without the §9.4 effects on the subject key's own signature only, and
+with them on every other signature, so a cosignature or an old-key signature that fails
+§9.4 leaves the record without any of those [S2-FIX1/Q2] decided (Inceptless decision
+2026-11-15 #13; Q2).
 
 Let `T` be the claimed `effective_at` of a revocation of a key. Effects on signatures made
 by that key (the signature's claimed `recorded_at`; for a manifest signature the manifest's
@@ -2933,11 +2970,17 @@ signature layer the Ed25519 cryptography of §3.4 runs before the key-lifecycle 
 applicable `E_SIG_*` code) even when its key is expired, revoked or compromised
 [S8⑪] decided (Inceptless decision 2026-11-11 #2; S8). Steps (4) and (5) are steps of the
 record, not of one entry: step (4) resolves the key of **every** `ed25519` entry before any
-equation is evaluated, so a record with an entry whose key cannot be resolved is
-`unverifiable` `E_KEY_UNKNOWN` even when another entry fails its equation; then every entry
-is judged in array order, each by its §3.4 equation and then by §9.4, and the first failing
-entry decides the record's code (every entry still reports its state, §14.6)
-[S2] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+equation is evaluated, and then every entry whose key resolved is judged in array order,
+each by its §3.4 equation and then by §9.4; every entry reports its state (§14.6)
+[S2] decided by principle (Inceptless decision 2026-11-15 #8; S2). The record's code is
+then chosen invalid-first: the first entry, in array order, with an invalid outcome (a
+§3.4 failure, or an invalid §9.4 outcome such as `E_KEY_REVOKED`, `E_KEY_EXPIRED` or
+`E_KEY_COMPROMISED`) decides it; only when no entry is invalid does an unresolved key give
+`unverifiable` `E_KEY_UNKNOWN`, and only then the first unverifiable §9.4 outcome (for
+example `E_TS_UNTRUSTED`). A known-key signature that fails its equation therefore makes
+the record invalid `E_SIG_INVALID` even when another entry's key cannot be resolved (§4.4
+step 2) [S2-FIX1/T2] decided by principle (Inceptless decision 2026-11-15 #13; invalid beats
+unverifiable).
 
 Two documented ordering exceptions live inside the kind checks:
 

@@ -55,7 +55,13 @@ remains usable for existing records and must be revoked separately (usually with
    verified against `body.new_public_key`; the old-key signature is verified against
    `body.old_public_key` when present, otherwise against the old key's declaration in
    context. If the needed key material is absent the record is `unverifiable`
-   (`E_KEY_UNKNOWN`).
+   (`E_KEY_UNKNOWN`). Both signatures are judged under parent specification §9.4 for this
+   record's verdict. The rotation supplies key material (§5.3) only when every check passes
+   apart from the §9.4 effects on the new key's own signature: a new-key signature that fails
+   §9.4 leaves the new key's material in place, so its later signatures are judged under its
+   own lifecycle, while an old-key signature that fails §9.4 makes the rotation supply no
+   material at all, so a signature by the new key is `E_KEY_UNKNOWN` unless another record
+   supplies it [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #13; Q2).
 4. **Effect.** The rotation is evidence of succession; it does not revoke the old key and
    does not by itself give the new key a class (a separate declaration publishes that).
    A rotation to a key of a different class is not supported: the new key's signature must
