@@ -15373,6 +15373,398 @@ declare(
 )
 
 
+# ---------------------------------------------------------------------------
+# S2-FIX4 (decision 2026-11-16 #4): the two differences the Rust follow-up's
+# differential fuzzing left against S2-FIX3 (h1-findings F83, F84). Every expected
+# conclusion below is hand-written from the specification text.
+# ---------------------------------------------------------------------------
+
+# -- F83 (§5.3, §11.3): a declaration whose other signature does not pass, and a
+#    rotation that is not semantically valid, supply no material for the manifest
+#    signature either: its entry is judged as an undeclared key's (E_KEY_UNKNOWN).
+
+
+def _fix4_flip_hex(value: str) -> str:
+    """Change the last hex digit before the final eight of a key id (an undeclared id)."""
+    index = len(value) - 9
+    digit = value[index]
+    replacement = "0" if digit != "0" else "1"
+    return value[:index] + replacement + value[index + 1:]
+
+
+def _fix4_owner_altered_files() -> dict[str, bytes]:
+    """previous-device-key-target-context with the target's device declaration altered.
+
+    The declaration's ``owner`` names another (undeclared) key after both signatures
+    were made, and the file keeps its listed name, so both of its signatures fail
+    their equations and the listing reports the digest mismatch (the F83 mutant
+    151115/2127511279114156445, made deterministic).
+    """
+    declaration = _w1_device_declaration(_W1_DEVICE, _W1_DEVICE_ID)
+    previous = _w1_build([declaration], ("derived", _W1_DEVICE), created_at=recordlib.T1)
+    target = _w1_build(
+        [declaration], ("derived", _W1_DEVICE), created_at=recordlib.T5,
+        previous_internal=previous,
+    )
+    path = "records/" + digest_of(declaration).split(":", 1)[1] + ".json"
+    altered = parse(canonical(declaration))
+    altered["body"]["owner"] = _fix4_flip_hex(altered["body"]["owner"])
+    target[path] = canonical(altered)
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "manifest-signer-declaration-owner-altered",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_MANIFEST_RECORD_DIGEST"),
+    build=lambda case_dir: _fix4_owner_altered_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_PREVIOUS_SIG_UNVERIFIED",),
+    limitations=FIX4_UNLINKED,
+    records=(),
+    notes="S2-FIX4 F83 (decision 2026-11-16 #4; §5.3, §11.3): "
+    "container/previous-device-key-target-context with the target's device "
+    "declaration altered after signing (its owner names another key, the file keeps "
+    "its listed name). Both of its signatures fail their equations, so under §5.3 it "
+    "supplies no material of any kind, the manifest signature's included: the "
+    "manifest entry by the device key is judged as an undeclared key's, E_KEY_UNKNOWN "
+    "(unverifiable, the pipeline goes on), and no check used context material (no "
+    "L_KEY_TRUST_TOFU). The records listing then stops the container with "
+    "E_MANIFEST_RECORD_DIGEST (records: []), before the previous-manifest stage.",
+)
+
+
+def _fix4_key_type_absent_files() -> dict[str, bytes]:
+    """manifest-context-trusted-tofu with ``body.key_type`` removed after signing.
+
+    The declaration keeps its stale signatures and is listed under its new digest;
+    the attestation names the new manifest digest but keeps the device key's
+    signature over the original one (the F83 mutant 777001/2419576593931708853).
+    """
+    original = _manifest_context_trusted_tofu_files()
+    original_sigfile = parse(original["container/signatures/manifest.sig.json"])
+    declaration = None
+    for path, data in original.items():
+        if path.startswith("container/records/"):
+            declaration = parse(data)
+    assert declaration is not None
+    altered = parse(canonical(declaration))
+    del altered["body"]["key_type"]
+    files = recordlib.build_container([altered], manifest_signers=("human-1",))
+    sigfile = dict(original_sigfile)
+    sigfile["digest"] = recordlib.manifest_digest(files["manifest.json"])
+    files["signatures/manifest.sig.json"] = canonical(sigfile)
+    return _wrap_internal(files)
+
+
+declare(
+    "container",
+    "manifest-signer-declaration-key-type-absent",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_SIG_INVALID"),
+    build=lambda case_dir: _fix4_key_type_absent_files(),
+    args=("--keys", "@keyset"),
+    limitations=("L_OFFLINE_CONTEXT",),
+    notices_absent=("N_KEY_TOFU",),
+    records=(
+        {"id": "key-declared-j1-manifest-device", "verdict": "invalid", "errors": ["E_SIG_INVALID"]},
+    ),
+    notes="S2-FIX4 F83 (decision 2026-11-16 #4; §5.3, §11.3): "
+    "container/manifest-context-trusted-tofu with body.key_type removed from the "
+    "device declaration after signing; the attestation names the new manifest digest "
+    "but keeps the old signature. The declaration's owner cosignature fails its "
+    "equation, so it supplies no material: the manifest entry is judged as an "
+    "undeclared key's, E_KEY_UNKNOWN, not E_MANIFEST_SIG_INVALID (the equation is "
+    "not evaluated), and the pipeline goes on to the records: the declaration is "
+    "invalid E_SIG_INVALID (step (4) before the body schema). No check used context "
+    "material.",
+)
+
+
+def _fix4_rotation_old_signature_fails_files() -> dict[str, bytes]:
+    """rotated-material-tofu with key-old's signature broken and key-new signing the manifest."""
+    rotation = key_rotation()
+    old_id = kid("key-old")
+    broken = []
+    for entry in rotation["sigs"]:
+        if entry["key"] == old_id:
+            raw = bytearray(keyutil.b64url_decode(entry["value"]))
+            raw[0] ^= 0x01
+            entry = {**entry, "value": keyutil.b64url_encode(bytes(raw))}
+        broken.append(entry)
+    rotation = {**rotation, "sigs": broken}
+    note = record_signed_by(
+        "key-new", "note-by-rotated-key", recorded_at=recordlib.T4, stage="accepted"
+    )
+    files = _wrap_internal(
+        recordlib.build_container([rotation, note], manifest_signers=("key-new",))
+    )
+    files.update(_keyset_without("key-declared-key-new.json"))
+    return files
+
+
+declare(
+    "container",
+    "manifest-signer-rotation-old-signature-fails",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_SIG_INVALID"),
+    build=lambda case_dir: _fix4_rotation_old_signature_fails_files(),
+    args=("--keys", "keyset"),
+    notices=("N_KEY_UNDECLARED",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {"id": "key-rotated-1", "verdict": "invalid", "errors": ["E_SIG_INVALID"]},
+        {"id": "note-by-rotated-key", "verdict": "unverifiable", "errors": ["E_KEY_UNKNOWN"]},
+    ),
+    notes="S2-FIX4 F83 (decision 2026-11-16 #4; §5.3, §11.3): "
+    "key-lifecycle/rotated-material-tofu with key-old's signature on the rotation "
+    "broken and the manifest signed by key-new, which the case's keyset does not "
+    "declare. The rotation is invalid E_SIG_INVALID, so it supplies no material "
+    "(§5.3: only a semantically valid rotation does): the manifest entry by key-new "
+    "is judged as an undeclared key's, E_KEY_UNKNOWN, and the note by key-new is "
+    "unverifiable E_KEY_UNKNOWN. No check used context material (no "
+    "L_KEY_TRUST_TOFU).",
+)
+
+
+def _fix4_previous_owner_body_absent_files() -> dict[str, bytes]:
+    """previous-key-not-trusted-in-target with the owner declaration's ``body`` removed."""
+    owner = _self_attested_human_declaration(
+        record_id="key-declared-w1-untrusted-owner", key_name=_W1_UNTRUSTED_OWNER
+    )
+    owner = {name: value for name, value in owner.items() if name != "body"}
+    device = _w1_device_with_derived_owner(
+        _W1_UNTRUSTED_DEVICE, _W1_UNTRUSTED_OWNER, "key-declared-w1-untrusted-device"
+    )
+    previous = _w1_build([device], ("derived", _W1_UNTRUSTED_DEVICE), created_at=recordlib.T1)
+    target = _w1_build(
+        [owner, device], ("keyset", "human-1"), created_at=recordlib.T5,
+        previous_internal=previous,
+    )
+    return _w1_pair_files(previous, target)
+
+
+declare(
+    "container",
+    "previous-signer-owner-declaration-body-absent",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ENV_MISSING_FIELD", "E_KEY_UNKNOWN", "E_MANIFEST_CHAIN"),
+    build=lambda case_dir: _fix4_previous_owner_body_absent_files(),
+    args=FIX4_PREVIOUS_ARGS,
+    notices=("N_KEY_UNDECLARED", "N_PREVIOUS_SIG_UNVERIFIED"),
+    limitations=FIX4_UNLINKED,
+    records=(
+        {"id": "key-declared-w1-untrusted-device", "verdict": "unverifiable", "errors": ["E_KEY_UNKNOWN"]},
+        {"id": "key-declared-w1-untrusted-owner", "verdict": "invalid", "errors": ["E_ENV_MISSING_FIELD"]},
+    ),
+    notes="S2-FIX4 F83/F84 (decision 2026-11-16 #4; §5.3, §11.5, §14.9): "
+    "container/previous-key-not-trusted-in-target with the owner declaration's body "
+    "removed (the F84 mutant 151115/941868555482201572; E_ENV_MISSING_FIELD). The owner "
+    "key then has no material, so the owner cosignature on the device declaration is "
+    "unverified (E_KEY_UNKNOWN) and that declaration supplies no material (§5.3): the "
+    "supplied previous's signature by the device key is not by a required key of the "
+    "target context (E_MANIFEST_CHAIN), and since no context material verified any "
+    "equation the report carries no L_KEY_TRUST_TOFU.",
+)
+
+def _fix4_self_attested_manifest_signer_files() -> dict[str, bytes]:
+    """A manifest signed by a human key whose only declaration carries only its own signature."""
+    declaration = _self_attested_human_declaration(
+        record_id="key-declared-fix4-self-attested", key_name="fix4-self-attested"
+    )
+    files = recordlib.build_container([declaration], manifest_signers=("human-1",))
+    return _wrap_internal(_w1_sign_manifest_with_derived(files, "fix4-self-attested"))
+
+
+declare(
+    "container",
+    "manifest-signer-declared-untrusted",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    build=lambda case_dir: _fix4_self_attested_manifest_signer_files(),
+    args=("--keys", "@keyset"),
+    notices=("N_SELF_ATTESTED_ROOT_KEY",),
+    limitations=("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT"),
+    records=(
+        {"id": "key-declared-fix4-self-attested", "verdict": "unverifiable", "errors": ["E_KEY_UNTRUSTED"]},
+    ),
+    notes="S2-FIX4 F83 guard (§11.3 T17/A-L8, §5.3): the manifest is signed by a human "
+    "key whose only declaration carries only its own signature. The declaration has no "
+    "other signature, so it supplies its material although it is untrusted "
+    "(E_KEY_UNTRUSTED, N_SELF_ATTESTED_ROOT_KEY): the manifest entry's key resolves, "
+    "the equation verifies with context material (L_KEY_TRUST_TOFU) and the container "
+    "reports no E_KEY_UNKNOWN. Only a declaration whose other signature does not pass "
+    "supplies no material (container/manifest-signer-declaration-*).",
+)
+
+
+# -- F84 (§14.9, §14.6): on a key-lifecycle record only the actor.key signature takes
+#    part in the TOFU predicate; it counts when its material came from a context
+#    record other than the record itself, even when its equation then fails.
+
+_FIX4_HX = "fix4-context-human"
+
+
+def _fix4_context_human() -> dict[str, Any]:
+    """A human key declared in the container, cosigned by the keyset root human-1."""
+    return _s2_declaration(
+        _FIX4_HX, record_id="key-declared-fix4-context-human", key_type="human", owner=None,
+        recorded_at=recordlib.T0, cosigners=("human-1",),
+    )
+
+
+def _fix4_body_key_absent(resign: bool) -> dict[str, Any]:
+    """A second declaration of the context human key whose ``body.key`` is absent.
+
+    ``actor.key`` still names the key, so its signature is verified against the
+    first declaration's (context) material. Without *resign* both signatures are
+    the ones made before ``body.key`` was removed and fail their equations.
+    """
+    declaration = _s2_declaration(
+        _FIX4_HX, record_id="key-declared-fix4-body-key-absent", key_type="human", owner=None,
+        recorded_at=recordlib.T1, cosigners=("human-1",),
+    )
+    altered = {name: value for name, value in declaration.items() if name != "sigs"}
+    altered["body"] = {name: value for name, value in declaration["body"].items() if name != "key"}
+    if resign:
+        private, _public, key_id = derived_key(_FIX4_HX)
+        signatures = [_derived_signature(private, key_id, altered), recordlib.sig_entry(altered, "human-1")]
+    else:
+        signatures = list(declaration["sigs"])
+    altered["sigs"] = sorted(signatures, key=lambda entry: entry["key"])
+    return altered
+
+
+def _fix4_body_key_absent_expected(resign: bool) -> tuple[dict[str, Any], ...]:
+    hx_id = derived_key(_FIX4_HX)[2]
+    state = "valid" if resign else "invalid"
+    record = _fix4_body_key_absent(resign)
+    return (
+        {"id": "key-declared-fix4-context-human", "verdict": "valid", "errors": [], "notices": []},
+        {
+            "id": "key-declared-fix4-body-key-absent",
+            "verdict": "invalid",
+            "errors": ["E_KIND_BODY_SCHEMA"] if resign else ["E_SIG_INVALID"],
+            "notices": ["N_KEY_TOFU"],
+            "sigs": _s2_sigs(record, {kid("human-1"): state, hx_id: state}),
+        },
+    )
+
+
+for _resign, _name, _code, _why in (
+    (False, "declaration-body-key-absent-actor-tofu-equation-fails", "E_SIG_INVALID",
+     "Both signatures were made before body.key was removed, so both equations fail "
+     "(E_SIG_INVALID): the actor.key check still used context material, and §14.9 "
+     "counts a record signature check \"even when its equation then fails\" (S2/F42)."),
+    (True, "declaration-body-key-absent-actor-tofu", "E_KIND_BODY_SCHEMA",
+     "The record is re-signed after body.key was removed, so both equations hold and "
+     "the record fails its body schema (E_KIND_BODY_SCHEMA, after the signatures)."),
+):
+    declare(
+        "key-lifecycle",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=(_code,),
+        build=lambda case_dir, _resign=_resign: container(
+            [_fix4_context_human(), _fix4_body_key_absent(_resign)]
+        ),
+        args=_S2_ARGS,
+        notices=("N_KEY_TOFU",),
+        limitations=("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT"),
+        records=_fix4_body_key_absent_expected(_resign),
+        notes="S2-FIX4 F84 (decision 2026-11-16 #4; §14.9, §14.6): a human key declared "
+        "in the container (cosigned by human-1) and a second declaration of it whose "
+        "body.key is absent (the F84 mutant 151115/4256477586932129590 in this shape). "
+        "Its actor.key signature cannot use material the record states for its own key, "
+        "so it is verified against the first declaration's, which is context material: "
+        "the check is context-trusted, N_KEY_TOFU on that record and L_KEY_TRUST_TOFU. "
+        + _why + " The first declaration's own self-signature uses its own material and "
+        "is not context-trusted.",
+    )
+
+
+def _fix4_revocation_cosigned_by_context_key() -> list[dict[str, Any]]:
+    revocation = _s2_revocation(
+        kid("key-old"), reason="retired", effective_at=recordlib.T2,
+        record_id="key-revoked-fix4-cosigned",
+    )
+    unsigned = {name: value for name, value in revocation.items() if name != "sigs"}
+    private, _public, key_id = derived_key(_FIX4_HX)
+    signatures = [recordlib.sig_entry(unsigned, "human-1"), _derived_signature(private, key_id, unsigned)]
+    return [_fix4_context_human(), {**unsigned, "sigs": sorted(signatures, key=lambda e: e["key"])}]
+
+
+declare(
+    "key-lifecycle",
+    "revocation-context-cosignature-not-tofu",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: container(_fix4_revocation_cosigned_by_context_key()),
+    args=_S2_ARGS,
+    notices_absent=("N_KEY_TOFU",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {"id": "key-declared-fix4-context-human", "verdict": "valid", "errors": []},
+        {"id": "key-revoked-fix4-cosigned", "verdict": "valid", "errors": []},
+    ),
+    notes="S2-FIX4 F84 (decision 2026-11-16 #4; §14.9, §14.6): a retirement of key-old "
+    "by human-1 (keyset) cosigned by a human key declared only in the container. The "
+    "cosignature verifies with context material, but on a key-lifecycle record only "
+    "the actor.key signature takes part in the TOFU predicate: no N_KEY_TOFU, no "
+    "L_KEY_TRUST_TOFU.",
+)
+
+
+def _fix4_device_cosigned_by_context_owner() -> list[dict[str, Any]]:
+    owner_private, _owner_public, owner_id = derived_key(_FIX4_HX)
+    device = _s2_declaration(
+        "fix4-device", record_id="key-declared-fix4-device", key_type="device", owner=None,
+        recorded_at=recordlib.T1, cosigners=(),
+    )
+    unsigned = {name: value for name, value in device.items() if name != "sigs"}
+    unsigned["body"] = {**device["body"], "owner": owner_id}
+    private, _public, key_id = derived_key("fix4-device")
+    signatures = [_derived_signature(private, key_id, unsigned), _derived_signature(owner_private, owner_id, unsigned)]
+    return [_fix4_context_human(), {**unsigned, "sigs": sorted(signatures, key=lambda e: e["key"])}]
+
+
+declare(
+    "key-lifecycle",
+    "device-declaration-context-owner-cosignature-not-tofu",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: container(_fix4_device_cosigned_by_context_owner()),
+    args=_S2_ARGS,
+    notices_absent=("N_KEY_TOFU",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {"id": "key-declared-fix4-context-human", "verdict": "valid", "errors": []},
+        {"id": "key-declared-fix4-device", "verdict": "valid", "errors": []},
+    ),
+    notes="S2-FIX4 F84 (decision 2026-11-16 #4; §14.9, §14.6): a device declaration "
+    "whose owner is a human key declared only in the container (cosigned by human-1), "
+    "cosigned by that owner. The owner cosignature verifies with another context "
+    "declaration's material, but a cosignature never takes part in the TOFU predicate "
+    "on a key-lifecycle record, and the device key's own signature uses the material "
+    "the record states for it: no N_KEY_TOFU, no L_KEY_TRUST_TOFU.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
