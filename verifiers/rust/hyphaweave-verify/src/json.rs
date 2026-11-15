@@ -14,10 +14,15 @@
 //! valid UTF-8 is `E_JSON_INVALID` before any per-position classification.
 //!
 //! Nesting depth is bounded by `MAX_JSON_DEPTH` (§13): the depth of every value
-//! is checked before the parser descends into it, so recursion never exceeds
-//! `MAX_JSON_DEPTH` frames and a hostile input cannot overflow the stack (S3).
-//! The writer and `Drop` of [`Value`] only ever see parsed values, so their
-//! recursion is bounded by the same limit.
+//! is checked before the parser reads it, so a hostile input stops at its first
+//! too-deep value (S3). Neither the parser nor the writer recurses: open
+//! containers are kept on a heap stack, so their stack use is the same at depth
+//! 1 and at depth `MAX_JSON_DEPTH` (H1-FIX1 R6). Bounded recursion was not
+//! enough: in a debug build each parser level took 1.3 KiB (array) to 1.7 KiB
+//! (object) of stack on aarch64-apple-darwin, so 32 levels alone took 43 to 56
+//! KiB of a thread's stack. `Value`'s `Clone` and `Drop` do not recurse either
+//! (see [`Value`]); only the derived `PartialEq` and `Debug` do, on values of
+//! at most `MAX_JSON_DEPTH` levels.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -66,18 +71,16 @@ fn check_preconditions(bytes: &[u8]) -> Result<(), JsonError> {
 /// [`parse_canonical_object`]. Returns the first violation in input byte order.
 pub fn parse_object(bytes: &[u8]) -> Result<Object, JsonError> {
     check_preconditions(bytes)?;
-    let mut parser = Parser {
-        bytes,
-        pos: 0,
-        depth: 0,
-    };
+    let mut parser = Parser { bytes, pos: 0 };
     parser.skip_whitespace();
     if parser.peek() != Some(b'{') {
         return Err(JsonError::at(e::JSON_INVALID, parser.pos));
     }
-    let Value::Object(object) = parser.parse_value()? else {
+    // `Value` implements `Drop`, so the object is taken out, not moved out.
+    let Value::Object(object) = &mut parser.parse_value()? else {
         return Err(JsonError::at(e::JSON_INVALID, 0));
     };
+    let object = std::mem::take(object);
     parser.skip_whitespace();
     if parser.pos != bytes.len() {
         // Trailing non-whitespace content (a second value, a comment, junk).
@@ -92,11 +95,7 @@ pub fn parse_object(bytes: &[u8]) -> Result<Object, JsonError> {
 /// [`parse_object`]/[`parse_canonical_object`].
 pub fn parse_value(bytes: &[u8]) -> Result<Value, JsonError> {
     check_preconditions(bytes)?;
-    let mut parser = Parser {
-        bytes,
-        pos: 0,
-        depth: 0,
-    };
+    let mut parser = Parser { bytes, pos: 0 };
     parser.skip_whitespace();
     let value = parser.parse_value()?;
     parser.skip_whitespace();
@@ -170,7 +169,34 @@ pub fn utf16_cmp(left: &str, right: &str) -> Ordering {
     }
 }
 
+/// A container the writer has opened and not yet closed, with the children
+/// still to write.
+enum Open<'a> {
+    Array {
+        items: std::slice::Iter<'a, Value>,
+        first: bool,
+    },
+    Object {
+        members: std::vec::IntoIter<(&'a str, &'a Value)>,
+        first: bool,
+    },
+}
+
 fn write_value(out: &mut Vec<u8>, value: &Value) {
+    let mut open = Vec::new();
+    start_value(out, value, &mut open);
+    finish(out, &mut open);
+}
+
+fn write_object(out: &mut Vec<u8>, object: &Object) {
+    let mut open = Vec::new();
+    start_object(out, object, &mut open);
+    finish(out, &mut open);
+}
+
+/// Writes a scalar completely; for a container writes only its opening
+/// bracket and pushes it onto `open`.
+fn start_value<'a>(out: &mut Vec<u8>, value: &'a Value, open: &mut Vec<Open<'a>>) {
     match value {
         Value::Null => out.extend_from_slice(b"null"),
         Value::Bool(true) => out.extend_from_slice(b"true"),
@@ -179,31 +205,65 @@ fn write_value(out: &mut Vec<u8>, value: &Value) {
         Value::Str(text) => write_string(out, text),
         Value::Array(items) => {
             out.push(b'[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    out.push(b',');
-                }
-                write_value(out, item);
-            }
-            out.push(b']');
+            open.push(Open::Array {
+                items: items.iter(),
+                first: true,
+            });
         }
-        Value::Object(object) => write_object(out, object),
+        Value::Object(object) => start_object(out, object, open),
     }
 }
 
-fn write_object(out: &mut Vec<u8>, object: &Object) {
+fn start_object<'a>(out: &mut Vec<u8>, object: &'a Object, open: &mut Vec<Open<'a>>) {
     let mut members: Vec<(&str, &Value)> = object.iter().collect();
     members.sort_by(|(left, _), (right, _)| utf16_cmp(left, right));
     out.push(b'{');
-    for (index, (name, value)) in members.iter().enumerate() {
-        if index > 0 {
-            out.push(b',');
+    open.push(Open::Object {
+        members: members.into_iter(),
+        first: true,
+    });
+}
+
+/// Writes the remaining children and closing brackets of every open
+/// container. Open containers live on the heap stack `open`, so the stack use
+/// of the writer does not depend on the nesting depth (S3, H1-FIX1 R6).
+fn finish(out: &mut Vec<u8>, open: &mut Vec<Open<'_>>) {
+    while let Some(innermost) = open.last_mut() {
+        let next = match innermost {
+            Open::Array { items, first } => match items.next() {
+                Some(item) => {
+                    if !std::mem::replace(first, false) {
+                        out.push(b',');
+                    }
+                    Some(item)
+                }
+                None => {
+                    out.push(b']');
+                    None
+                }
+            },
+            Open::Object { members, first } => match members.next() {
+                Some((name, value)) => {
+                    if !std::mem::replace(first, false) {
+                        out.push(b',');
+                    }
+                    write_string(out, name);
+                    out.push(b':');
+                    Some(value)
+                }
+                None => {
+                    out.push(b'}');
+                    None
+                }
+            },
+        };
+        match next {
+            Some(value) => start_value(out, value, open),
+            None => {
+                open.pop();
+            }
         }
-        write_string(out, name);
-        out.push(b':');
-        write_value(out, value);
     }
-    out.push(b'}');
 }
 
 fn write_string(out: &mut Vec<u8>, text: &str) {
@@ -236,7 +296,19 @@ fn write_string(out: &mut Vec<u8>, text: &str) {
 struct Parser<'a> {
     bytes: &'a [u8],
     pos: usize,
-    depth: usize,
+}
+
+/// A container the parser has opened and not yet closed.
+enum Container {
+    /// The elements read so far.
+    Array(Vec<Value>),
+    /// The members read so far, every member name seen (duplicates are
+    /// rejected, §1.9) and the name whose value is being read.
+    Object {
+        object: Object,
+        seen: HashSet<String>,
+        name: String,
+    },
 }
 
 impl Parser<'_> {
@@ -260,105 +332,124 @@ impl Parser<'_> {
         JsonError::at(code, self.pos)
     }
 
-    fn parse_object(&mut self) -> Result<Object, JsonError> {
-        debug_assert_eq!(self.peek(), Some(b'{'));
-        self.pos += 1;
-        let mut object = Object::new();
-        let mut seen: HashSet<String> = HashSet::new();
+    /// Reads one object member name and the `:` after it, and leaves the
+    /// position at the start of the member value.
+    fn parse_member_name(&mut self, seen: &mut HashSet<String>) -> Result<String, JsonError> {
         self.skip_whitespace();
-        if self.peek() == Some(b'}') {
-            self.pos += 1;
-            return Ok(object);
+        if self.peek() != Some(b'"') {
+            return Err(self.error(e::JSON_INVALID));
         }
-        loop {
-            self.skip_whitespace();
-            if self.peek() != Some(b'"') {
-                return Err(self.error(e::JSON_INVALID));
-            }
-            let name_offset = self.pos;
-            let name = self.parse_string()?;
-            // §1.9: a duplicate member name is the first violation at the
-            // position of the repeated name, before its value is parsed. The
-            // specification example `{"a":1,"a":1.5}` is therefore a duplicate,
-            // not a float.
-            if !seen.insert(name.clone()) {
-                return Err(JsonError::at(e::JSON_DUPLICATE_KEY, name_offset));
-            }
-            self.skip_whitespace();
-            if self.peek() != Some(b':') {
-                return Err(self.error(e::JSON_INVALID));
-            }
-            self.pos += 1;
-            self.skip_whitespace();
-            let value = self.parse_value()?;
-            object.insert(name, value);
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => {
-                    self.pos += 1;
-                }
-                Some(b'}') => {
-                    self.pos += 1;
-                    return Ok(object);
-                }
-                _ => return Err(self.error(e::JSON_INVALID)),
-            }
+        let name_offset = self.pos;
+        let name = self.parse_string()?;
+        // §1.9: a duplicate member name is the first violation at the
+        // position of the repeated name, before its value is parsed. The
+        // specification example `{"a":1,"a":1.5}` is therefore a duplicate,
+        // not a float.
+        if !seen.insert(name.clone()) {
+            return Err(JsonError::at(e::JSON_DUPLICATE_KEY, name_offset));
         }
+        self.skip_whitespace();
+        if self.peek() != Some(b':') {
+            return Err(self.error(e::JSON_INVALID));
+        }
+        self.pos += 1;
+        self.skip_whitespace();
+        Ok(name)
     }
 
-    /// Parses one value at depth `self.depth + 1`. The depth bound is checked
-    /// before descending, so recursion is bounded by `MAX_JSON_DEPTH` (S3).
+    /// Parses one value starting at the current position.
+    ///
+    /// Open containers live on the heap stack `open`, not on the call stack, so
+    /// the stack use of the parser does not depend on the nesting depth (S3,
+    /// H1-FIX1 R6). The depth of every value is checked before the value is
+    /// read or its container opened, so `open` never holds more than
+    /// `MAX_JSON_DEPTH` containers and a too-deep input stops at its first
+    /// too-deep value.
     fn parse_value(&mut self) -> Result<Value, JsonError> {
-        if self.depth + 1 > MAX_DEPTH {
-            // §1.9: a depth violation is `E_JSON_SIZE`, at the position of the
-            // first value that is too deep (scalars included).
-            return Err(self.error(e::JSON_SIZE));
-        }
-        match self.peek() {
-            None => Err(self.error(e::JSON_INVALID)),
-            Some(b'{') => {
-                self.depth += 1;
-                let object = self.parse_object();
-                self.depth -= 1;
-                Ok(Value::Object(object?))
-            }
-            Some(b'[') => {
-                self.depth += 1;
-                let array = self.parse_array();
-                self.depth -= 1;
-                array
-            }
-            Some(b'"') => Ok(Value::Str(self.parse_string()?)),
-            Some(b't') => self.parse_literal(b"true", Value::Bool(true)),
-            Some(b'f') => self.parse_literal(b"false", Value::Bool(false)),
-            Some(b'n') => self.parse_literal(b"null", Value::Null),
-            Some(b'-' | b'0'..=b'9') => self.parse_number(),
-            Some(_) => Err(self.error(e::JSON_INVALID)),
-        }
-    }
-
-    fn parse_array(&mut self) -> Result<Value, JsonError> {
-        debug_assert_eq!(self.peek(), Some(b'['));
-        self.pos += 1;
-        let mut items = Vec::new();
-        self.skip_whitespace();
-        if self.peek() == Some(b']') {
-            self.pos += 1;
-            return Ok(Value::Array(items));
-        }
+        let mut open: Vec<Container> = Vec::new();
         loop {
-            self.skip_whitespace();
-            items.push(self.parse_value()?);
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => {
+            // A value at depth `open.len() + 1` starts here.
+            if open.len() + 1 > MAX_DEPTH {
+                // §1.9: a depth violation is `E_JSON_SIZE`, at the position of
+                // the first value that is too deep (scalars included).
+                return Err(self.error(e::JSON_SIZE));
+            }
+            let mut value = match self.peek() {
+                None => return Err(self.error(e::JSON_INVALID)),
+                Some(b'{') => {
                     self.pos += 1;
+                    self.skip_whitespace();
+                    if self.peek() == Some(b'}') {
+                        self.pos += 1;
+                        Value::Object(Object::new())
+                    } else {
+                        let mut seen = HashSet::new();
+                        let name = self.parse_member_name(&mut seen)?;
+                        open.push(Container::Object {
+                            object: Object::new(),
+                            seen,
+                            name,
+                        });
+                        continue;
+                    }
                 }
-                Some(b']') => {
+                Some(b'[') => {
                     self.pos += 1;
-                    return Ok(Value::Array(items));
+                    self.skip_whitespace();
+                    if self.peek() == Some(b']') {
+                        self.pos += 1;
+                        Value::Array(Vec::new())
+                    } else {
+                        open.push(Container::Array(Vec::new()));
+                        continue;
+                    }
                 }
-                _ => return Err(self.error(e::JSON_INVALID)),
+                Some(b'"') => Value::Str(self.parse_string()?),
+                Some(b't') => self.parse_literal(b"true", Value::Bool(true))?,
+                Some(b'f') => self.parse_literal(b"false", Value::Bool(false))?,
+                Some(b'n') => self.parse_literal(b"null", Value::Null)?,
+                Some(b'-' | b'0'..=b'9') => self.parse_number()?,
+                Some(_) => return Err(self.error(e::JSON_INVALID)),
+            };
+            // `value` is complete: add it to the innermost open container, then
+            // either start that container's next value or close the container
+            // and continue with the container as the completed value.
+            loop {
+                let Some(container) = open.last_mut() else {
+                    return Ok(value);
+                };
+                self.skip_whitespace();
+                match container {
+                    Container::Array(items) => {
+                        items.push(value);
+                        match self.peek() {
+                            Some(b',') => {
+                                self.pos += 1;
+                                self.skip_whitespace();
+                                break;
+                            }
+                            Some(b']') => self.pos += 1,
+                            _ => return Err(self.error(e::JSON_INVALID)),
+                        }
+                    }
+                    Container::Object { object, seen, name } => {
+                        object.insert(std::mem::take(name), value);
+                        match self.peek() {
+                            Some(b',') => {
+                                self.pos += 1;
+                                *name = self.parse_member_name(seen)?;
+                                break;
+                            }
+                            Some(b'}') => self.pos += 1,
+                            _ => return Err(self.error(e::JSON_INVALID)),
+                        }
+                    }
+                }
+                value = match open.pop() {
+                    Some(Container::Array(items)) => Value::Array(items),
+                    Some(Container::Object { object, .. }) => Value::Object(object),
+                    None => unreachable!("the innermost container was just read"),
+                };
             }
         }
     }

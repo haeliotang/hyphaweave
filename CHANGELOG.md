@@ -6,6 +6,22 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1 small-stack fix — 2026-11-15 — DRAFT, UNRELEASED
+
+### Changed
+
+- **Stack** (R6): the Rust JSON parser and canonical writer and `Value`'s
+  `Clone` and `Drop` no longer recurse; open containers live on a heap stack,
+  so their stack use does not grow with the nesting depth (in a debug build a
+  32-level object document took about 58 KiB in the recursive parser).
+- **Tests** (R6): `tests/small_stack.rs` runs the whole verifier on a 128 KiB
+  stack instead of 64 KiB. Ed25519 verification through curve25519-dalek's
+  AVX2 backend takes about 66 KiB in an x86_64 debug build, more than the
+  former 64 KiB, which overflowed on the Linux CI runner without any nesting.
+  The JSON layer is checked on its own on a 32 KiB stack, legal object
+  nesting is covered as well as array nesting, and a too-deep document is
+  shown to be rejected at its first too-deep value.
+
 ## H1-FIX2B — 2026-11-15 — DRAFT, UNRELEASED
 
 Supplement to revision 2 (decision 2026-11-15 #6, rulings Z1–Z4), after the
