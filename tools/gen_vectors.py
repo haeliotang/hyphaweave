@@ -3911,6 +3911,102 @@ declare(
 )
 
 
+# ---------------------------------------------------------------------------
+# S2 (decision 2026-11-15 #8): actor sub-order and sigs member types
+# ---------------------------------------------------------------------------
+
+
+def _s2_agent_note(record_id: str, **changes: Any) -> dict[str, Any]:
+    """An unsigned agent note whose actor has the given members replaced or removed."""
+    actor_value = dict(
+        recordlib.agent_actor(grant=recordlib.make_ref(_kid("human-1"), "g", MISSING_DIGEST))
+    )
+    for name, value in changes.items():
+        if value is None:
+            actor_value.pop(name, None)
+        else:
+            actor_value[name] = value
+    return with_field(recordlib.note(record_id), "actor", actor_value)
+
+
+declare(
+    "actor",
+    "agent-missing-idempotency-before-on-behalf-grammar",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_ACTOR_IDEMPOTENCY_MISSING",),
+    build=lambda: rec(
+        _s2_agent_note("actor-s2-1", on_behalf_of="ed25519:NOTHEX", idempotency_key=None)
+    ),
+    notes="S2/F45 (§14.5 step (2): presence -> closedness -> grammar, inside the closed "
+    "actor object too): the four agent-only members are required members of an agent "
+    "actor, so a missing idempotency_key (presence) is reported before the malformed "
+    "on_behalf_of (grammar).",
+)
+
+declare(
+    "actor",
+    "agent-missing-grant-before-on-behalf-type",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_ACTOR_GRANT_MISSING",),
+    build=lambda: rec(_s2_agent_note("actor-s2-2", on_behalf_of=7, grant=None)),
+    notes="S2/F67 (§14.5 step (2)): a missing grant (presence) is reported before an "
+    "on_behalf_of of the wrong JSON type (grammar).",
+)
+
+declare(
+    "actor",
+    "agent-missing-on-behalf-before-key-type",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_ACTOR_ON_BEHALF_MISSING",),
+    build=lambda: rec(_s2_agent_note("actor-s2-3", key=7, on_behalf_of=None)),
+    notes="S2/F67 (§14.5 step (2)): presence of the agent-only members is decided before "
+    "the grammar of any member, actor.key included: a missing on_behalf_of is reported "
+    "before an actor.key of the wrong JSON type.",
+)
+
+declare(
+    "sig",
+    "ed25519-value-wrong-json-type",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_SIGS",),
+    build=lambda: rec(
+        set_sigs(
+            recordlib.note("sig-s2-1"),
+            [{"alg": "ed25519", "key": _kid("human-1"), "value": 2}],
+        )
+    ),
+    notes="S2/F67 (§4.3): a sigs entry member present with the wrong JSON type is a "
+    "structural defect of the entry's closed shape, E_ENV_SIGS; the per-member codes "
+    "(E_ENV_SIG_VALUE here) apply only to the grammar of a string member.",
+)
+
+declare(
+    "sig",
+    "ed25519-value-wrong-type-before-key-grammar",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_ENV_SIGS",),
+    build=lambda: rec(
+        set_sigs(
+            recordlib.note("sig-s2-2"),
+            [{"alg": "ed25519", "key": "ed25519:NOTHEX", "value": 2}],
+        )
+    ),
+    notes="S2/F67 (§4.3): the JSON types of all three members are the entry's structure "
+    "and are judged before the per-member grammar, so a non-string value wins over a "
+    "malformed key (E_ENV_SIGS, not E_ENV_SIG_KEY).",
+)
+
+
 # === END CASE SECTIONS ===
 
 
