@@ -11528,6 +11528,95 @@ declare(
 )
 
 
+
+# -- §14.5 steps (4)-(5) across entries: every entry is judged ----------------
+
+
+def _s2_two_signer_files(*, unknown_second: bool) -> dict[str, bytes]:
+    first_private, _first_public, first_id = derived_key("s2-two-signer-a")
+    second_name = "s2-two-signer-undeclared" if unknown_second else "s2-two-signer-b"
+    second_private, _second_public, second_id = derived_key(second_name)
+    declarations = [_s2_declaration("s2-two-signer-a", record_id="key-declared-s2-two-signer-a")]
+    if not unknown_second:
+        declarations.append(
+            _s2_declaration("s2-two-signer-b", record_id="key-declared-s2-two-signer-b")
+        )
+    record = recordlib.build_record(
+        kind="example.note",
+        id="s2-two-signer-note",
+        actor={"type": "device", "key": first_id},
+        body={"text": "two signers"},
+        recorded_at=recordlib.T1,
+        origin_instance=first_id,
+    )
+    entries = {
+        first_id: _derived_signature(first_private, first_id, record),
+        second_id: _derived_signature(second_private, second_id, record),
+    }
+    tampered = dict(entries[first_id])
+    raw = bytearray(keyutil.b64url_decode(tampered["value"], expected_len=64))
+    raw[32] ^= 0x01  # the low bit of S: R stays canonical and S stays below L
+    tampered["value"] = keyutil.b64url_encode(bytes(raw))
+    entries[first_id] = tampered
+    if not first_id < second_id:
+        raise SystemExit("the tampered entry must come first in key order")
+    record = {**record, "sigs": [entries[first_id], entries[second_id]]}
+    return container(declarations + [record])
+
+
+declare(
+    "key-lifecycle",
+    "signature-entries-all-judged",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_SIG_INVALID",),
+    build=lambda case_dir: _s2_two_signer_files(unknown_second=False),
+    args=_S2_ARGS,
+    records=(
+        {
+            "id": "s2-two-signer-note",
+            "verdict": "invalid",
+            "errors": ["E_SIG_INVALID"],
+            "sigs": [
+                {"key": derived_key("s2-two-signer-a")[2], "state": "invalid"},
+                {"key": derived_key("s2-two-signer-b")[2], "state": "valid"},
+            ],
+        },
+    ),
+    notes="S2 (§4.4 step 2: every ed25519 entry is verified; §14.6): the note's first "
+    "entry fails the equation and its second entry is a good signature by a declared key. "
+    "Every entry is judged and reports its own state (invalid, valid); the first failing "
+    "entry decides the record's code, E_SIG_INVALID.",
+)
+
+declare(
+    "key-lifecycle",
+    "signature-key-resolution-before-equation",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNKNOWN",),
+    build=lambda case_dir: _s2_two_signer_files(unknown_second=True),
+    args=_S2_ARGS,
+    records=(
+        {
+            "id": "s2-two-signer-note",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "sigs": [
+                {"key": derived_key("s2-two-signer-a")[2], "state": "invalid"},
+                {"key": derived_key("s2-two-signer-undeclared")[2], "state": "unverified"},
+            ],
+        },
+    ),
+    notes="S2 (§14.5 steps (4) and (5)): the note's first entry fails the equation and its "
+    "second entry names a key that nothing declares. Key resolution (step (4)) covers every "
+    "entry before any equation (step (5)) decides the record, so the record is "
+    "unverifiable E_KEY_UNKNOWN, not invalid E_SIG_INVALID; every entry still reports its "
+    "state (invalid, unverified).",
+)
+
 # -- F51 / F61-2 / F67: crash sites of the candidate key state ------------------
 
 
