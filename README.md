@@ -31,17 +31,17 @@ Read this before using anything in this repository:
   specification, schemas, vectors and the Python verifier; it does not perform
   the round trips.
 - **Two implementations: the Python reference verifier and the Rust verifier;
-  the Rust verifier has not yet caught up with the S2 round and its revision
-  S2-FIX1.** The Python
+  the Rust verifier has not yet caught up with the S2 round and its revisions
+  S2-FIX1 and S2-FIX2.** The Python
   reference verifier lives in `verifiers/python/`; the second, independent
   implementation (milestone H1, `verifiers/rust/`) was written from the
   specification and the conformance vectors only. Its revisions H1-FIX1 to
   H1-FIX2B implement revision 3 of the specification and the S1 rounds, and its
   findings (`docs/h1-findings.md`) led to the S2 round of revision 3 (decision
-  2026-11-15 #8) and its revision S2-FIX1 (decision 2026-11-15 #13). The Python
-  verifier and the vectors implement both; the Rust verifier does not yet: on this
-  snapshot it passes the candidate regression set but not 38 of the 656 main
-  vectors, and one more main vector (an anchor bundle with a non-UTF-8 certificate
+  2026-11-15 #8) and its revisions S2-FIX1 and S2-FIX2 (decisions 2026-11-15 #18
+  and #22). The Python verifier and the vectors implement them; the Rust verifier
+  does not yet: on this snapshot it passes the candidate regression set but not 57
+  of the 683 main vectors, and one more main vector (an anchor bundle with a non-UTF-8 certificate
   subject) makes its whole `vectors` run stop with a usage error; its gate-3 allow
   list still lists the 37 report differences that the S2 Python corrections
   removed. Passing the same vectors is necessary but not sufficient

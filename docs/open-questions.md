@@ -1110,7 +1110,7 @@ for the founder and the specification text is unchanged for them.
    key's own lifecycle (`E_KEY_COMPROMISED`, invalid), which is the less conservative
    outcome. Vectors `key-lifecycle/declaration-compromised-*`,
    `declaration-before-own-valid-from`, `declaration-cosigner-retired`,
-   `rotation-old-key-retired`. *Corrected by S2-FIX1 (decision 2026-11-15 #13, Q2):* the
+   `rotation-old-key-retired`. *Corrected by S2-FIX1 (decision 2026-11-15 #18, Q2):* the
    S2 text extended the "facts still supplied" half to every signature of the record, which
    let a cosignature or an old-key signature that fails §9.4 still hand material and trust
    to another key (review A high-1, review B medium-1); it also contradicted X5. Only the
@@ -1152,7 +1152,7 @@ for the founder and the specification text is unchanged for them.
    verified and judged before the next, and the first failure stops the layer. Reading B:
    steps (4) and (5) are steps of the record (§14.5) and §4.4 step 2 verifies "every"
    entry. **Chosen B**: every entry is judged and reports its own state. *Correction (S2-FIX1
-   T2, decision 2026-11-15 #13):* S2 also wrote that an unresolvable key anywhere makes the
+   T2, decision 2026-11-15 #18):* S2 also wrote that an unresolvable key anywhere makes the
    record `E_KEY_UNKNOWN` even when another entry fails its equation. That was **not** the
    more conservative reading, although S2 labelled it so (review B high-1, review A low-3):
    it lowers an invalid `E_SIG_INVALID` to unverifiable, and §4.4 step 2 says the opposite.
@@ -1181,7 +1181,7 @@ for the founder and the specification text is unchanged for them.
     list it enumerates. **Chosen A** for those three rules, the more conservative (a receipt
     one implementation accepted is rejected). S2 then declared the list of 1a rules closed,
     leaving the content of REAL and RELATIVE-OID outside 1a. *Withdrawn by S2-FIX1 T3
-    (decision 2026-11-15 #13):* closing the list was a relaxation of the registry's "any
+    (decision 2026-11-15 #18):* closing the list was a relaxation of the registry's "any
     universal DER rule" (review B medium-2); 1a is now X.690 tag by tag (§7.3). Vectors
     `integrity-levels/l2-ts-der-*`, `l2-ts-der-1a-*`.
 12. **Rotation key-id grammar (F61-3)** — *a new rule decided by principle, not "what the
@@ -1212,12 +1212,12 @@ for the founder and the specification text is unchanged for them.
     the specification stays "revision 3"; the registry counts its own revisions (this round is
     its revision 7). *Corrected by S2-FIX1 T7:* the registry folds later decisions of one
     round into the same registry revision (revision 6 carries 2026-11-12 #1–#3; revision 7
-    carries 2026-11-15 #8 and #13); "one per decision" did not match its history.
+    carries 2026-11-15 #8 and #18; S2-FIX2 adds #22); "one per decision" did not match its history.
 
-### 7.2 Handed to the founder — ruled by decision 2026-11-15 #13
+### 7.2 Handed to the founder — ruled by decision 2026-11-15 #18
 
 Each was handed to the founder with both readings, their consequences and a
-recommendation. **All five are ruled** (decision 2026-11-15 #13): F47 as recommended (Q1);
+recommendation. **All five are ruled** (decision 2026-11-15 #18): F47 as recommended (Q1);
 cosignature and old-key trust: **not** supplied (Q2, the more conservative answer); F69-1,
 F69-2, F55 first part as recommended, "invalid first" (Q3); F64 with fixed bounds from
 2,048 bits (Q4); F68 open point as recommended, steps 1–5 walked beyond the bound (Q5). The
@@ -1236,9 +1236,9 @@ not (review A high-1 item 3), only the cosignature half was shared.
 - **F64** — the key-size and signature-encoding bounds of check 10.
 - **F68 open point** — whether steps 1–5 of §5.5.2 are walked beyond the depth bound.
 
-### 7.3 S2-FIX1: decided by principle (decision 2026-11-15 #13)
+### 7.3 S2-FIX1: decided by principle (decision 2026-11-15 #18)
 
-Besides the founder's rulings, decision 2026-11-15 #13 settled the review items of the S2
+Besides the founder's rulings, decision 2026-11-15 #18 settled the review items of the S2
 round. The main session decided T2 by the founder's Q3 principle ("invalid beats
 unverifiable"); the founder can overturn it.
 
@@ -1281,7 +1281,7 @@ unverifiable"); the founder can overturn it.
    ISO 8601 parser the profile does not define. The repertoire of a restricted string type
    is X.680 value validity, not an X.690 encoding rule, and stays outside 1a; universal tag
    numbers 15 and 37 or more have no DER rule and keep the framing-only treatment of X1.
-   Vectors `integrity-levels/l2-ts-der-1a-*`.
+   Vectors `integrity-levels/l2-ts-der-1a-*`. *Revised by S2-FIX2 U4 (§7.5 item 3).*
 6. **`readable` (T8).** A root regular file named `readable` is outside the layout
    (`E_CONTAINER_ENTRY`, the second verifier's answer and the more conservative one).
    Vectors `container/readable-root-regular-file*`.
@@ -1291,14 +1291,15 @@ unverifiable"); the founder can overturn it.
    `L_LABELS_ARE_CLAIMS` are not reported when the records-listing phase stops the
    container (no record is verified). An `E_CONTAINER_ENTRY` from the entry checks keeps the
    notice (the entries were enumerated; T6). Vectors `container/readable-*-failure`,
-   `container/*-limitation-not-reported-after-listing-failure`.
+   `container/*-limitation-not-reported-after-listing-failure`. *The `N_READABLE_PRESENT`
+   half is narrowed by S2-FIX2 U7 (§7.5 item 6).*
 8. **§11.5 W1 rule 2 without a trust root (T8).** Kept as written: `--previous` with no
    keyset is `E_MANIFEST_CHAIN` (invalid). The specification now states the consequence and
    advises recipients to supply their keyset and only a `--previous` they accepted earlier.
 
 ### 7.4 Registered, not changed in S2-FIX1
 
-From the S2 next-batch list (decision 2026-11-15 #13, T8: registered only):
+From the S2 next-batch list (decision 2026-11-15 #18, T8: registered only):
 
 - §11.5: the two tiers of one origin (ledger / receipts) cannot tell a new chain head from
   a silent restart; a series or tier identifier in the manifest is proposed.
@@ -1314,4 +1315,54 @@ From the S2 next-batch list (decision 2026-11-15 #13, T8: registered only):
   failing entry decides (W10/L5), so an unverifiable entry (an undeclared key) can precede
   an invalid one (`E_MANIFEST_SIG_INVALID`). The T2 principle ("invalid first") was ruled
   for record signature entries only; whether the manifest rule should follow it is noted
-  here for a later decision.
+  here for a later decision. *Decided by S2-FIX2 U5 (decision 2026-11-15 #22), see §7.5.*
+
+### 7.5 S2-FIX2 (decision 2026-11-15 #22)
+
+A narrow review of S2-FIX1 led to one more founder ruling and six items decided by
+principle. The founder can overturn the items decided by principle.
+
+1. **Step 1 of the grant chain in two tiers (Q6, ruled by the founder).** S2-FIX1's Q5 walk
+   could not show "invalid first": step 1 required each resolved parent to be a valid
+   record, so an invalid ancestor reached every record above it as the unverifiable
+   `E_GRANT_UNRESOLVED`. **Ruled**: a parent (or a record's cited grant) that is present but
+   itself invalid makes the child invalid `E_GRANT_GRANTER` (step 1 has no invalid code of
+   its own; the code of step 2 is used, in the shape of the erasure tiers of Q1); a parent
+   that is absent or present but not valid for another reason stays `E_GRANT_UNRESOLVED`.
+   This changes ordinary agent records; the frozen candidate set was scanned first and no
+   conclusion of it changes. Vectors `grant/agent-record-cited-grant-present-invalid`,
+   `grant/sub-grant-parent-*`, `grant/chain-depth-10-root-present-invalid`, and the
+   changed `grant/chain-depth-9-root-not-transferable` and
+   `grant/chain-depth-9-first-link-exceeds`.
+2. **Erasure basis chain (U1).** The program/device half of Q1: the window, revocation and
+   chain of a `body.basis` grant are judged at the erasure's `recorded_at` like an agent's
+   `actor.grant` (S2-FIX1 judged them for agents only, so an expired or revoked basis was
+   valid). Vectors `erasure/actor-program-basis-expired`, `-revoked`,
+   `erasure/actor-device-basis-expired`.
+3. **1a string and date types (U4).** S2-FIX1's table had the ESC rule the wrong way round:
+   it let ESC through in the types X.690 forbids it in (NumericString, PrintableString,
+   IA5String, VisibleString by §8.23.5.3 and Table 3; UTF8String by §8.23.10) and rejected
+   every ESC in the ISO 2022 register types, where Table 3 allows escape sequences.
+   **Decided**: no ESC in the five types; the register types are judged by §11.4 (no
+   designation of an entry already designated, designation into the smallest G set) and
+   §8.23.5.4 (no announcer) from the Table 3 defaults, while what depends on the register
+   entries (§8.23.5.1, whether a sequence is needed) is not judged. DATE, TIME-OF-DAY,
+   DATE-TIME, OID-IRI and RELATIVE-OID-IRI are rejected with TIME and DURATION: stricter
+   than X.690, a conservative reading decided by principle. Vectors
+   `integrity-levels/l2-ts-der-1a-*` (15 new, two replaced).
+4. **Manifest signature entries (U5).** The §7.4 item above: decided "invalid first" by the
+   T2 principle; an entry of a required key that fails the equation decides
+   `E_MANIFEST_SIG_INVALID` whatever the order and even beside an undeclared key. No vector
+   of the frozen candidate set has more than one manifest signature entry. Vectors
+   `container/manifest-sig-*-unknown-key*`.
+5. **§11.5 wording (U6).** Rule 1 said "as in §5.3" for a rule that is stricter than §5.3
+   (the link uses the rotation's verdict); the wording now says so. No change of behaviour.
+6. **`N_READABLE_PRESENT` after a member-level failure (U7).** S2-FIX1 withheld the notice
+   after every `E_CONTAINER_ZIP`, a member CRC failure included, although the entries had
+   been enumerated. **Decided**: it is withheld only when the archive fails in phases 1–4 of
+   the zip check order; a member that fails as it is read afterwards keeps it. Vectors
+   `container/readable-reported-after-member-crc-failure` (replacing
+   `readable-not-reported-after-zip-structure-failure`) and
+   `container/readable-not-reported-after-central-directory-failure`.
+7. **Decision number (U3).** S2-FIX1 is decision 2026-11-15 #18; the references that said
+   #13 are corrected.
