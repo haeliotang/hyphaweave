@@ -6,6 +6,49 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round, revision 4 (S2-FIX4) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #4 (decided by principle — the specification's own text; the founder
+can overturn every item): the two differences the Rust follow-up's differential fuzzing
+left against S2-FIX3 (`docs/h1-findings.md` F83, F84 on the Rust branch). The `format`
+identifier is unchanged; no error code is added; the registry stays at revision 7. No
+conclusion of the frozen candidate set changes.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **No manifest material from a declaration that supplies none (F83, §5.3, §11.3).** A
+  declaration with another signature that does not pass, and a `weave.key.rotated` record
+  that is not semantically valid, supply no material for the manifest signature or a
+  supplied previous container's manifest signature either: such an entry is judged as an
+  undeclared key's (`E_KEY_UNKNOWN`), its equation is not evaluated, and it adds no
+  `L_KEY_TRUST_TOFU`. The reference verifier used to take that material at step (5)
+  (reporting `E_MANIFEST_SIG_INVALID`, or no code and `L_KEY_TRUST_TOFU`) and for the
+  previous-manifest link; it now verifies the record set before the manifest equation.
+- **The TOFU predicate on key-lifecycle records (F84, §14.9).** Only the `actor.key`
+  signature takes part; it is context-trusted when its material came from a context record
+  other than the record itself, even when its equation fails (S2/F42); a cosignature never
+  takes part. The reference verifier never counted a declaration's `actor.key` signature
+  verified against another context declaration's material (a declaration without
+  `body.key`), and counted a context-material cosignature on a revocation.
+
+### Vectors, tests and gates
+
+- **Vectors**: nine new main cases (716 → 725): `container/manifest-signer-declaration-owner-altered`
+  and `-key-type-absent` (the two F83 reproductions), `container/manifest-signer-rotation-old-signature-fails`,
+  `container/previous-signer-owner-declaration-body-absent` (the second F84 reproduction, an
+  F83 shape at the previous-manifest link), `container/manifest-signer-declared-untrusted`
+  (A-L8 guard: an untrusted declaration with no other signature still supplies material),
+  `key-lifecycle/declaration-body-key-absent-actor-tofu` and `-equation-fails` (the first
+  F84 reproduction), `key-lifecycle/revocation-context-cosignature-not-tofu` and
+  `device-declaration-context-owner-cosignature-not-tofu`. No existing case changed.
+- **Unit tests**: `test_container.py` — the A-L8 test now uses the untrusted-declaration
+  vector; its old setup (a declaration whose cosigner has no material) is pinned as
+  `E_KEY_UNKNOWN`.
+- **Ablation catalogue**: six S2-FIX4 entries; `s2-f42-tofu-after-equation` re-anchored on
+  the new predicate function (the same mutation).
+- **Rust verifier**: not changed and no follow-up needed. The Rust follow-up binary
+  (`r2/rust-s2`, `dcaffa2`) passes all 725 main cases and the frozen set.
+
 ## S2 round, revision 3 (S2-FIX3) — 2026-11-16 — DRAFT, UNRELEASED
 
 Decision 2026-11-16 #1 (decided by principle — invalid first, the specification's own

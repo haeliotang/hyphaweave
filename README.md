@@ -46,8 +46,9 @@ Read this before using anything in this repository:
   subject) makes its whole `vectors` run stop with a usage error; its gate-3 allow
   list still lists the 37 report differences that the S2 Python corrections
   removed. Its follow-up branch closes those and found the differences that S2-FIX3
-  (decision 2026-11-16 #1) settles; that branch is not part of this snapshot, and nine of
-  the 27 S2-FIX3 cases are still to be followed there. Passing the same vectors is necessary but not sufficient
+  (decision 2026-11-16 #1) and S2-FIX4 (decision 2026-11-16 #4) settle; that branch is not
+  part of this snapshot, and its binary passes all 725 main cases of this snapshot and the
+  candidate set. Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
