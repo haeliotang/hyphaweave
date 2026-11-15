@@ -38,8 +38,6 @@ supplementary structural predicates for rules Draft 2020-12 cannot express:
 - manifest attestation ``timestamps`` sorted by path ascending with unique paths
   and one acyclic renewal chain (exactly one ``renews=null`` head, every
   ``renews`` path listed, no receipt renewed twice);
-- semantically duplicate ``refs`` entries (same ``rel`` and target
-  ``origin``/``id``/``digest`` even if the ``hints`` differ);
 - the calendar validity (spec §2.8) of the TS members at the top level of the
   key-lifecycle and consent bodies (S2; the TS pattern cannot express it).
 
@@ -531,36 +529,10 @@ def envelope_supplement(doc: Any) -> list[str]:
     if isinstance(labels, dict) and "licence" in labels:
         problems.extend(licence_expression_problems(labels["licence"]))
 
-    refs = doc.get("refs")
-    if isinstance(refs, list):
-        seen: dict[tuple[str, str, str, str, str], int] = {}
-        for index, entry in enumerate(refs):
-            if not isinstance(entry, dict):
-                continue
-            rel = entry.get("rel")
-            ref = entry.get("ref")
-            if not isinstance(rel, str) or not isinstance(ref, dict):
-                continue
-            origin = ref.get("origin")
-            if not isinstance(origin, dict):
-                continue
-            project = origin.get("project")
-            instance = origin.get("instance")
-            ref_id = ref.get("id")
-            digest = ref.get("digest")
-            if not all(
-                isinstance(value, str)
-                for value in (project, instance, ref_id, digest)
-            ):
-                continue
-            marker = (rel, project, instance, ref_id, digest)  # type: ignore[arg-type]
-            if marker in seen:
-                problems.append(
-                    f"refs[{index}] duplicates refs[{seen[marker]}] "
-                    "(same rel and target origin/id/digest)"
-                )
-            else:
-                seen[marker] = index
+    # S2-FIX3 F76 (§6.1): duplicate refs entries are identical (rel, ref) pairs,
+    # the reference objects compared as whole JSON values; the envelope schema's
+    # uniqueItems already rejects them, and entries that differ only in kind or
+    # hints are not duplicates, so no supplementary refs predicate remains.
 
     sigs = doc.get("sigs")
     if isinstance(sigs, list):
