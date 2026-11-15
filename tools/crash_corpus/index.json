@@ -1,5 +1,5 @@
 {
-  "case_count": 146,
+  "case_count": 154,
   "cases": [
     {
       "base_case": "container/previous-zip-valid",
@@ -1745,6 +1745,78 @@
       "overlay": [
         "tsa.crt.pem"
       ]
+    },
+    {
+      "base_case": "key-lifecycle/crash-declaration-without-key",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F51: weave.key.declared without body.key (KeyError 'key' in the candidate key state). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00000",
+      "index": 0,
+      "overlay": []
+    },
+    {
+      "base_case": "key-lifecycle/crash-revocation-without-key",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F51: weave.key.revoked without body.key (KeyError 'key'). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00001",
+      "index": 1,
+      "overlay": []
+    },
+    {
+      "base_case": "key-lifecycle/crash-declaration-without-key-type",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F67: weave.key.declared without body.key_type (KeyError 'key_type'). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00002",
+      "index": 2,
+      "overlay": []
+    },
+    {
+      "base_case": "key-lifecycle/crash-revocation-without-effective-at",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F67: weave.key.revoked without body.effective_at (KeyError 'effective_at'). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00003",
+      "index": 3,
+      "overlay": []
+    },
+    {
+      "base_case": "key-lifecycle/crash-revocation-effective-at-space",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F61-2: effective_at with a space instead of T (ValueError from strptime). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00004",
+      "index": 4,
+      "overlay": []
+    },
+    {
+      "base_case": "key-lifecycle/crash-revocation-effective-at-no-fraction",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F67: effective_at without fractional seconds (ValueError). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00005",
+      "index": 5,
+      "overlay": []
+    },
+    {
+      "base_case": "key-lifecycle/crash-revocation-effective-at-day-31",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F67: effective_at on 31 November (ValueError: day is out of range). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00006",
+      "index": 6,
+      "overlay": []
+    },
+    {
+      "base_case": "key-lifecycle/crash-revocation-effective-at-second-60",
+      "category": "container-dir",
+      "deleted": [],
+      "desc": "S2 (H1 findings, reproduced on 5474cf7/e51deb4): F67: effective_at with second 60 (ValueError: second must be in 0..59). The committed vector is the crash input itself; replayed with its own arguments.",
+      "file_id": "s2-00007",
+      "index": 7,
+      "overlay": []
     }
   ],
   "corpus_version": 1,

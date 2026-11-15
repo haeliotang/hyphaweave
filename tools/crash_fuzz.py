@@ -44,8 +44,9 @@ fails the gate. A crash is never an accepted rejection.
 The committed regression corpus under ``tools/crash_corpus/`` holds the 145
 crash inputs found by the S1-FIX2 recheck (6 ``previous`` + 139 ``tsa``) and the
 ``--tsa-trust`` PEM with an invalid certificate version found by the S1-FIX3
-recheck with seed 777 (S1-FIX4 W4); every run replays it first and requires zero
-crashes. ``index.json`` records the original seed/category/index for
+recheck with seed 777 (S1-FIX4 W4), plus the eight record-body crash inputs of the
+H1 findings F51, F61-2 and F67 (S2; the committed ``key-lifecycle/crash-*`` vectors
+replayed as-is); every run replays it first and requires zero crashes. ``index.json`` records the original seed/category/index for
 traceability.
 
 Load: every worker runs one CLI subprocess at a time. When this gate runs next
