@@ -2069,7 +2069,9 @@ impl World {
         let message = digest::manifest_signature_message(manifest_digest);
         let mut outcome = ManifestSigOutcome::default();
         let mut any_known = false;
-        let mut first_invalid: Option<Code> = None;
+        let mut first_equation_invalid: Option<Code> = None;
+        let mut first_lifecycle_invalid: Option<Code> = None;
+        let mut unknown_key = false;
         let mut first_unverifiable: Option<Code> = None;
         for entry in signatures {
             if !entry.known_algorithm {
@@ -2091,24 +2093,34 @@ impl World {
             if !matches!(resolution.state, SigState::Invalid(e::MANIFEST_SIG_INVALID)) {
                 outcome.context_trusted |= resolution.material_from_context;
             }
-            // §11.3 (S2-FIX2/U5, the T2 principle): invalid first — an entry
-            // whose declared key fails (equation or §9.4) decides before an
-            // entry that is only unverifiable, whatever their array order.
+            // §11.3 (S2-FIX2/U5, S2-FIX2b): invalid beats unverifiable across
+            // the entries, whatever their order — an entry that fails the
+            // equation (`E_MANIFEST_SIG_INVALID`, decided by step (5) before
+            // any §9.4 effect) first, then an invalid §9.4 outcome of an
+            // entry's key; only then `E_KEY_UNKNOWN`, which an unverifiable
+            // §9.4 outcome (`E_TS_UNTRUSTED`) does not override.
             match resolution.state {
                 SigState::Valid => {}
+                SigState::Invalid(code)
+                    if matches!(code, e::KEY_EXPIRED | e::KEY_REVOKED | e::KEY_COMPROMISED) =>
+                {
+                    first_lifecycle_invalid.get_or_insert(code);
+                }
                 SigState::Invalid(code) => {
-                    if first_invalid.is_none() {
-                        first_invalid = Some(code);
-                    }
+                    first_equation_invalid.get_or_insert(code);
+                }
+                SigState::Unverified(code) if code == e::KEY_UNKNOWN => {
+                    unknown_key = true;
                 }
                 SigState::Unverified(code) => {
-                    if first_unverifiable.is_none() {
-                        first_unverifiable = Some(code);
-                    }
+                    first_unverifiable.get_or_insert(code);
                 }
             }
         }
-        outcome.code = first_invalid.or(first_unverifiable);
+        outcome.code = first_equation_invalid
+            .or(first_lifecycle_invalid)
+            .or(unknown_key.then_some(e::KEY_UNKNOWN))
+            .or(first_unverifiable);
         if !any_known {
             outcome.code = Some(e::SIG_UNVERIFIABLE);
         }
