@@ -532,3 +532,56 @@ fn structurally_failed_erasure_record_is_not_attested() {
         verify_container(ContainerInput::Files(files), &keyset_with(None)).expect("container");
     assert_eq!(container_errors(&report), vec![e::ERASE_ATTESTATION]);
 }
+
+/// §11.3 (S2-FIX2/U5 and its §9.4 half, decided with it by principle): the
+/// manifest signature entries are judged invalid-first. human-1 is retired
+/// before the manifest's `created_at`, so its manifest signature is invalid
+/// `E_KEY_REVOKED` (§9.4); an entry by an undeclared key that sorts first does
+/// not lower that to `E_KEY_UNKNOWN`.
+#[test]
+fn manifest_lifecycle_failure_beats_an_undeclared_entry() {
+    let mut retire = Object::new();
+    retire.insert("effective_at", "2026-11-01T06:00:00.000Z");
+    retire.insert("key", key_id("human-1"));
+    retire.insert("reason", "retired");
+    let revocation = signed(
+        envelope(
+            "s2-u5-retire-human-1",
+            "weave.key.revoked",
+            "human-1",
+            "2026-11-01T06:00:00.000Z",
+            retire,
+        ),
+        &["human-1"],
+    );
+    let mut files = l0_container(&[revocation]);
+    let single = verify_container(ContainerInput::Files(files.clone()), &keyset_with(None))
+        .expect("container");
+    assert_eq!(container_errors(&single), vec![e::KEY_REVOKED]);
+    let attestation_path = "signatures/manifest.sig.json".to_owned();
+    let mut attestation = json::parse_object(&files[&attestation_path]).expect("attestation");
+    let mut entries = vec![{
+        let mut entry = Object::new();
+        entry.insert("alg", "ed25519");
+        entry.insert("key", format!("ed25519:{}", "0".repeat(32)));
+        entry.insert("value", b64::encode(&[0u8; 64]));
+        Value::Object(entry)
+    }];
+    if let Some(Value::Array(existing)) = attestation.get("signatures") {
+        entries.extend(existing.iter().cloned());
+    }
+    let mut rebuilt = Object::new();
+    for (name, value) in attestation.iter() {
+        if name == "signatures" {
+            rebuilt.insert(name, Value::Array(entries.clone()));
+        } else {
+            rebuilt.insert(name, value.clone());
+        }
+    }
+    attestation = rebuilt;
+    files.insert(attestation_path, json::canonical_object_bytes(&attestation));
+    let report =
+        verify_container(ContainerInput::Files(files), &keyset_with(None)).expect("container");
+    assert_eq!(report.verdict, Verdict::Invalid);
+    assert_eq!(container_errors(&report), vec![e::KEY_REVOKED]);
+}

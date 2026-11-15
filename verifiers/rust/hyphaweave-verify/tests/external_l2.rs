@@ -144,6 +144,23 @@ fn replay(case_dir: &Path) -> CaseEvidence {
     CaseEvidence { evidence }
 }
 
+/// True when `signatures/` holds a `.tsr` file that the attestation does not
+/// list.
+fn has_unlisted_receipt(container: &Path) -> bool {
+    let listed: BTreeSet<String> = attestation_entries(container)
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
+    std::fs::read_dir(container.join("signatures"))
+        .map(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                name.ends_with(".tsr") && !listed.contains(&format!("signatures/{name}"))
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn all_failure_codes(evidence: &timestamp::ChainEvidence) -> BTreeSet<&'static str> {
     evidence
         .receipts
@@ -189,6 +206,14 @@ fn external_l2_integrity_level_cases() {
             continue;
         }
 
+        if has_unlisted_receipt(&case_dir.join("container")) {
+            // §11.3, §12.2 step 1 (S2/F54): an unlisted `.tsr` fails the file
+            // checks of the container's timestamp phase before any receipt is
+            // decoded; that is container-level (`tests/container_vectors.rs`),
+            // not the profile replay of this file.
+            skipped += 1;
+            continue;
+        }
         let CaseEvidence { evidence } = replay(&case_dir);
         if let Some(expected_anchor_verified) = expected_anchor_verified {
             assert_eq!(
