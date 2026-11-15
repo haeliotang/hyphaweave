@@ -83,7 +83,12 @@ kind-checked (parent specification §6.3).
    (`E_ERASE_ATTESTATION`); and the original live record is not also present
    (`E_ERASE_CONTRADICTION`). These rules make the erase assertion self-consistent and
    prevent a container from carrying both the data and a claim that it was erased (parent
-   specification §10.3).
+   specification §10.3). The checks see only an erasure record that passes the §14.1
+   structural group (a placeholder that names one that fails it, for example one without
+   `sigs`, is `E_ERASE_ATTESTATION`); the placeholder check is applied to a valid erasure
+   record — a missing placeholder, or only a malformed one, is `E_ERASE_DIGEST_MISMATCH` —
+   and to any erasure record a placeholder names, whatever its own verdict
+   [S2-FIX3/F80/F82] decided by principle (Inceptless decision 2026-11-16 #1).
 3. **Attestation is a claim, not proof of deletion.** A signed attestation is the format's
    best available evidence that an erasure happened; there is no cryptographic proof of
    absence. The verifier reports the erased entry with its attestation integrity

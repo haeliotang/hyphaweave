@@ -24,7 +24,9 @@ parent specification.
   `E_ACTOR_KEY_TYPE_MISMATCH` (the kind's signer rule; parent specification §5.1/Q30).
 - `sigs` **MUST** be present. If `sigs` is non-empty but the required human/organization
   signer is missing or wrong, `E_ACTOR_KEY_TYPE_MISMATCH` is reported instead of
-  `E_SIG_REQUIRED`; `E_SIG_REQUIRED` is used only when `sigs` is absent or empty.
+  `E_SIG_REQUIRED`; `E_SIG_REQUIRED` is used only when `sigs` is absent or empty. The required signer is `actor.key` (parent specification §4.4): a valid
+  signature by another human or organization key does not satisfy the rule
+  [S2-FIX3/F81] decided by principle (Inceptless decision 2026-11-16 #1).
 - `salt` is optional; `refs` and `labels` follow the parent specification.
 
 ## Body

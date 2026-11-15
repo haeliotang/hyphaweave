@@ -50,6 +50,9 @@ remains usable for existing records and must be revoked separately (usually with
    (§2.5) or has another JSON type is a body-schema defect, `E_KIND_BODY_SCHEMA`, decided
    in the same pre-signature structural check and before this rule (parent specification
    §14.5) [S2/F61-3] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+   `new_public_key` is required: a rotation without it (absent, or present only under
+   another member name) fails this rule, `E_KEY_ROTATION_KEYS` in the same pre-signature
+   check, and no signature check runs (`sigs` is `[]`) [S2-FIX3/F74] decided by principle (Inceptless decision 2026-11-16 #1).
 3. **Both signatures.** At least one valid signature by `old_key` and at least one valid
    signature by `new_key` MUST be present (`E_KEY_ROTATION_SIGS`). The new-key signature is
    verified against `body.new_public_key`; the old-key signature is verified against
