@@ -1349,7 +1349,7 @@ principle. The founder can overturn the items decided by principle.
    entries (§8.23.5.1, whether a sequence is needed) is not judged. DATE, TIME-OF-DAY,
    DATE-TIME, OID-IRI and RELATIVE-OID-IRI are rejected with TIME and DURATION: stricter
    than X.690, a conservative reading decided by principle. Vectors
-   `integrity-levels/l2-ts-der-1a-*` (15 new, two replaced).
+   `integrity-levels/l2-ts-der-1a-*` (16 new, two replaced).
 4. **Manifest signature entries (U5).** The §7.4 item above: decided "invalid first" by the
    T2 principle; an entry of a required key that fails the equation decides
    `E_MANIFEST_SIG_INVALID` whatever the order and even beside an undeclared key. No vector

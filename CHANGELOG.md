@@ -46,7 +46,7 @@ added.
 
 ### Vectors, tools and tests
 
-- **Vectors**: 30 new main cases and 3 replaced (656 → 683): U1 3, U2 5, U4 15 (and
+- **Vectors**: 31 new main cases and 3 replaced (656 → 684): U1 3, U2 5, U4 16 (and
   `l2-ts-der-1a-date-utf8` / `oid-iri-utf8` replaced by `-date-rejected` /
   `-oid-iri-rejected`), U5 3, U7 1 (and `readable-not-reported-after-zip-structure-failure`
   replaced by `readable-reported-after-member-crc-failure`). Changed expectations:
@@ -61,7 +61,7 @@ added.
 
 The Rust verifier was not changed. Of the S2-FIX2 vectors it fails 20 (U2 5, two of them
 the changed S2-FIX1 cases; U4 14; U5 1); it already passes the U1 and U7 cases and the U4 controls. With the 37 earlier
-failures it fails 57 of the 683 main vectors, and the anchor-bundle case still stops its
+failures it fails 57 of the 684 main vectors, and the anchor-bundle case still stops its
 whole `vectors` run with a usage error.
 
 ## S2 round, revision 1 (S2-FIX1) — 2026-11-15 — DRAFT, UNRELEASED

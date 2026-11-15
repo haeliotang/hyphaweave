@@ -41,7 +41,7 @@ Read this before using anything in this repository:
   2026-11-15 #8) and its revisions S2-FIX1 and S2-FIX2 (decisions 2026-11-15 #18
   and #22). The Python verifier and the vectors implement them; the Rust verifier
   does not yet: on this snapshot it passes the candidate regression set but not 57
-  of the 683 main vectors, and one more main vector (an anchor bundle with a non-UTF-8 certificate
+  of the 684 main vectors, and one more main vector (an anchor bundle with a non-UTF-8 certificate
   subject) makes its whole `vectors` run stop with a usage error; its gate-3 allow
   list still lists the 37 report differences that the S2 Python corrections
   removed. Passing the same vectors is necessary but not sufficient
