@@ -1052,11 +1052,13 @@ def _verify_cms(
                 # W6: a key the allowlisted algorithm cannot use means the
                 # signature does not verify (check 10), not a check-6 failure.
                 raise WeaveError("E_TS_CMS", "signature algorithm does not match the key")
+            _check_rsa_key_bounds(public_key)
             digest_class = _RSA_PKCS1V15_OIDS[signature_algorithm_oid]
             public_key.verify(signature, signed_attrs_der, padding.PKCS1v15(), digest_class())
         else:
             if not isinstance(public_key, ec.EllipticCurvePublicKey):
                 raise WeaveError("E_TS_CMS", "signature algorithm does not match the key")
+            _check_ecdsa_signature_encoding(signature, public_key)
             digest_class = _ECDSA_OIDS[signature_algorithm_oid]
             public_key.verify(signature, signed_attrs_der, ec.ECDSA(digest_class()))
     except WeaveError:
@@ -1067,6 +1069,78 @@ def _verify_cms(
         # ValueError/TypeError for malformed key material.
         raise WeaveError("E_TS_CMS", "CMS signature does not verify") from error
     return signer_info, signer_certificate_der
+
+
+#: S2-FIX1 Q4 (§12.2 check 10): the RSA bounds written into the profile.
+_RSA_MIN_MODULUS_BITS = 2048
+_RSA_MAX_MODULUS_BITS = 8192
+_RSA_MIN_EXPONENT = 65537
+_RSA_EXPONENT_LIMIT = 1 << 256
+#: Group orders n of the curves whose bound Python checks itself; for any other
+#: curve the library's verification rejects r or s outside [1, n-1] (FIPS 186-5).
+_EC_ORDERS = {
+    "secp256r1": int(
+        "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551", 16
+    ),
+    "secp384r1": int(
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF"
+        "581A0DB248B0A77AECEC196ACCC52973",
+        16,
+    ),
+    "secp521r1": int(
+        "01FF" + "FFFFFFFF" * 7 + "FFFFFFFA"
+        "51868783BF2F966B7FCC0148F709A5D03BB5C9B8899C47AEBB6FB71E91386409",
+        16,
+    ),
+}
+
+
+def _check_rsa_key_bounds(public_key: "rsa.RSAPublicKey") -> None:
+    """S2-FIX1 Q4: modulus 2048-8192 bits; public exponent odd, 65537 <= e < 2^256."""
+    if not _RSA_MIN_MODULUS_BITS <= public_key.key_size <= _RSA_MAX_MODULUS_BITS:
+        raise WeaveError("E_TS_CMS", "RSA modulus size is outside 2048-8192 bits")
+    exponent = public_key.public_numbers().e
+    if exponent % 2 == 0 or not _RSA_MIN_EXPONENT <= exponent < _RSA_EXPONENT_LIMIT:
+        raise WeaveError("E_TS_CMS", "RSA public exponent is outside the profile bounds")
+
+
+def _check_ecdsa_signature_encoding(signature: bytes, public_key) -> None:
+    """S2-FIX1 Q4: ``Ecdsa-Sig-Value`` is a DER SEQUENCE of two minimal positive
+    INTEGERs r and s, each in [1, n - 1], with no trailing octets."""
+
+    def read_tlv(data: bytes, position: int, expected_tag: int) -> tuple[bytes, int]:
+        if position + 2 > len(data) or data[position] != expected_tag:
+            raise WeaveError("E_TS_CMS", "ECDSA signature is not a DER Ecdsa-Sig-Value")
+        length = data[position + 1]
+        position += 2
+        if length & 0x80:
+            count = length & 0x7F
+            if count == 0 or count > 2 or position + count > len(data) or data[position] == 0:
+                raise WeaveError("E_TS_CMS", "ECDSA signature length is not DER")
+            length = int.from_bytes(data[position : position + count], "big")
+            if length < 0x80:
+                raise WeaveError("E_TS_CMS", "ECDSA signature length is not DER")
+            position += count
+        if position + length > len(data):
+            raise WeaveError("E_TS_CMS", "ECDSA signature is truncated")
+        return data[position : position + length], position + length
+
+    body, end = read_tlv(signature, 0, 0x30)
+    if end != len(signature):
+        raise WeaveError("E_TS_CMS", "ECDSA signature carries trailing octets")
+    order = _EC_ORDERS.get(public_key.curve.name)
+    position = 0
+    for _name in ("r", "s"):
+        content, position = read_tlv(body, position, 0x02)
+        if not content or content[0] & 0x80:
+            raise WeaveError("E_TS_CMS", "ECDSA %s is not a positive INTEGER" % _name)
+        if len(content) > 1 and content[0] == 0x00 and content[1] < 0x80:
+            raise WeaveError("E_TS_CMS", "ECDSA %s is not minimally encoded" % _name)
+        value = int.from_bytes(content, "big")
+        if value < 1 or (order is not None and value >= order):
+            raise WeaveError("E_TS_CMS", "ECDSA %s is outside [1, n - 1]" % _name)
+    if position != len(body):
+        raise WeaveError("E_TS_CMS", "ECDSA signature has more than two components")
 
 
 def _check_ess_signing_certificate_v2(values, signer_certificate_der: bytes) -> None:
