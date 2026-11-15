@@ -634,3 +634,48 @@ fn manifest_equation_failure_beats_a_lifecycle_failure() {
         verify_container(ContainerInput::Files(files), &keyset_with(None)).expect("container");
     assert_eq!(container_errors(&report), vec![e::MANIFEST_SIG_INVALID]);
 }
+
+/// §5.3 (S2-FIX3/F72; H1-S2 differential fuzzing on
+/// `key-lifecycle/nonmonotonic-closure-class-conflict`): material must be
+/// grounded. Two declarations that only cosign each other — human-2 cosigned
+/// by org-1, org-1 cosigned by human-2, neither key in the keyset — supply no
+/// material to each other, so each cosignature is `E_KEY_UNKNOWN` rather than
+/// a verified signature of an untrusted declaration.
+#[test]
+fn cosignature_cycle_supplies_no_material() {
+    let declaration = |id: &str, key: &str, class: &str, cosigner: &str| {
+        let mut body = Object::new();
+        body.insert("algorithm", "ed25519");
+        body.insert("key", key_id(key));
+        body.insert("key_type", class);
+        body.insert(
+            "public_key",
+            b64::encode(&ed25519::public_key_from_seed(&seed(key))),
+        );
+        signed(
+            envelope(
+                id,
+                "weave.key.declared",
+                key,
+                "2026-11-02T00:00:00.000Z",
+                body,
+            ),
+            &[key, cosigner],
+        )
+    };
+    let human_2 = declaration("s2-f72-cycle-human-2", "human-2", "human", "org-1");
+    let org_1 = declaration("s2-f72-cycle-org-1", "org-1", "organization", "human-2");
+    let mut options = VerifyOptions::new();
+    options.keyset.push(
+        fs::read(vectors_root().join("keys/keyset/key-declared-human-1.json")).expect("root"),
+    );
+    let report = verify_container(
+        ContainerInput::Files(l0_container(&[human_2, org_1])),
+        &options,
+    )
+    .expect("container");
+    for record in &report.records {
+        assert_eq!(record.errors, vec![e::KEY_UNKNOWN], "{:?}", record.id);
+    }
+    assert_eq!(report.records.len(), 2);
+}
