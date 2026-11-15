@@ -564,8 +564,14 @@ impl<'a> Seq<'a> {
     }
 }
 
+/// A universally tagged primitive of the schema. Its content obeys the
+/// canonical-content rules of its type (§12.2 1c: "every typed primitive ...
+/// is rebuilt from its content octets by the X.690 rules for its type"). In a
+/// receipt 1a has already judged every TLV; for a `--tsa-trust` anchor, which
+/// gets 1a on its `extnValue`s only (§14.1), this is where they are judged.
 fn universal_primitive<'a>(tlv: &Tlv<'a>, number: u64) -> DerResult<&'a [u8]> {
     if tlv.is_universal(number) && !tlv.tag.constructed {
+        der::check_typed_content(number, tlv.content)?;
         Ok(tlv.content)
     } else {
         Err(DerError("unexpected type"))
@@ -620,6 +626,8 @@ fn is_time(tlv: &Tlv<'_>) -> bool {
 
 fn time_value<'a>(tlv: &Tlv<'a>) -> DerResult<Tlv<'a>> {
     if is_time(tlv) {
+        // §12.2 1c: times are compared as their raw content in the DER form.
+        der::check_typed_content(tlv.tag.number.unwrap_or_default(), tlv.content)?;
         Ok(*tlv)
     } else {
         Err(DerError("expected Time"))
@@ -682,6 +690,7 @@ fn extensions_content(content: &[u8]) -> DerResult<Vec<(&[u8], &[u8])>> {
         let mut seq = Seq::new(&item)?;
         let id = oid_value(&seq.next()?)?;
         if let Some(critical) = seq.optional(|tlv| tlv.is_universal(universal::BOOLEAN)) {
+            universal_primitive(&critical, universal::BOOLEAN)?;
             if critical.content == [0x00] {
                 return Err(DerError("critical DEFAULT FALSE encoded"));
             }
@@ -1478,8 +1487,105 @@ const SHA512_DIGEST_INFO_PREFIX: [u8; 19] = [
     0x00, 0x04, 0x40,
 ];
 
+/// The unsigned big-endian magnitude of a positive DER INTEGER content
+/// (leading `0x00` sign octets removed). `None` for an empty, non-minimal,
+/// negative or zero INTEGER.
+fn positive_integer_magnitude(content: &[u8]) -> Option<&[u8]> {
+    der::check_integer(content).ok()?;
+    if content[0] & 0x80 != 0 {
+        return None;
+    }
+    let skip = content.iter().take_while(|octet| **octet == 0).count();
+    let magnitude = &content[skip..];
+    if magnitude.is_empty() {
+        None
+    } else {
+        Some(magnitude)
+    }
+}
+
+/// Compares two unsigned big-endian magnitudes without leading zero octets.
+fn magnitude_cmp(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+/// §12.2 check 10 (S2-FIX1/Q4): the RSA key bounds, judged explicitly on the
+/// `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }`
+/// (RFC 8017 §A.1.1) carried in the `subjectPublicKey` BIT STRING: a modulus
+/// of 2,048 to 8,192 bits and an odd public exponent `e` with
+/// 65,537 <= `e` < 2^256. A key decoder's own limits are not the criterion.
+fn rsa_key_within_bounds(spki: &[u8]) -> bool {
+    let bounds = || -> DerResult<bool> {
+        let tlv = der::read_single(spki)?;
+        let mut seq = Seq::new(&tlv)?;
+        algorithm_identifier(&seq.next()?)?;
+        let bits = universal_primitive(&seq.next()?, universal::BIT_STRING)?;
+        seq.finish()?;
+        let Some((&0, key)) = bits.split_first() else {
+            return Ok(false);
+        };
+        let key = der::read_single(key)?;
+        let mut key = Seq::new(&key)?;
+        let modulus = integer_value(&key.next()?)?;
+        let exponent = integer_value(&key.next()?)?;
+        key.finish()?;
+        let (Some(modulus), Some(exponent)) = (
+            positive_integer_magnitude(modulus),
+            positive_integer_magnitude(exponent),
+        ) else {
+            return Ok(false);
+        };
+        // Bit length of the modulus: the leading octet is non-zero.
+        let modulus_bits = (modulus.len() - 1) * 8 + (8 - modulus[0].leading_zeros() as usize);
+        let modulus_ok = (2048..=8192).contains(&modulus_bits);
+        // 65,537 <= e < 2^256, e odd.
+        let exponent_ok = exponent.len() <= 32
+            && magnitude_cmp(exponent, &[0x01, 0x00, 0x01]) != std::cmp::Ordering::Less
+            && exponent.last().is_some_and(|octet| octet & 1 == 1);
+        Ok(modulus_ok && exponent_ok)
+    };
+    bounds().unwrap_or(false)
+}
+
+/// The order `n` of P-256 (FIPS 186-4 §D.1.2.3, SEC 2 §2.4.2).
+const P256_ORDER: [u8; 32] = [
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+];
+
+/// The order `n` of P-384 (FIPS 186-4 §D.1.2.4, SEC 2 §2.5.1).
+const P384_ORDER: [u8; 48] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xc7, 0x63, 0x4d, 0x81, 0xf4, 0x37, 0x2d, 0xdf,
+    0x58, 0x1a, 0x0d, 0xb2, 0x48, 0xb0, 0xa7, 0x7a, 0xec, 0xec, 0x19, 0x6a, 0xcc, 0xc5, 0x29, 0x73,
+];
+
+/// §12.2 check 10 (S2-FIX1/Q4): the signature value is one DER
+/// `Ecdsa-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` (RFC 5480, RFC 5758)
+/// with no octet after it, `r` and `s` positive in their shortest encoding and
+/// each in [1, n − 1]. Judged with this crate's X.690 reader, never by the
+/// signature type's own decoder.
+fn ecdsa_signature_within_bounds(signature: &[u8], order: &[u8]) -> bool {
+    let bounds = || -> DerResult<bool> {
+        let tlv = der::read_single(signature)?;
+        let mut seq = Seq::new(&tlv)?;
+        let r = integer_value(&seq.next()?)?;
+        let s = integer_value(&seq.next()?)?;
+        seq.finish()?;
+        Ok([r, s].iter().all(|value| {
+            positive_integer_magnitude(value).is_some_and(|magnitude| {
+                magnitude_cmp(magnitude, order) == std::cmp::Ordering::Less
+            })
+        }))
+    };
+    bounds().unwrap_or(false)
+}
+
 fn verify_rsa(spki: &[u8], hash: HashAlgorithm, message: &[u8], signature: &[u8]) -> bool {
     use rsa::pkcs8::DecodePublicKey;
+    if !rsa_key_within_bounds(spki) {
+        return false;
+    }
     let Ok(public_key) = rsa::PublicKey::from_public_key_der(spki) else {
         return false;
     };
@@ -1520,6 +1626,9 @@ fn verify_ecdsa(spki: &[u8], hash: HashAlgorithm, message: &[u8], signature: &[u
     };
     let digest = digest_with(hash, message);
     if is_oid(&curve, PRIME256V1) {
+        if !ecdsa_signature_within_bounds(signature, &P256_ORDER) {
+            return false;
+        }
         let (Ok(key), Ok(signature)) = (
             p256::ecdsa::VerifyingKey::from_sec1_bytes(&point),
             p256::ecdsa::Signature::from_der(signature),
@@ -1528,6 +1637,9 @@ fn verify_ecdsa(spki: &[u8], hash: HashAlgorithm, message: &[u8], signature: &[u
         };
         key.verify_prehash(&digest, &signature).is_ok()
     } else if is_oid(&curve, SECP384R1) {
+        if !ecdsa_signature_within_bounds(signature, &P384_ORDER) {
+            return false;
+        }
         let (Ok(key), Ok(signature)) = (
             p384::ecdsa::VerifyingKey::from_sec1_bytes(&point),
             p384::ecdsa::Signature::from_der(signature),
@@ -1668,7 +1780,14 @@ pub fn load_trust_anchors(file_contents: &[Vec<u8>]) -> Result<Vec<[u8; 32]>, Us
                 .collect();
             let der_bytes = crate::b64::decode_standard_padded(&encoded)
                 .ok_or_else(|| usage("a PEM block is not valid base64"))?;
-            let decodes = der::check_universal_rules(&der_bytes).is_ok()
+            // §14.1 (S2/F62/F63): an anchor decodes as an X.509 certificate
+            // under exactly the rules of §12.2 1e — the module walk with the
+            // 1b/1c rules (typed primitives in their canonical content), the
+            // version constraints and the 1a rules for every `extnValue`. The
+            // open types (an `AttributeTypeAndValue.value`, for example) are
+            // judged by their framing only, so 1a is not applied to the whole
+            // certificate here.
+            let decodes = der::check_framing(&der_bytes).is_ok()
                 && der::read_single(&der_bytes)
                     .ok()
                     .is_some_and(|tlv| certificate(&tlv).is_ok());
@@ -2008,6 +2127,137 @@ mod tests {
             HashAlgorithm::Sha384,
             message,
             &flipped
+        ));
+    }
+
+    /// An RSA `SubjectPublicKeyInfo` with the given modulus and exponent
+    /// magnitudes (big-endian, positive).
+    fn rsa_spki(modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
+        let integer = |magnitude: &[u8]| {
+            let mut content = Vec::new();
+            if magnitude.first().is_some_and(|octet| octet & 0x80 != 0) {
+                content.push(0x00);
+            }
+            content.extend_from_slice(magnitude);
+            der::encode(0x02, &content)
+        };
+        let mut key = integer(modulus);
+        key.extend(integer(exponent));
+        let mut bits = vec![0x00];
+        bits.extend(der::encode(0x30, &key));
+        let mut algorithm = der::encode(0x06, &der::oid(RSA_ENCRYPTION));
+        algorithm.extend(der::encode(0x05, &[]));
+        let mut spki = der::encode(0x30, &algorithm);
+        spki.extend(der::encode(0x03, &bits));
+        der::encode(0x30, &spki)
+    }
+
+    /// §12.2 check 10 (S2-FIX1/Q4): the RSA key bounds, checked explicitly.
+    #[test]
+    fn rsa_key_bounds() {
+        let modulus = |bits: usize| {
+            let mut bytes = vec![0xFFu8; bits.div_ceil(8)];
+            let top = bits % 8;
+            if top != 0 {
+                bytes[0] = (1u8 << top) - 1;
+            }
+            bytes
+        };
+        let f4 = [0x01, 0x00, 0x01];
+        assert!(rsa_key_within_bounds(&rsa_spki(&modulus(2048), &f4)));
+        assert!(rsa_key_within_bounds(&rsa_spki(&modulus(8192), &f4)));
+        assert!(rsa_key_within_bounds(&rsa_spki(&modulus(3071), &f4)));
+        assert!(!rsa_key_within_bounds(&rsa_spki(&modulus(2047), &f4)));
+        assert!(!rsa_key_within_bounds(&rsa_spki(&modulus(1024), &f4)));
+        assert!(!rsa_key_within_bounds(&rsa_spki(&modulus(8193), &f4)));
+        let n = modulus(2048);
+        assert!(!rsa_key_within_bounds(&rsa_spki(&n, &[0x03])));
+        assert!(!rsa_key_within_bounds(&rsa_spki(&n, &[0x01, 0x00, 0x00])));
+        assert!(!rsa_key_within_bounds(&rsa_spki(&n, &[0x01, 0x00, 0x02])));
+        assert!(!rsa_key_within_bounds(&rsa_spki(&n, &[0xFF, 0xFF])));
+        assert!(rsa_key_within_bounds(&rsa_spki(&n, &[0x01, 0x00, 0x03])));
+        // e < 2^256: 2^256 - 1 is inside, 2^256 + 1 is not.
+        assert!(rsa_key_within_bounds(&rsa_spki(&n, &[0xFF; 32])));
+        let mut above = vec![0x01];
+        above.extend([0x00; 31]);
+        above.push(0x01);
+        assert!(!rsa_key_within_bounds(&rsa_spki(&n, &above)));
+        // A negative exponent or a malformed key is outside the bounds.
+        let mut negative = rsa_spki(&n, &f4);
+        let at = negative.len() - 4;
+        assert_eq!(negative[at..], [0x03, 0x01, 0x00, 0x01]);
+        negative[at + 1] = 0x81;
+        assert!(!rsa_key_within_bounds(&negative));
+        assert!(!rsa_key_within_bounds(&[0x30, 0x00]));
+    }
+
+    /// §12.2 check 10 (S2-FIX1/Q4): `Ecdsa-Sig-Value` strict DER with r, s in
+    /// [1, n - 1], checked explicitly.
+    #[test]
+    fn ecdsa_signature_bounds() {
+        let signature = |r: &[u8], s: &[u8]| {
+            let mut content = der::encode(0x02, r);
+            content.extend(der::encode(0x02, s));
+            der::encode(0x30, &content)
+        };
+        let minus_one = |order: &[u8]| {
+            let mut value = vec![0x00];
+            value.extend_from_slice(order);
+            let last = value.len() - 1;
+            value[last] -= 1;
+            value
+        };
+        let with_sign = |order: &[u8]| {
+            let mut value = vec![0x00];
+            value.extend_from_slice(order);
+            value
+        };
+        for order in [&P256_ORDER[..], &P384_ORDER[..]] {
+            assert!(ecdsa_signature_within_bounds(
+                &signature(&[0x01], &[0x01]),
+                order
+            ));
+            assert!(ecdsa_signature_within_bounds(
+                &signature(&minus_one(order), &minus_one(order)),
+                order
+            ));
+            // r or s = 0, = n, negative, non-minimal.
+            assert!(!ecdsa_signature_within_bounds(
+                &signature(&[0x00], &[0x01]),
+                order
+            ));
+            assert!(!ecdsa_signature_within_bounds(
+                &signature(&[0x01], &with_sign(order)),
+                order
+            ));
+            assert!(!ecdsa_signature_within_bounds(
+                &signature(&[0x81], &[0x01]),
+                order
+            ));
+            assert!(!ecdsa_signature_within_bounds(
+                &signature(&[0x00, 0x01], &[0x01]),
+                order
+            ));
+            // Trailing octets, a third INTEGER, a missing one.
+            let mut trailing = signature(&[0x01], &[0x01]);
+            trailing.push(0x00);
+            assert!(!ecdsa_signature_within_bounds(&trailing, order));
+            let mut three = der::encode(0x02, &[0x01]);
+            three.extend(der::encode(0x02, &[0x01]));
+            three.extend(der::encode(0x02, &[0x01]));
+            assert!(!ecdsa_signature_within_bounds(
+                &der::encode(0x30, &three),
+                order
+            ));
+            assert!(!ecdsa_signature_within_bounds(
+                &der::encode(0x30, &der::encode(0x02, &[0x01])),
+                order
+            ));
+        }
+        // P-384's n - 1 is above P-256's n.
+        assert!(!ecdsa_signature_within_bounds(
+            &signature(&minus_one(&P384_ORDER), &[0x01]),
+            &P256_ORDER
         ));
     }
 }
