@@ -74,6 +74,9 @@ class LoadedRecord:
     structural_envelope: Any = None
     structural_key_type: str | None = None
     container_path: str | None = None
+    #: S2/F60: the record file failed parsing with a size violation (nesting
+    #: above MAX_JSON_DEPTH), reported by the records-listing phase.
+    size_violation: bool = False
 
 
 def load_record_bytes(raw: bytes, *, source: str, size_code: str = "E_JSON_SIZE") -> LoadedRecord:

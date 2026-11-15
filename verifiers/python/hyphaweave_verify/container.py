@@ -1368,10 +1368,14 @@ def _load_container_records(container_input: ContainerInput) -> _RecordListing:
         raw = container_input.files[relative_path]
         try:
             record = verifier.load_record_bytes(raw, source="container")
-        except WeaveError:
+        except WeaveError as error:
             record = verifier.LoadedRecord(
                 raw=raw, value=None, digest=None, source="container"
             )
+            # S2/F60 (§1.9, §14.5 U8): nesting above MAX_JSON_DEPTH is a size
+            # violation like any other; the records-listing phase reports it as
+            # E_JSON_SIZE, not as an unconfirmable digest.
+            record.size_violation = error.code == "E_JSON_SIZE"
         record.container_path = relative_path
         records.append(record)
         by_path[relative_path] = record
@@ -1404,9 +1408,11 @@ def _check_records_listing(
             continue
         if match.group(1) not in listed_hex:
             errors.add("E_MANIFEST_RECORD_EXTRA")
+            if record.size_violation:
+                errors.add("E_JSON_SIZE")
             continue
         if record.value is None or record.digest is None:
-            errors.add("E_MANIFEST_RECORD_DIGEST")
+            errors.add("E_JSON_SIZE" if record.size_violation else "E_MANIFEST_RECORD_DIGEST")
             continue
         if match.group(1) != record.digest.partition(":")[2]:
             errors.add("E_MANIFEST_RECORD_DIGEST")
