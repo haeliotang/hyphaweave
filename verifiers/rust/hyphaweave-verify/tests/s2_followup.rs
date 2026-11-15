@@ -411,3 +411,61 @@ fn trust_is_not_handed_on_through_a_declaration_that_supplies_no_material() {
     assert_eq!(by_id("s2-f72-human-2").errors, vec![e::KEY_REVOKED]);
     assert_eq!(by_id("s2-f72-note").errors, vec![e::KEY_UNKNOWN]);
 }
+
+/// §4.5 (H1-S2 differential fuzzing): every structural violation of a
+/// placeholder is `E_KIND_BODY_SCHEMA`, a `format` of another JSON type
+/// ("wrong member type") included; a `format` string other than
+/// `"weave-record/1"` keeps `E_ENV_FORMAT`.
+#[test]
+fn placeholder_format_of_another_type_is_body_schema() {
+    let options = keyset_with(None);
+    let source = vectors_root().join("digest/record-erased-placeholder/record.json");
+    let object = json::parse_object(&fs::read(source).expect("placeholder")).expect("json");
+    let with_format = |format: Value| {
+        let mut entries = Object::new();
+        for (name, value) in object.iter() {
+            if name == "format" {
+                entries.insert(name, format.clone());
+            } else {
+                entries.insert(name, value.clone());
+            }
+        }
+        verify_record(&json::canonical_object_bytes(&entries), &options).expect("record")
+    };
+    assert_eq!(
+        with_format(Value::Int(2)).records[0].errors,
+        vec![e::KIND_BODY_SCHEMA]
+    );
+    assert_eq!(
+        with_format(Value::Str("weave-record/2".to_owned())).records[0].errors,
+        vec![e::ENV_FORMAT]
+    );
+}
+
+/// §10.3 (H1-S2 differential fuzzing): the cross-checks apply "when both
+/// the placeholder and its erasure record are present". The container of
+/// `erasure/actor-agent-grant-absent` without its placeholder has no §10.3
+/// code; with the placeholder (the committed case) rule 1 holds as well.
+#[test]
+fn erasure_without_placeholder_has_no_cross_check_code() {
+    let source = vectors_root().join("erasure/actor-agent-grant-absent/container/records");
+    let mut records = Vec::new();
+    for entry in fs::read_dir(&source).expect("records") {
+        let bytes = fs::read(entry.expect("entry").path()).expect("record");
+        let object = json::parse_object(&bytes).expect("json");
+        if object.get_str("kind") != Some("weave.erased") {
+            records.push(bytes);
+        }
+    }
+    assert_eq!(records.len(), 1);
+    let report = verify_container(
+        ContainerInput::Files(l0_container(&records)),
+        &keyset_with(None),
+    )
+    .expect("container");
+    assert!(
+        !container_errors(&report).contains(&e::ERASE_DIGEST_MISMATCH),
+        "{:?}",
+        container_errors(&report)
+    );
+}
