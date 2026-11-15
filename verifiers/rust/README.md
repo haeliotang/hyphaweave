@@ -18,7 +18,10 @@ committed vector; even that script never reads the Python source.
 **Review status.** H1 was reviewed by two independent reviewers on 2026-11-11;
 H1-FIX1 (2026-11-14) brings the verifier up to specification revision 3 (the
 S1 rounds, decision 2026-11-11 #2 and its follow-ups) and handles every review
-item. The revised verifier has not itself been re-reviewed yet. The format
+item; H1-FIX2 and H1-FIX2B follow the two re-reviews, and H1-S2 (2026-11-15,
+decision 2026-11-15 #20) follows the S2 round of revision 3 and its revision
+S2-FIX1 (decisions 2026-11-15 #8 and #13), so both implementations now follow
+revision 3 including S2. H1-S2 has not itself been reviewed yet. The format
 `weave-record/1` v0.1 is still a draft and has not passed J1/J2 acceptance, so
 the candidate regression set in `vectors/frozen/v0.1-candidate/` is not frozen
 yet. Nothing in this file claims that a CI run or a gate has passed; run the

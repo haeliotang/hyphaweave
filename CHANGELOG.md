@@ -6,6 +6,48 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1-S2 (Rust follow-up of the S2 round) — 2026-11-15 — DRAFT, UNRELEASED
+
+Decision 2026-11-15 #20: the Rust verifier follows the S2 round of revision 3 and its
+revision S2-FIX1. No specification, schema, vector or Python change. Both
+implementations now follow revision 3 including S2: each passes the 656 main and the 202
+candidate regression vectors, and the gate-3 allow list is empty.
+
+### Changed (Rust verifier)
+
+- **Rotation key ids** (§9.2 rule 2, §14.5; S2/F61-3): a `new_key`/`old_key` that is not
+  a key id is `E_KIND_BODY_SCHEMA` before the signature layer (`sigs` `[]`).
+- **Key-lifecycle trust** (§5.3, §9.4; S2-FIX1/Q2): a declaration whose cosignature fails
+  §9.4 supplies no key material and no trust; a rotation whose only §9.4 failure is its
+  new-key signature still supplies the new key's material, one whose old-key signature
+  fails supplies none.
+- **Signature entries** (§4.4 step 2, §14.5; S2-FIX1/T2): invalid first — an invalid entry
+  decides before an unresolved key's `E_KEY_UNKNOWN`.
+- **Erasure actor** (kind page; S2-FIX1/Q1): a present but invalid authorising grant is
+  `E_ERASE_ACTOR`; the lookup, the coverage and the chain validity follow in that order.
+- **Step (7) order** (§4.4 step 5, §14.5; S2-FIX1/Q3): for a signer-constrained kind the
+  step-5 outcome is reported after the kind's other rules (delegated-grant chain,
+  declaration owner and class, consent-revocation target).
+- **§5.4 order** (S2/F69-3): grantee and kind/action before the grant's window and
+  revocation.
+- **Check 10 bounds** (§12.2; S2-FIX1/Q4): RSA modulus 2,048–8,192 bits, odd
+  65,537 ≤ `e` < 2^256, strict-DER `Ecdsa-Sig-Value` with `r`, `s` in [1, n − 1], checked
+  explicitly (`E_TS_CMS`).
+- **1a by universal tag number** (§12.2; S2-FIX1/T3): REAL, RELATIVE-OID, TIME and
+  DURATION rejected, ISO 2022 strings without ESC, whole UniversalString/BMPString units,
+  UTF-8 content of DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI.
+- **`--tsa-trust` anchors** (§14.1, §12.2 1e; S2/F62, F63): an anchor is judged by the
+  module walk, the typed primitives' canonical content, the version constraints and 1a on
+  every `extnValue`; open types only by framing (a non-UTF-8 subject no longer stops the
+  `vectors` run).
+- **`N_READABLE_PRESENT`** (§11.8; S2-FIX1/T8): not reported after a zip-structure failure.
+- **Review A low-1** (no vector; tests in `tests/s2_followup.rs`): a 33-level array is
+  `E_JSON_SIZE` and a top-level `18446744073709551616` is `E_JSON_NUMBER_RANGE` (the
+  top-level shape is judged after the value); a keyset declaration that fails its own
+  checks supplies no key material (§14.1), and keyset material is preferred for the TOFU
+  predicate.
+- **Gate 3**: `verifiers/rust/scripts/gate3_known_differences.json` is empty again.
+
 ## S2 round, revision 1 (S2-FIX1) — 2026-11-15 — DRAFT, UNRELEASED
 
 Decision 2026-11-15 #13: the founder's rulings Q1–Q5 on the questions the S2 round left
