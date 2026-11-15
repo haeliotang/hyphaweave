@@ -1102,6 +1102,17 @@ first failing check determines the error [S3][Q10] decided (Inceptless decision 
    revoked ancestor beyond the bound, reports `E_GRANT_EXPIRED` or `E_GRANT_REVOKED`, not
    `E_GRANT_UNRESOLVED`; this holds for a cited grant and for the ancestors of a grant record
    being verified [S2/F68] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+   Steps 1–5 are walked over the entire chain as well, links beyond the depth bound
+   included: the walk goes from the cited grant up to its root, stopped only by cycle
+   detection (a cycle is `E_GRANT_UNRESOLVED`), and step 7 is decided after it, so an
+   invalid outcome of steps 2–5 on any link, or an unverifiable outcome of step 1 or 6, is
+   reported instead of the depth code. The length of the walk is bounded by the number of
+   records in the verification context (each grant is visited once). Because step 1
+   requires every resolved parent to be a **valid** record, a step-2 to step-5 failure on a
+   link makes that link's child record itself invalid, and every record above it then fails
+   step 1; a failure beyond the bound therefore reaches a record that cites the chain as
+   `E_GRANT_UNRESOLVED` from its first link [S2-FIX1/Q5] decided (Inceptless decision
+   2026-11-15 #13; Q5).
 
    When the record being verified is itself a `weave.grant`, its **own** validity window and
    its own revocation are not compared against its own `recorded_at`: the grant is the

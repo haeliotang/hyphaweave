@@ -118,7 +118,10 @@ parent specification Appendix A):
    `recorded_at`, so one before the grant's `valid_from` is `E_GRANT_EXPIRED` [S9] decided
    (Inceptless decision 2026-11-11 #2; S9).
 7. **Depth.** Up to 8 links from the grant used by a record to its root; deeper chains are
-   `unverifiable` (`E_GRANT_UNRESOLVED`). A cycle is not constructible for digest
+   `unverifiable` (`E_GRANT_UNRESOLVED`). Steps 1–6 walk the whole chain, links beyond
+   this bound included, stopped only by cycle detection; the depth is decided after them
+   (parent specification §5.5.2) [S2-FIX1/Q5] decided (Inceptless decision 2026-11-15 #13;
+   Q5). A cycle is not constructible for digest
    references; the key-id rotation graph used by the revocation rule is bounded separately.
 
 ### Authorisation of a record
