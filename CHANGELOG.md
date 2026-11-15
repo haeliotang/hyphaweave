@@ -9,10 +9,10 @@ draft and may be replaced before the first public release.
 ## H1-S2 (Rust follow-up of the S2 round) — 2026-11-15 — DRAFT, UNRELEASED
 
 Decision 2026-11-15 #20: the Rust verifier follows the S2 round of revision 3 and its
-revisions S2-FIX1 and S2-FIX2 (decisions 2026-11-15 #8, #18 and #22). No specification,
-schema, vector or Python change. Both implementations now follow revision 3 including S2:
-each passes the 684 main and the 202 candidate regression vectors, and the gate-3 allow
-list is empty.
+revisions S2-FIX1, S2-FIX2 and S2-FIX2b (decisions 2026-11-15 #8, #18, #22 and #32). No
+specification, schema, vector or Python change. Both implementations now follow revision 3
+including S2: each passes the 689 main and the 202 candidate regression vectors, and the
+gate-3 allow list is empty.
 
 ### Changed (Rust verifier)
 
@@ -30,8 +30,10 @@ list is empty.
 - **Grant chain step 1** (§5.5.2, §5.4; S2-FIX2/U2, Q6): a parent or cited grant record
   that is present but itself invalid is `E_GRANT_GRANTER`; one that cannot be
   established stays `E_GRANT_UNRESOLVED`.
-- **Manifest signature entries** (§11.3; S2-FIX2/U5): invalid first, as for record
-  signatures.
+- **Manifest signature entries** (§11.3; S2-FIX2/U5, S2-FIX2b): an equation failure
+  (`E_MANIFEST_SIG_INVALID`) first, then an invalid §9.4 outcome of a declared signing
+  key, and only then `E_KEY_UNKNOWN`, which an unverifiable §9.4 outcome does not
+  override.
 - **Step (7) order** (§4.4 step 5, §14.5; S2-FIX1/Q3): for a signer-constrained kind the
   step-5 outcome is reported after the kind's other rules (delegated-grant chain,
   declaration owner and class, consent-revocation target).
@@ -63,6 +65,27 @@ list is empty.
   an unlisted `.tsr` with no listed receipt leaves no timestamp evidence for §9.4; trust
   is not handed on through a declaration that supplies no material (Q2).
 - **Gate 3**: `verifiers/rust/scripts/gate3_known_differences.json` is empty again.
+
+## S2 round, revision 2 supplement (S2-FIX2b) — 2026-11-15 — DRAFT, UNRELEASED
+
+Decision 2026-11-15 #32 (decided by principle; the founder can overturn it): the §9.4
+half of U5. The `format` identifier is unchanged; no error code is added.
+
+- **Manifest signature entries, §9.4 outcome (§11.3).** A verified manifest signature
+  entry of a declared key whose §9.4 outcome at the manifest's `created_at` is invalid
+  (`E_KEY_REVOKED`, `E_KEY_COMPROMISED`, `E_KEY_EXPIRED`) decides the manifest signature
+  even beside an entry whose key is undeclared; before, the undeclared key's
+  `E_KEY_UNKNOWN` (unverifiable) masked a retired or compromised manifest signing key. An
+  unverifiable §9.4 outcome (`E_TS_UNTRUSTED`) still leaves `E_KEY_UNKNOWN` as the code.
+  No conclusion of the frozen candidate set changes (none of its manifest signatures has
+  more than one entry).
+- **Vectors**: 5 new main cases (684 → 689): `container/manifest-sig-retired-key-beats-unknown-key`,
+  `manifest-sig-compromised-key-beats-unknown-key`, their single-entry controls
+  `manifest-sig-retired-key-only-entry` and `manifest-sig-compromised-key-only-entry`, and
+  `manifest-sig-untrusted-receipt-keeps-unknown-key` (unverifiable §9.4 outcome).
+- **Ablation catalogue**: 3 S2-FIX2b entries; the anchor of `fix2-u5-manifest-unknown-dropped`
+  moved to step (5).
+- **Rust verifier**: not changed and not re-measured on these cases.
 
 ## S2 round, revision 2 (S2-FIX2) — 2026-11-15 — DRAFT, UNRELEASED
 

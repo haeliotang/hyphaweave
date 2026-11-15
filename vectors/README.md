@@ -49,7 +49,7 @@ frozen candidate set is validated separately and is not part of the index).
 
 Authoritative source is `vectors/index.json`; regenerate with
 `tools/gen_index.py` after adding cases. At the time of writing (revision 3
-with the S1 rounds, the S2 round, S2-FIX1 and S2-FIX2, `weave-record/1` v0.1 draft, not
+with the S1 rounds, the S2 round, S2-FIX1, S2-FIX2 and S2-FIX2b, `weave-record/1` v0.1 draft, not
 yet accepted by J1/J2):
 
 | category | cases |
@@ -64,11 +64,11 @@ yet accepted by J1/J2):
 | `erasure` | 26 |
 | `grant` | 51 |
 | `key-lifecycle` | 101 |
-| `container` | 134 |
+| `container` | 139 |
 | `integrity-levels` | 183 |
-| **total** | **684** |
+| **total** | **689** |
 
-Verdict distribution: `valid` 146, `erased` 1, `invalid` 489, `unverifiable` 48.
+Verdict distribution: `valid` 146, `erased` 1, `invalid` 493, `unverifiable` 49.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are

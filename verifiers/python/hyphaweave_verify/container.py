@@ -750,6 +750,10 @@ def verify_container(
     )
 
     # Step 4-5: manifest digest and signature.
+    # S2-FIX2b (§11.3, decision 2026-11-15 #32 by principle, as U5 and S2-FIX1 T2):
+    # beside an undeclared key the verified entries keep their keys, so their §9.4
+    # effects are still judged below; an invalid outcome there replaces E_KEY_UNKNOWN.
+    manifest_unknown_signer_keys: tuple[str, ...] = ()
     try:
         manifest_digest = encoding.manifest_digest(canonical.canonicalize(manifest_value))
         container["manifest_digest"] = manifest_digest
@@ -764,11 +768,16 @@ def verify_container(
         manifest_candidates, manifest_candidate_sources = _candidate_manifest_keys(
             _load_container_records(container_input).records, keyset_verified
         )
-        manifest_signature_keys = _verify_manifest_signatures(
+        manifest_signature_keys, manifest_unknown_key = _judge_manifest_signatures(
             attestation.signatures,
             manifest_digest,
             manifest_candidates,
         )
+        if manifest_unknown_key:
+            manifest_unknown_signer_keys = manifest_signature_keys
+            raise WeaveError(
+                "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
+            )
         manifest_context_trusted = any(
             manifest_candidate_sources.get(key) == "context"
             for key in manifest_signature_keys
@@ -905,6 +914,30 @@ def verify_container(
             manifest_context_trusted=manifest_context_trusted,
             **finish_flags,
         )
+    # S2-FIX2b (§11.3): an entry of a declared key whose §9.4 outcome is invalid
+    # (retired, compromised without rescue, outside its validity window) decides
+    # the manifest signature even beside an undeclared key; an unverifiable §9.4
+    # outcome leaves E_KEY_UNKNOWN as the code and the record pipeline runs.
+    try:
+        _check_manifest_signer_effects(
+            manifest_unknown_signer_keys,
+            _candidate_key_state(
+                _load_container_records(container_input).records, keyset_verified
+            ),
+            manifest.created_at,
+            verified_timestamps,
+            timestamp_evidence_present,
+        )
+    except WeaveError as error:
+        if error.effect == "invalid":
+            errors.remove("E_KEY_UNKNOWN")
+            errors.append(error.code)
+            return _finish_container(
+                container_input, container, errors, notices, [], limitations_iter,
+                active_skipper,
+                manifest_context_trusted=manifest_context_trusted,
+                **finish_flags,
+            )
 
     # Step 7 (continued): per-record verification.
     record_views = verifier.verify_record_set(
@@ -1245,6 +1278,27 @@ def _verify_manifest_signatures(
     candidates: dict[str, bytes],
 ) -> tuple[str, ...]:
     """Verify the manifest CMS-less Ed25519 signatures; return the signer key ids."""
+    signer_keys, unknown_key = _judge_manifest_signatures(
+        signatures, manifest_digest, candidates
+    )
+    if unknown_key:
+        raise WeaveError(
+            "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
+        )
+    return signer_keys
+
+
+def _judge_manifest_signatures(
+    signatures: Iterable[manifest_module.ManifestSignature],
+    manifest_digest: str,
+    candidates: dict[str, bytes],
+) -> tuple[tuple[str, ...], bool]:
+    """Judge every manifest signature entry.
+
+    Returns the key ids of the entries that verify and whether some entry's key
+    is undeclared; raises for an entry that fails its equation or for no
+    known-algorithm entry at all.
+    """
     message = encoding.manifest_sig_message(manifest_digest)
     signer_keys: list[str] = []
     known = [signature for signature in signatures if signature.is_ed25519]
@@ -1282,11 +1336,7 @@ def _verify_manifest_signatures(
         signer_keys.append(signature.key)
     if first_invalid is not None:
         raise first_invalid
-    if unknown_key:
-        raise WeaveError(
-            "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
-        )
-    return tuple(signer_keys)
+    return tuple(signer_keys), unknown_key
 
 
 def _candidate_key_state(
