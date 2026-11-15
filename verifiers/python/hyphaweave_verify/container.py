@@ -289,9 +289,11 @@ def _read_directory_container(path: Path) -> ContainerInput:
             if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
                 error = error or "E_CONTAINER_ENTRY"
                 continue
-            if relative_path == "readable" or relative_path.startswith("readable/"):
+            if relative_path.startswith("readable/"):
                 # spec §11.8/§13: readable/ is ignored entirely; never read and
-                # never counted (T15: the total counts streamed bytes only).
+                # never counted (T15: the total counts streamed bytes only). A
+                # regular file named `readable` at the root is not a readable/
+                # entry: it is outside the layout (S2-FIX1 T8, E_CONTAINER_ENTRY).
                 readable_present = True
                 continue
             if _TSA_CERT_FILE.fullmatch(relative_path):
@@ -402,7 +404,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
                 precheck_names.add(entry.name)
                 # §14.6 N_READABLE_PRESENT: only an entry that passed its own
                 # entry checks is an observed readable/ entry (T6, F32).
-                if entry.name == "readable" or entry.name.startswith("readable/"):
+                if entry.name.startswith("readable/"):
                     readable_present = True
             if entry_error is not None:
                 return ContainerInput(
@@ -432,9 +434,10 @@ def _read_zip_container(path: Path) -> ContainerInput:
                     error = error or "E_CONTAINER_ENTRY"
                     continue
                 seen_names.add(name)
-                if name == "readable" or name.startswith("readable/"):
+                if name.startswith("readable/"):
                     # T6: readable/ entries still passed the path/symlink/duplicate
-                    # checks above, but are never decompressed or CRC-checked.
+                    # checks above, but are never decompressed or CRC-checked. A file
+                    # entry named `readable` is outside the layout (S2-FIX1 T8).
                     readable_present = True
                     continue
                 if _TSA_CERT_FILE.fullmatch(name):
@@ -802,15 +805,6 @@ def verify_container(
         if path.startswith("records/")
     )
     listing = _load_container_records(container_input)
-    finish_flags["placeholder_seen"] = any(
-        verifier.erase.looks_like_placeholder(record.value)
-        for record in listing.records
-        if isinstance(record.value, dict)
-    )
-    finish_flags["labels_seen"] = any(
-        isinstance(record.value, dict) and "labels" in record.value
-        for record in listing.records
-    )
     listing_errors = _check_records_listing(manifest, listing, container_input)
     if oversized_records:
         # U8/T16: an oversize records/ file is one more independent violation of
@@ -831,6 +825,18 @@ def verify_container(
             **finish_flags,
         )
     loaded_records = listing.records
+    # S2-FIX1 (§14.5, §14.9): L_ERASED_PLACEHOLDER and L_LABELS_ARE_CLAIMS describe
+    # the records that are verified; when the records-listing phase stops the
+    # container, no record is verified and neither is reported.
+    finish_flags["placeholder_seen"] = any(
+        verifier.erase.looks_like_placeholder(record.value)
+        for record in listing.records
+        if isinstance(record.value, dict)
+    )
+    finish_flags["labels_seen"] = any(
+        isinstance(record.value, dict) and "labels" in record.value
+        for record in listing.records
+    )
 
     # Step 11 is computed before per-record verification: a verified L2
     # timestamp can rescue a key-compromise signature (S2). The *reported*
