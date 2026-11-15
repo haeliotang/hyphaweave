@@ -14687,6 +14687,692 @@ declare(
 )
 
 
+
+# ---------------------------------------------------------------------------
+# S2-FIX3 (decision 2026-11-16 #1): differences found by the H1-S2 differential
+# fuzzing (h1-findings F70-F82) and the sigs-absent erasure record. Every expected
+# conclusion below is hand-written from the specification text.
+# ---------------------------------------------------------------------------
+
+# -- F72 (§5.3, Q2): a declaration in which a signature other than its subject
+#    key's does not pass supplies no material, so trust is not handed on through it.
+
+
+def _fix3_cosigned_human(name: str, record_id: str, recorded_at: str, cosigner: str) -> dict[str, Any]:
+    """A human declaration of a derived key, self-signed and cosigned by derived *cosigner*."""
+    declaration = _s2_declaration(
+        name, record_id=record_id, key_type="human", owner=None, recorded_at=recorded_at,
+        cosigners=(),
+    )
+    cosigner_private, _public, cosigner_id = derived_key(cosigner)
+    extra = _derived_signature(cosigner_private, cosigner_id, declaration)
+    return {**declaration, "sigs": sorted(declaration["sigs"] + [extra], key=lambda e: e["key"])}
+
+
+def _fix3_retired_chain(depth: int) -> list[dict[str, Any]]:
+    """human-1 (keyset) retired at T1; A declared at T2 cosigned by human-1; then
+    *depth* further human declarations, each cosigned by the previous one; a note
+    by the last key."""
+    retirement = recordlib.key_revocation(
+        "human-1", reason="retired", effective_at=recordlib.T1, signer_name="human-1",
+        record_id="key-revoked-fix3-human-1",
+    )
+    first = _s2_declaration(
+        "fix3-chain-a", record_id="key-declared-fix3-chain-a", key_type="human", owner=None,
+        recorded_at=recordlib.T2, cosigners=("human-1",),
+    )
+    records = [retirement, first]
+    previous = "fix3-chain-a"
+    for index, name in enumerate(("fix3-chain-b", "fix3-chain-c")[:depth]):
+        records.append(
+            _fix3_cosigned_human(
+                name, "key-declared-" + name, (recordlib.T3, recordlib.T4)[index], previous
+            )
+        )
+        previous = name
+    records.append(_s2_derived_note(previous, "fix3-note-by-chain-end", recordlib.T5, key_type="human"))
+    return records
+
+
+def _fix3_retired_chain_expected(depth: int) -> tuple[dict[str, Any], ...]:
+    records = _fix3_retired_chain(depth)
+    a_id = derived_key("fix3-chain-a")[2]
+    expected: list[dict[str, Any]] = [
+        {"id": "key-revoked-fix3-human-1", "verdict": "valid", "errors": []},
+        {
+            "id": "key-declared-fix3-chain-a",
+            "verdict": "invalid",
+            "errors": ["E_KEY_REVOKED"],
+            "sigs": _s2_sigs(records[1], {kid("human-1"): "unverified", a_id: "valid"}),
+        },
+    ]
+    previous_id = a_id
+    for offset, name in enumerate(("fix3-chain-b", "fix3-chain-c")[:depth]):
+        own_id = derived_key(name)[2]
+        expected.append(
+            {
+                "id": "key-declared-" + name,
+                "verdict": "unverifiable",
+                "errors": ["E_KEY_UNKNOWN"],
+                "notices": ["N_KEY_UNDECLARED"],
+                "sigs": _s2_sigs(records[2 + offset], {previous_id: "unverified", own_id: "valid"}),
+            }
+        )
+        previous_id = own_id
+    expected.append(
+        {
+            "id": "fix3-note-by-chain-end",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "notices": ["N_KEY_UNDECLARED"],
+            "sigs": [{"key": previous_id, "state": "unverified"}],
+        }
+    )
+    return tuple(expected)
+
+
+declare(
+    "key-lifecycle",
+    "declaration-cosigner-retired-trust-not-handed-on",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: container(_fix3_retired_chain(1)),
+    args=_S2_ARGS,
+    records=_fix3_retired_chain_expected(1),
+    notes="S2-FIX3 F72 (decision 2026-11-16 #1; §5.3, Q2): human-1 (a keyset root) has a "
+    "valid 'retired' revocation effective at T1. A human declaration of key A recorded at "
+    "T2 is cosigned by human-1: that cosignature fails §9.4, so A's declaration is invalid "
+    "E_KEY_REVOKED and supplies no key material at all. A human declaration of key B "
+    "recorded at T3 is cosigned by A: A's signature has no material (unverified), so B's "
+    "declaration is unverifiable E_KEY_UNKNOWN, not trusted through A; a note signed by B "
+    "at T5 is unverifiable E_KEY_UNKNOWN. A key that gained trust only through a "
+    "declaration that supplies no material never hands trust on.",
+)
+
+declare(
+    "key-lifecycle",
+    "declaration-cosigner-retired-trust-not-handed-on-twice",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: container(_fix3_retired_chain(2)),
+    args=_S2_ARGS,
+    records=_fix3_retired_chain_expected(2),
+    notes="S2-FIX3 F72 (§5.3, Q2): declaration-cosigner-retired-trust-not-handed-on with "
+    "one more link: key C, recorded at T4, is cosigned by B. B's declaration is "
+    "unverifiable (its cosignature by A has no material), so it supplies no material "
+    "either: C's declaration and the note signed by C at T5 are unverifiable "
+    "E_KEY_UNKNOWN. A verifier whose fixed point keeps a declaration trusted on the "
+    "strength of its own earlier verdict reports C and the note valid.",
+)
+
+
+def _fix3_extra_cosignature_records(kind: str) -> list[dict[str, Any]]:
+    declaration = _s2_declaration(
+        "fix3-extra-cosigned", record_id="key-declared-fix3-extra-cosigned", key_type="human",
+        owner=None, recorded_at=recordlib.T1, cosigners=("human-2",),
+    )
+    if kind == "undeclared":
+        private, _public, key_id = derived_key("fix3-undeclared-cosigner")
+        extra = _derived_signature(private, key_id, declaration)
+    else:
+        # human-1's signature over another record: well encoded, but its §3.4
+        # equation fails for this declaration.
+        extra = {
+            **recordlib.sig_entry(declaration, "human-1"),
+            "value": recordlib.sig_entry(recordlib.note("fix3-foreign"), "human-1")["value"],
+        }
+    declaration = {**declaration, "sigs": sorted(declaration["sigs"] + [extra], key=lambda e: e["key"])}
+    return [
+        declaration,
+        _s2_derived_note("fix3-extra-cosigned", "fix3-note-by-extra-cosigned", recordlib.T2, key_type="human"),
+    ]
+
+
+def _fix3_extra_cosignature_expected(kind: str) -> tuple[dict[str, Any], ...]:
+    declaration = _fix3_extra_cosignature_records(kind)[0]
+    own = derived_key("fix3-extra-cosigned")[2]
+    if kind == "undeclared":
+        declaration_expected = {
+            "id": "key-declared-fix3-extra-cosigned",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "notices": ["N_KEY_UNDECLARED"],
+            "sigs": _s2_sigs(declaration, {
+                kid("human-2"): "valid", own: "valid",
+                derived_key("fix3-undeclared-cosigner")[2]: "unverified",
+            }),
+        }
+    else:
+        declaration_expected = {
+            "id": "key-declared-fix3-extra-cosigned",
+            "verdict": "invalid",
+            "errors": ["E_SIG_INVALID"],
+            "sigs": _s2_sigs(declaration, {kid("human-1"): "invalid", kid("human-2"): "valid", own: "valid"}),
+        }
+    return (
+        declaration_expected,
+        {
+            "id": "fix3-note-by-extra-cosigned",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "notices": ["N_KEY_UNDECLARED"],
+            "sigs": [{"key": own, "state": "unverified"}],
+        },
+    )
+
+
+declare(
+    "key-lifecycle",
+    "declaration-undeclared-cosigner-supplies-no-material",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNKNOWN",),
+    build=lambda case_dir: container(_fix3_extra_cosignature_records("undeclared")),
+    args=_S2_ARGS,
+    records=_fix3_extra_cosignature_expected("undeclared"),
+    notes="S2-FIX3 F72 (§5.3: a record supplies key material only when it passes every "
+    "check other than the §9.4 effects on its subject key's signature): a human "
+    "declaration recorded at T1, cosigned by human-2 (a keyset root) and carrying a "
+    "further signature by a key that nothing declares. The declaration is unverifiable "
+    "E_KEY_UNKNOWN (§14.5 step (4)), so it is not semantically valid and supplies no "
+    "material: a note signed by the declared key at T2 is unverifiable E_KEY_UNKNOWN, "
+    "although human-2's cosignature verified.",
+)
+
+declare(
+    "key-lifecycle",
+    "declaration-invalid-cosignature-supplies-no-material",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_SIG_INVALID"),
+    build=lambda case_dir: container(_fix3_extra_cosignature_records("invalid")),
+    args=_S2_ARGS,
+    records=_fix3_extra_cosignature_expected("invalid"),
+    notes="S2-FIX3 F72 (§5.3, §4.4 step 2): the same declaration, but the further entry is "
+    "human-1's signature over another record, so its §3.4 equation fails. "
+    "The declaration is invalid E_SIG_INVALID (invalid beats the valid cosignature), not "
+    "semantically valid, and supplies no material: the note signed by the declared key at "
+    "T2 is unverifiable E_KEY_UNKNOWN.",
+)
+
+
+# -- F73 (§5.3, §9.1 rule 3): an owner resolves only through a structurally valid
+#    declaration.
+
+
+def _fix3_owner_sigs_absent_records() -> list[dict[str, Any]]:
+    owner = _s2_declaration(
+        "fix3-owner", record_id="key-declared-fix3-owner", key_type="human", owner=None, cosigners=()
+    )
+    owner = {key: value for key, value in owner.items() if key != "sigs"}
+    owner_private, _owner_public, owner_id = derived_key("fix3-owner")
+    device = _s2_declaration(
+        "fix3-owned-device", record_id="key-declared-fix3-owned-device", recorded_at=recordlib.T1,
+        cosigners=(),
+    )
+    device = {key: value for key, value in device.items() if key != "sigs"}
+    device = {**device, "body": {**device["body"], "owner": owner_id}}
+    device_private, _device_public, device_id = derived_key("fix3-owned-device")
+    device = {
+        **device,
+        "sigs": sorted(
+            [
+                _derived_signature(device_private, device_id, device),
+                _derived_signature(owner_private, owner_id, device),
+            ],
+            key=lambda e: e["key"],
+        ),
+    }
+    return [owner, device]
+
+
+declare(
+    "key-lifecycle",
+    "owner-declaration-sigs-absent",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_SIG_REQUIRED"),
+    build=lambda case_dir: container(_fix3_owner_sigs_absent_records()),
+    args=_S2_ARGS,
+    records=(
+        {"id": "key-declared-fix3-owner", "verdict": "invalid", "errors": ["E_SIG_REQUIRED"], "sigs": []},
+        {
+            "id": "key-declared-fix3-owned-device",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "sigs": _s2_sigs(
+                _fix3_owner_sigs_absent_records()[1],
+                {derived_key("fix3-owner")[2]: "valid", derived_key("fix3-owned-device")[2]: "valid"},
+            ),
+        },
+    ),
+    notes="S2-FIX3 F73 (decision 2026-11-16 #1; §5.3, §9.1 rule 3): the only declaration "
+    "of a human key (not in the keyset) has no sigs member (E_SIG_REQUIRED, check (3)); a "
+    "device declaration names that key as its owner and carries the owner's cosignature. "
+    "A declaration that fails the §14.1 structural group (sigs presence included) never "
+    "takes part in class determination, so the owner cannot be resolved: the device "
+    "declaration is unverifiable E_KEY_UNKNOWN, not E_KEY_UNTRUSTED (an owner that "
+    "resolves but is not trusted). The owner's cosignature still verifies against the "
+    "material its record states (sigs state valid).",
+)
+
+
+# -- F74 (§9.2 rule 2, §14.5, §14.6): a rotation without new_public_key is
+#    E_KEY_ROTATION_KEYS before the signature layer.
+
+
+def _fix3_rotation(*, member: str | None) -> dict[str, Any]:
+    new_private, new_public, new_id = derived_key("fix3-rotation-new")
+    body: dict[str, Any] = {
+        "new_key": new_id,
+        "old_key": kid("key-old"),
+        "old_public_key": key("key-old").public_b64url(),
+        "reason": "scheduled rotation",
+    }
+    if member is not None:
+        body[member] = keyutil.b64url_encode(new_public)
+    record = recordlib.build_record(
+        kind="weave.key.rotated",
+        id="key-rotated-fix3",
+        actor=recordlib.actor("key-old"),
+        body=body,
+        stage="accepted",
+        recorded_at=recordlib.T2,
+        origin_instance=kid("key-old"),
+    )
+    signatures = [recordlib.sig_entry(record, "key-old"), _derived_signature(new_private, new_id, record)]
+    return {**record, "sigs": sorted(signatures, key=lambda e: e["key"])}
+
+
+for _name, _member, _why in (
+    ("rotation-new-public-key-missing", None,
+     "a rotation from key-old to a key that nothing else declares has no new_public_key "
+     "member"),
+    ("rotation-new-public-key-renamed", "new_public_kez",
+     "the same rotation with new_public_key renamed new_public_kez (an unknown member of "
+     "the closed body as well)"),
+):
+    declare(
+        "key-lifecycle",
+        _name,
+        "record",
+        "record.json",
+        "invalid",
+        errors=("E_KEY_ROTATION_KEYS",),
+        build=lambda case_dir, _member=_member: {
+            "record.json": canonical(_fix3_rotation(member=_member))
+        },
+        args=LIFECYCLE_ARGS,
+        records=({"id": "key-rotated-fix3", "sigs": []},),
+        notes="S2-FIX3 F74 (decision 2026-11-16 #1; §9.2 rule 2, §14.5, §14.6): " + _why
+        + "; both required signatures verify. new_public_key is required and MUST be strict "
+        "base64url of exactly 32 bytes; a missing value fails that structural rule, which "
+        "is part of the kind body check and runs before signature verification: "
+        "E_KEY_ROTATION_KEYS (invalid), sigs [] (no signature check ran). Not the "
+        "new key's E_KEY_UNKNOWN at the signature layer (unverifiable), nor "
+        "E_KIND_BODY_SCHEMA after it.",
+    )
+
+
+# -- F75 (§11.9, §14.5): a layout violation and a member CRC failure of step (1)
+#    are reported together.
+
+
+def _fix3_readable_root_file_crc() -> bytes:
+    files = dict(recordlib.build_container(SIMPLE_RECORDS()))
+    files["readable"] = b"a regular file named readable at the container root\n"
+    archive = bytearray(as_zip(files))
+    position = archive.find(b'{"actor"')
+    if position < 0:
+        raise SystemExit("record member data not found in the stored archive")
+    archive[position + 20] ^= 0x01
+    return bytes(archive)
+
+
+declare(
+    "container",
+    "readable-root-regular-file-zip-member-crc",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY", "E_CONTAINER_ZIP"),
+    build=lambda case_dir: {"container.zip": _fix3_readable_root_file_crc()},
+    args=("--keys", "@keyset"),
+    records=[],
+    notices_absent=("N_READABLE_PRESENT",),
+    notes="S2-FIX3 F75 (decision 2026-11-16 #1; §11.1, §11.9, §14.5): "
+    "container/readable-root-regular-file-zip with one byte of a record member's stored "
+    "data flipped. The zip phases 1-4 and the entry checks pass; the root regular file "
+    "named readable is outside the layout (E_CONTAINER_ENTRY) and the record member then "
+    "fails its CRC-32 as it is read (E_CONTAINER_ZIP). Both are independent violations of "
+    "container step (1), and the failing stage reports every violation it finds: both "
+    "codes. No readable/ entry exists, so no N_READABLE_PRESENT.",
+)
+
+
+# -- F79 (§9.4, §14.5): only valid revocations affect the manifest signature, judged
+#    at step (5), before the records listing.
+
+
+def _fix3_mutual_manifest_after_files() -> dict[str, bytes]:
+    files = _mutual_revocation_files(human1_earlier=True)
+    records = [parse(data) for path, data in sorted(files.items()) if path.startswith("container/records/")]
+    manifest = parse(files["container/manifest.json"])
+    order = {entry["digest"]: index for index, entry in enumerate(manifest["records"])}
+    records.sort(key=lambda record: order[recordlib.record_digest(record)])
+    return container(records, created_at=recordlib.T9)
+
+
+_FIX3_MUTUAL_RECORDS = (
+    {"id": "mutual-revocation-by-human-1", "verdict": "valid", "errors": []},
+    {
+        "id": _mutual_revocation_records(human1_earlier=True)["by_human_2"]["id"],
+        "verdict": "invalid",
+        "errors": ["E_KEY_REVOKED"],
+    },
+    {"id": "mutual-revocation-note-human-1", "verdict": "valid", "errors": []},
+    {"id": "mutual-revocation-note-human-2", "verdict": "invalid", "errors": ["E_KEY_REVOKED"]},
+)
+
+declare(
+    "key-lifecycle",
+    "mutual-revocation-order-a-manifest-after-both",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKED",),
+    build=lambda case_dir: _fix3_mutual_manifest_after_files(),
+    args=("--keys", "@keyset"),
+    expected_container={"errors": []},
+    records=_FIX3_MUTUAL_RECORDS,
+    notes="S2-FIX3 F79 (decision 2026-11-16 #1; §9.4, §9.5, §11.3): "
+    "key-lifecycle/mutual-revocation-order-a with the manifest's created_at moved to T9, "
+    "after both revocations (effective T2). §9.4 collects only valid revocations: by the "
+    "§9.5 order the revocation of human-1 (signed by human-2, whose own revocation comes "
+    "first) is invalid E_KEY_REVOKED and has no effect, so the manifest signature by "
+    "human-1 passes §9.4 (container.errors []) and the records are reported as in the "
+    "committed case. Counting every revocation record, valid or not, would stop the "
+    "container with E_KEY_REVOKED at the manifest signature.",
+)
+
+
+def _fix3_broken_compromise_revocation() -> dict[str, Any]:
+    # The signature value human-2 made over another record (the retired form): a
+    # well-encoded signature whose §3.4 equation fails for this record.
+    revocation = _fix2b_revocation("key-compromise")
+    foreign = _fix2b_revocation("retired")["sigs"][0]["value"]
+    return {**revocation, "sigs": [{**revocation["sigs"][0], "value": foreign}]}
+
+
+def _fix3_broken_revocation_files(*, unknown_first: bool) -> dict[str, bytes]:
+    files = recordlib.build_container(
+        [_fix3_broken_compromise_revocation()], created_at=_FIX2B_CREATED_AT
+    )
+    if unknown_first:
+        _fix2b_with_unknown_first(files)
+    return _wrap_internal(files)
+
+
+def _fix3_broken_revocation_expected() -> dict[str, Any]:
+    return {
+        "id": "key-revoked-human-1-key-compromise",
+        "verdict": "invalid",
+        "errors": ["E_SIG_INVALID"],
+        "sigs": [{"key": kid("human-2"), "state": "invalid"}],
+    }
+
+
+declare(
+    "container",
+    "manifest-sig-invalid-compromise-revocation-not-counted",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_SIG_INVALID",),
+    build=lambda case_dir: _fix3_broken_revocation_files(unknown_first=False),
+    args=("--keys", "@keyset"),
+    expected_container={"errors": []},
+    records=(_fix3_broken_revocation_expected(),),
+    notes="S2-FIX3 F79 (§9.4, §9.5): container/manifest-sig-compromised-key-only-entry with "
+    "the key-compromise revocation's only signature replaced by human-2's signature over "
+    "another record, so its §3.4 equation fails: the revocation is invalid E_SIG_INVALID "
+    "and takes no effect. "
+    "The manifest signature by human-1 passes §9.4 (container.errors []), and the "
+    "pipeline reaches the records.",
+)
+
+declare(
+    "container",
+    "manifest-sig-invalid-compromise-revocation-keeps-unknown-key",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_SIG_INVALID"),
+    build=lambda case_dir: _fix3_broken_revocation_files(unknown_first=True),
+    args=("--keys", "@keyset"),
+    expected_container={"errors": ["E_KEY_UNKNOWN"]},
+    records=(_fix3_broken_revocation_expected(),),
+    notes="S2-FIX3 F79 (§9.4, §11.3): the same broken revocation with the two manifest "
+    "signature entries of container/manifest-sig-compromised-key-beats-unknown-key (an "
+    "undeclared key first, then human-1). The revocation is invalid and has no effect, so "
+    "the human-1 entry's §9.4 outcome is valid and the undeclared key's E_KEY_UNKNOWN "
+    "stays the manifest signature code (unverifiable, the records pipeline runs).",
+)
+
+
+def _fix3_unlisted_record_file() -> dict[str, bytes]:
+    files = recordlib.build_container(
+        [_fix2b_revocation("key-compromise")], created_at=_FIX2B_CREATED_AT
+    )
+    files["records/extra.json"] = b"{}\n"
+    return _wrap_internal(files)
+
+
+declare(
+    "container",
+    "manifest-sig-compromised-key-before-records-listing",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_COMPROMISED",),
+    build=lambda case_dir: _fix3_unlisted_record_file(),
+    args=("--keys", "@keyset"),
+    records=[],
+    notes="S2-FIX3 F79 (§9.4, §14.5): container/manifest-sig-compromised-key-only-entry "
+    "plus an unlisted records/extra.json ({}). The manifest signature's §9.4 judgement is "
+    "part of step (5) and precedes the records listing of step (7): the valid "
+    "key-compromise revocation (computed internally from the records present) makes it "
+    "E_KEY_COMPROMISED, and the pipeline stops there, so E_MANIFEST_RECORD_EXTRA is not "
+    "reported.",
+)
+
+
+# -- F78 (§14.9, the S2 reading of F37): L_LABELS_ARE_CLAIMS and L_ERASED_* are
+#    facts about the records as parsed.
+
+
+def _fix3_labels_failing_envelope() -> dict[str, Any]:
+    return {**note("labels-fix3-container"), "labels": {"sensitivity": "nope"}}
+
+
+declare(
+    "container",
+    "labels-on-record-failing-envelope",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ENV_SENSITIVITY",),
+    build=lambda case_dir: container([_fix3_labels_failing_envelope()]),
+    args=("--keys", "@keyset"),
+    limitations=("L_LABELS_ARE_CLAIMS", "L_OFFLINE_CONTEXT"),
+    records=({"id": "labels-fix3-container", "verdict": "invalid", "errors": ["E_ENV_SENSITIVITY"]},),
+    notes="S2-FIX3 F78 (decision 2026-11-16 #1; §14.9, the S2 reading of F37): the "
+    "container's only record carries a labels member whose sensitivity is outside the "
+    "vocabulary (E_ENV_SENSITIVITY, check (2)). L_LABELS_ARE_CLAIMS is a fact about the "
+    "verified records as parsed: one carries a labels member, so it is reported although "
+    "the record's envelope fails (the same reading as labels/labels-on-record-failing-envelope "
+    "for a record target).",
+)
+
+
+# -- F80, F82 and the sigs-absent erasure record (§10.3).
+
+
+def _fix3_org_erasure() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    original = erased_original("erasure-revision-original")
+    attestation = erasure_record(
+        original, record_id="erasure-revision-attestation", signer="org-1",
+        actor_type="organization",
+    )
+    return original, attestation, erased_placeholder(original, attestation)
+
+
+def _fix3_malformed_placeholder() -> dict[str, Any]:
+    _original, _attestation, placeholder = _fix3_org_erasure()
+    return {**placeholder, "sigs": []}
+
+
+declare(
+    "erasure",
+    "placeholder-malformed-only",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ERASE_DIGEST_MISMATCH", "E_KIND_BODY_SCHEMA"),
+    build=lambda case_dir: container([_fix3_malformed_placeholder(), _fix3_org_erasure()[1]]),
+    args=ERASURE_REVISION_ARGS,
+    expected_container={"errors": ["E_ERASE_DIGEST_MISMATCH"]},
+    records=(
+        {"id": "erasure-revision-original", "verdict": "invalid", "errors": ["E_KIND_BODY_SCHEMA"]},
+        {"id": "erasure-revision-attestation", "verdict": "valid", "errors": []},
+    ),
+    notes="S2-FIX3 F80 (decision 2026-11-16 #1; §10.3, §4.5, S2/F48; invalid first): "
+    "erasure/actor-organization-valid whose placeholder carries an extra sigs member, so "
+    "it fails §4.5 (E_KIND_BODY_SCHEMA) and is not a placeholder for the cross-checks. "
+    "The valid erasure record's erased reference therefore resolves to no placeholder in "
+    "the container: rule 1, a missing placeholder, E_ERASE_DIGEST_MISMATCH.",
+)
+
+declare(
+    "erasure",
+    "erasure-without-placeholder",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ERASE_DIGEST_MISMATCH",),
+    build=lambda case_dir: container([_fix3_org_erasure()[1]]),
+    args=ERASURE_REVISION_ARGS,
+    expected_container={"errors": ["E_ERASE_DIGEST_MISMATCH"]},
+    records=({"id": "erasure-revision-attestation", "verdict": "valid", "errors": []},),
+    notes="S2-FIX3 (§10.3 rule 1; the F80 ruling applied to its other half): the valid "
+    "organization erasure record of erasure/actor-organization-valid without any "
+    "placeholder. Rule 1 is evaluated for every valid erasure record: its erased "
+    "reference resolves to no placeholder in the container, E_ERASE_DIGEST_MISMATCH, the "
+    "same outcome as placeholder-malformed-only (a malformed placeholder is no placeholder).",
+)
+
+
+def _fix3_other_id_placeholder_files() -> dict[str, bytes]:
+    files = _fix2_erasure_basis_files(signer="program-1", grant_kwargs=dict(valid_until=recordlib.T3))
+    records = [parse(data) for path, data in sorted(files.items()) if path.startswith("container/records/")]
+    manifest = parse(files["container/manifest.json"])
+    order = {entry["digest"]: index for index, entry in enumerate(manifest["records"])}
+    records.sort(key=lambda record: order[recordlib.record_digest(record)])
+    edited = [
+        {**record, "id": record["id"] + "-other"} if record.get("kind") == "weave.erased" else record
+        for record in records
+    ]
+    return container(edited)
+
+
+declare(
+    "erasure",
+    "placeholder-other-id-attests-unverifiable-erasure",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ERASE_DIGEST_MISMATCH", "E_GRANT_EXPIRED"),
+    build=lambda case_dir: _fix3_other_id_placeholder_files(),
+    args=ERASURE_REVISION_ARGS,
+    expected_container={"errors": ["E_ERASE_DIGEST_MISMATCH"]},
+    records=(
+        {"id": "erasure-revision-attestation", "verdict": "unverifiable", "errors": ["E_GRANT_EXPIRED"]},
+        {"id": "erasure-basis-grant", "verdict": "valid", "errors": []},
+    ),
+    notes="S2-FIX3 F82 (decision 2026-11-16 #1; §10.3 rule 1): erasure/actor-program-basis-expired "
+    "(the program erasure is unverifiable E_GRANT_EXPIRED) whose placeholder's own id is "
+    "changed to erasure-revision-original-other while its attestation still names the "
+    "erasure record. The placeholder and its erasure record are both present, so the rules "
+    "apply whatever the erasure's own verdict: the erased reference does not resolve to a "
+    "placeholder with the same origin and id, E_ERASE_DIGEST_MISMATCH.",
+)
+
+
+def _fix3_attested_erasure_files(edit: str) -> dict[str, bytes]:
+    original, attestation, _placeholder = _fix3_org_erasure()
+    if edit == "sigs-absent":
+        attestation = {key: value for key, value in attestation.items() if key != "sigs"}
+    else:
+        unsigned = {key: value for key, value in attestation.items() if key != "sigs"}
+        unsigned = {**unsigned, "body": {**unsigned["body"], "reason": "not-a-reason"}}
+        attestation = recordlib.signed(unsigned, "org-1")
+    return container([erased_placeholder(original, attestation), attestation])
+
+
+for _name, _edit, _code, _why, _sigs in (
+    ("attested-erasure-sigs-absent", "sigs-absent", "E_SIG_REQUIRED",
+     "has no sigs member (E_SIG_REQUIRED, check (3))", []),
+    ("attested-erasure-body-schema", "body-schema", "E_KIND_BODY_SCHEMA",
+     "has a body.reason outside the closed vocabulary (E_KIND_BODY_SCHEMA, check (6))",
+     [{"key": kid("org-1"), "state": "valid"}]),
+):
+    declare(
+        "erasure",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_ERASE_ATTESTATION", _code),
+        build=lambda case_dir, _edit=_edit: _fix3_attested_erasure_files(_edit),
+        args=ERASURE_REVISION_ARGS,
+        expected_container={"errors": ["E_ERASE_ATTESTATION"]},
+        records=(
+            {"id": "erasure-revision-original", "verdict": "erased", "errors": []},
+            {"id": "erasure-revision-attestation", "verdict": "invalid", "errors": [_code],
+             "sigs": _sigs},
+        ),
+        notes="S2-FIX3 (decision 2026-11-16 #1, the sigs-absent erasure record; §10.3, "
+        "§14.1): the placeholder's attestation names (by origin, id and digest) a "
+        "weave.erasure record that " + _why + ". A record that fails the §14.1 structural "
+        "group is not an erasure record for the cross-checks, as a placeholder that fails "
+        "§4.5 is not a placeholder (S2/F48): the attestation does not resolve to the "
+        "erasure record, E_ERASE_ATTESTATION.",
+    )
+
+declare(
+    "erasure",
+    "placeholder-malformed-record-target",
+    "record",
+    "record.json",
+    "invalid",
+    errors=("E_KIND_BODY_SCHEMA",),
+    build=lambda case_dir: {"record.json": canonical(_fix3_malformed_placeholder())},
+    args=ERASURE_REVISION_ARGS,
+    limitations=("L_ERASED_PLACEHOLDER", "L_ERASED_STANDALONE", "L_OFFLINE_CONTEXT"),
+    notes="S2-FIX3 F78 (§14.9, the S2 reading of F37): a record target that is a "
+    "weave.erased record with an extra sigs member (E_KIND_BODY_SCHEMA, §4.5). "
+    "L_ERASED_PLACEHOLDER and L_ERASED_STANDALONE are facts about the record as parsed "
+    "(its kind is weave.erased), malformed or not, as for the records of a container.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
