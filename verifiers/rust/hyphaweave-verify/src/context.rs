@@ -710,8 +710,8 @@ impl World {
     fn build_trust(&mut self) -> Result<(), UsageError> {
         // (1) Structurally valid declarations.
         let mut schema: Vec<(usize, kinds::KeyDeclaredBody)> = Vec::new();
-        for index in 0..self.slots.len() {
-            let Some(record) = self.slots[index].record.as_ref() else {
+        for (index, slot) in self.slots.iter().enumerate() {
+            let Some(record) = slot.record.as_ref() else {
                 continue;
             };
             if record.kind() != "weave.key.declared" || structural_error(record).is_some() {
@@ -1954,8 +1954,8 @@ impl World {
         let mut erasure_slots: Vec<usize> = Vec::new();
         let mut placeholder_slots: Vec<usize> = Vec::new();
         let mut idempotency: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
-        for index in 0..count {
-            let Some(record) = self.slots[index].record.clone() else {
+        for (index, slot) in self.slots.iter().enumerate().take(count) {
+            let Some(record) = slot.record.clone() else {
                 continue;
             };
             match &record.parsed {

@@ -132,7 +132,13 @@ impl FromIterator<(String, Value)> for Object {
 
 /// A JSON value under the WR-CJ input restrictions: no floats, integers in
 /// `[-(2^53-1), 2^53-1]`, no lone surrogates.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Clone` and `Drop` are written out rather than derived: the derived ones
+/// recurse once per nesting level, about 1 KiB (`Clone`) and 0.25 KiB (`Drop`)
+/// of stack per level in a debug build, so the stack use of a verifier run
+/// grew with the input depth (S3, H1-FIX1 R6). These walk the tree from a heap
+/// work list, so their stack use does not depend on the depth.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Value {
     /// JSON `null`.
     Null,
@@ -146,6 +152,104 @@ pub enum Value {
     Array(Vec<Value>),
     /// A JSON object.
     Object(Object),
+}
+
+/// A container being copied by [`Value::clone`]: the members still to copy
+/// and the copy so far.
+enum CloneFrame<'a> {
+    Array {
+        source: std::slice::Iter<'a, Value>,
+        copy: Vec<Value>,
+    },
+    Object {
+        source: std::slice::Iter<'a, (String, Value)>,
+        copy: Vec<(String, Value)>,
+        name: String,
+    },
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        let mut open: Vec<CloneFrame<'_>> = Vec::new();
+        let mut next = self;
+        loop {
+            let mut finished = match next {
+                Self::Null => Some(Self::Null),
+                Self::Bool(flag) => Some(Self::Bool(*flag)),
+                Self::Int(number) => Some(Self::Int(*number)),
+                Self::Str(text) => Some(Self::Str(text.clone())),
+                Self::Array(items) => {
+                    open.push(CloneFrame::Array {
+                        source: items.iter(),
+                        copy: Vec::with_capacity(items.len()),
+                    });
+                    None
+                }
+                Self::Object(object) => {
+                    open.push(CloneFrame::Object {
+                        source: object.entries.iter(),
+                        copy: Vec::with_capacity(object.entries.len()),
+                        name: String::new(),
+                    });
+                    None
+                }
+            };
+            // Add the finished value to the innermost open container, then
+            // either copy that container's next member or close the container.
+            next = loop {
+                let Some(frame) = open.last_mut() else {
+                    return finished.expect("a value with no open container is finished");
+                };
+                match frame {
+                    CloneFrame::Array { source, copy } => {
+                        copy.extend(finished.take());
+                        if let Some(item) = source.next() {
+                            break item;
+                        }
+                    }
+                    CloneFrame::Object { source, copy, name } => {
+                        if let Some(value) = finished.take() {
+                            copy.push((std::mem::take(name), value));
+                        }
+                        if let Some((key, item)) = source.next() {
+                            name.clone_from(key);
+                            break item;
+                        }
+                    }
+                }
+                finished = match open.pop() {
+                    Some(CloneFrame::Array { copy, .. }) => Some(Self::Array(copy)),
+                    Some(CloneFrame::Object { copy, .. }) => {
+                        Some(Self::Object(Object { entries: copy }))
+                    }
+                    None => unreachable!("the innermost container was just read"),
+                };
+            };
+        }
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        // Move the children of every container onto a heap work list, so each
+        // value is dropped with no children and nothing recurses.
+        let mut pending = match self {
+            Self::Array(items) if !items.is_empty() => std::mem::take(items),
+            Self::Object(object) if !object.entries.is_empty() => {
+                object.entries.drain(..).map(|(_, value)| value).collect()
+            }
+            _ => return,
+        };
+        while let Some(mut value) = pending.pop() {
+            match &mut value {
+                Self::Array(items) => pending.append(items),
+                Self::Object(object) => {
+                    pending.extend(object.entries.drain(..).map(|(_, value)| value));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Value {

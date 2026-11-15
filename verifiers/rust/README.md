@@ -319,8 +319,9 @@ The test suite has three layers:
    `tests/identity.rs`, the full record identity of §6.3/§10.3; and
    `tests/l2_probes.rs`, the `Extension.critical` DEFAULT row and the
    chain-head `renews` rule on a re-signed receipt; `tests/precedence.rs`,
-   a §5.5.2 check-order case, H1-FIX2) and the 64
-   KiB-stack nesting test (`tests/small_stack.rs`, R6). The slow
+   a §5.5.2 check-order case, H1-FIX2) and the small-stack nesting test
+   (`tests/small_stack.rs`, R6: the whole verifier on a 128 KiB stack, the
+   JSON parser, writer, `Clone` and `Drop` on a 32 KiB stack). The slow
    corpus-wide ablation and byte-flip gates in `tests/gates.rs` are `#[ignore]`d
    and run with `--release --include-ignored`.
 3. **The conformance runner** (`vectors <dir>`) over every case in `vectors/`
