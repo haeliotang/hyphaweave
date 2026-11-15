@@ -971,7 +971,13 @@ Q2). A signature counts in this sense only when its key resolves, its §3.4 equa
 and it passes §9.4: a declaration with another signature whose key cannot be resolved,
 whose equation fails or which fails §9.4 supplies no material **of any kind** — neither the
 material that verifies its key's signatures on other records, nor the material a
-cosignature on another declaration is verified against, nor an owner for §9.1 rule 3. Trust
+cosignature on another declaration is verified against, nor an owner for §9.1 rule 3. Nor
+does it supply the material a manifest signature (§11.3) or a supplied previous container's
+manifest signature (§11.5) is verified against, and neither does a `weave.key.rotated`
+record that is not semantically valid in this sense: a manifest signature entry whose key
+has material only from such records is judged as an entry of an undeclared key
+(`E_KEY_UNKNOWN`, §11.3), and its equation is not evaluated [S2-FIX4/F83] decided by
+principle (Inceptless decision 2026-11-16 #4). Trust
 is therefore never handed on through such a declaration: a declaration whose trusting
 cosignature is made by its key is not trusted through it, and neither is any declaration
 further down that chain.
@@ -2172,7 +2178,8 @@ members:
   unverifiable one [S2-FIX2/U5] decided by principle (Inceptless decision 2026-11-15 #22;
   as S2-FIX1 T2 for record signatures; the §9.4 half by Inceptless decision 2026-11-15
   #32). A **required key** for the manifest signature is a key that resolves
-  in the verification context through a `weave.key.declared` or `weave.key.rotated` record;
+  in the verification context through a `weave.key.declared` or `weave.key.rotated` record
+  that supplies its material under §5.3 (S2-FIX4/F83);
   it does not have to be trusted for the cryptographic equation, which is evaluated before
   trust (§9.4). A **declared but untrusted** signing key therefore does not make the
   manifest signature unverifiable: only absent key material or an **undeclared** signature
@@ -3560,7 +3567,16 @@ context-trusted as soon as context material is used for it, even when its equati
 fails (§14.6). A **manifest** or supplied previous-manifest signature check contributes to
 `L_KEY_TRUST_TOFU` only when the context material verified its equation (§11.5): a failed
 manifest equation is reported as `E_MANIFEST_SIG_INVALID` (or `E_MANIFEST_CHAIN`) and adds no
-limitation [S2/F42] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+limitation [S2/F42] decided by principle (Inceptless decision 2026-11-15 #8; S2). On a
+`weave.key.declared`, `weave.key.rotated` or `weave.key.revoked` record only the signature by
+`actor.key` takes part, and it is context-trusted exactly when the material used for it came
+from a context record other than the record itself (even when its equation then fails, as
+above); a cosignature never takes part, whatever material verified it, and a key with no
+material under §5.3 has no check to count. Material a key-lifecycle record states for its own
+keys is therefore not context material, but a declaration whose `actor.key` signature is
+verified against another context declaration's material (its own `body.key` is absent or
+names another key) is context-trusted [S2-FIX4/F84] decided by principle (Inceptless decision
+2026-11-16 #4).
 
 | identifier | emitted if and only if |
 |---|---|
@@ -3967,6 +3983,16 @@ the specification's own text); the founder can overturn them.
 | S2-FIX3/F79 | only valid revocations affect the manifest signature; its §9.4 outcome is reported at step (5), before the level/chain and records-listing stages | §9.4, §14.5 |
 | S2-FIX3/F80, F82 (and the `sigs`-absent erasure record) | §10.3 sees only erasure records that pass the structural group; rule 1 for every valid erasure record (a missing or malformed placeholder is `E_ERASE_DIGEST_MISMATCH`) and for every erasure record a placeholder names, whatever its verdict | §10.3, `weave.erasure.md`, registry |
 | S2-FIX3/F81 | the required signer of a consent record is `actor.key`; another human key's signature does not satisfy it | `weave.consent.granted.md`, `weave.consent.revoked.md` |
+
+The following rows are fixed by Inceptless decision **2026-11-16 #4** (S2-FIX4, the fourth
+revision of the S2 round): the two differences left by the Rust follow-up's differential
+fuzzing (`docs/h1-findings.md` F83, F84), **decided by principle** (the specification's own
+text); the founder can overturn them.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S2-FIX4/F83 | a declaration that supplies no material under §5.3, and a rotation that is not semantically valid, supply none for the manifest signature or a supplied previous container's manifest signature either: such an entry is judged as an undeclared key's (`E_KEY_UNKNOWN`) | §5.3, §11.3 |
+| S2-FIX4/F84 | on a key-lifecycle record only the `actor.key` signature takes part in the TOFU predicate: context-trusted when its material came from a context record other than the record itself, even if its equation fails; cosignatures never count | §14.9 |
 
 ### A.2 PROVISIONAL implementation shapes
 
