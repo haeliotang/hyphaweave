@@ -473,6 +473,10 @@ def test_keyset_semantic_failure_is_not_a_usage_error(tmp_path) -> None:
             "kind": "weave.key.revoked",
             "origin": {"instance": "ed25519:" + "33" * 16, "project": "example"},
             "recorded_at": "2026-11-01T00:00:00.000Z",
+            # S2-FIX1 T5: a keyset record that must be signed carries a structurally
+            # valid sigs entry (absent or empty sigs is itself a usage error, §14.1);
+            # the signature value does not verify, which is not a usage error either.
+            "sigs": [{"alg": "ed25519", "key": "ed25519:" + "33" * 16, "value": "A" * 86}],
             "stage": "accepted",
         },
         separators=(",", ":"),
