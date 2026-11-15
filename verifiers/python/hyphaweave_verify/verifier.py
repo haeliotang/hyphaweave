@@ -233,6 +233,10 @@ class Context:
         self.pending_touched = False
         self._index: dict[tuple[str, str, str], list[RecordView]] = {}
         self._declared_material: dict[str, tuple[bytes, str]] = {}
+        #: S2-FIX4 F84: ``"keyset"`` or ``"context"`` for each entry of
+        #: ``_declared_material`` (the §14.9 TOFU predicate needs where the
+        #: material that verified a signature came from).
+        self._declared_material_source: dict[str, str] = {}
         self._owner_material: dict[str, tuple[bytes, str]] = {}
         #: S2-FIX3 F72: which declarations (by digest) put a key in ``trusted``.
         self._trust_sources: dict[str, set[tuple[str, str]]] = {}
@@ -262,6 +266,7 @@ class Context:
         self.grant_state = GrantState()
         self.consent_revocations = {}
         self._declared_material = {}
+        self._declared_material_source = {}
         self._owner_material = {}
         self._trust_sources = {}
         trusted: set[str] = set()
@@ -335,12 +340,20 @@ class Context:
             return
         if encoding.key_id_from_public_key(public_key) != key_id:
             return
-        self._declared_material.setdefault(key_id, (public_key, key_type))
+        if key_id not in self._declared_material:
+            self._declared_material[key_id] = (public_key, key_type)
+            self._declared_material_source[key_id] = (
+                "keyset" if view.loaded.source == "keyset" else "context"
+            )
         if key_id not in self._owner_material and _structural_declaration_class(view) is not None:
             self._owner_material[key_id] = (public_key, key_type)
 
     def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
         return self._declared_material.get(key_id)
+
+    def declaration_material_source(self, key_id: str) -> str | None:
+        """``"keyset"``/``"context"`` for :meth:`declaration_material` (S2-FIX4 F84)."""
+        return self._declared_material_source.get(key_id)
 
     def owner_declaration(self, key_id: str) -> tuple[bytes, str] | None:
         """S2-FIX3 F73: an owner's material and class from a structurally valid declaration."""
@@ -713,17 +726,16 @@ def _verify_signatures(
             if "N_KEY_UNDECLARED" not in view.notices:
                 view.notices.append("N_KEY_UNDECLARED")
             continue
-        if from_context:
-            # S8.10/F12.2: TOFU covers material admitted through context
-            # declarations, not material supplied by the local keyset. §14.6:
-            # the check counts once the context material is used, "even if
-            # that signature or the record then fails" (S2/F42), so the
-            # notice is decided before the equation.
-            if (
-                context.material_source(signature.key) == "context"
-                and "N_KEY_TOFU" not in view.notices
-            ):
-                view.notices.append("N_KEY_TOFU")
+        # S8.10/F12.2: TOFU covers material admitted through context
+        # declarations, not material supplied by the local keyset. §14.6:
+        # the check counts once the context material is used, "even if that
+        # signature or the record then fails" (S2/F42), so the notice is
+        # decided before the equation.
+        if (
+            _signature_context_trusted(signature.key, envelope, context, from_context)
+            and "N_KEY_TOFU" not in view.notices
+        ):
+            view.notices.append("N_KEY_TOFU")
         # S8.11/§14.5: the Ed25519 cryptographic steps (§3.4) run before the
         # §9.4 lifecycle/semantic effects, so a flipped signature on a
         # compromised/expired/revoked key reports E_SIG_INVALID.
@@ -782,6 +794,37 @@ def _verify_signatures(
         raise WeaveError("E_KEY_UNKNOWN", "signing key is not declared in the context")
     if first_unverifiable is not None:
         raise first_unverifiable
+
+
+def _signature_context_trusted(
+    key: str,
+    envelope: envelope_module.Envelope,
+    context: Context,
+    from_context: bool,
+) -> bool:
+    """The §14.9 TOFU predicate for one record signature check (S2-FIX4 F84).
+
+    On a key-lifecycle record only the signature by ``actor.key`` takes part
+    (§14.6): a cosignature never does, whatever material verified it. A
+    signature takes part when the material used for it came from a context
+    record other than the record itself: material a declaration or rotation
+    states for its own keys is not context material, and a declaration's
+    signature by a key it does not state is verified against another
+    declaration's material, which counts when that declaration is in the
+    context rather than the keyset. A key with no material (§5.3) has no
+    check to count; the caller only asks once material was found.
+    """
+    if envelope.kind in kinds.KEY_LIFECYCLE_KINDS and key != envelope.actor_key:
+        return False
+    if envelope.kind == kinds.KIND_DECLARED:
+        if envelope.body.get("key") == key:
+            return False
+        source = context.declaration_material_source(key)
+        if source is not None:
+            return source == "context"
+    if not from_context:
+        return False
+    return context.material_source(key) == "context"
 
 
 def _lifecycle_subject_key(envelope: envelope_module.Envelope) -> object:
