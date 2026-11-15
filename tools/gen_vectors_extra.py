@@ -13082,6 +13082,327 @@ declare(
 )
 
 
+# -- Q1 (F47): an erasure's authorising grant. Present but itself invalid ->
+#    E_ERASE_ACTOR (invalid); absent, outside its window or revoked ->
+#    the grant codes (unverifiable, "cannot be established").
+
+
+def _fix1_erasure_agent_files(
+    *,
+    grant_kwargs: dict[str, Any] | None = None,
+    include_grant: bool = True,
+    revoke_at: str | None = None,
+    actions: Sequence[str] = ("accept", "erase"),
+) -> dict[str, bytes]:
+    original = erased_original("erasure-revision-original")
+    grant = root_grant(
+        record_id="erasure-basis-grant",
+        grantee="agent-1",
+        kinds=("weave.erasure",),
+        actions=tuple(actions),
+        scope=("example",),
+        **(grant_kwargs or {}),
+    )
+    actor = recordlib.actor(
+        "agent-1",
+        model="example/model@1.2.3",
+        on_behalf_of=recordlib.kid("human-1"),
+        grant=parent_ref(grant),
+        idempotency_key="idem-erasure-agent",
+    )
+    attestation = erasure_record(
+        original,
+        record_id="erasure-revision-attestation",
+        reason="data-subject-request",
+        signer="agent-1",
+        actor_override=actor,
+    )
+    placeholder = erased_placeholder(original, attestation)
+    records: list[dict[str, Any]] = []
+    if include_grant:
+        records.append(grant)
+    if revoke_at is not None:
+        records.append(
+            grant_revocation(grant, record_id="erasure-basis-grant-revoked", effective_at=revoke_at)
+        )
+    return container(records + [placeholder, attestation])
+
+
+def _fix1_erasure_program_files(*, include_grant: bool, invalid_grant: bool = False) -> dict[str, bytes]:
+    original = erased_original("erasure-revision-original")
+    grant = root_grant(
+        record_id="erasure-basis-grant",
+        grantee="program-1",
+        kinds=("weave.erasure",),
+        actions=("erase",),
+        scope=("example",),
+        **(dict(valid_from=recordlib.T9, valid_until=recordlib.T0) if invalid_grant else {}),
+    )
+    attestation = erasure_record(
+        original,
+        record_id="erasure-revision-attestation",
+        reason="retention-expired",
+        signer="program-1",
+        basis=parent_ref(grant),
+    )
+    placeholder = erased_placeholder(original, attestation)
+    return container(([grant] if include_grant else []) + [placeholder, attestation])
+
+
+_FIX1_BAD_WINDOW = dict(valid_from=recordlib.T9, valid_until=recordlib.T0)
+
+for _name, _build, _verdict, _attestation_errors, _other, _why in (
+    ("actor-agent-grant-present-invalid",
+     lambda case_dir: _fix1_erasure_agent_files(grant_kwargs=_FIX1_BAD_WINDOW),
+     "invalid", ("E_ERASE_ACTOR",),
+     ({"id": "erasure-basis-grant", "verdict": "invalid", "errors": ["E_KEY_VALIDITY"]},),
+     "the agent's actor.grant resolves to a grant record that is present but itself invalid "
+     "(its valid_from T9 is after its valid_until T0, E_KEY_VALIDITY). A present grant that "
+     "is invalid is a disallowed signer basis: E_ERASE_ACTOR (invalid)"),
+    ("actor-agent-grant-absent",
+     lambda case_dir: _fix1_erasure_agent_files(include_grant=False),
+     "unverifiable", ("E_GRANT_UNRESOLVED",), (),
+     "the agent's actor.grant names a grant that is not in the container. The authorising "
+     "grant cannot be established: E_GRANT_UNRESOLVED (unverifiable)"),
+    ("actor-agent-grant-expired",
+     lambda case_dir: _fix1_erasure_agent_files(grant_kwargs=dict(valid_until=recordlib.T3)),
+     "unverifiable", ("E_GRANT_EXPIRED",),
+     ({"id": "erasure-basis-grant", "verdict": "valid", "errors": []},),
+     "the agent's grant is valid but its window ends at T3, before the erasure's recorded_at "
+     "T4: E_GRANT_EXPIRED (unverifiable)"),
+    ("actor-agent-grant-revoked",
+     lambda case_dir: _fix1_erasure_agent_files(revoke_at=recordlib.T3),
+     "unverifiable", ("E_GRANT_REVOKED",),
+     ({"id": "erasure-basis-grant", "verdict": "valid", "errors": []},
+      {"id": "erasure-basis-grant-revoked", "verdict": "valid", "errors": []}),
+     "the agent's grant is revoked by its granter effective T3, before the erasure's "
+     "recorded_at T4: E_GRANT_REVOKED (unverifiable)"),
+    ("actor-agent-grant-expired-and-lacks-erase",
+     lambda case_dir: _fix1_erasure_agent_files(
+         grant_kwargs=dict(valid_until=recordlib.T3), actions=("accept",)
+     ),
+     "invalid", ("E_ERASE_ACTOR",),
+     ({"id": "erasure-basis-grant", "verdict": "valid", "errors": []},),
+     "the agent's grant does not allow the erase action (invalid) and its window also ends "
+     "before the erasure (unverifiable). Invalid beats unverifiable: E_ERASE_ACTOR"),
+    ("actor-program-basis-absent",
+     lambda case_dir: _fix1_erasure_program_files(include_grant=False),
+     "unverifiable", ("E_GRANT_UNRESOLVED",), (),
+     "a program erasure's body.basis names a grant that is not in the container: the "
+     "authorising grant cannot be established, E_GRANT_UNRESOLVED (unverifiable)"),
+    ("actor-program-basis-present-invalid",
+     lambda case_dir: _fix1_erasure_program_files(include_grant=True, invalid_grant=True),
+     "invalid", ("E_ERASE_ACTOR",),
+     ({"id": "erasure-basis-grant", "verdict": "invalid", "errors": ["E_KEY_VALIDITY"]},),
+     "a program erasure's body.basis resolves to a grant record that is present but itself "
+     "invalid (E_KEY_VALIDITY): E_ERASE_ACTOR (invalid)"),
+):
+    _attestation = {
+        "id": "erasure-revision-attestation",
+        "verdict": _verdict,
+        "errors": list(_attestation_errors),
+    }
+    declare(
+        "erasure",
+        _name,
+        "container",
+        "container",
+        "invalid" if _verdict == "invalid" or any(r["verdict"] == "invalid" for r in _other) else _verdict,
+        errors=tuple(sorted(set(_attestation_errors) | {e for r in _other for e in r["errors"]})),
+        build=_build,
+        args=ERASURE_REVISION_ARGS,
+        records=(_attestation,) + tuple(_other),
+        notes="S2-FIX1 Q1 (F47; weave.erasure signer rules, error table): " + _why + ".",
+    )
+
+
+# -- Q3 (F69-1, F55 first part): the §4.4 step-5 outcome after the other rules of
+#    step (7); the dedicated signer code of step 4 before the rules that consult
+#    other records.
+
+
+def _fix1_resign(record: dict[str, Any], signers: Sequence[str], *, unknown_alg: bool = False) -> dict[str, Any]:
+    unsigned = {name: value for name, value in record.items() if name != "sigs"}
+    result = recordlib.signed(unsigned, list(signers))
+    if unknown_alg:
+        result = {**result, "sigs": [{**entry, "alg": "ed25519-x"} for entry in result["sigs"]]}
+    return result
+
+
+def _fix1_expanding_sub_grant_files(signers: Sequence[str], *, unknown_alg: bool) -> dict[str, bytes]:
+    parent = root_grant(
+        record_id="grant-root-exceeds",
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "propose", "accept"),
+        transferable=True,
+    )
+    child = delegated_grant(
+        parent, record_id="grant-sub-exceeds", kinds=("example.note", "example.receipt")
+    )
+    return container([parent, _fix1_resign(child, signers, unknown_alg=unknown_alg)])
+
+
+def _fix1_parent_expired_files() -> dict[str, bytes]:
+    parent = root_grant(
+        record_id="grant-root-parent-expired",
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T3,
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "propose"),
+        transferable=True,
+    )
+    child = delegated_grant(
+        parent,
+        record_id="grant-sub-parent-expired",
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T3,
+        recorded_at=recordlib.T4,
+    )
+    return container([parent, _fix1_resign(child, ["agent-1"], unknown_alg=True)])
+
+
+declare(
+    "grant",
+    "sub-grant-expands-kinds-step5-outcome-last",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_GRANT_DELEGATION_EXCEEDS",),
+    build=lambda case_dir: _fix1_expanding_sub_grant_files(["agent-1"], unknown_alg=True),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "grant-sub-exceeds", "verdict": "invalid", "errors": ["E_GRANT_DELEGATION_EXCEEDS"]},
+    ),
+    notes="S2-FIX1 Q3 (F69-1; §4.4 step 5, §14.5): grant/sub-grant-expands-kinds whose only "
+    "sigs entry (by agent-1, the sub-granter) uses the unknown algorithm ed25519-x. §4.4 "
+    "step 5 applies (unverifiable E_SIG_UNVERIFIABLE), but that outcome is reported only "
+    "after every other rule of step (7) has passed; the delegation check fails, so the "
+    "record is invalid E_GRANT_DELEGATION_EXCEEDS.",
+)
+
+declare(
+    "grant",
+    "parent-expired-step5-outcome-last",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_GRANT_EXPIRED",),
+    build=lambda case_dir: _fix1_parent_expired_files(),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "grant-sub-parent-expired", "verdict": "unverifiable", "errors": ["E_GRANT_EXPIRED"]},
+    ),
+    notes="S2-FIX1 Q3 (F69-1): grant/parent-expired whose sub-grant's only sigs entry uses "
+    "the unknown algorithm ed25519-x. The parent expired at T3 and the sub-grant is recorded "
+    "at T4; the step-(7) chain rule fails (E_GRANT_EXPIRED) before the step-5 outcome "
+    "(E_SIG_UNVERIFIABLE) would be reported, so the record is unverifiable E_GRANT_EXPIRED.",
+)
+
+declare(
+    "grant",
+    "sub-grant-granter-signer-before-delegation",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_GRANT_GRANTER",),
+    build=lambda case_dir: _fix1_expanding_sub_grant_files(["agent-2"], unknown_alg=False),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "grant-sub-exceeds", "verdict": "invalid", "errors": ["E_GRANT_GRANTER"]},
+    ),
+    notes="S2-FIX1 Q3 (F55 first part, first item; §14.5 step (7)): the expanding sub-grant "
+    "of grant/sub-grant-expands-kinds is signed only by agent-2, a declared key that is not "
+    "the sub-granter (agent-1), so §4.4 step 4 gives the dedicated signer code. The signer "
+    "rule precedes the rules that consult other records (the delegated-chain checks), so "
+    "the record is invalid E_GRANT_GRANTER, not E_GRANT_DELEGATION_EXCEEDS.",
+)
+
+
+def _fix1_class_conflict_unknown_alg_declaration() -> dict[str, Any]:
+    material = key("device-1")
+    body = {
+        "algorithm": "ed25519",
+        "key": material.key_id,
+        "key_type": "program",
+        "owner": kid("human-1"),
+        "public_key": material.public_b64url(),
+    }
+    record = recordlib.build_record(
+        kind="weave.key.declared",
+        id="key-declared-fix1-device-1-as-program",
+        actor={"type": "program", "key": material.key_id},
+        body=body,
+        stage="accepted",
+        recorded_at=recordlib.T1,
+        origin_instance=material.key_id,
+    )
+    return _fix1_resign(record, ["device-1", "human-1"], unknown_alg=True)
+
+
+declare(
+    "key-lifecycle",
+    "declaration-class-conflict-before-step5-outcome",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_CLASS_CONFLICT",),
+    build=lambda case_dir: container([_fix1_class_conflict_unknown_alg_declaration()]),
+    args=_S2_ARGS,
+    records=(
+        {
+            "id": "key-declared-fix1-device-1-as-program",
+            "verdict": "invalid",
+            "errors": ["E_KEY_CLASS_CONFLICT"],
+        },
+    ),
+    notes="S2-FIX1 Q3 (F69-1; §4.4 step 5, §5.3): a container declaration re-declares the "
+    "keyset's device-1 key as a program key; its two sigs entries (device-1 and the owner "
+    "human-1) use the unknown algorithm ed25519-x, so §4.4 step 5 applies (unverifiable "
+    "E_SIG_UNVERIFIABLE). That outcome waits until the other step-(7) rules have passed; "
+    "the governing class (device, from the keyset) conflicts, so the record is invalid "
+    "E_KEY_CLASS_CONFLICT.",
+)
+
+
+def _fix1_erasure_wrong_signer_files() -> dict[str, bytes]:
+    original = erased_original("erasure-revision-original")
+    grant = root_grant(
+        record_id="erasure-basis-grant", grantee="program-1", kinds=("weave.erasure",),
+        actions=("erase",), scope=("example",),
+    )
+    attestation = erasure_record(
+        original,
+        record_id="erasure-revision-attestation",
+        reason="retention-expired",
+        signer="program-1",
+        basis=parent_ref(grant),
+    )
+    attestation = _fix1_resign(attestation, ["device-1"])
+    placeholder = erased_placeholder(original, attestation)
+    return container([placeholder, attestation])
+
+
+declare(
+    "erasure",
+    "actor-program-signer-rule-before-basis-lookup",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ERASE_ACTOR",),
+    build=lambda case_dir: _fix1_erasure_wrong_signer_files(),
+    args=ERASURE_REVISION_ARGS,
+    records=(
+        {"id": "erasure-revision-attestation", "verdict": "invalid", "errors": ["E_ERASE_ACTOR"]},
+    ),
+    notes="S2-FIX1 Q1/Q3 (§14.5 step (7), weave.erasure signer rules): a program erasure "
+    "whose body.basis names a grant that is not in the container (that alone is "
+    "unverifiable E_GRANT_UNRESOLVED) is signed only by device-1, a declared key that is "
+    "not the actor's (§4.4 step 4: the dedicated signer code E_ERASE_ACTOR). The signer "
+    "rule precedes the lookup of the authorising grant, so the record is invalid "
+    "E_ERASE_ACTOR.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,

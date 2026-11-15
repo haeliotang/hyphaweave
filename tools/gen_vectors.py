@@ -4007,6 +4007,116 @@ declare(
 )
 
 
+# ---------------------------------------------------------------------------
+# S2-FIX1 (decision 2026-11-15 #13), Q3: order inside steps (7) and (9)
+# ---------------------------------------------------------------------------
+
+
+def _fix1_bad_window_consent(signers: Sequence[str], *, unknown_alg: bool = False) -> dict[str, Any]:
+    unsigned = {
+        name: value
+        for name, value in consent_grant(
+            "consent-fix1-bad-window", valid_from=recordlib.T2, valid_until=recordlib.T1
+        ).items()
+        if name != "sigs"
+    }
+    record = recordlib.signed(unsigned, list(signers))
+    if unknown_alg:
+        record = {**record, "sigs": [{**entry, "alg": "ed25519-x"} for entry in record["sigs"]]}
+    return record
+
+
+declare(
+    "labels",
+    "consent-validity-before-signer-rule",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_CONSENT_VALIDITY",),
+    build=lambda: build_container([_fix1_bad_window_consent(["device-1"])]),
+    args=("--keys", "@keyset"),
+    records=(
+        {"id": "consent-fix1-bad-window", "verdict": "invalid", "errors": ["E_CONSENT_VALIDITY"]},
+    ),
+    notes="S2-FIX1 Q3 (F69-2; §14.5 step (7), consent kind page): a consent whose actor is "
+    "human-1 but whose only signature is a good signature by device-1 (so §4.4 step 4: the "
+    "dedicated signer code E_ACTOR_KEY_TYPE_MISMATCH applies) also has valid_from after "
+    "valid_until. Inside step (7) the kind's rules that read only the record come before "
+    "the signer rule: E_CONSENT_VALIDITY.",
+)
+
+declare(
+    "labels",
+    "consent-validity-before-step5-outcome",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_CONSENT_VALIDITY",),
+    build=lambda: build_container([_fix1_bad_window_consent(["human-1"], unknown_alg=True)]),
+    args=("--keys", "@keyset"),
+    records=(
+        {"id": "consent-fix1-bad-window", "verdict": "invalid", "errors": ["E_CONSENT_VALIDITY"]},
+    ),
+    notes="S2-FIX1 Q3 (F69-1; §4.4 step 5): the bad-window consent's only sigs entry uses "
+    "the unknown algorithm ed25519-x, so §4.4 step 5 applies (unverifiable "
+    "E_SIG_UNVERIFIABLE, human-1 is declared). The step-5 outcome is reported only after "
+    "every other rule of the kind's step (7) has passed; the window rule fails first, so "
+    "the record is invalid E_CONSENT_VALIDITY (invalid beats unverifiable).",
+)
+
+declare(
+    "labels",
+    "consent-kind-mismatch-reports-no-propagation-notice",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_REF_KIND_MISMATCH",),
+    build=lambda: (
+        lambda target: build_container(
+            [
+                target,
+                recordlib.note(
+                    "labels-fix1-consent-mismatch",
+                    labels={
+                        "sensitivity": "internal",
+                        "consent": recordlib.make_ref(
+                            target["origin"]["instance"],
+                            target["id"],
+                            recordlib.record_digest(target),
+                            kind="weave.consent.granted",
+                        ),
+                    },
+                    refs=[
+                        {
+                            "rel": "derived_from",
+                            "ref": recordlib.make_ref(
+                                recordlib.kid("human-1"),
+                                "labels-fix1-absent-input",
+                                "sha256:" + "5a" * 32,
+                            ),
+                        }
+                    ],
+                ),
+            ]
+        )
+    )(recordlib.note("labels-fix1-consent-target")),
+    args=("--keys", "@keyset"),
+    records=(
+        {
+            "id": "labels-fix1-consent-mismatch",
+            "verdict": "invalid",
+            "errors": ["E_REF_KIND_MISMATCH"],
+        },
+    ),
+    notices_absent=("N_LABEL_PROPAGATION_UNCHECKED",),
+    notes="S2-FIX1 Q3 (F55 first part, third item; §14.5): a note derived from a record "
+    "that is not in the container (label propagation cannot be checked) cites as its "
+    "consent a record of another kind (E_REF_KIND_MISMATCH, step (9)). A record that fails "
+    "reports only its outcome: the step-(9) notice N_LABEL_PROPAGATION_UNCHECKED is not "
+    "reported for it.",
+)
+
+
 # === END CASE SECTIONS ===
 
 
