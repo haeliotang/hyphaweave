@@ -617,7 +617,9 @@ class _InternalRecordState:
     views: list[verifier.RecordView]
 
 
-def _records_without_material(views: Iterable[verifier.RecordView]) -> frozenset[int]:
+def _records_without_material(
+    views: Iterable[verifier.RecordView], *, rotations: bool = True
+) -> frozenset[int]:
     """The container key-lifecycle records that supply no key material (S2-FIX4 F83).
 
     §5.3 (S2-FIX1 Q2, S2-FIX3 F72): a declaration with a signature other than
@@ -627,7 +629,9 @@ def _records_without_material(views: Iterable[verifier.RecordView]) -> frozenset
     that fails only through the §9.4 effects on its new key's own signature is
     admitted, S2/F38); so neither can verify a manifest signature. Identified
     by ``id()`` of the loaded record, as the views keep the objects they were
-    built from.
+    built from. ``rotations=False`` leaves the rotations to a caller with a
+    stricter rule of its own (the previous-manifest link, X5: only *valid*
+    rotations).
     """
     withheld: set[int] = set()
     for view in views:
@@ -636,7 +640,8 @@ def _records_without_material(views: Iterable[verifier.RecordView]) -> frozenset
         if view.envelope.kind == kinds.KIND_DECLARED and view.nonsubject_signature_failed:
             withheld.add(id(view.loaded))
         elif (
-            view.envelope.kind == kinds.KIND_ROTATED
+            rotations
+            and view.envelope.kind == kinds.KIND_ROTATED
             and view.verdict != "valid"
             and view.admitted_rotation is None
         ):
@@ -1721,7 +1726,7 @@ class _PreviousLinkContext:
         candidates, sources = _candidate_manifest_keys(
             [record for record in container_records if id(record) not in invalid_rotations],
             keyset_views,
-            withheld=_records_without_material(record_views),
+            withheld=_records_without_material(record_views, rotations=False),
         )
         context = verifier.Context()
         for view in keyset_views:
