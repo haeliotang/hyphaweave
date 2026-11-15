@@ -1086,3 +1086,129 @@ no text change, the reason (specification §14.10 and the kind pages carry the d
 | F15 | adopted: `vectors --tsa-trust` default anchor; `--previous` accepts a directory or zip; `--keys`/`--previous` not accepted on `vectors` | spec §14.1 |
 | F16 | adopted: a container invalid error stops with `records: []`; manifest signature verification is the cryptographic equation only | spec §14.5, §11.3 |
 | F17 | adopted: exact matcher semantics stated normatively | spec §14.10 and `vectors/README.md` |
+
+## 7. The S2 round of revision 3 (decision 2026-11-15 #8)
+
+The S2 round closes the findings of the second implementation recorded in
+`docs/h1-findings.md` (F38–F69). Every entry below carries the status `decided by
+principle (Inceptless decision 2026-11-15 #8)`: it gives the readings, the chosen one and
+why it is the more conservative (or, where neither is more conservative, the one the text
+supports). Section 7.2 lists the questions the principle does not settle; they stay open
+for the founder and the specification text is unchanged for them.
+
+### 7.1 Decided by principle
+
+1. **§9.4 and the signatures of a key-lifecycle record (F38, F61-1).** Reading A: a
+   declaration's self-signature only proves possession and, like a grant judged against
+   its own window (S9), is exempt from §9.4. Reading B: §9.4 applies to "signatures made by
+   that key", every one. **Chosen B** for the record's own verdict: under A a declaration of
+   a compromised key, recorded before the compromise, is valid even when the only receipt
+   that could rescue it fails (F61-1, a security defect: a record-level `valid` on a stolen
+   key). The cosignatures and a rotation's two signatures are judged the same way. The
+   judgement does not remove the record's key facts (§5.3): without them every signature by
+   the key would fall to `E_KEY_UNKNOWN` (unverifiable) instead of being judged under the
+   key's own lifecycle (`E_KEY_COMPROMISED`, invalid), which is the less conservative
+   outcome. Vectors `key-lifecycle/declaration-compromised-*`,
+   `declaration-before-own-valid-from`, `declaration-cosigner-retired`,
+   `rotation-old-key-retired`.
+2. **`sigs[]` when `E_KEY_PUBLIC_KEY` precedes signature verification (F39, F50).**
+   Reading A: the malformed `public_key` is found at step (6) as a body defect, after the
+   signatures were checked, so `sigs` lists their states. Reading B: T1 places it "before
+   any trust judgement", i.e. before step (4). **Chosen B**: the declared key's own material
+   is what its self-signature would resolve to, so key resolution cannot run without it;
+   no signature check runs and `sigs` is `[]`, and the code wins over every other body
+   defect (`body.key` included, F50). Vector `key-lifecycle/declared-public-key-before-body-key`.
+3. **TOFU and failed equations (F42).** Records: §14.6 already says "even if that signature
+   or the record then fails"; the reference verifier did not count a failed equation and is
+   corrected (vector `key-lifecycle/tofu-on-failed-equation`). Manifest and previous
+   signatures: §11.5 counts material "that verified the equation". **Chosen**: the literal
+   text — a failed manifest equation adds no `L_KEY_TRUST_TOFU`; the container is invalid
+   (`E_MANIFEST_SIG_INVALID`) and the failure itself is reported. Both implementations agree.
+4. **A structurally invalid reference target (F44).** Tier (a), the target keeps a
+   well-formed `origin` and `id`: §6.3 already gives `unverifiable` ("present but … itself
+   not valid"). Tier (b), the target's own `origin` or `id` is malformed: reading A, still
+   present (`unverifiable`); reading B, it has no identity (`missing`). **Chosen B**: identity
+   is the well-formed triple of §4.1/F58; a record without one cannot be "a record with that
+   `origin` and `id`". Vectors `container/reference-to-structurally-invalid-target`,
+   `container/reference-to-target-with-malformed-origin`.
+5. **Presence of the agent-only actor members (F45, F67).** Presence → closedness → grammar
+   applies inside `actor`; the agent-only members are required members of an agent actor, so
+   their absence is a presence defect reported before any member's grammar. The reference
+   verifier checked them member by member and is corrected. Vectors
+   `actor/agent-missing-*-before-*`.
+6. **§4.4 step 5 for the signer-constrained kinds and the meaning of "declared" (F46,
+   F69-4).** §4.4 step 5 says "if any `sigs` entry names a key that is not declared". The
+   committed (frozen) vector `sig/unknown-alg` expects `E_SIG_UNVERIFIABLE` for an entry whose
+   own key is undeclared while `actor.key` is declared, so the text is reworded to what the
+   vectors pin: the required signer key decides. A key named with public material by a
+   `weave.key.rotated` record is declared (§9.2 rule 5 calls those members "explicit
+   declarations"), the more conservative reading (step 4's invalid dedicated code rather
+   than step 5's unverifiable). Vector `key-lifecycle/declared-only-unknown-algorithm-entries`.
+7. **Signature entries across steps (4) and (5).** Reading A: each entry is resolved,
+   verified and judged before the next, and the first failure stops the layer. Reading B:
+   steps (4) and (5) are steps of the record (§14.5) and §4.4 step 2 verifies "every"
+   entry. **Chosen B**: an unresolvable key anywhere makes the record `E_KEY_UNKNOWN`; every
+   entry is judged and reports its own state; the first failing entry (equation, then
+   §9.4) decides the code. Vectors `key-lifecycle/signature-entries-all-judged`,
+   `key-lifecycle/signature-key-resolution-before-equation`.
+8. **§10.3 when the erasure record and the placeholder do not pair (F48).** Reading A: the
+   first failing rule decides. Reading B: the three rules are independent and the stage
+   reports every violation (§14.5). **Chosen B**, the more complete report. A placeholder that
+   fails §4.5 is an invalid record, not a placeholder (F69). Vector
+   `erasure/cross-checks-reported-independently`.
+9. **An unlisted `.tsr` (F54) and timestamps under L1 (F56).** §11.3 is explicit for both;
+   the reference verifier ignored them and is corrected. The unlisted file is a file-check
+   failure of the timestamp phase whatever the level. Vectors `container/unlisted-receipt-file-l0`,
+   `integrity-levels/l2-unlisted-receipt-file`, `integrity-levels/l1-lists-timestamp`.
+10. **Unlisted, misnamed or too-deep `records/` files (F55 second part, F60).** Reading A for
+    depth: the file cannot be parsed, so its digest cannot be confirmed
+    (`E_MANIFEST_RECORD_DIGEST`). Reading B: §1.9 makes depth a size violation "like any size
+    violation" (`E_JSON_SIZE`). **Chosen B**, the literal §1.9. An oversize file is subject to
+    the limit whether or not it is listed (§11.6 item 5, §13, U8). Vectors
+    `container/oversize-record-file-misnamed`, `container/record-nesting-above-limit`.
+11. **1a: X.690 in full or the list it names (F57, F66).** Reading A: 1a means X.690 for
+    every universal TLV (universal tag 0 never occurs; ENUMERATED is an INTEGER;
+    EXTERNAL, EMBEDDED PDV and CHARACTER STRING are constructed-only). Reading B: 1a is the
+    list it enumerates. **Chosen A** for those three rules, the more conservative (a receipt
+    one implementation accepted is rejected), with the list of 1a rules then closed: the
+    content of REAL and RELATIVE-OID and the character repertoire of string types stay
+    outside 1a, as both implementations already treat them. Vectors `integrity-levels/l2-ts-der-*`.
+12. **Rotation key-id grammar (F61-3).** Reading A: a malformed `new_key`/`old_key` is a
+    "contradiction" with its public key, `E_KEY_ROTATION_KEYS`. Reading B: the key ids are
+    body-table members, `E_KIND_BODY_SCHEMA`. **Chosen B**, decided in the pre-signature
+    structural check (so never the unverifiable `E_KEY_UNKNOWN` that key resolution would give).
+    Vectors `key-lifecycle/rotation-old-key-malformed`, `rotation-new-key-wrong-type`.
+13. **Certificate versions and "decodes as an X.509 certificate" (F62, F63).** Reading A: a
+    parsing library decides. Reading B: the RFC 5280 module and X.690 only (X1). **Chosen B**:
+    the 1b/1c walk plus the module's version constraints (extensions need v3, unique
+    identifiers v2 or v3; versions above v3 are rejected, the conservative side of RFC
+    5280's "SHOULD be prepared to accept any version"); open types stay open. The same rule
+    judges `--tsa-trust` anchors (the strict side of the anchor-strictness question). Vectors
+    `integrity-levels/l2-ts-signer-cert-*`; anchor shapes in the reference verifier's tests.
+14. **§5.5.2 step 6 beyond the depth bound (F68).** Step 6 judges "the cited grant and every
+    ancestor"; it covers links beyond the bound and precedes step 7. Vectors
+    `grant/chain-depth-9-*`, `grant/chain-depth-10-grant-*`.
+15. **§5.4 bullet order (F69-3).** Reading A: the list is not an order. Reading B: it is.
+    **Chosen B**: the invalid mismatches (grantee, kind/action) precede the unverifiable
+    window and revocation state, so a defect that makes the record invalid is never hidden
+    behind an unverifiable outcome.
+16. **How this round is numbered.** §0.3 now states the rule the history already followed:
+    a revision is opened by one decision's rulings and later decisions are rounds of it, so
+    the specification stays "revision 3"; the registry counts its own revisions per decision
+    (this round is its revision 7).
+
+### 7.2 Open for the founder (not decided; text unchanged)
+
+Each was handed to the founder with both readings, their consequences and a
+recommendation; the specification keeps its current text for each until the founder rules
+in a later decision.
+
+- **F47** — an erasure whose authorising grant is present but invalid: `E_ERASE_ACTOR`
+  (invalid, the reference verifier) or the grant codes (unverifiable, the second verifier).
+- **Cosignature and old-key trust after §9.4 (from entry 1)** — whether a declaration whose
+  owner cosignature, or a rotation whose old-key signature, fails §9.4 still extends trust
+  or supplies material.
+- **F69-1, F69-2, F55 first part** — where the §4.4 step-5 outcome and the consent signer
+  rule sit inside step (7), and the consent checks against label propagation in step (9).
+- **F64** — the key-size and signature-encoding bounds of check 10.
+- **F68 open point** — whether steps 1–5 of §5.5.2 are walked beyond the depth bound.
