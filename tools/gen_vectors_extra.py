@@ -13483,6 +13483,131 @@ for _name, _root_kwargs, _code, _why in (
     )
 
 
+# -- T3: the §12.2 1a table, one universal tag number at a time (X.690) ---------
+
+for _name, _identifier, _content, _verdict, _why in (
+    # 7 ObjectDescriptor: a GraphicString (X.680), primitive only (§10.2), ISO 2022 (§11.4).
+    ("l2-ts-der-1a-object-descriptor-primitive", b"\x07", b"A", "valid",
+     "07 01 41: an ObjectDescriptor in the primitive form (control)"),
+    ("l2-ts-der-1a-object-descriptor-constructed", b"\x27", b"\x07\x01A", "invalid",
+     "27 03 07 01 41: an ObjectDescriptor in the constructed form; it is a restricted "
+     "character string type, primitive only in DER (X.690 §10.2)"),
+    ("l2-ts-der-1a-object-descriptor-escape", b"\x07", b"\x1b(B", "invalid",
+     "07 03 1b 28 42: an ObjectDescriptor carrying an ISO 2022 escape sequence; 1a judges "
+     "X.690 §11.4 conservatively (no ESC octet in an ISO 2022 register type)"),
+    # 9 REAL: §8.5, §11.3.
+    ("l2-ts-der-1a-real-plus-zero", b"\x09", b"", "valid",
+     "09 00: the REAL plus zero, no contents octets (X.690 §8.5.2; control)"),
+    ("l2-ts-der-1a-real-binary-one", b"\x09", b"\x80\x00\x01", "valid",
+     "09 03 80 00 01: the REAL 1 in binary form, base 2, F = 0, a one-octet exponent 0 and "
+     "the odd mantissa 1 (X.690 §8.5.7, §11.3.1; control)"),
+    ("l2-ts-der-1a-real-decimal-nr3", b"\x09", b"\x0315.E-1", "valid",
+     "09 07 03 31 35 2e 45 2d 31: the REAL 1.5 as NR3 '15.E-1' (X.690 §11.3.2; control)"),
+    ("l2-ts-der-1a-real-minus-zero", b"\x09", b"\x43", "valid",
+     "09 01 43: the REAL minus zero (X.690 §8.5.9; control)"),
+    ("l2-ts-der-1a-real-constructed", b"\x29", b"\x09\x00", "invalid",
+     "29 02 09 00: a REAL in the constructed form (X.690 §8.5.1: primitive)"),
+    ("l2-ts-der-1a-real-base-8", b"\x09", b"\x90\x00\x01", "invalid",
+     "09 03 90 00 01: a binary REAL with base 8; DER uses base 2 (X.690 §11.3.1)"),
+    ("l2-ts-der-1a-real-scaling-factor", b"\x09", b"\x84\x00\x01", "invalid",
+     "09 03 84 00 01: a binary REAL with scaling factor F = 1; DER requires F = 0 "
+     "(X.690 §11.3.1)"),
+    ("l2-ts-der-1a-real-even-mantissa", b"\x09", b"\x80\x00\x02", "invalid",
+     "09 03 80 00 02: a binary REAL whose mantissa 2 is even; DER chooses M odd "
+     "(X.690 §11.3.1)"),
+    ("l2-ts-der-1a-real-mantissa-leading-zero", b"\x09", b"\x80\x00\x00\x01", "invalid",
+     "09 04 80 00 00 01: the mantissa 1 written in two octets; M in the fewest octets "
+     "(X.690 §11.3.1)"),
+    ("l2-ts-der-1a-real-exponent-nonminimal", b"\x09", b"\x81\x00\x00\x01", "invalid",
+     "09 04 81 00 00 01: the exponent 0 written in two octets (format 01); E in the fewest "
+     "octets (X.690 §11.3.1)"),
+    ("l2-ts-der-1a-real-long-exponent-format", b"\x09", b"\x83\x01\x00\x01", "invalid",
+     "09 04 83 01 00 01: the exponent 0 in the long format 11 with one octet; the fewest "
+     "octets use format 00 (X.690 §8.5.7.4, §11.3.1)"),
+    ("l2-ts-der-1a-real-decimal-nr1", b"\x09", b"\x011", "invalid",
+     "09 02 01 31: a decimal REAL in the NR1 form; DER uses NR3 (X.690 §11.3.2.1)"),
+    ("l2-ts-der-1a-real-decimal-trailing-zero", b"\x09", b"\x0310.E+0", "invalid",
+     "09 07 03 31 30 2e 45 2b 30: NR3 '10.E+0', whose mantissa ends in 0 "
+     "(X.690 §11.3.2.4)"),
+    ("l2-ts-der-1a-real-decimal-plus-exponent", b"\x09", b"\x031.E+1", "invalid",
+     "09 06 03 31 2e 45 2b 31: NR3 '1.E+1', a non-zero exponent with a PLUS SIGN "
+     "(X.690 §11.3.2.6)"),
+    ("l2-ts-der-1a-real-special-reserved", b"\x09", b"\x44", "invalid",
+     "09 01 44: a special REAL octet that X.690 §8.5.9 reserves"),
+    # 10 ENUMERATED: primitive only (§8.4).
+    ("l2-ts-der-1a-enumerated-constructed", b"\x2a", b"\x0a\x01\x01", "invalid",
+     "2a 03 0a 01 01: an ENUMERATED in the constructed form (X.690 §8.4: primitive)"),
+    # 13 RELATIVE-OID: §8.20.
+    ("l2-ts-der-1a-relative-oid-minimal", b"\x0d", b"\x81\x00\x03", "valid",
+     "0d 03 81 00 03: the RELATIVE-OID {128 3}, each sub-identifier minimal (control)"),
+    ("l2-ts-der-1a-relative-oid-nonminimal", b"\x0d", b"\x80\x01", "invalid",
+     "0d 02 80 01: a RELATIVE-OID sub-identifier with a leading 0x80 octet; sub-identifiers "
+     "use the fewest octets (X.690 §8.20.2)"),
+    ("l2-ts-der-1a-relative-oid-truncated", b"\x0d", b"\x81", "invalid",
+     "0d 01 81: a RELATIVE-OID whose last sub-identifier octet has bit 8 set "
+     "(X.690 §8.20.2)"),
+    ("l2-ts-der-1a-relative-oid-empty", b"\x0d", b"", "invalid",
+     "0d 00: a RELATIVE-OID with no sub-identifier"),
+    ("l2-ts-der-1a-relative-oid-constructed", b"\x2d", b"\x0d\x01\x01", "invalid",
+     "2d 03 0d 01 01: a RELATIVE-OID in the constructed form (X.690 §8.20.1: primitive)"),
+    # 14 TIME and 34 DURATION: rejected (§11.9 canonical form not judged).
+    ("l2-ts-der-1a-time-rejected", b"\x0e", b"2026-11-15", "invalid",
+     "0e 0a '2026-11-15': a TIME value; its DER canonical form (X.690 §11.9) needs an "
+     "ISO 8601 parser this profile does not define, so 1a rejects TIME values"),
+    ("l2-ts-der-1a-time-constructed", b"\x2e", b"\x0e\x01A", "invalid",
+     "2e 03 0e 01 41: a TIME in the constructed form (X.690 §8.26.1.1: primitive)"),
+    ("l2-ts-der-1a-duration-rejected", b"\x1f\x22", b"P1D", "invalid",
+     "1f 22 03 'P1D': a DURATION value (universal 34), rejected like TIME"),
+    # 31-33, 35, 36: primitive, UTF-8 contents (§8.21, §8.22, §8.26).
+    ("l2-ts-der-1a-date-utf8", b"\x1f\x1f", b"2026-11-15", "valid",
+     "1f 1f 0a '2026-11-15': a DATE (universal 31) whose contents are UTF-8 (control)"),
+    ("l2-ts-der-1a-date-not-utf8", b"\x1f\x1f", b"\xff", "invalid",
+     "1f 1f 01 ff: a DATE whose contents are not UTF-8 (X.690 §8.26.2.2)"),
+    ("l2-ts-der-1a-date-time-constructed", b"\x3f\x21", b"\x0c\x01A", "invalid",
+     "3f 21 03 0c 01 41: a DATE-TIME (universal 33) in the constructed form "
+     "(X.690 §8.26.4.1: primitive)"),
+    ("l2-ts-der-1a-oid-iri-utf8", b"\x1f\x23", b"/a", "valid",
+     "1f 23 02 '/a': an OID-IRI (universal 35) whose contents are UTF-8 (control)"),
+    ("l2-ts-der-1a-relative-oid-iri-not-utf8", b"\x1f\x24", b"\xc0\x80", "invalid",
+     "1f 24 02 c0 80: a RELATIVE-OID-IRI (universal 36) whose contents are an overlong, "
+     "hence not UTF-8, sequence (X.690 §8.22.2)"),
+    # 28 UniversalString, 30 BMPString: whole code units (§8.23.7, §8.23.8).
+    ("l2-ts-der-1a-universal-string-units", b"\x1c", b"\x00\x00\x00A", "valid",
+     "1c 04 00 00 00 41: a UniversalString of one 4-octet unit (control)"),
+    ("l2-ts-der-1a-universal-string-partial-unit", b"\x1c", b"\x00\x00A", "invalid",
+     "1c 03 00 00 41: a UniversalString that is not whole 4-octet units (X.690 §8.23.7)"),
+    ("l2-ts-der-1a-bmp-string-units", b"\x1e", b"\x00A", "valid",
+     "1e 02 00 41: a BMPString of one 2-octet unit (control)"),
+    ("l2-ts-der-1a-bmp-string-partial-unit", b"\x1e", b"A", "invalid",
+     "1e 01 41: a BMPString that is not whole 2-octet units (X.690 §8.23.8)"),
+    # ISO 2022 register types (§11.4).
+    ("l2-ts-der-1a-teletex-string-plain", b"\x14", b"A", "valid",
+     "14 01 41: a TeletexString without escape sequences (control)"),
+    ("l2-ts-der-1a-general-string-escape", b"\x1b", b"\x1b(B", "invalid",
+     "1b 03 1b 28 42: a GeneralString with an escape sequence; 1a judges X.690 §11.4 "
+     "conservatively (no ESC octet)"),
+):
+    _expected = _S2_VALID_L2 if _verdict == "valid" else _W3_SCHEMA_EXPECTED
+    declare(
+        "integrity-levels",
+        _name,
+        "container",
+        "container",
+        _verdict,
+        build=lambda case_dir, _identifier=_identifier, _content=_content: _crafted_l2_files(
+            case_dir,
+            tsr_factory=lambda imprint: _x1_resigned(_x1_unsigned_value(_identifier, _content))(
+                _crafted_tsr(imprint)
+            ),
+        ),
+        notes="S2-FIX1 T3 (§12.2 1a table, X.690 per universal tag number): the receipt gains "
+        "one unregistered unsigned attribute (an open type, judged by its framing and the "
+        "universal rules of 1a only) whose value is " + _why + ". The receipt is otherwise "
+        "fully re-signed with the test TSA key.",
+        **_expected,
+    )
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
