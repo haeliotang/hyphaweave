@@ -6,6 +6,27 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round, revision 2 supplement (S2-FIX2b) — 2026-11-15 — DRAFT, UNRELEASED
+
+Decision 2026-11-15 #32 (decided by principle; the founder can overturn it): the §9.4
+half of U5. The `format` identifier is unchanged; no error code is added.
+
+- **Manifest signature entries, §9.4 outcome (§11.3).** A verified manifest signature
+  entry of a declared key whose §9.4 outcome at the manifest's `created_at` is invalid
+  (`E_KEY_REVOKED`, `E_KEY_COMPROMISED`, `E_KEY_EXPIRED`) decides the manifest signature
+  even beside an entry whose key is undeclared; before, the undeclared key's
+  `E_KEY_UNKNOWN` (unverifiable) masked a retired or compromised manifest signing key. An
+  unverifiable §9.4 outcome (`E_TS_UNTRUSTED`) still leaves `E_KEY_UNKNOWN` as the code.
+  No conclusion of the frozen candidate set changes (none of its manifest signatures has
+  more than one entry).
+- **Vectors**: 5 new main cases (684 → 689): `container/manifest-sig-retired-key-beats-unknown-key`,
+  `manifest-sig-compromised-key-beats-unknown-key`, their single-entry controls
+  `manifest-sig-retired-key-only-entry` and `manifest-sig-compromised-key-only-entry`, and
+  `manifest-sig-untrusted-receipt-keeps-unknown-key` (unverifiable §9.4 outcome).
+- **Ablation catalogue**: 3 S2-FIX2b entries; the anchor of `fix2-u5-manifest-unknown-dropped`
+  moved to step (5).
+- **Rust verifier**: not changed and not re-measured on these cases.
+
 ## S2 round, revision 2 (S2-FIX2) — 2026-11-15 — DRAFT, UNRELEASED
 
 Decision 2026-11-15 #22: the founder's ruling Q6 and the items of the narrow review of

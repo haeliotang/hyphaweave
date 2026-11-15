@@ -40,8 +40,9 @@ Read this before using anything in this repository:
   findings (`docs/h1-findings.md`) led to the S2 round of revision 3 (decision
   2026-11-15 #8) and its revisions S2-FIX1 and S2-FIX2 (decisions 2026-11-15 #18
   and #22). The Python verifier and the vectors implement them; the Rust verifier
-  does not yet: on this snapshot it passes the candidate regression set but not 57
-  of the 684 main vectors, and one more main vector (an anchor bundle with a non-UTF-8 certificate
+  does not yet: on the S2-FIX2 snapshot it passes the candidate regression set but not 57
+  of the 684 main vectors (the five S2-FIX2b cases, decision 2026-11-15 #32, are not
+  measured yet), and one more main vector (an anchor bundle with a non-UTF-8 certificate
   subject) makes its whole `vectors` run stop with a usage error; its gate-3 allow
   list still lists the 37 report differences that the S2 Python corrections
   removed. Passing the same vectors is necessary but not sufficient
