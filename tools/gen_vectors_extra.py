@@ -14436,6 +14436,9 @@ for _name, _identifier, _content, _verdict, _why in (
     ("l2-ts-der-1a-utf8-string-escape", b"\x0c", b"\x1b(B", "invalid",
      "0c 03 1b 28 42: a UTF8String containing an escape sequence; it is well-formed UTF-8, "
      "but X.690 §8.23.10 forbids escape sequences in a UTF8String"),
+    ("l2-ts-der-1a-utf8-string-not-utf8", b"\x0c", b"\xff", "invalid",
+     "0c 01 ff: a UTF8String whose contents are not well-formed UTF-8 (X.690 §8.23.10); "
+     "pins the UTF-8 rule beside the escape rule of utf8-string-escape"),
     ("l2-ts-der-1a-ia5-string-plain", b"\x16", b"A", "valid",
      "16 01 41: an IA5String without an escape sequence (control)"),
     ("l2-ts-der-1a-teletex-string-designation", b"\x14", b"\x1b(BA", "valid",
