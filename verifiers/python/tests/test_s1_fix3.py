@@ -309,11 +309,17 @@ def test_crash_corpus_index_is_complete() -> None:
     corpus = VECTORS.parent / "tools" / "crash_corpus"
     index = json.loads((corpus / "index.json").read_text(encoding="utf-8"))
     assert index["seed"] == 20261111
-    # 145 S1-FIX2 recheck inputs plus the S1-FIX4 W4 seed-777 --tsa-trust PEM.
-    assert index["case_count"] == len(index["cases"]) == 146
+    # 145 S1-FIX2 recheck inputs, the S1-FIX4 W4 seed-777 --tsa-trust PEM and the
+    # eight S2 record-body crash inputs (F51/F61-2/F67, committed vectors as-is).
+    assert index["case_count"] == len(index["cases"]) == 154
     assert any(case["file_id"] == "tsa-s777-00048" for case in index["cases"])
     for case in index["cases"]:
-        assert case["category"] in ("previous", "tsa")
+        if case["file_id"].startswith("s2-"):
+            assert case["category"] == "container-dir"
+            assert case["overlay"] == [] and case["deleted"] == []
+            assert (VECTORS / case["base_case"] / "expected.json").is_file()
+        else:
+            assert case["category"] in ("previous", "tsa")
         assert case["base_case"]
         for relative in case["overlay"]:
             assert (corpus / case["file_id"] / relative).is_file(), case["file_id"]

@@ -625,72 +625,84 @@ def _verify_signatures(
             timestamp_sort_key(envelope.recorded_at),
             digest,
         )
-    try:
-        for signature in envelope.sigs:
-            if not signature.is_ed25519:
-                # Q13: unknown algorithms are ignored, never invalidating.
-                states.append({"key": signature.key, "state": "ignored"})
-                continue
-            material, from_context = _resolve_signing_key(signature.key, envelope, context)
-            if material is None:
-                states.append({"key": signature.key, "state": "unverified"})
+    # S2 (§14.5 steps (4)-(5), §4.4 step 2, §14.6): step (4) resolves the key
+    # of every ed25519 entry before any cryptography; an unresolvable key makes
+    # the record unverifiable E_KEY_UNKNOWN whatever the other entries say.
+    # Every entry is then judged in array order, first by the §3.4 equation and
+    # then by the §9.4 effects, and reports its own state; the first failing
+    # entry decides the record's code.
+    resolved: list[tuple[Any, bytes | None, bool]] = []
+    for signature in envelope.sigs:
+        if not signature.is_ed25519:
+            resolved.append((signature, None, False))
+            continue
+        material, from_context = _resolve_signing_key(signature.key, envelope, context)
+        resolved.append((signature, material, from_context))
+    unknown_key = any(
+        signature.is_ed25519 and material is None for signature, material, _ in resolved
+    )
+    first_error: WeaveError | None = None
+    for signature, material, from_context in resolved:
+        if not signature.is_ed25519:
+            # Q13: unknown algorithms are ignored, never invalidating.
+            states.append({"key": signature.key, "state": "ignored"})
+            continue
+        if material is None:
+            states.append({"key": signature.key, "state": "unverified"})
+            if "N_KEY_UNDECLARED" not in view.notices:
                 view.notices.append("N_KEY_UNDECLARED")
-                raise WeaveError(
-                    "E_KEY_UNKNOWN", "signing key is not declared in the context"
-                )
-            # S8.11/§14.5: the Ed25519 cryptographic steps (§3.4) run before the
-            # §9.4 lifecycle/semantic effects, so a flipped signature on a
-            # compromised/expired/revoked key reports E_SIG_INVALID.
-            if from_context:
-                # S8.10/F12.2: TOFU covers material admitted through context
-                # declarations, not material supplied by the local keyset. §14.6:
-                # the check counts once the context material is used, "even if
-                # that signature or the record then fails" (S2/F42), so the
-                # notice is decided before the equation.
-                if (
-                    context.material_source(signature.key) == "context"
-                    and "N_KEY_TOFU" not in view.notices
-                ):
-                    view.notices.append("N_KEY_TOFU")
+            continue
+        if from_context:
+            # S8.10/F12.2: TOFU covers material admitted through context
+            # declarations, not material supplied by the local keyset. §14.6:
+            # the check counts once the context material is used, "even if
+            # that signature or the record then fails" (S2/F42), so the
+            # notice is decided before the equation.
+            if (
+                context.material_source(signature.key) == "context"
+                and "N_KEY_TOFU" not in view.notices
+            ):
+                view.notices.append("N_KEY_TOFU")
+        # S8.11/§14.5: the Ed25519 cryptographic steps (§3.4) run before the
+        # §9.4 lifecycle/semantic effects, so a flipped signature on a
+        # compromised/expired/revoked key reports E_SIG_INVALID.
+        try:
+            ed25519.verify_signature(material, message, signature.raw or b"")
+        except WeaveError as error:
+            states.append({"key": signature.key, "state": "invalid"})
+            first_error = first_error or error
+            continue
+        if from_context or own_effects:
+            # §9.4 judges every signature by its key's lifecycle, including
+            # the signatures of a declaration or rotation whose material
+            # the record itself supplies (S2/F38/F61-1): a declaration of a
+            # compromised key is rescued only by a verified trusted
+            # receipt, exactly like any other record the key signed.
             try:
-                ed25519.verify_signature(material, message, signature.raw or b"")
-            except WeaveError:
-                states.append({"key": signature.key, "state": "invalid"})
-                raise
-            if from_context or own_effects:
-                # §9.4 judges every signature by its key's lifecycle, including
-                # the signatures of a declaration or rotation whose material
-                # the record itself supplies (S2/F38/F61-1): a declaration of a
-                # compromised key is rescued only by a verified trusted
-                # receipt, exactly like any other record the key signed.
-                try:
-                    context.key_state.check_signature_effects(
-                        signature.key,
-                        envelope.recorded_at,
-                        verified_timestamps=context.verified_timestamps,
-                        timestamp_evidence_present=context.timestamp_evidence_present,
-                        prior_order=(
-                            revocation_prior_order
-                            if envelope.kind == kinds.KIND_REVOKED
-                            else None
-                        ),
-                    )
-                except WeaveError:
-                    # §14.6 (S8.10/F12, F52): the equation passed but the key
-                    # state fails a §9.4 rule, so the signature is unverified.
-                    states.append({"key": signature.key, "state": "unverified"})
-                    raise
-            states.append({"key": signature.key, "state": "valid"})
-            verified.add(signature.key)
-    finally:
-        for signature in envelope.sigs[len(states):]:
-            states.append(
-                {
-                    "key": signature.key,
-                    "state": "ignored" if not signature.is_ed25519 else "unverified",
-                }
-            )
-        view.verified_keys = frozenset(verified)
+                context.key_state.check_signature_effects(
+                    signature.key,
+                    envelope.recorded_at,
+                    verified_timestamps=context.verified_timestamps,
+                    timestamp_evidence_present=context.timestamp_evidence_present,
+                    prior_order=(
+                        revocation_prior_order
+                        if envelope.kind == kinds.KIND_REVOKED
+                        else None
+                    ),
+                )
+            except WeaveError as error:
+                # §14.6 (S8.10/F12, F52): the equation passed but the key
+                # state fails a §9.4 rule, so the signature is unverified.
+                states.append({"key": signature.key, "state": "unverified"})
+                first_error = first_error or error
+                continue
+        states.append({"key": signature.key, "state": "valid"})
+        verified.add(signature.key)
+    view.verified_keys = frozenset(verified)
+    if unknown_key:
+        raise WeaveError("E_KEY_UNKNOWN", "signing key is not declared in the context")
+    if first_error is not None:
+        raise first_error
 
 
 def _resolve_signing_key(
