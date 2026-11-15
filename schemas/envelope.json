@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://inceptless.com/hyphaweave/schemas/v1/envelope.json",
   "title": "weave-record/1 record envelope",
-  "description": "JSON Schema Draft 2020-12 for a normal weave-record/1 record envelope. An unknown-kind record body must be an object and is otherwise unconstrained here; the registered-kind schemas under kinds/ constrain it further. Rules JSON Schema cannot express (cross-field equalities, signature ordering, duplicate references, ...) are enforced by tools/check_schemas.py and listed in schemas/README.md.",
+  "description": "JSON Schema Draft 2020-12 for a normal weave-record/1 record envelope. An unknown-kind record body must be an object and is otherwise unconstrained here; the registered-kind schemas under kinds/ constrain it further. Rules JSON Schema cannot express (cross-field equalities, signature ordering, ...) are enforced by tools/check_schemas.py and listed in schemas/README.md.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -239,7 +239,7 @@
     },
     "ref_entry": {
       "title": "record reference entry",
-      "description": "One entry of the envelope refs array. Exact structural duplicates are rejected by uniqueItems; semantically duplicate entries (same rel and target origin/id/digest with different hints) are caught by tools/check_schemas.py.",
+      "description": "One entry of the envelope refs array. Duplicates are identical (rel, ref) pairs compared as whole JSON values and are rejected by uniqueItems; entries that differ only in kind or hints are not duplicates (§6.1, S2-FIX3 F76).",
       "type": "object",
       "additionalProperties": false,
       "required": ["rel", "ref"],
