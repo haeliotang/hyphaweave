@@ -1245,6 +1245,13 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
             if record.value is None or erase.looks_like_placeholder(record.value):
                 raise WeaveError("E_JSON_INVALID", "keyset file is not a normal record")
             envelope = envelope_module.validate_envelope(record.value)
+            # §14.1 structural group (S2-FIX1 T5): "sigs presence and format
+            # (§4.3, including a record that requires per-record signatures
+            # but has sigs absent or empty)"; every keyset kind is signed per
+            # record, so `"sigs": []` is an operator error, not a record that
+            # quietly establishes no trust.
+            if envelope_module.signing_required(envelope.kind, envelope.stage) and not envelope.sigs:
+                raise WeaveError("E_SIG_REQUIRED", "a keyset record requires per-record signatures")
             # S8.9/§14.1: the structural side of the boundary includes the
             # registered-kind body *schema*; a semantic, lifecycle, actor,
             # authorisation or cryptographic failure is not a usage error and
