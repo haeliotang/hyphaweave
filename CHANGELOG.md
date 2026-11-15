@@ -6,6 +6,66 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round, revision 3 (S2-FIX3) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #1 (decided by principle — invalid first, the specification's own
+text; the founder can overturn every item): the differences the Rust follow-up's
+differential fuzzing found between the two verifiers (`docs/h1-findings.md` F70–F82 on the
+Rust branch). The `format` identifier is unchanged; no error code is added; the registry
+stays at revision 7. No conclusion of the frozen candidate set changes.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **Trust is not handed on through a declaration that supplies no material (F72, §5.3).**
+  A declaration with another signature that does not pass (unresolved key, failed
+  equation, failed §9.4) supplies no material of any kind — also not for verifying a
+  cosignature on another declaration or for resolving an owner — and a declaration never
+  keeps itself trusted through its own earlier verdict. The reference verifier used to
+  keep such a chain valid (a key cosigned by a key whose own declaration failed Q2).
+- **Owner resolution (F73, §9.1).** Only through a declaration that passes the §14.1
+  structural group: an owner whose only declaration has no `sigs` is `E_KEY_UNKNOWN`.
+- **`refs` duplicates (F76, §6.1).** Whole reference values are compared; entries that
+  differ only in `kind` or `hints` are not duplicates (were `E_ENV_REFS`).
+- **Actor key class (F77, §5.1).** Compared without a verified signature, before the grant
+  coverage: an agent record whose `actor.key` is declared `human` is
+  `E_ACTOR_KEY_TYPE_MISMATCH` even with unknown-algorithm signatures only (was
+  `E_GRANT_UNRESOLVED`).
+- **Manifest signature and revocations (F79, §9.4, §14.5).** Only valid revocations affect
+  the manifest signature, and its §9.4 outcome is reported at step (5), before the
+  level/chain and records-listing stages.
+- **Erasure cross-checks (F80, F82, §10.3).** Only erasure records that pass the structural
+  group are erasure records (a placeholder naming one without `sigs` is
+  `E_ERASE_ATTESTATION`); rule 1 also applies to an erasure record a placeholder names
+  whatever its verdict (`E_ERASE_DIGEST_MISMATCH`). A valid erasure record without a
+  well-formed placeholder stays `E_ERASE_DIGEST_MISMATCH` (written down).
+- **Container step (1) (F75, §11.9).** A layout violation and a member read failure are
+  reported together (`E_CONTAINER_ENTRY` + `E_CONTAINER_ZIP`).
+- **Report details (F78, §14.6, §14.9).** `L_LABELS_ARE_CLAIMS` and `L_ERASED_*` follow the
+  records as parsed for record targets too (the limitations of ten main and five frozen
+  record-target cases change, not their conclusions); entry names compare exactly, so a
+  root `Manifest.json` no longer reads as the manifest on a case-insensitive file system.
+- **Written down without a behaviour change of the reference verifier:** a rotation without
+  `new_public_key` is `E_KEY_ROTATION_KEYS` before key resolution with `sigs` `[]` (F74); the
+  consent signer is `actor.key` (F81); "top-level value not an object" is decided after the
+  value (F70); an anchor's typed primitives follow 1c (F71).
+
+### Vectors, tests and gates
+
+- **Vectors**: 27 new main cases (689 → 716): `jcs/top-level-*` (3), `ref/refs-differ-only-*`
+  (2), `actor/agent-with-human-key-unknown-alg-only`, `actor/consent-signed-by-other-human-key`,
+  `labels/labels-on-record-failing-envelope`, `key-lifecycle/declaration-*` (4),
+  `owner-declaration-sigs-absent`, `rotation-new-public-key-missing`/`-renamed`,
+  `mutual-revocation-order-a-manifest-after-both`, `container/readable-root-regular-file-zip-member-crc`,
+  `container/manifest-sig-*` (3), `container/labels-on-record-failing-envelope`, and
+  `erasure/*` (6). No existing case changed.
+- **Unit tests**: `test_s2_fix3.py` (self-trust, anchor typed primitives, exact entry names,
+  record-command limitations).
+- **Ablation catalogue**: 16 S2-FIX3 entries (one documented equivalent, pinned by a unit
+  test).
+- **Rust verifier**: not changed here. The Rust follow-up binary (`r2/rust-s2`, `78e1c24`)
+  passes the frozen set and 707 of the 716 main cases; the nine others and the
+  record-target limitations of F78 are its next increment.
+
 ## S2 round, revision 2 supplement (S2-FIX2b) — 2026-11-15 — DRAFT, UNRELEASED
 
 Decision 2026-11-15 #32 (decided by principle; the founder can overturn it): the §9.4

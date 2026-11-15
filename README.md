@@ -45,7 +45,9 @@ Read this before using anything in this repository:
   measured yet), and one more main vector (an anchor bundle with a non-UTF-8 certificate
   subject) makes its whole `vectors` run stop with a usage error; its gate-3 allow
   list still lists the 37 report differences that the S2 Python corrections
-  removed. Passing the same vectors is necessary but not sufficient
+  removed. Its follow-up branch closes those and found the differences that S2-FIX3
+  (decision 2026-11-16 #1) settles; that branch is not part of this snapshot, and nine of
+  the 27 S2-FIX3 cases are still to be followed there. Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the

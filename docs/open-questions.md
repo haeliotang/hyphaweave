@@ -1366,3 +1366,58 @@ principle. The founder can overturn the items decided by principle.
    `container/readable-not-reported-after-central-directory-failure`.
 7. **Decision number (U3).** S2-FIX1 is decision 2026-11-15 #18; the references that said
    #13 are corrected.
+
+### 7.6 S2-FIX3 (decision 2026-11-16 #1)
+
+The Rust follow-up of the S2 round (`r2/rust-s2`) found the differences F70–F82 between the
+two verifiers by differential fuzzing (`docs/h1-findings.md` on that branch). The main
+session ruled them by principle ("invalid first", the specification's own text); the
+founder can overturn every item. No conclusion of the frozen candidate set changes.
+
+1. **F72, trust handed on (§5.3, Q2).** A declaration with another signature that does not
+   pass — an unresolved key, a failed equation or a failed §9.4 — supplies no material of
+   any kind, also not for verifying a cosignature on another declaration or for resolving an
+   owner, so trust is never handed on through it; "already trusted" never comes from the
+   declaration being judged. Vectors `key-lifecycle/declaration-cosigner-retired-trust-not-handed-on`,
+   `-twice`, `declaration-undeclared-cosigner-supplies-no-material`,
+   `declaration-invalid-cosignature-supplies-no-material`.
+2. **F73, owner without `sigs`.** An owner resolves only through a declaration that passes
+   the §14.1 structural group: `E_KEY_UNKNOWN`, not `E_KEY_UNTRUSTED`. Vector
+   `key-lifecycle/owner-declaration-sigs-absent`.
+3. **F74, rotation without `new_public_key`.** `E_KEY_ROTATION_KEYS` before key resolution,
+   `sigs` `[]` (§9.2 rule 2 requires the member; the ruling's note "as Rust" does not match
+   the Rust verifier, which reports the new key's `E_KEY_UNKNOWN` or `E_KIND_BODY_SCHEMA`;
+   the code it names, before the signature layer, is the one implemented). Vectors
+   `key-lifecycle/rotation-new-public-key-missing`, `-renamed`.
+4. **F75, layout and member failure.** Reported together in container step (1). Vector
+   `container/readable-root-regular-file-zip-member-crc`.
+5. **F76, `refs` duplicates.** Whole reference values are compared (`kind`, `hints`
+   included). Vectors `ref/refs-differ-only-in-kind`, `ref/refs-differ-only-in-hint-order`.
+6. **F77, actor key class.** Needs no verified signature and precedes the grant coverage.
+   Vector `actor/agent-with-human-key-unknown-alg-only`.
+7. **F78, report details.** `L_LABELS_ARE_CLAIMS` and `L_ERASED_*` are facts about the
+   records as parsed, for record targets and containers alike (the S2 reading of F37,
+   extended to record targets so that one rule holds; this changes the limitations of ten
+   main and five frozen record-target cases, not their conclusions); entry names compare
+   exactly, so `Manifest.json` is not `manifest.json` (the reference verifier read it on a
+   case-insensitive file system). Vectors `labels/labels-on-record-failing-envelope`,
+   `container/labels-on-record-failing-envelope`, `erasure/placeholder-malformed-record-target`.
+8. **F79, manifest signature and revocations.** Only valid revocations count, and the
+   manifest signature's §9.4 outcome is reported at step (5), before the level/chain and
+   records-listing stages. Vectors `key-lifecycle/mutual-revocation-order-a-manifest-after-both`,
+   `container/manifest-sig-invalid-compromise-revocation-*`,
+   `container/manifest-sig-compromised-key-before-records-listing`.
+9. **F80, F82 and the `sigs`-absent erasure record (§10.3).** Only erasure records that pass
+   the structural group are erasure records; rule 1 is evaluated for every valid erasure
+   record (a missing or malformed placeholder is `E_ERASE_DIGEST_MISMATCH`, which also
+   covers a valid erasure record without any placeholder — the same principle, not
+   separately ruled) and for every erasure record a placeholder names, whatever its
+   verdict. Vectors `erasure/placeholder-malformed-only`, `erasure/erasure-without-placeholder`,
+   `erasure/placeholder-other-id-attests-unverifiable-erasure`,
+   `erasure/attested-erasure-sigs-absent`, `erasure/attested-erasure-body-schema`.
+10. **F81, consent signer.** The required signer is `actor.key` (the ruling's note "as
+    Rust" does not match the Rust verifier, which accepts any verified human key; the code
+    it names is the one implemented). Vector `actor/consent-signed-by-other-human-key`.
+11. **F70, F71.** Wording only (both verifiers agree): "top-level value not an object" is
+    decided after the value (vectors `jcs/top-level-*`); an anchor's typed primitives follow
+    1c (unit tests, an anchor failure is a usage error).
