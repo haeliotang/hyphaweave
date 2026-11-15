@@ -614,12 +614,10 @@ impl World {
             let Some(record) = slot.record.as_ref() else {
                 continue;
             };
-            // A record "carries a labels member" when its envelope passed the
-            // structure checks with that member (F37).
-            if record
-                .envelope()
-                .is_some_and(|envelope| envelope.labels.is_some())
-            {
+            // §14.9 (S2-FIX3/F78): a fact about the record as parsed — a JSON
+            // object with a top-level `labels` member, whether or not its
+            // envelope then passes.
+            if record.object.contains("labels") {
                 facts.labels_present = true;
             }
             // A `weave.erased` record, well formed or not (F37).
@@ -1004,7 +1002,15 @@ impl World {
             }
             return DeclIssue::None;
         }
-        if is_keyset || self.trusted.contains_key(&key) {
+        // "Already trusted" means trusted through a record other than this
+        // declaration: a declaration never keeps itself trusted (§5.3,
+        // S2-FIX3/F72).
+        if is_keyset
+            || self
+                .trusted
+                .get(&key)
+                .is_some_and(|trusted| trusted.source != index)
+        {
             return DeclIssue::None;
         }
         if self.cosigned_by_trusted_human(record, &message, &key) {
@@ -1173,17 +1179,10 @@ impl World {
             // that is itself not admitted has no material here: its signature
             // cannot hand trust on either (§5.3: such a declaration
             // "establishes no trust").
-            let lifecycle_failure = match resolution.state {
-                SigState::Invalid(code) => {
-                    matches!(code, e::KEY_EXPIRED | e::KEY_REVOKED | e::KEY_COMPROMISED)
-                }
-                SigState::Unverified(code) => {
-                    code == e::TS_UNTRUSTED
-                        || (code == e::KEY_UNKNOWN && self.trusted.contains_key(&entry.key))
-                }
-                SigState::Valid => false,
-            };
-            if lifecycle_failure {
+            // §5.3 (S2-FIX3/F72): a signature counts only when its key
+            // resolves, its §3.4 equation holds and it passes §9.4; any other
+            // outcome leaves the declaration without material of any kind.
+            if resolution.state != SigState::Valid {
                 admitted = false;
                 break;
             }
@@ -2301,14 +2300,14 @@ impl World {
                     let _ = placeholder;
                 }
             }
-            // §10.3 applies "when both the placeholder and its erasure record
-            // are present in a container"; a record that fails its own §4.5
-            // structure is not a placeholder (S2/F48). Without a placeholder
-            // for the erased identity, rule 1 is broken only when some
-            // placeholder of the container attests this erasure record (its
-            // `erased` reference then names no placeholder); otherwise there
-            // is no placeholder to cross-check.
-            let Some(placeholder_slot) = matching_placeholder else {
+            // §10.3 (S2-FIX3/F80/F82): rule 1 is evaluated for every erasure
+            // record that is valid and for every erasure record that a
+            // placeholder's `attestation` names, whatever its own verdict; an
+            // erasure record that is neither is judged by its own verdict only.
+            // A valid erasure record whose erased identity has no placeholder
+            // that passes §4.5 (none, or only a malformed one) has a missing
+            // placeholder.
+            let named = {
                 let Some(erasure_record) = self.slots[erasure_slot].record.as_ref() else {
                     continue;
                 };
@@ -2316,7 +2315,7 @@ impl World {
                 let erasure_identity = erasure_record
                     .envelope()
                     .map(|envelope| identity_key(&envelope.origin, &envelope.id));
-                let attested = placeholder_slots.iter().any(|&slot| {
+                placeholder_slots.iter().any(|&slot| {
                     self.slots[slot]
                         .record
                         .as_ref()
@@ -2328,10 +2327,13 @@ impl World {
                                     &placeholder.attestation.id,
                                 )) == erasure_identity
                         })
-                });
-                if attested {
-                    outcome.container_errors.push(e::ERASE_DIGEST_MISMATCH);
-                }
+                })
+            };
+            if !named && self.evaluate(erasure_slot).verdict != Verdict::Valid {
+                continue;
+            }
+            let Some(placeholder_slot) = matching_placeholder else {
+                outcome.container_errors.push(e::ERASE_DIGEST_MISMATCH);
                 continue;
             };
             let placeholder = self.slots[placeholder_slot]

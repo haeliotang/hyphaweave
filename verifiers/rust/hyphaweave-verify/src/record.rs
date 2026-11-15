@@ -872,7 +872,14 @@ fn check_consent_signer(envelope: &Envelope, facts: &SigFacts) -> Result<(), Cod
     if !matches!(envelope.actor.actor_type.as_str(), "human" | "organization") {
         return Err(e::ACTOR_KEY_TYPE_MISMATCH);
     }
-    if facts.any_valid_of_class(&["human", "organization"]) {
+    // Consent kind pages (S2-FIX3/F81): the required signer is `actor.key`
+    // (§4.4); a valid signature by another human or organization key does not
+    // satisfy the rule.
+    if facts.any_valid(&envelope.actor.key)
+        && facts
+            .class_of(&envelope.actor.key)
+            .is_none_or(|class| matches!(class, "human" | "organization"))
+    {
         Ok(())
     } else if facts.has_verifiable_known_signature() {
         Err(e::ACTOR_KEY_TYPE_MISMATCH)
