@@ -11840,6 +11840,38 @@ declare(
 )
 
 
+
+def _s2_manifest_tofu_failed_files() -> dict[str, bytes]:
+    files = _manifest_context_trusted_tofu_files()
+    path = "container/signatures/manifest.sig.json"
+    sigfile = parse(files[path])
+    entry = dict(sigfile["signatures"][0])
+    raw = bytearray(keyutil.b64url_decode(entry["value"], expected_len=64))
+    raw[32] ^= 0x01
+    entry["value"] = keyutil.b64url_encode(bytes(raw))
+    sigfile["signatures"] = [entry] + list(sigfile["signatures"][1:])
+    return {**files, path: canonical(sigfile)}
+
+
+declare(
+    "container",
+    "manifest-tofu-failed-equation",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SIG_INVALID",),
+    build=lambda case_dir: _s2_manifest_tofu_failed_files(),
+    args=_S2_ARGS,
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=[],
+    notes="S2/F42 (§11.5, §14.9 TOFU predicate): the manifest of "
+    "container/manifest-context-trusted-tofu, signed by a container-declared device key, "
+    "with its signature value altered. A manifest signature contributes to "
+    "L_KEY_TRUST_TOFU only when the context material verified its equation; the failed "
+    "equation is E_MANIFEST_SIG_INVALID, the pipeline stops at step (5) and the report "
+    "carries no L_KEY_TRUST_TOFU.",
+)
+
 # -- F44: a present but structurally invalid reference target --------------------
 
 
