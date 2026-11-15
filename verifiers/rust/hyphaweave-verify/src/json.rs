@@ -69,24 +69,30 @@ fn check_preconditions(bytes: &[u8]) -> Result<(), JsonError> {
 ///
 /// This is the syntax pass only; canonical byte form is checked by
 /// [`parse_canonical_object`]. Returns the first violation in input byte order.
+///
+/// "Top-level value not an object where an object is required" (§1.9) is a
+/// property of the whole value, so it is decided once the value has been
+/// read: a violation inside the value — a depth above `MAX_JSON_DEPTH`
+/// (`E_JSON_SIZE`), an integer out of range (`E_JSON_NUMBER_RANGE`), any other
+/// class of the stage-one pass — is reported first (S2 review A low-1: a
+/// 33-level array is `E_JSON_SIZE`, a top-level `18446744073709551616` is
+/// `E_JSON_NUMBER_RANGE`).
 pub fn parse_object(bytes: &[u8]) -> Result<Object, JsonError> {
     check_preconditions(bytes)?;
     let mut parser = Parser { bytes, pos: 0 };
     parser.skip_whitespace();
-    if parser.peek() != Some(b'{') {
-        return Err(JsonError::at(e::JSON_INVALID, parser.pos));
-    }
-    // `Value` implements `Drop`, so the object is taken out, not moved out.
-    let Value::Object(object) = &mut parser.parse_value()? else {
-        return Err(JsonError::at(e::JSON_INVALID, 0));
-    };
-    let object = std::mem::take(object);
+    let start = parser.pos;
+    let mut value = parser.parse_value()?;
     parser.skip_whitespace();
     if parser.pos != bytes.len() {
         // Trailing non-whitespace content (a second value, a comment, junk).
         return Err(JsonError::at(e::JSON_INVALID, parser.pos));
     }
-    Ok(object)
+    // `Value` implements `Drop`, so the object is taken out, not moved out.
+    let Value::Object(object) = &mut value else {
+        return Err(JsonError::at(e::JSON_INVALID, start));
+    };
+    Ok(std::mem::take(object))
 }
 
 /// Parses any JSON value (WR-CJ input restrictions: no floats, integer range,
