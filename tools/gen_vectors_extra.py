@@ -13403,6 +13403,86 @@ declare(
 )
 
 
+# -- Q5 (F68 open point): steps 1-5 of §5.5.2 are walked beyond the depth bound.
+#    Step 1 needs every resolved parent to be a valid record, so a step-2..5
+#    failure on a link reaches the records above it as step 1 (cascade).
+
+
+def _fix1_deep_chain_bad_root_files(**root_kwargs: Any) -> dict[str, bytes]:
+    root_args: dict[str, Any] = dict(
+        record_id="grant-depth-root",
+        kinds=("weave.grant", "example.note"),
+        actions=("grant", "propose", "accept"),
+        valid_from=recordlib.T0,
+        valid_until=recordlib.T9,
+        transferable=True,
+    )
+    root_args.update(root_kwargs)
+    root = root_grant(**root_args)
+    records = [root]
+    parent = root
+    grantee = "agent-2"
+    final_grantee = grantee
+    for index in range(9):
+        final_grantee = grantee
+        child = delegated_grant(
+            parent,
+            record_id="grant-depth-%d" % (index + 1),
+            sub_granter="agent-1" if index % 2 == 0 else "agent-2",
+            grantee=grantee,
+            kinds=("weave.grant", "example.note"),
+            actions=("grant", "propose", "accept"),
+            valid_from=recordlib.T0,
+            valid_until=recordlib.T9,
+            transferable=True,
+        )
+        records.append(child)
+        parent = child
+        grantee = "agent-1" if index % 2 == 0 else "agent-2"
+    records.append(
+        agent_action(
+            parent, record_id="grant-depth-9-note", key_name=final_grantee,
+            recorded_at=recordlib.T4, stage="accepted",
+        )
+    )
+    return _wrap_internal(recordlib.build_container(records))
+
+
+for _name, _root_kwargs, _code, _why in (
+    ("chain-depth-9-root-not-transferable", dict(transferable=False), "E_GRANT_NOT_TRANSFERABLE",
+     "the root grant is not transferable, so the ninth link (grant-depth-1 to the root, "
+     "beyond the depth bound for the note) fails step 3"),
+    ("chain-depth-9-first-link-exceeds", dict(kinds=("weave.grant",)), "E_GRANT_DELEGATION_EXCEEDS",
+     "the root grant covers only weave.grant, so the ninth link (grant-depth-1 to the root, "
+     "beyond the depth bound for the note) fails step 5 (example.note is not in the parent)"),
+):
+    declare(
+        "grant",
+        _name,
+        "container",
+        "container",
+        "invalid",
+        errors=(_code, "E_GRANT_UNRESOLVED"),
+        build=lambda case_dir, _root_kwargs=_root_kwargs: _fix1_deep_chain_bad_root_files(
+            **_root_kwargs
+        ),
+        args=GRANT_ARGS,
+        records=(
+            {"id": "grant-depth-1", "verdict": "invalid", "errors": [_code]},
+            {"id": "grant-depth-2", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
+            {"id": "grant-depth-9", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
+            {"id": "grant-depth-9-note", "verdict": "unverifiable", "errors": ["E_GRANT_UNRESOLVED"]},
+        ),
+        notes="S2-FIX1 Q5 (F68 open point; §5.5.2): grant/chain-depth-9-links (a note citing "
+        "the depth-9 grant, nine parent links, one beyond the bound) where " + _why + ". "
+        "Steps 1-5 are walked beyond the bound as well, and step 1 requires each resolved "
+        "parent to be a valid record: grant-depth-1 is itself invalid (" + _code + "), every "
+        "grant above it fails step 1 (unverifiable E_GRANT_UNRESOLVED), and so does the note, "
+        "whose walk stops at its first link. A failure beyond the bound is therefore never "
+        "hidden behind step 7, and it reaches the note as step 1.",
+    )
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
