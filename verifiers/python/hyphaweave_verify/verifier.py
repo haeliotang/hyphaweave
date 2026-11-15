@@ -123,11 +123,14 @@ class RecordView:
     consent_revocation: ConsentRevocation | None = None
     #: S2/F38/F61-1: the key-lifecycle facts of a ``weave.key.declared`` or
     #: ``weave.key.rotated`` record whose checks pass when the §9.4 effects on
-    #: the record's *own* signatures are left out. §9.4 judges every signature
-    #: of the record for its reported verdict, but whether the record supplies
-    #: key material, governs a window or enters the trusted set (§5.3) is
-    #: decided without those effects, so a declaration of a compromised key
-    #: keeps the key's lifecycle attached to every signature it makes.
+    #: the signature of the record's *subject key* (``body.key`` of a
+    #: declaration, ``body.new_key`` of a rotation) are left out. §9.4 judges
+    #: every signature of the record for its reported verdict, but whether the
+    #: record supplies key material, governs a window or enters the trusted set
+    #: (§5.3) is decided without that one effect, so a declaration of a
+    #: compromised key keeps the key's lifecycle attached to every signature it
+    #: makes. A cosignature or a rotation's old-key signature must pass §9.4
+    #: for the record to be admitted at all (S2-FIX1 T1, Q2).
     admitted_declaration: KeyDeclaration | None = None
     admitted_rotation: KeyRotation | None = None
 
@@ -626,11 +629,14 @@ def _verify_signatures(
             digest,
         )
     # S2 (§14.5 steps (4)-(5), §4.4 step 2, §14.6): step (4) resolves the key
-    # of every ed25519 entry before any cryptography; an unresolvable key makes
-    # the record unverifiable E_KEY_UNKNOWN whatever the other entries say.
-    # Every entry is then judged in array order, first by the §3.4 equation and
-    # then by the §9.4 effects, and reports its own state; the first failing
-    # entry decides the record's code.
+    # of every ed25519 entry before any cryptography, and every resolved entry
+    # is then judged in array order, first by the §3.4 equation and then by the
+    # §9.4 effects, and reports its own state. S2-FIX1 T2 ("invalid beats
+    # unverifiable", §4.4 step 2): the first entry with an invalid outcome
+    # decides the record's code even when another entry's key cannot be
+    # resolved; only without one is the record unverifiable, E_KEY_UNKNOWN for
+    # an unresolved key before any unverifiable §9.4 outcome.
+    subject_key = _lifecycle_subject_key(envelope)
     resolved: list[tuple[Any, bytes | None, bool]] = []
     for signature in envelope.sigs:
         if not signature.is_ed25519:
@@ -641,7 +647,8 @@ def _verify_signatures(
     unknown_key = any(
         signature.is_ed25519 and material is None for signature, material, _ in resolved
     )
-    first_error: WeaveError | None = None
+    first_invalid: WeaveError | None = None
+    first_unverifiable: WeaveError | None = None
     for signature, material, from_context in resolved:
         if not signature.is_ed25519:
             # Q13: unknown algorithms are ignored, never invalidating.
@@ -670,14 +677,19 @@ def _verify_signatures(
             ed25519.verify_signature(material, message, signature.raw or b"")
         except WeaveError as error:
             states.append({"key": signature.key, "state": "invalid"})
-            first_error = first_error or error
+            first_invalid = first_invalid or error
             continue
-        if from_context or own_effects:
+        if from_context or own_effects or signature.key != subject_key:
             # §9.4 judges every signature by its key's lifecycle, including
             # the signatures of a declaration or rotation whose material
             # the record itself supplies (S2/F38/F61-1): a declaration of a
             # compromised key is rescued only by a verified trusted
             # receipt, exactly like any other record the key signed.
+            # The admission pass (own_effects=False, §5.3) leaves out only
+            # the §9.4 effects on the signature of the key the record
+            # states (its subject key); a cosignature or a rotation's
+            # old-key signature that fails §9.4 gives the record's subject
+            # key neither material nor trust (S2-FIX1 T1, Q2).
             try:
                 context.key_state.check_signature_effects(
                     signature.key,
@@ -694,15 +706,36 @@ def _verify_signatures(
                 # §14.6 (S8.10/F12, F52): the equation passed but the key
                 # state fails a §9.4 rule, so the signature is unverified.
                 states.append({"key": signature.key, "state": "unverified"})
-                first_error = first_error or error
+                if record_verdict([error.code]) == "invalid":
+                    first_invalid = first_invalid or error
+                else:
+                    first_unverifiable = first_unverifiable or error
                 continue
         states.append({"key": signature.key, "state": "valid"})
         verified.add(signature.key)
     view.verified_keys = frozenset(verified)
+    if first_invalid is not None:
+        raise first_invalid
     if unknown_key:
         raise WeaveError("E_KEY_UNKNOWN", "signing key is not declared in the context")
-    if first_error is not None:
-        raise first_error
+    if first_unverifiable is not None:
+        raise first_unverifiable
+
+
+def _lifecycle_subject_key(envelope: envelope_module.Envelope) -> object:
+    """The key a declaration or rotation states for itself (§5.3, S2-FIX1 Q2).
+
+    ``body.key`` of a ``weave.key.declared`` record and ``body.new_key`` of a
+    ``weave.key.rotated`` record; ``None`` for every other kind. Only that
+    key's own signature is left out of §9.4 when the record's admission is
+    decided (:func:`attempt_record`).
+    """
+    body = envelope.body if isinstance(envelope.body, dict) else {}
+    if envelope.kind == kinds.KIND_DECLARED:
+        return body.get("key")
+    if envelope.kind == kinds.KIND_ROTATED:
+        return body.get("new_key")
+    return None
 
 
 def _resolve_signing_key(
@@ -997,9 +1030,11 @@ def attempt_record(view: RecordView, context: Context) -> None:
     """Re-run the full record pipeline, replacing the view's current result.
 
     For ``weave.key.declared`` and ``weave.key.rotated`` the pipeline runs a
-    second time with the §9.4 effects on the record's own body-supplied
-    signatures left out; when that pass is valid its facts are *admitted* to
-    the key state even if the reported verdict fails a §9.4 rule (S2/F38).
+    second time with the §9.4 effects on the subject key's own signature left
+    out (:func:`_lifecycle_subject_key`); when that pass is valid its facts are
+    *admitted* to the key state even if the reported verdict fails a §9.4 rule
+    (S2/F38). Every other signature, cosignatures and a rotation's old-key
+    signature included, keeps its §9.4 effects in that pass (S2-FIX1 Q2).
     """
     _attempt_record_pass(view, context, own_effects=True)
     view.admitted_declaration = None
