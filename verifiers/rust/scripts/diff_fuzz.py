@@ -18,6 +18,11 @@ Output: one JSON line per mutant in `--out` (class, case, seed, both
 conclusions and exit codes, whether the normalized report bytes are equal),
 and a summary on standard output.
 
+Exit status: 1 when any mutant's conclusions differ (verdict, error codes,
+notices or exit code of the two runs), 0 otherwise. Report-detail differences
+with equal conclusions do not change the exit status; they are counted in
+the summary (`mutants` minus `same_bytes`) and listed in `--out`.
+
 Requires the `cryptography` package (Ed25519 signing of the test seeds only).
 """
 
@@ -681,7 +686,7 @@ def main() -> int:
             totals["same_bytes"] += int(result["same_bytes"])
             out.write(json.dumps(result, sort_keys=True) + "\n")
     print(json.dumps(totals))
-    return 0
+    return 1 if totals["same_conclusion"] != totals["mutants"] else 0
 
 
 if __name__ == "__main__":
