@@ -76,7 +76,7 @@ targets. The CLI is the only place that reads the environment.
 
 ## Building
 
-The crate needs a stable Rust toolchain (MSRV `1.87`). From the repository root:
+The crate needs a stable Rust toolchain (MSRV `1.88`). From the repository root:
 
 ```bash
 cargo build --manifest-path verifiers/rust/Cargo.toml

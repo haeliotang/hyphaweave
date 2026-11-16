@@ -6,6 +6,13 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## Rust verifier MSRV 1.88 — 2026-11-16 — DRAFT, UNRELEASED
+
+The Rust verifier declared `rust-version = "1.87"`, but its locked dependency `sha2` 0.11.1
+declares `rust-version = "1.88"`, so the crate could not build on 1.87. The declared MSRV is now
+1.88 (`verifiers/rust/Cargo.toml`, `verifiers/rust/README.md`). Every other locked registry
+dependency declares 1.87 or lower. Found by the Zoeweave Z2 review. No code or vector changes.
+
 ## S2 round, revision 6 (S2-FIX6) — 2026-11-16 — DRAFT, UNRELEASED
 
 Decision 2026-11-16 #13 (decided by principle; the founder can overturn every item): the
