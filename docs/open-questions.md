@@ -394,6 +394,14 @@ otherwise.
   problems?
 - **Decision.** Only `sha256` (the path is `blobs/sha256/<hex>`); an unsupported
   algorithm, a size mismatch or a set mismatch is `E_MANIFEST_BLOB` (invalid).
+- **Refined (S3 round, Inceptless decision 2026-11-16 #44, decided by principle).**
+  A malformed `manifest.blobs` (not an array, more than `MAX_BLOBS` entries, an entry
+  that is not a closed `{digest,size}` object, a digest without the §2.7 grammar, a
+  size that is not a non-negative integer) is `E_MANIFEST_SCHEMA` (§11.2, §13, Q24);
+  a well-formed digest other than `sha256:<64 lowercase hex>`, digests out of order or
+  repeated, and every disagreement with the files are `E_MANIFEST_BLOB`; any file in
+  `blobs/` or `blobs/sha256/` that is not a listed blob is extra, whatever its name;
+  a deeper directory is `E_CONTAINER_ENTRY`. The order of the checks is in §11.7.
 - **Reasoning.** Blobs are content-addressed attachments; H0 needs no agility
   there, and one code keeps negative vectors deterministic.
 - **Where.** `spec/weave-record-1.md` §11.7; `vectors/container/`; verifier

@@ -19,7 +19,9 @@ rounds (Inceptless decisions 2026-11-11 #5 to 2026-11-12 #3) and the **S2 round*
 implementation (H1 findings F38–F69) by the rules marked `[S2]`, together with its first
 revision (Inceptless decision 2026-11-15 #18, the founder's rulings Q1–Q5 and the review
 items of the S2 round, marked `[S2-FIX1]`); like the S1 rounds, it implements rulings of a
-later decision inside revision 3 (§0.3).
+later decision inside revision 3 (§0.3). The **S3 round** (Inceptless decision 2026-11-16
+#44) settles the error codes of blob violations (§11.1, §11.2, §11.7), marked
+`[S3/B1]`–`[S3/B4]`.
 **Editors:** Inceptless.
 **Licence:** this specification text is licensed CC BY 4.0; code and test vectors for the
 format are licensed Apache-2.0.
@@ -104,15 +106,16 @@ values (§4.3), never by silently changing the meaning of existing names [B3][E1
 A **revision** of this document is the set of rulings of the one decision that opens it
 (revision 2: decision 2026-11-10 #42; revision 3: decision 2026-11-11 #2); later decisions
 that close findings against the open revision are recorded as **rounds** of that revision
-(the S1 rounds and the S2 round of revision 3), with their rulings tagged and listed in
-Appendix A. The error-code registry (`spec/error-codes.md`) numbers its own revisions by
-its own convention: a decision that opens a specification revision or a round opens a
+(the S1 rounds, the S2 round and the S3 round of revision 3), with their rulings tagged and
+listed in Appendix A. The error-code registry (`spec/error-codes.md`) numbers its own
+revisions by its own convention: a decision that opens a specification revision or a round opens a
 registry revision, and later decisions that only revise that round are folded into the same
 registry revision (registry revision 6 carries decisions 2026-11-12 #1, #2 and #3; registry
 revision 7 carries decisions 2026-11-15 #8, #18 and #22). Neither changes the `format`
 identifier [S2] decided by principle (Inceptless decision 2026-11-15 #8; S2); the
 registry-numbering sentence is corrected to the registry's own history [S2-FIX1/T7] decided
-by principle (Inceptless decision 2026-11-15 #18).
+by principle (Inceptless decision 2026-11-15 #18). The S3 round opens registry revision 8
+[S3] decided by principle (Inceptless decision 2026-11-16 #44).
 
 ### 0.4 Normative references
 
@@ -2132,7 +2135,13 @@ is required evidence, and its absence is the registry's "no signatures" conditio
 [S8②] decided (Inceptless decision 2026-11-11 #2; S8). Directories not listed
 here, or unknown files inside a listed directory, are `E_CONTAINER_ENTRY` — with two special
 cases: an extra file in `records/` is `E_MANIFEST_RECORD_EXTRA`, and an extra file in
-`blobs/` is `E_MANIFEST_BLOB`. The `readable/` directory and anything below it is ignored
+`blobs/` is `E_MANIFEST_BLOB`. An extra file in `blobs/` is any file directly in `blobs/`
+or `blobs/sha256/` that is not a listed blob, whatever its name (for example
+`blobs/stray`, or a name that is not 64 lowercase hex digits); a file below any other
+directory inside `blobs/` (such as `blobs/sha512/<name>` or `blobs/sha256/<dir>/<name>`)
+lies in a directory not listed here and is `E_CONTAINER_ENTRY`, in the directory and the
+zip form alike [S3/B3][S3/B4] decided by principle (Inceptless decision 2026-11-16 #44).
+The `readable/` directory and anything below it is ignored
 entirely: it is never parsed, never hashed, never decompressed in the zip form, its CRC is
 never checked, it is never trusted, and it is never part of the manifest
 [Q19][S16/F4] decided (Inceptless decision 2026-11-11 #2; S16/F4; 2026-11-10 #34; Q19). All
@@ -2154,7 +2163,7 @@ The manifest is a canonical JSON object with these members; unknown members are
 | `records` | yes | array of 1–100000 entries (§11.2.1), sorted by `digest` ascending, unique digests; violations `E_MANIFEST_RECORDS` |
 | `previous_manifest` | yes | `null`, or exactly `{"digest":<digest string>}` (closed); malformed `E_MANIFEST_SCHEMA` |
 | `chain` | conditional | for L0: absent or `null`; a non-null `chain` with `level == "L0"` is `E_MANIFEST_LEVEL` (invalid); for L1/L2: required exactly `{"algorithm":"sha256","head":<digest string>}`; missing or null → `E_MANIFEST_L1_NO_HEAD` |
-| `blobs` | no | array of blobs (§11.7); absent means no blobs; malformed `E_MANIFEST_SCHEMA` |
+| `blobs` | no | array of blobs (§11.7); absent, or an empty array, means no blobs; malformed (§11.7 rule 1: not an array, more than `MAX_BLOBS` entries, an entry that is not a closed `{digest,size}` object, a digest without the §2.7 digest-string grammar, a size that is not a non-negative integer) `E_MANIFEST_SCHEMA`; every other blob violation `E_MANIFEST_BLOB` (§11.7 rules 2 and 3) [S3/B1] |
 
 The manifest's `origin` is the publisher of the container; records inside the container may
 carry other origins (a container may transport records received from other systems), and
@@ -2446,15 +2455,51 @@ file is absent or whose digest mismatches is invalid.
 ### 11.7 Blobs
 
 Attachments are content-addressed as `blobs/sha256/<64 lowercase hex>`. `manifest.blobs`,
-when present, is an array of closed objects `{"digest":<digest string>,"size":<integer>=0}`,
-sorted ascending by `digest`, unique digests. For H0 every blob digest MUST be
-`sha256:<64 lowercase hex>` (the path convention only defines sha256) and every blob's
-`size` MUST equal its byte length, at most `MAX_BLOB_BYTES`; at most 10,000 blobs. Every
-`blobs/sha256/<hex>` file MUST be listed with matching sha256 and size, every listed blob
-MUST exist, and a present `blobs/` directory MUST have a non-empty `manifest.blobs`
-listing; all violations (including an unsupported blob digest algorithm) are
+when present, is an array of at most `MAX_BLOBS` (10,000) closed objects
+`{"digest":<digest string>,"size":<integer>=0}`, sorted ascending by `digest` (UTF-16
+code-unit order), unique digests; an empty array lists no blobs, like an absent member.
+For H0 every blob digest MUST be `sha256:<64 lowercase hex>` (the path convention only
+defines sha256) and every blob's `size` MUST equal its byte length, at most
+`MAX_BLOB_BYTES`. Every file in `blobs/` MUST be a listed blob `blobs/sha256/<hex>` with
+matching sha256 and size, every listed blob MUST exist, and a present `blobs/` directory
+MUST have a non-empty `manifest.blobs` listing; an unsupported blob digest algorithm is
 `E_MANIFEST_BLOB` [Q23] decided (Inceptless decision 2026-11-10 #34; Q23). Blob files are
 not JSON and are not canonicalised; they are hashed as raw bytes.
+
+**Codes.** The code of a blob violation depends on what is needed to see it
+[S3/B1][S3/B2][S3/B3] decided by principle (Inceptless decision 2026-11-16 #44):
+
+1. **The listing is malformed: `E_MANIFEST_SCHEMA`** (§11.2). `blobs` is present but is
+   not an array (`null` included); it has more than `MAX_BLOBS` entries (§13, whose
+   limit-to-code mapping is fixed [Q24]); an entry is not an object with exactly the
+   members `digest` and `size`; a `digest` is not a string with the digest-string grammar
+   of §2.7 (for example uppercase hexadecimal digits, no `:`, a malformed algorithm name,
+   or an empty hexadecimal part or one longer than 128 digits); a `size` is not a
+   non-negative integer.
+2. **The listing is well-formed but breaks this section: `E_MANIFEST_BLOB`.** A digest is
+   a digest string other than `sha256:<64 lowercase hex>` — an unsupported algorithm,
+   which §2.7 calls structurally valid, not malformed, or `sha256` with another number of
+   digits; or the digests are not strictly ascending (out of order, or one digest listed
+   twice).
+3. **The listing and the files disagree: `E_MANIFEST_BLOB`.** A listed blob file is
+   missing; a file's sha256 or byte length differs from its entry; a listed `size` or a
+   file exceeds `MAX_BLOB_BYTES`; a file in `blobs/` or `blobs/sha256/` is not a listed
+   blob, whatever its name (§11.1); `blobs/` is present while `manifest.blobs` is absent or
+   empty. `blobs/` is present when the directory exists in the directory form, and in the
+   zip form when the name of some entry, a directory entry included, starts with `blobs/`.
+
+**Check order.** Rules 1 and 2 read `manifest.json` only and are decided at the
+manifest-structure step (§14.5 step (3)), so a failure there reports `records: []`. They
+run in this order, and the first failing check is the only one reported: the array, the
+entry count, then every entry in array order — its shape, its digest grammar and its size
+(rule 1), then its sha256 form (rule 2) — and last the order of the digests (rule 2). An
+entry with an unsupported algorithm therefore reports `E_MANIFEST_BLOB` even when a later
+entry is malformed, and a malformed entry before it reports `E_MANIFEST_SCHEMA`. Rule 3 is
+the blob step (§14.5 step (9)): it runs after the records are verified and reports
+`E_MANIFEST_BLOB` once, whatever the number of disagreements. A directory below `blobs/`
+other than `blobs/sha256/`, or inside `blobs/sha256/`, is a layout violation,
+`E_CONTAINER_ENTRY` at entry enumeration (§11.1) [S3/B4] decided by principle (Inceptless
+decision 2026-11-16 #44).
 
 ### 11.8 `readable/`
 
@@ -4059,6 +4104,18 @@ the founder can overturn them.
 | S2-FIX6 (owner lookup first) | an owner that cannot be resolved is `E_KEY_UNKNOWN` before the owner-cosignature rule and before the §4.4 step 5 outcome | §9.1 |
 | S2-FIX6 (grant chain order) | the whole grant chain is judged for revocation before any link's window: a revoked link anywhere is `E_GRANT_REVOKED` | §5.5.2, `weave.grant.md` |
 | S2-FIX6 (registry) | `E_GRANT_GRANTER` no longer lists a parent outside its window or revoked (those are `E_GRANT_EXPIRED` / `E_GRANT_REVOKED`, §5.5.2 step 6) | registry, `weave.grant.md` |
+
+The following rows are fixed by Inceptless decision **2026-11-16 #44** (the S3 round: the
+blob findings of the MW2 reviews, where the two reference verifiers reported different
+codes, and the contradiction between §11.2, §11.7 and §13), **decided by principle**; the
+founder can overturn them.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S3/B1 | a malformed `manifest.blobs` (not an array, an entry that is not a closed `{digest,size}` object, a digest without the §2.7 digest-string grammar, a size that is not a non-negative integer) is `E_MANIFEST_SCHEMA`; a well-formed listing with a digest other than `sha256:<64 lowercase hex>` (an unsupported algorithm included) or digests that are not strictly ascending (a repeated digest included) is `E_MANIFEST_BLOB`; both are decided at the manifest-structure step in a fixed order (array, count, each entry in array order: shape, grammar and size, then sha256 form; then order); an empty array means no blobs | §11.2, §11.7 |
+| S3/B2 | more than `MAX_BLOBS` entries stays `E_MANIFEST_SCHEMA` as the §13 table fixes it (Q24); §11.7 no longer says that all blob violations are `E_MANIFEST_BLOB` | §11.7, §13 |
+| S3/B3 | every file directly in `blobs/` or `blobs/sha256/` that is not a listed blob is an extra blob file, whatever its name (`E_MANIFEST_BLOB`, blob step); `blobs/` is present in the zip form when some entry name starts with `blobs/` | §11.1, §11.7 |
+| S3/B4 | a file below another directory inside `blobs/` (other than `blobs/sha256/`, or inside `blobs/sha256/`) lies in a directory the layout does not list: `E_CONTAINER_ENTRY` at entry enumeration, in the directory and the zip form alike | §11.1, §11.7 |
 
 ### A.2 PROVISIONAL implementation shapes
 
