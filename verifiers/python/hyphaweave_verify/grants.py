@@ -260,9 +260,11 @@ def validate_grant_chain(
         if grant.digest in seen:
             raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is cyclic")
         seen = seen | {grant.digest}
-        _check_window(grant, at_time)
+        # S2-FIX5 (decision 2026-11-16 #9; §5.4, §5.5.2 step 6): a grant that is
+        # both revoked and outside its window at the evaluated time is revoked.
         if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:
             raise WeaveError("E_GRANT_REVOKED", "grant is revoked")
+        _check_window(grant, at_time)
         if grant.actor_type in ("human", "organization"):
             break  # root grant
         parent, _parent_digest = _resolve_grant(grant.parent_reference, context)

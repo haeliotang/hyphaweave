@@ -1421,3 +1421,59 @@ founder can overturn every item. No conclusion of the frozen candidate set chang
 11. **F70, F71.** Wording only (both verifiers agree): "top-level value not an object" is
     decided after the value (vectors `jcs/top-level-*`); an anchor's typed primitives follow
     1c (unit tests, an anchor failure is a usage error).
+
+### 7.7 S2-FIX4 (decision 2026-11-16 #4)
+
+The Rust follow-up's differential fuzzing against S2-FIX3 left two differences (F83, F84 in
+`docs/h1-findings.md` on that branch). The main session ruled F83 by §5.3 and left F84 to
+the specification's own text; the founder can overturn both. No conclusion of the frozen
+candidate set changes.
+
+1. **F83, manifest material (§5.3, §11.3).** §5.3 already said "no material of any kind",
+   but its list named record signatures, cosignatures and owners only, and §11.3 defined a
+   required key as one that resolves "through a declaration"; one sentence in §5.3 and one
+   clause in §11.3 state that the manifest signature and a supplied previous's signature
+   are no exception, and that the same holds for a rotation that is not semantically valid
+   (§5.3 already allowed only a valid rotation to supply material). Vectors
+   `container/manifest-signer-declaration-owner-altered`, `-key-type-absent`,
+   `container/manifest-signer-rotation-old-signature-fails`,
+   `container/previous-signer-owner-declaration-body-absent`; guard
+   `container/manifest-signer-declared-untrusted`.
+2. **F84, TOFU on key-lifecycle records (§14.9).** One sentence: on a key-lifecycle record
+   only the `actor.key` signature takes part, and it is context-trusted exactly when its
+   material came from a context record other than the record itself. The leaning that a
+   signature whose verification fails should produce no trust notice is overruled by the
+   text: §14.9 (S2/F42, decision 2026-11-15 #8) says a record signature check "is
+   context-trusted as soon as context material is used for it, even when its equation then
+   fails", and §14.6 says the same ("even if that signature or the record then fails");
+   §14.6 and the registry row of `N_KEY_TOFU` already limited key-lifecycle records to the
+   actor-key signature. A signature whose key has no material under §5.3 (F83) has no check
+   to count, so the two rules do not meet. Of the two reported shapes, the declaration
+   whose `actor.key` signature used another declaration's material is the reference
+   verifier's error; the other (an owner declaration without `body`, reported as an owner
+   cosignature) was in fact the previous-manifest link taking material F83 withholds, so
+   it is fixed by F83. Vectors `key-lifecycle/declaration-body-key-absent-actor-tofu`,
+   `-equation-fails`, `key-lifecycle/revocation-context-cosignature-not-tofu`,
+   `device-declaration-context-owner-cosignature-not-tofu`. The Rust verifier needs no
+   change for either.
+
+### 7.8 S2-FIX5 (decision 2026-11-16 #9)
+
+The differential fuzzing of S2-FIX4 left two specification ambiguities; the founder decided
+both.
+
+1. **Verification material (§5.3).** §5.3 asked for semantic validity of a declaration that
+   supplies material, while §11.3 (T17/A-L8) let a declared but untrusted key verify an
+   equation; neither said whether a declaration that fails the §14.1 structural group
+   counts. Ruling: a declaration supplies verification material, and resolves an owner,
+   only when it passes the structural group and every signature other than its subject
+   key's passes; trust is not required — the F73 owner rule applied to all material.
+   Vectors `key-lifecycle/declaration-key-type-absent-supplies-no-material`,
+   `declaration-sigs-absent-supplies-no-material`, `cosigner-declaration-key-type-absent`,
+   `container/manifest-signer-declaration-not-structural`; `key-lifecycle/owner-declaration-sigs-absent`
+   changes (the owner cosignature is `unverified`).
+2. **A grant both revoked and expired (§5.4).** §5.4 listed the window before the
+   revocation, §5.5.2 step 6 and `weave.grant.md` the other way round. Ruling:
+   `E_GRANT_REVOKED` (the more specific, stronger fact); §5.4 takes the order of §5.5.2.
+   Vectors `grant/revoked-and-expired`, `erasure/actor-program-basis-revoked-and-expired`.
+

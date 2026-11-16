@@ -6,6 +6,85 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round, revision 5 (S2-FIX5) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #9 (decided by the founder): the two specification ambiguities the
+S2-FIX4 differential fuzzing left. The `format` identifier is unchanged; no error code is
+added; the registry stays at revision 7. No conclusion of the frozen candidate set changes.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **Which declarations supply verification material (§5.3).** A declaration supplies the
+  material a signature by its key is verified against (on another record, as a cosignature,
+  on the manifest or a supplied previous manifest) and resolves an owner only when it passes
+  the §14.1 structural group and every signature other than its subject key's passes; trust
+  is not required (T17/A-L8). A declaration without `sigs` or whose body fails its schema
+  (a missing `key_type`) supplies none. The reference verifier used to verify cosignatures
+  and the manifest signature against such declarations (it already refused a missing
+  `key_type` for cosignatures).
+- **A grant both revoked and outside its window (§5.4).** `E_GRANT_REVOKED`, not
+  `E_GRANT_EXPIRED`: §5.4 now lists the revocation rule first, as §5.5.2 step 6 and the
+  grant kind page do (order only).
+
+### Vectors, tests and gates
+
+- **Vectors**: six new main cases (725 → 731): `key-lifecycle/declaration-key-type-absent-supplies-no-material`,
+  `declaration-sigs-absent-supplies-no-material`, `cosigner-declaration-key-type-absent`,
+  `container/manifest-signer-declaration-not-structural`, `grant/revoked-and-expired`,
+  `erasure/actor-program-basis-revoked-and-expired`. One existing main case changes by the
+  ruling: `key-lifecycle/owner-declaration-sigs-absent` (S2-FIX3) — the owner's cosignature
+  on the device declaration is now `unverified` with `N_KEY_UNDECLARED` (its conclusion,
+  unverifiable `E_KEY_UNKNOWN`, is unchanged).
+- **Ablation catalogue**: three S2-FIX5 entries; `fix3-f73-owner-structural` is now a
+  documented equivalent (owner and signature lookups read one map).
+- **Rust verifier**: not changed here. The Rust follow-up binary (`r2/rust-s2`, `dcaffa2`)
+  passes the frozen set and 728 of the 731 main cases; the three others
+  (`key-lifecycle/owner-declaration-sigs-absent`, `cosigner-declaration-key-type-absent`,
+  `container/manifest-signer-declaration-not-structural`) are its next increment.
+
+## S2 round, revision 4 (S2-FIX4) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #4 (decided by principle — the specification's own text; the founder
+can overturn every item): the two differences the Rust follow-up's differential fuzzing
+left against S2-FIX3 (`docs/h1-findings.md` F83, F84 on the Rust branch). The `format`
+identifier is unchanged; no error code is added; the registry stays at revision 7. No
+conclusion of the frozen candidate set changes.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **No manifest material from a declaration that supplies none (F83, §5.3, §11.3).** A
+  declaration with another signature that does not pass, and a `weave.key.rotated` record
+  that is not semantically valid, supply no material for the manifest signature or a
+  supplied previous container's manifest signature either: such an entry is judged as an
+  undeclared key's (`E_KEY_UNKNOWN`), its equation is not evaluated, and it adds no
+  `L_KEY_TRUST_TOFU`. The reference verifier used to take that material at step (5)
+  (reporting `E_MANIFEST_SIG_INVALID`, or no code and `L_KEY_TRUST_TOFU`) and for the
+  previous-manifest link; it now verifies the record set before the manifest equation.
+- **The TOFU predicate on key-lifecycle records (F84, §14.9).** Only the `actor.key`
+  signature takes part; it is context-trusted when its material came from a context record
+  other than the record itself, even when its equation fails (S2/F42); a cosignature never
+  takes part. The reference verifier never counted a declaration's `actor.key` signature
+  verified against another context declaration's material (a declaration without
+  `body.key`), and counted a context-material cosignature on a revocation.
+
+### Vectors, tests and gates
+
+- **Vectors**: nine new main cases (716 → 725): `container/manifest-signer-declaration-owner-altered`
+  and `-key-type-absent` (the two F83 reproductions), `container/manifest-signer-rotation-old-signature-fails`,
+  `container/previous-signer-owner-declaration-body-absent` (the second F84 reproduction, an
+  F83 shape at the previous-manifest link), `container/manifest-signer-declared-untrusted`
+  (A-L8 guard: an untrusted declaration with no other signature still supplies material),
+  `key-lifecycle/declaration-body-key-absent-actor-tofu` and `-equation-fails` (the first
+  F84 reproduction), `key-lifecycle/revocation-context-cosignature-not-tofu` and
+  `device-declaration-context-owner-cosignature-not-tofu`. No existing case changed.
+- **Unit tests**: `test_container.py` — the A-L8 test now uses the untrusted-declaration
+  vector; its old setup (a declaration whose cosigner has no material) is pinned as
+  `E_KEY_UNKNOWN`.
+- **Ablation catalogue**: six S2-FIX4 entries; `s2-f42-tofu-after-equation` re-anchored on
+  the new predicate function (the same mutation).
+- **Rust verifier**: not changed and no follow-up needed. The Rust follow-up binary
+  (`r2/rust-s2`, `dcaffa2`) passes all 725 main cases and the frozen set.
+
 ## H1-S2 (Rust follow-up of the S2 round) — 2026-11-15 — DRAFT, UNRELEASED
 
 Decision 2026-11-15 #20: the Rust verifier follows the S2 round of revision 3 and its

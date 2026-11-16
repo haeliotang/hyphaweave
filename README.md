@@ -31,19 +31,19 @@ Read this before using anything in this repository:
   specification, schemas, vectors and the Python verifier; it does not perform
   the round trips.
 - **Two implementations: the Python reference verifier and the Rust verifier;
-  both have followed revision 3, including the S2 round, its revisions S2-FIX1,
-  S2-FIX2 and S2-FIX3 and the supplement S2-FIX2b.** The Python
+  both have followed revision 3, including the S2 round, its revisions S2-FIX1 to
+  S2-FIX5 and the supplement S2-FIX2b.** The Python
   reference verifier lives in `verifiers/python/`; the second, independent
   implementation (milestone H1, `verifiers/rust/`) was written from the
   specification and the conformance vectors only. Its revisions H1-FIX1 to
   H1-FIX2B implement revision 3 of the specification and the S1 rounds, and its
   findings (`docs/h1-findings.md`) led to the S2 round of revision 3 (decision
   2026-11-15 #8) and its revisions S2-FIX1 and S2-FIX2 (decisions 2026-11-15 #18
-  and #22, the supplement S2-FIX2b, decision 2026-11-15 #32, and S2-FIX3, decision
-  2026-11-16 #1), which both
-  verifiers now implement (the Rust follow-up H1-S2, decision 2026-11-15 #20):
-  each passes all 716 main vectors and the 202 candidate regression vectors, and
-  their reports are byte-identical on every case (the gate-3 allow list is
+  and #22, the supplement S2-FIX2b, decision 2026-11-15 #32, S2-FIX3, decision
+  2026-11-16 #1, and S2-FIX4 and S2-FIX5, decisions 2026-11-16 #4 and #9), which both
+  verifiers now implement (the Rust follow-ups H1-S2 and H1-S3, decisions 2026-11-15 #20
+  and 2026-11-16 #10): each passes all 731 main vectors and the 202 candidate regression
+  vectors, and their reports are byte-identical on every case (the gate-3 allow list is
   empty). Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make

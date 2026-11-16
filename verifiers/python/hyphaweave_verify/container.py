@@ -606,17 +606,65 @@ def _validate_layout(container: ContainerInput) -> None:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _InternalRecordState:
+    """Timestamp evidence and record verdicts computed ahead of their report steps."""
+
+    archive: Any
+    verified_timestamps: tuple[VerifiedTimestamp, ...]
+    timestamp_evidence_present: bool
+    listing: "_RecordListing"
+    views: list[verifier.RecordView]
+
+
+def _records_without_material(
+    views: Iterable[verifier.RecordView], *, rotations: bool = True
+) -> frozenset[int]:
+    """The container key-lifecycle records that supply no key material (S2-FIX4 F83).
+
+    §5.3 (S2-FIX1 Q2, S2-FIX3 F72): a declaration with a signature other than
+    its subject key's that does not pass (unresolved key, failed §3.4
+    equation, failed §9.4) supplies no material of any kind, and only a valid
+    ``weave.key.rotated`` record supplies its explicit material (a rotation
+    that fails only through the §9.4 effects on its new key's own signature is
+    admitted, S2/F38); so neither can verify a manifest signature. Identified
+    by ``id()`` of the loaded record, as the views keep the objects they were
+    built from. ``rotations=False`` leaves the rotations to a caller with a
+    stricter rule of its own (the previous-manifest link, X5: only *valid*
+    rotations).
+    """
+    withheld: set[int] = set()
+    for view in views:
+        if view.envelope is None:
+            continue
+        if view.envelope.kind == kinds.KIND_DECLARED and view.nonsubject_signature_failed:
+            withheld.add(id(view.loaded))
+        elif (
+            rotations
+            and view.envelope.kind == kinds.KIND_ROTATED
+            and view.verdict != "valid"
+            and view.admitted_rotation is None
+        ):
+            withheld.add(id(view.loaded))
+    return frozenset(withheld)
+
+
 def _candidate_manifest_keys(
     container_records: list[verifier.LoadedRecord],
     keyset_views: list[verifier.RecordView],
+    *,
+    withheld: frozenset[int] = frozenset(),
 ) -> tuple[dict[str, bytes], dict[str, str]]:
-    """Keys usable for manifest-signature verification before record verdicts exist.
+    """Keys usable for manifest-signature verification.
 
     Keys come from (a) the externally supplied keyset (already verified), and
-    (b) structurally valid key-lifecycle records inside the container itself.
-    A record's *validity* can only be established later, but the manifest
-    signature is checked at step 5, so only key material whose key-id derivation
-    matches its declared public key is used.
+    (b) key-lifecycle records inside the container itself whose key-id
+    derivation matches their declared public key, a declaration only when it
+    passes the §14.1 structural group (S2-FIX5). Trust is not
+    required for the equation (§11.3), but a record in ``withheld`` (``id()``
+    of the loaded record) supplies nothing: §5.3 lets a declaration whose
+    other signature fails supply no material of any kind, and only a valid
+    rotation supply its explicit material (S2-FIX4 F83).
     """
     candidates: dict[str, bytes] = {}
     #: T10: material admitted from the local keyset is not context-trusted; a
@@ -630,6 +678,8 @@ def _candidate_manifest_keys(
         candidates[key_id] = declaration.public_key
         sources[key_id] = "keyset"
     for record in container_records:
+        if id(record) in withheld:
+            continue
         value = record.value
         try:
             envelope = verifier.envelope_module.validate_envelope(value)
@@ -638,6 +688,10 @@ def _candidate_manifest_keys(
         body = envelope.body
         try:
             if envelope.kind == kinds.KIND_DECLARED:
+                # S2-FIX5 (decision 2026-11-16 #9; §5.3): only a declaration that
+                # passes the §14.1 structural group supplies material.
+                if verifier._structural_declaration_class(verifier.RecordView(loaded=record)) is None:
+                    continue
                 raw = verifier.decode_public_key_material(body.get("public_key"))
                 if encoding.key_id_from_public_key(raw) == body.get("key"):
                     candidates.setdefault(body["key"], raw)
@@ -779,6 +833,85 @@ def verify_container(
         }
     )
 
+    internal_state: list[_InternalRecordState] = []
+
+    def _internal_record_state() -> _InternalRecordState:
+        """The timestamp archive and the record verdicts, computed once.
+
+        Step (5) needs them for the material of the manifest signature (S2-FIX4
+        F83) and for its §9.4 judgement (S2-FIX3 F79); they are pure and are
+        reported at their own steps.
+        """
+        if internal_state:
+            return internal_state[0]
+        # Step 11 is computed before per-record verification: a verified L2
+        # timestamp can rescue a key-compromise signature (S2). The *reported*
+        # timestamp errors are still appended after the record pass, so the
+        # deterministic container check order is unchanged.
+        trust_fingerprints = None
+        if tsa_trust is not None:
+            # W4/§14.1: the anchors were validated as operator input before the
+            # pipeline started; parsing them again cannot fail here.
+            trust_fingerprints = timestamps_module.parse_trust_anchors(tsa_trust)
+        archive = verify_timestamp_archive(
+            listed=[
+                {"path": entry.path, "digest": entry.digest, "renews": entry.renews}
+                for entry in attestation.timestamps
+            ],
+            files=container_input.files,
+            manifest_digest=manifest_digest,
+            trust_anchor_fingerprints=trust_fingerprints,
+            oversized=frozenset(
+                path
+                for path in container_input.oversized
+                if _TIMESTAMP_FILE.fullmatch(path)
+            ),
+            present=frozenset(
+                path
+                for path in (*container_input.files, *container_input.oversized)
+                if _TIMESTAMP_FILE.fullmatch(path)
+            ),
+        )
+        # Rescue evidence keeps every verified receipt together with its
+        # accuracy; the compromise rule is genTime + accuracy < effective_at (strict).
+        verified_timestamps: tuple[VerifiedTimestamp, ...] = tuple(
+            VerifiedTimestamp(
+                gen_time=result.gen_time or "",
+                gen_time_ms=result.gen_time_ms or 0,
+                gen_time_us=result.gen_time_us
+                if result.gen_time_us is not None
+                else (result.gen_time_ms or 0) * 1000,
+                accuracy_us=result.accuracy_us,
+            )
+            for result in archive.verified_results()
+        )
+        timestamp_evidence_present = bool(attestation.timestamps)
+        # S2-FIX3 F79 (§9.4, §14.5): the §9.4 judgement of the manifest signature
+        # belongs to step (5), before the level/chain and records-listing stages,
+        # and §9.4 counts only *valid* revocations. Record validity is computed
+        # internally first (the listed order governs reporting and stopping, not
+        # the internal computation order): the records present in records/ are
+        # verified with the timestamp evidence, and only the revocations that are
+        # valid there (and the keyset's valid revocations) affect the manifest
+        # signature. The same record views are reported at step (7).
+        present_listing = _load_container_records(container_input)
+        internal_record_views = verifier.verify_record_set(
+            present_listing.records,
+            verified_timestamps=verified_timestamps,
+            timestamp_evidence_present=timestamp_evidence_present,
+            context_views=keyset_verified,
+        )
+        internal_state.append(
+            _InternalRecordState(
+                archive=archive,
+                verified_timestamps=verified_timestamps,
+                timestamp_evidence_present=timestamp_evidence_present,
+                listing=present_listing,
+                views=internal_record_views,
+            )
+        )
+        return internal_state[0]
+
     # Step 4-5: manifest digest and signature.
     # S2-FIX2b (§11.3, decision 2026-11-15 #32 by principle, as U5 and S2-FIX1 T2):
     # beside an undeclared key the verified entries keep their keys, so their §9.4
@@ -795,8 +928,16 @@ def verify_container(
             raise WeaveError("E_MANIFEST_DIGEST", "attestation digest does not match the manifest")
         if not attestation.signatures:
             raise WeaveError("E_MANIFEST_UNSIGNED", "manifest attestation has no signatures")
+        # S2-FIX4 F83 (§5.3, Q2/F72): a declaration in which a signature other
+        # than its subject key's does not pass supplies no material of any
+        # kind, the material for the manifest signature included, and only a
+        # valid rotation supplies its explicit material; both are record-level
+        # facts, so the record set is verified first.
+        internal = _internal_record_state()
         manifest_candidates, manifest_candidate_sources = _candidate_manifest_keys(
-            _load_container_records(container_input).records, keyset_verified
+            internal.listing.records,
+            keyset_verified,
+            withheld=_records_without_material(internal.views),
         )
         manifest_signature_keys, manifest_unknown_key = _judge_manifest_signatures(
             attestation.signatures,
@@ -828,63 +969,12 @@ def verify_container(
             manifest_context_trusted=manifest_context_trusted
             )
 
-    # Step 11 is computed before per-record verification: a verified L2
-    # timestamp can rescue a key-compromise signature (S2). The *reported*
-    # timestamp errors are still appended after the record pass, so the
-    # deterministic container check order is unchanged.
-    trust_fingerprints = None
-    if tsa_trust is not None:
-        # W4/§14.1: the anchors were validated as operator input before the
-        # pipeline started; parsing them again cannot fail here.
-        trust_fingerprints = timestamps_module.parse_trust_anchors(tsa_trust)
-    archive = verify_timestamp_archive(
-        listed=[
-            {"path": entry.path, "digest": entry.digest, "renews": entry.renews}
-            for entry in attestation.timestamps
-        ],
-        files=container_input.files,
-        manifest_digest=manifest_digest,
-        trust_anchor_fingerprints=trust_fingerprints,
-        oversized=frozenset(
-            path
-            for path in container_input.oversized
-            if _TIMESTAMP_FILE.fullmatch(path)
-        ),
-        present=frozenset(
-            path
-            for path in (*container_input.files, *container_input.oversized)
-            if _TIMESTAMP_FILE.fullmatch(path)
-        ),
-    )
-    # Rescue evidence keeps every verified receipt together with its
-    # accuracy; the compromise rule is genTime + accuracy < effective_at (strict).
-    verified_timestamps: tuple[VerifiedTimestamp, ...] = tuple(
-        VerifiedTimestamp(
-            gen_time=result.gen_time or "",
-            gen_time_ms=result.gen_time_ms or 0,
-            gen_time_us=result.gen_time_us
-            if result.gen_time_us is not None
-            else (result.gen_time_ms or 0) * 1000,
-            accuracy_us=result.accuracy_us,
-        )
-        for result in archive.verified_results()
-    )
-    timestamp_evidence_present = bool(attestation.timestamps)
-    # S2-FIX3 F79 (§9.4, §14.5): the §9.4 judgement of the manifest signature
-    # belongs to step (5), before the level/chain and records-listing stages,
-    # and §9.4 counts only *valid* revocations. Record validity is computed
-    # internally first (the listed order governs reporting and stopping, not
-    # the internal computation order): the records present in records/ are
-    # verified with the timestamp evidence, and only the revocations that are
-    # valid there (and the keyset's valid revocations) affect the manifest
-    # signature. The same record views are reported at step (7).
-    present_listing = _load_container_records(container_input)
-    internal_record_views = verifier.verify_record_set(
-        present_listing.records,
-        verified_timestamps=verified_timestamps,
-        timestamp_evidence_present=timestamp_evidence_present,
-        context_views=keyset_verified,
-    )
+    internal = _internal_record_state()
+    archive = internal.archive
+    verified_timestamps = internal.verified_timestamps
+    timestamp_evidence_present = internal.timestamp_evidence_present
+    present_listing = internal.listing
+    internal_record_views = internal.views
     manifest_key_state = _candidate_key_state(
         present_listing.records, keyset_verified, internal_record_views
     )
@@ -1641,6 +1731,7 @@ class _PreviousLinkContext:
         candidates, sources = _candidate_manifest_keys(
             [record for record in container_records if id(record) not in invalid_rotations],
             keyset_views,
+            withheld=_records_without_material(record_views, rotations=False),
         )
         context = verifier.Context()
         for view in keyset_views:

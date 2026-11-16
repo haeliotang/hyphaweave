@@ -1740,8 +1740,8 @@ def _build_s2_catalogue() -> None:
              ("container/zip-prefix-input-identity",)),
         _lit("s2-f42-tofu-after-equation", "verifier.py", "s2.f42.tofu",
              "S2/F42: decide TOFU only after a passing equation",
-             "        if from_context:\n            # S8.10/F12.2",
-             "        if from_context and False:\n            # S8.10/F12.2",
+             "        if (\n            _signature_context_trusted(",
+             "        if (\n            False and _signature_context_trusted(",
              (_KL + "tofu-on-failed-equation",)),
         _lit("s2-f44-raw-identity", "verifier.py", "s2.f44.identity",
              "S2/F44: a structurally failed record has no identity",
@@ -2142,7 +2142,11 @@ def _build_s2_catalogue() -> None:
              "F73: resolve an owner through a declaration that fails the structural group",
              "        owner_material = context.owner_declaration(owner)\n",
              "        owner_material = context.declaration_material(owner)\n",
-             (_KL + "owner-declaration-sigs-absent",)),
+             (_KL + "owner-declaration-sigs-absent",),
+             equivalent_reason="S2-FIX5 (decision 2026-11-16 #9) made every declared material "
+             "come from a structurally valid declaration, so the owner lookup and the "
+             "signature lookup read the same map; the structural rule itself is pinned by "
+             "fix5-material-structural"),
         _lit("fix3-f74-missing-new-public-key", "keys.py", "fix3.f74.rotation",
              "F74: let a rotation without new_public_key reach the signature layer",
              "    new_key = body.get(\"new_key\")\n    try:\n",
@@ -2237,6 +2241,70 @@ def _build_s2_catalogue() -> None:
              "        if not _erasure_record_structural(resolved):\n",
              "        if resolved.envelope.kind != kinds.KIND_ERASURE:\n",
              ("erasure/attested-erasure-sigs-absent", "erasure/attested-erasure-body-schema")),
+        # S2-FIX4 (decision 2026-11-16 #4): F83 manifest material, F84 TOFU predicate.
+        _lit("fix4-f83-manifest-material", "container.py", "fix4.f83.manifest",
+             "F83: verify the manifest signature with material from records that supply "
+             "none under §5.3",
+             "            withheld=_records_without_material(internal.views),\n",
+             "            withheld=frozenset(),\n",
+             ("container/manifest-signer-declaration-owner-altered",
+              "container/manifest-signer-declaration-key-type-absent",
+              "container/manifest-signer-rotation-old-signature-fails")),
+        _lit("fix4-f83-previous-material", "container.py", "fix4.f83.previous",
+             "F83: verify a supplied previous's signature with material from a declaration "
+             "whose other signature did not pass",
+             "            withheld=_records_without_material(record_views, rotations=False),\n",
+             "            withheld=frozenset(),\n",
+             ("container/previous-signer-owner-declaration-body-absent",)),
+        _lit("fix4-f83-declaration", "container.py", "fix4.f83.manifest",
+             "F83: let a declaration whose other signature did not pass supply manifest "
+             "material",
+             "        if view.envelope.kind == kinds.KIND_DECLARED and view.nonsubject_signature_failed:\n",
+             "        if False:\n",
+             ("container/manifest-signer-declaration-owner-altered",
+              "container/manifest-signer-declaration-key-type-absent",
+              "container/previous-signer-owner-declaration-body-absent")),
+        _lit("fix4-f83-rotation", "container.py", "fix4.f83.manifest",
+             "F83: let a rotation that is not valid supply manifest material",
+             "            rotations\n            and view.envelope.kind == kinds.KIND_ROTATED\n",
+             "            False\n            and view.envelope.kind == kinds.KIND_ROTATED\n",
+             ("container/manifest-signer-rotation-old-signature-fails",)),
+        _lit("fix4-f84-cosignature", "verifier.py", "fix4.f84.tofu",
+             "F84: count a key-lifecycle record's cosignature for the TOFU predicate",
+             "    if envelope.kind in kinds.KEY_LIFECYCLE_KINDS and key != envelope.actor_key:\n",
+             "    if False:\n",
+             (_KL + "revocation-context-cosignature-not-tofu",
+              _KL + "device-declaration-context-owner-cosignature-not-tofu")),
+        _lit("fix4-f84-declaration-actor", "verifier.py", "fix4.f84.tofu",
+             "F84: never count a declaration's actor.key signature verified against another "
+             "context declaration's material",
+             "        if source is not None:\n            return source == \"context\"\n",
+             "        if source is not None:\n            return False\n",
+             (_KL + "declaration-body-key-absent-actor-tofu",
+              _KL + "declaration-body-key-absent-actor-tofu-equation-fails")),
+        # S2-FIX5 (decision 2026-11-16 #9): material precondition, grant code order.
+        _lit("fix5-material-structural", "verifier.py", "fix5.material",
+             "S2-FIX5: let a declaration that fails the §14.1 structural group supply "
+             "verification material",
+             "        if _structural_declaration_class(view) is None:\n            return\n"
+             "        try:\n",
+             "        if False:\n            return\n        try:\n",
+             (_KL + "owner-declaration-sigs-absent", _KL + "cosigner-declaration-key-type-absent")),
+        _lit("fix5-manifest-structural", "container.py", "fix5.material",
+             "S2-FIX5: let a declaration that fails the structural group supply manifest "
+             "material",
+             "                if verifier._structural_declaration_class(verifier.RecordView(loaded=record)) is None:\n",
+             "                if False:\n",
+             ("container/manifest-signer-declaration-not-structural",)),
+        _lit("fix5-grant-revoked-first", "grants.py", "fix5.grant-order",
+             "S2-FIX5: report E_GRANT_EXPIRED for a grant that is both revoked and expired",
+             "        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:\n"
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n"
+             "        _check_window(grant, at_time)\n",
+             "        _check_window(grant, at_time)\n"
+             "        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:\n"
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n",
+             ("grant/revoked-and-expired", "erasure/actor-program-basis-revoked-and-expired")),
     )
 
 
