@@ -451,3 +451,116 @@ fn misnamed_oversize_record_member_in_zip_reports_both_listing_violations() {
     .expect("container");
     assert_eq!(errors(&small), vec![e::MANIFEST_RECORD_EXTRA]);
 }
+
+/// Every file below `dir` as a relative path (`/`-separated) -> bytes.
+fn read_tree(dir: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    let mut stack = vec![(dir.to_path_buf(), String::new())];
+    while let Some((path, prefix)) = stack.pop() {
+        for entry in fs::read_dir(&path).expect("read_dir") {
+            let entry = entry.expect("entry");
+            let name = entry.file_name().into_string().expect("utf-8 name");
+            let relative = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if entry.path().is_dir() {
+                stack.push((entry.path(), relative));
+            } else {
+                files.insert(relative, fs::read(entry.path()).expect("read"));
+            }
+        }
+    }
+    files
+}
+
+/// S3 (§11.1, §11.9): the three input forms judge the blob tree alike. A file
+/// in a directory below `blobs/` other than `blobs/sha256/`, or in a directory
+/// inside `blobs/sha256/`, lies in a directory the layout does not list
+/// (`E_CONTAINER_ENTRY`, entry enumeration); a file in `blobs/` or
+/// `blobs/sha256/` whose name is not a listed blob is an extra blob file
+/// (`E_MANIFEST_BLOB`, blob step), whatever its name. The directory walk
+/// rejects the deeper directories on its own; the zip form and the in-memory
+/// file map depend on the path classification. Built from the vector
+/// `container/blobs-extra-file-not-a-digest` without its extra file (blob A
+/// listed and stored, valid).
+#[test]
+fn blob_tree_paths_are_judged_alike_in_every_input_form() {
+    let source = vectors_root().join("container/blobs-extra-file-not-a-digest/container");
+    let mut base = read_tree(&source);
+    assert!(base.remove("blobs/sha256/not-a-digest").is_some());
+    let listed = base
+        .keys()
+        .find(|path| path.starts_with("blobs/sha256/"))
+        .expect("listed blob")
+        .clone();
+    let upper = format!(
+        "blobs/sha256/{}",
+        listed["blobs/sha256/".len()..].to_uppercase()
+    );
+    let cases: [(String, Vec<&str>, bool); 7] = [
+        (
+            format!("blobs/sha512/{}", "0".repeat(128)),
+            vec![e::CONTAINER_ENTRY],
+            true,
+        ),
+        (
+            format!("blobs/sha256/sub/{}", "0".repeat(64)),
+            vec![e::CONTAINER_ENTRY],
+            true,
+        ),
+        (
+            format!("blobs/{}", "0".repeat(64)),
+            vec![e::MANIFEST_BLOB],
+            true,
+        ),
+        ("blobs/stray".to_owned(), vec![e::MANIFEST_BLOB], true),
+        ("blobs/sha256".to_owned(), vec![e::MANIFEST_BLOB], false),
+        (
+            "blobs/sha256/not-a-digest".to_owned(),
+            vec![e::MANIFEST_BLOB],
+            true,
+        ),
+        (upper, vec![e::MANIFEST_BLOB], false),
+    ];
+    let judge = |files: &BTreeMap<String, Vec<u8>>, directory: bool, tag: usize| {
+        let options = keyset_options();
+        let mut out = Vec::new();
+        let in_memory =
+            verify_container(ContainerInput::Files(files.clone()), &options).expect("files");
+        out.push(errors(&in_memory));
+        let members: Vec<(String, Vec<u8>)> =
+            files.iter().map(|(n, d)| (n.clone(), d.clone())).collect();
+        let zipped =
+            verify_container(ContainerInput::Zip(stored_zip(&members)), &options).expect("zip");
+        out.push(errors(&zipped));
+        if directory {
+            let target = std::env::temp_dir().join(format!(
+                "h1-probe-s3-{}-{}-{tag}",
+                std::process::id(),
+                line!()
+            ));
+            for (name, data) in files {
+                let path = target.join(name);
+                fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+                fs::write(&path, data).expect("write");
+            }
+            let walked = verify_container(ContainerInput::Directory(target.clone()), &options)
+                .expect("directory");
+            fs::remove_dir_all(&target).expect("cleanup");
+            out.push(errors(&walked));
+        }
+        out
+    };
+    for form in judge(&base, true, 0) {
+        assert_eq!(form, Vec::<&str>::new(), "control");
+    }
+    for (index, (path, expected, directory)) in cases.into_iter().enumerate() {
+        let mut files = base.clone();
+        files.insert(path.clone(), b"not listed\n".to_vec());
+        for form in judge(&files, directory, index + 1) {
+            assert_eq!(form, expected, "{path}");
+        }
+    }
+}
