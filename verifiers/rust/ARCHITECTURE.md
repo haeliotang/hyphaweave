@@ -183,14 +183,19 @@ Then follow the container check order exactly; the key rules:
 1. Entry safety/layout (`E_CONTAINER_ENTRY`; unknown top-level entries, bad
    paths, duplicate names, unknown files under `signatures/`/`previous/`;
    `readable/` is ignored entirely and never parsed/hashed). Extra file in
-   `records/` → `E_MANIFEST_RECORD_EXTRA`; extra file in `blobs/` →
-   `E_MANIFEST_BLOB`.
+   `records/` → `E_MANIFEST_RECORD_EXTRA`; extra file in `blobs/` or
+   `blobs/sha256/`, whatever its name → `E_MANIFEST_BLOB` at step 10; a file
+   below any other directory inside `blobs/` → `E_CONTAINER_ENTRY`, in the
+   directory and zip forms alike (`classify_path`, S3 B3/B4).
 2. `manifest.json` missing → `E_MANIFEST_MISSING`; parse with
    `json::parse_canonical_object(.., limits::MAX_MANIFEST_BYTES)` (JSON codes
    pass through).
 3. Manifest schema (`E_MANIFEST_SCHEMA`, `E_MANIFEST_FORMAT`,
    `E_MANIFEST_VERSION`, `E_MANIFEST_LEVEL`, `E_MANIFEST_RECORDS`; details in
-   §11.2/§11.2.1). Manifest structure invalid before records → container
+   §11.2/§11.2.1). `manifest.blobs` is checked here too (`parse_blobs`, §11.7
+   rules 1–2, S3 B1): array, `MAX_BLOBS`, each entry's shape, digest grammar
+   and size (`E_MANIFEST_SCHEMA`) then its sha256 form, and last the order
+   (`E_MANIFEST_BLOB`). Manifest structure invalid before records → container
    invalid, `records: []`, exactly one container error (§14.5).
 4. Manifest digest = `digest::manifest_digest(canonical manifest bytes without
    LF)`; compare with `signatures/manifest.sig.json.digest` → `E_MANIFEST_DIGEST`
@@ -235,7 +240,7 @@ Then follow the container check order exactly; the key rules:
    `world.container_cross_checks()` (§10.3 erasure, §8.5 local-only export,
    §5.4 idempotency duplicate); merge `record_errors`/`record_notices` into the
    reports (an error makes a `valid` record `invalid`; sort and dedupe).
-10. Blobs (§11.7) `E_MANIFEST_BLOB`.
+10. Blobs (§11.7 rule 3) `E_MANIFEST_BLOB`.
 11. Previous-manifest chain (§11.5) `E_MANIFEST_CHAIN_MISSING`,
     `E_MANIFEST_CHAIN_UNEXPECTED`, `E_MANIFEST_CHAIN`, and `--previous`
     (`options.previous`): recompute that container's manifest digest and

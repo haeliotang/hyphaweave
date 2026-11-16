@@ -148,10 +148,18 @@ fn classify_path(path: &str) -> PathClass {
         return PathClass::Unknown;
     }
     if let Some(rest) = path.strip_prefix("blobs/") {
-        if let Some(hex) = rest.strip_prefix("sha256/") {
-            if !hex.contains('/') && is_lower_hex_64(hex) {
-                return PathClass::Blob;
-            }
+        // §11.1 (S3): a file in `blobs/` or `blobs/sha256/` that is not a blob is
+        // an extra blob file whatever its name (step (9), E_MANIFEST_BLOB); a
+        // file one directory deeper lies in a directory the layout does not
+        // list (`blobs/<other>/`, `blobs/sha256/<dir>/`), E_CONTAINER_ENTRY.
+        // The directory walk already rejects those directories; this keeps the
+        // zip form, which has no directory walk, judging the same way (§11.9).
+        let name = rest.strip_prefix("sha256/").unwrap_or(rest);
+        if name.contains('/') {
+            return PathClass::Unknown;
+        }
+        if rest.len() > name.len() && is_lower_hex_64(name) {
+            return PathClass::Blob;
         }
         return PathClass::BlobsExtra;
     }
