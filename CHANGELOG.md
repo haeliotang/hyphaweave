@@ -6,6 +6,101 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S3-FIX1: revision of the S3 round — 2026-11-17 — DRAFT, UNRELEASED
+
+Decision 2026-11-17 #5 (the founder can overturn every item; the rules are **decided by
+principle**). The two reviews of the S3 round found that the round's own §11.7 sentence on
+directories below `blobs/` contradicted §11.9 rule 4, that the Rust verifier skipped the
+path-safety check for zip directory entries, and that the differential fuzz still had two
+older disagreements between the reference verifiers. This revision settles all of them and
+the review's low items. The `format` identifier is unchanged; no error code is added; the
+registry stays at revision 8. No conclusion of the frozen candidate set changes and no
+existing main vector changes.
+
+### Security fix (Rust verifier)
+
+- **Zip directory entries now pass the path-safety check (§11.9, S3-FIX1/Z2).** H1 skipped
+  zero-data directory entries *before* the path-safety, symbolic-link and duplicate-name
+  checks, so it **accepted** a zip container that also held a directory entry such as
+  `../x/`, `a/../../x/` or `/abs/` (verdict `valid`), although §11.9 forbids `..` segments
+  and absolute paths in every entry. It now reports `E_CONTAINER_ENTRY`, as Python did.
+  Embedders of an earlier H1 should treat such archives as invalid.
+
+### Wire-visible changes (specification and both verifiers)
+
+- **Zip directory entries take no part in the layout (§11.1, §11.7, §11.9 rule 4,
+  S3-FIX1/Z1).** In the zip form a zero-data directory entry is ignored for the layout and
+  for whether `blobs/` is present: `blobs/` is present only through a file entry. A zip
+  whose only extra entry is `foo/`, `blobs/sha512/` or `blobs/sha256/sub/` is valid, with or
+  without a blob listing, and so is a zip without a listing whose only `blobs/` entry is the
+  directory entry `blobs/sha256/`. The S3 sentence that called a directory below `blobs/` a
+  layout violation now speaks of a **file** below it. The directory form is unchanged: a real
+  directory outside the layout is `E_CONTAINER_ENTRY`, empty or not. **Python changed:** it
+  judged such zips `E_CONTAINER_ENTRY` (and, from the S3 round, a zip whose only `blobs/`
+  entry was a directory entry `E_MANIFEST_BLOB`). **H1 changed:** without a listing it
+  reported `E_MANIFEST_BLOB` for a zip with a directory entry below `blobs/`.
+- **`N_IDEMPOTENCY_DUPLICATE` (§5.4, S3-FIX1/R1).** A pair is two records with the same
+  `origin` and `actor.idempotency_key`, nothing else (not `actor.key`), and every record
+  whose envelope structure passes takes part, whatever its verdict (a record whose `sigs`
+  fail included). **Python changed:** it also compared `actor.key`, and it skipped records
+  whose `sigs` failed.
+- **`E_LABEL_LOCAL_ONLY_EXPORTED` (§8.5, S3-FIX1/R3).** Read over the same records as R1: a
+  `local-only` record whose `sigs` fail is still an exported `local-only` record. **Python
+  changed:** it skipped such records. This item applies the reading of R1 to the only other
+  cross-record rule that read fully parsed envelopes only; the decision did not name it, and
+  it can be overturned on its own.
+- **§4.4 step 5 waits for the owner's trust (§9.1 rule 3, S3-FIX1/R2).** A declaration of an
+  `agent`/`program`/`device` key signed only with unknown algorithms, whose owner resolves
+  but is not trusted, is `unverifiable` with `E_KEY_UNTRUSTED`, not with the step-5
+  `E_SIG_UNVERIFIABLE`. **H1 changed** (Python already did this).
+- **The digest-string grammar everywhere (§2.7, S3-FIX1/D1).** Every reader of a digest
+  string applies the whole grammar: the algorithm-name pattern, its 32-byte bound and 1–128
+  lowercase hexadecimal digits. The 64 digits of `sha256` are a requirement of the
+  algorithm, not of the grammar. **Python changed:** references and erased placeholders used
+  a laxer check (any `[a-z0-9-]` algorithm name, any length), so a reference digest
+  `sha--256:ab` or one with 129 hex digits was an unsupported algorithm (the reference
+  `unverifiable`) instead of `E_ENV_REFS`, and such a placeholder digest was accepted instead
+  of `E_KIND_BODY_SCHEMA`; the one strict check now lives in `encoding.is_digest_string`
+  (the private copy in `manifest.py` is gone). **H1 changed:** a reference digest `sha256:`
+  with another number of digits than 64 resolved like a sha256 digest (`missing` when the
+  target is absent); it is now `unverifiable`, like an unsupported algorithm, as in Python.
+- **Text only:** §11.7 says why step (3) reports one code while §14.5 lets a failing stage
+  report every violation it finds, and that `blobs` is the last member checked; a listed
+  `size` above `MAX_BLOB_BYTES` is rule 3 although it can be seen in `manifest.json`; Q23
+  (reasoning and locations) and `verifiers/rust/ARCHITECTURE.md` (its step 10 is the spec's
+  step (9)) are corrected; Appendix A lists the S3-FIX1 rulings.
+
+### Vectors, tests and gates
+
+- **Vectors**: 20 new main cases (777 → 797), no existing case changed:
+  - `container/` (11): valid `zip-directory-entry-outside-layout`,
+    `blobs-directory-entry-unknown-listed-zip`, `-unknown-unlisted-zip`,
+    `-sha256-subdirectory-listed-zip`, `-sha256-subdirectory-unlisted-zip`,
+    `-sha256-only-zip`, `blobs-directory-entries-empty-listing-zip`; `E_CONTAINER_ENTRY`
+    `zip-directory-entry-dotdot`, `-dotdot-nested`, `-absolute`; `E_MANIFEST_SCHEMA`
+    `blobs-listing-too-many-first-unsupported` (the count is checked before any entry);
+  - `actor/` (2): `idempotency-duplicate-sigs-malformed` (review A R1),
+    `idempotency-duplicate-other-signer` (R1b);
+  - `labels/` (1): `local-only-exported-sigs-malformed`;
+  - `key-lifecycle/` (1): `owner-untrusted-device-unknown-algorithm-only` (review A R2);
+  - `ref/` (3): `digest-algorithm-name-malformed`, `digest-hex-too-long` (`E_ENV_REFS`),
+    `digest-sha256-wrong-length` (valid, the reference unverifiable);
+  - `erasure/` (2): `placeholder-digest-algorithm-name-malformed`,
+    `placeholder-digest-hex-too-long`.
+- **Ablation catalogue**: `tools/anti_verification.py` gains `exact_pinned`: for every S3 and
+  S3-FIX1 entry the vectors a mutation turns red must be exactly its `pinned_by`, or the
+  entry is a catalogue error. Nine S3-FIX1 entries turn the Python changes off one by one
+  (directory entries in the layout, in the presence of `blobs/` and in the path check; the
+  idempotency key, the idempotency and local-only record sets; the algorithm-name pattern and
+  the 128-digit bound; the `MAX_BLOBS` count before the entries); the S3 entry that used the
+  old lax `encoding.is_digest_string` is replaced by the two grammar entries. One more entry
+  (an oversized blob file not counted as an extra file) is a documented equivalent mutant:
+  `MAX_BLOB_BYTES` equals `MAX_CONTAINER_UNCOMPRESSED_BYTES`, so such a file is reported as
+  `E_CONTAINER_SIZE` at step (1) first.
+- **REUSE**: the two SPDX lines that `tools/gen_vectors_extra.py` writes into the frozen
+  README are wrapped in `REUSE-IgnoreStart` / `REUSE-IgnoreEnd`, so REUSE 6.x passes as well
+  as the 5.0.2 that CI pins.
+
 ## S3 round: blob error codes — 2026-11-16 — DRAFT, UNRELEASED
 
 Decision 2026-11-16 #44 (the founder asked for this round; its rules are **decided by
