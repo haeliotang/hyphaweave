@@ -658,8 +658,9 @@ def _candidate_manifest_keys(
     """Keys usable for manifest-signature verification.
 
     Keys come from (a) the externally supplied keyset (already verified), and
-    (b) structurally valid key-lifecycle records inside the container itself
-    whose key-id derivation matches their declared public key. Trust is not
+    (b) key-lifecycle records inside the container itself whose key-id
+    derivation matches their declared public key, a declaration only when it
+    passes the §14.1 structural group (S2-FIX5). Trust is not
     required for the equation (§11.3), but a record in ``withheld`` (``id()``
     of the loaded record) supplies nothing: §5.3 lets a declaration whose
     other signature fails supply no material of any kind, and only a valid
@@ -687,6 +688,10 @@ def _candidate_manifest_keys(
         body = envelope.body
         try:
             if envelope.kind == kinds.KIND_DECLARED:
+                # S2-FIX5 (decision 2026-11-16 #9; §5.3): only a declaration that
+                # passes the §14.1 structural group supplies material.
+                if verifier._structural_declaration_class(verifier.RecordView(loaded=record)) is None:
+                    continue
                 raw = verifier.decode_public_key_material(body.get("public_key"))
                 if encoding.key_id_from_public_key(raw) == body.get("key"):
                     candidates.setdefault(body["key"], raw)

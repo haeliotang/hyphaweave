@@ -237,7 +237,6 @@ class Context:
         #: ``_declared_material`` (the §14.9 TOFU predicate needs where the
         #: material that verified a signature came from).
         self._declared_material_source: dict[str, str] = {}
-        self._owner_material: dict[str, tuple[bytes, str]] = {}
         #: S2-FIX3 F72: which declarations (by digest) put a key in ``trusted``.
         self._trust_sources: dict[str, set[tuple[str, str]]] = {}
         #: Where a key's governing declaration material came from: ``"keyset"``
@@ -267,7 +266,6 @@ class Context:
         self.consent_revocations = {}
         self._declared_material = {}
         self._declared_material_source = {}
-        self._owner_material = {}
         self._trust_sources = {}
         trusted: set[str] = set()
         self._material_source = {}
@@ -311,8 +309,13 @@ class Context:
         self._trusted_human_org = frozenset(trusted)
 
     def _register_declared_material(self, view: RecordView) -> None:
-        """Owner lookup material: any structurally usable declaration, valid or not.
+        """Declared material: a structurally valid declaration, trusted or not.
 
+        S2-FIX5 (decision 2026-11-16 #9; §5.3): a declaration supplies the
+        material a signature is verified against only when it passes the §14.1
+        structural group (``sigs`` presence and the body schema included) and
+        every signature other than its subject key's passes; trust is not
+        required (T17/A-L8). The same declarations resolve an owner (F73).
         S2-FIX3 F72 (§5.3, Q2): a declaration in which a signature other than
         its subject key's fails §9.4 supplies no material at all, neither for
         verifying signatures by its key nor for resolving it as an owner.
@@ -330,9 +333,9 @@ class Context:
         key_type = body.get("key_type")
         if not isinstance(key_id, str):
             return
-        if key_id in self._declared_material and key_id in self._owner_material:
+        if key_id in self._declared_material:
             return
-        if key_type not in ("human", "organization", "agent", "program", "device"):
+        if _structural_declaration_class(view) is None:
             return
         try:
             public_key = decode_public_key_material(body.get("public_key"))
@@ -340,13 +343,10 @@ class Context:
             return
         if encoding.key_id_from_public_key(public_key) != key_id:
             return
-        if key_id not in self._declared_material:
-            self._declared_material[key_id] = (public_key, key_type)
-            self._declared_material_source[key_id] = (
-                "keyset" if view.loaded.source == "keyset" else "context"
-            )
-        if key_id not in self._owner_material and _structural_declaration_class(view) is not None:
-            self._owner_material[key_id] = (public_key, key_type)
+        self._declared_material[key_id] = (public_key, key_type)
+        self._declared_material_source[key_id] = (
+            "keyset" if view.loaded.source == "keyset" else "context"
+        )
 
     def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
         return self._declared_material.get(key_id)
@@ -356,8 +356,12 @@ class Context:
         return self._declared_material_source.get(key_id)
 
     def owner_declaration(self, key_id: str) -> tuple[bytes, str] | None:
-        """S2-FIX3 F73: an owner's material and class from a structurally valid declaration."""
-        return self._owner_material.get(key_id)
+        """S2-FIX3 F73: an owner's material and class from a structurally valid declaration.
+
+        Since S2-FIX5 every declared material comes from such a declaration, so
+        the owner lookup and the signature lookup read the same map.
+        """
+        return self._declared_material.get(key_id)
 
     def is_declared_key(self, key_id: str) -> bool:
         return self.key_state.is_declared(key_id)
