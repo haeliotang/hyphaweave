@@ -2209,6 +2209,79 @@ duplicates, the reading S2-FIX3/F76 withdrew. Every other step of the Python job
 `tools/` is outside this branch's remit, so it was left to the S2 workstream, which fixed
 it in `772a8e4` (merged here as `0ee3b51`); the Python job then passed all 16 steps.
 
+## H1-S3 follow-up (decision 2026-11-16 #10)
+
+The S2 workstream settled the differences that the H1-S2 differential fuzzing left
+against S2-FIX3 in two more revisions: S2-FIX4 (decision 2026-11-16 #4, decided by
+principle; F83, F84) and S2-FIX5 (decision 2026-11-16 #9, decided by the founder; the
+two ambiguities the S2-FIX4 fuzzing left). Branch `r2/rust-s2` merged
+`s2/spec-revision` at `2120dde` (731 main cases, 202 frozen) as `c175106`; no
+specification, schema, vector, tool or Python change.
+
+### S2-FIX4 dispositions (decision 2026-11-16 #4)
+
+| finding | S2-FIX4 ruling | Rust |
+|---|---|---|
+| F83 | §5.3, §11.3: a declaration that supplies no material under §5.3, and a rotation that is not semantically valid, supply none for the manifest signature or a supplied previous manifest's signature either; such an entry is an undeclared key's (`E_KEY_UNKNOWN`), its equation is not evaluated — the H1-S2 reading | none (already; the nine S2-FIX4 cases passed on `dcaffa2`) |
+| F84 | §14.9: on a key-lifecycle record only the `actor.key` signature takes part in the TOFU predicate, context-trusted when its material came from a context record other than the record itself, even if its equation fails; a cosignature never takes part — the H1-S2 reading | none (already) |
+
+### S2-FIX5 dispositions (decision 2026-11-16 #9) and the Rust change
+
+| item | S2-FIX5 ruling | Rust |
+|---|---|---|
+| material | §5.3 "Material for a signature check": a `weave.key.declared` record supplies the material a signature by its key is verified against (on another record, as a cosignature, on the manifest or a supplied previous manifest) and resolves its key as an owner (§9.1 rule 3) exactly when it passes the §14.1 structural group **and** every signature other than its subject key's passes; trust is not required (T17/A-L8). The declaration's own self-signature is still checked against the key it states | **changed** (`cacf8ee`): `World::declared_material_slots` takes material only from declarations with `decl_schema` (set in `build_trust` exactly for the declarations that pass the structural group, the group the governing class is taken from); it used to require only the envelope and the `sigs` format, so a declaration without `sigs` or without `key_type` supplied material. Every material path goes through it: record signatures and cosignatures (`resolve_signature_material`), the owner cosignature in the trust closure (`candidate_issue`), the manifest signature (step (5)) and the previous-manifest link (`check_previous_signatures`). Owner resolution: `World::owner_resolves` (a structural declaration of the owner key that `declaration_admitted` admits) is applied where the declaration's §9.1 check is reported (`decl_issue`, and `decl_issue_without_signatures` at §4.4 step 5), as the rest of §5.3 is applied where material is used (F72) — the trust closure runs before §9.4 can be evaluated. Vectors: `key-lifecycle/owner-declaration-sigs-absent` (changed expectation: the owner cosignature `unverified`, `N_KEY_UNDECLARED`), `key-lifecycle/cosigner-declaration-key-type-absent`, `container/manifest-signer-declaration-not-structural`; owner resolution by `tests/s2_followup.rs`, `owner_resolves_only_through_a_declaration_that_supplies_material` (no vector, see F85) |
+| grant order | §5.4: a grant both revoked and outside its window is `E_GRANT_REVOKED` (the order of §5.5.2 step 6) | none (already: `grant/revoked-and-expired`, `erasure/actor-program-basis-revoked-and-expired` pass) |
+
+### F85 — Owner resolution through a declaration whose other signature does not pass (§5.3, §9.1 rule 3)
+
+Found while following S2-FIX5 (a probe, not the fuzzing): a device declaration names
+human-2 as its owner and is signed by the device key alone; human-2's only declaration is
+`human`, cosigned by key-old, which nothing declares (so that declaration's other signature
+does not pass and it supplies nothing under §5.3). Keyset: human-1 only.
+
+| shape | reference | Rust before `cacf8ee` | Rust now |
+|---|---|---|---|
+| device declaration signed by the device key | unverifiable `E_KEY_UNKNOWN` | invalid `E_KEY_DECLARED_NOT_COSIGNED` (the owner resolved through the structural group alone) | unverifiable `E_KEY_UNKNOWN` |
+| the same, signed only with an unknown algorithm (§4.4 step 5) | unverifiable `E_KEY_UNKNOWN` | (not probed) | unverifiable `E_KEY_UNKNOWN` |
+| human-2 cosigned by human-1 instead (owner resolves) | `E_KEY_DECLARED_NOT_COSIGNED`, and `E_SIG_UNVERIFIABLE` for the unknown-algorithm form | the same | the same |
+
+Spec reading: unique since S2-FIX3/F72 ("nor an owner for §9.1 rule 3"), restated by the
+S2-FIX5 paragraph; **Rust was wrong** and now follows it (the four rows are the four
+containers of the test above; set `H1_S2_DUMP_DIR` to write them out). With an owner
+cosignature present the difference was not observable: that cosignature has no material
+either, so step (4) already reports `E_KEY_UNKNOWN`. No vector pins the shape; a vector
+would.
+
+Not changed: the governing validity window (`World::governing_window`) still comes from the
+earliest context declaration whose closure outcome is valid or untrusted, without asking
+§5.3 admission ("governing a window … still need[s] semantic validity"). No vector, probe or
+fuzzing run reaches a difference there: a declaration that §5.3 does not admit supplies no
+material, so its window governs only signatures whose material came from another
+declaration of the same key.
+
+## H1-S3 gate results
+
+Recorded 2026-11-16 on branch `r2/rust-s2`: the Python job from `2cefa8f`, the Rust job,
+the red checks and the fuzzing from `18a1f3a` (the commit between them changes only
+`tests/s2_followup.rs`); merged `s2/spec-revision` at `2120dde` (731 main cases, 202
+frozen). rustup stable 1.100.0 (`rustup update stable`: unchanged). The reference verifier
+ran only as a black box, installed into a venv with the ci.yml command
+(`pip install -c verifiers/python/constraints.txt -e "verifiers/python[dev]"`,
+`reuse==5.0.2`). Local differences from ci.yml, none of them semantic: `CARGO_TARGET_DIR`
+is outside the repository, so the crash-fuzz `--binary` follows it and gate 3 gets
+`--rust-binary`/`--python-cli`; cargo runs with `-j 2` and the ablation, byte-flip and
+crash-fuzz tools with `--jobs 2` (the machine was shared).
+
+| gate | result |
+|---|---|
+| 1. CI, both jobs, from the repository root | Python job: all 16 steps exit 0 — generators `--check` (4), pytest 420 passed 1 skipped, vectors 731/731, SHA256SUMS and `CHECK_FROZEN: PASS`, frozen 202/202, schemas, external, ablation (340 mutations, 304 killed, 27 documented equivalent, 0 unpinned, 9 documented redundant, 0 catalogue errors), byte-flip (437,311 mutants, 0 survivors), crash fuzz (1,956 mutants, 0 crashes), spec examples, REUSE 3.3. Rust job: fmt, clippy all targets, clippy library, `cargo test --workspace` (17 test binaries, 121 passed, 0 failed, 3 ignored), both `vectors` runs, `cargo deny check` (advisories, bans, licenses, sources ok), `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz, gate 3: every step exit 0 |
+| 2. vectors | Rust 731/731 main and 202/202 frozen |
+| 3. two-implementation comparison | allow list empty; 933 cases (731 + 202), 933 byte-identical, PASS |
+| 4. red checks | each change removed on its own turns red and is restored (`cmp` equal, then `touch`): material without the structural group — the three S2-FIX5 cases mismatch and no other; owner resolution at the declaration's check, at §4.4 step 5, and owner resolution without §5.3 admission — `owner_resolves_only_through_a_declaration_that_supplies_material` fails |
+| 5. differential fuzzing | `scripts/diff_fuzz.py`, 10 classes × 400, release binary of `18a1f3a`: seed **151115** 3,761 mutants, 3,761 byte-identical; seed **777001** 3,799 mutants, 3,799 byte-identical. 0 conclusion differences, 0 report-detail differences; both verifiers exit 0 or 1 only, no Rust stderr, no timeout |
+| 6. other gates | Rust crash fuzz 2,000 mutants, 0 failures; `cargo check -p hyphaweave-verify --target aarch64-linux-android` exit 0, no warning; `reuse lint` compliant |
+| 7. other workstreams untouched | `git diff --stat 2120dde..r2/rust-s2 -- spec schemas vectors verifiers/python tools` is empty |
+
 ## H1-S2 gate results
 
 Recorded 2026-11-16 on branch `r2/rust-s2`, head `0ee3b51` (Rust code as at `e7d2b77`), after
@@ -2326,3 +2399,5 @@ black box, installed non-editable from `git archive origin/main`.
   results.
 - **2026-11-15 (H1-S2)** — added the H1-S2 follow-up table, F70–F84, the
   S2-FIX3 dispositions, and the H1-S2 gate results.
+- **2026-11-16 (H1-S3)** — added the S2-FIX4 and S2-FIX5 dispositions, the Rust change
+  for the S2-FIX5 material rule, F85, and the H1-S3 gate results.

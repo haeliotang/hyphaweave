@@ -6,6 +6,26 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1-S3 (Rust follow-up of S2-FIX4 and S2-FIX5) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #10: the Rust verifier follows S2-FIX4 and S2-FIX5 (decisions
+2026-11-16 #4 and #9). No specification, schema, vector, tool or Python change. Both
+implementations now follow revision 3 including S2-FIX5: each passes the 731 main and the
+202 candidate regression vectors, and the gate-3 allow list stays empty.
+
+### Changed (Rust verifier)
+
+- **Material for a signature check** (§5.3, S2-FIX5): a `weave.key.declared` record
+  supplies material for record signatures, cosignatures, the manifest signature and a
+  supplied previous manifest's signature only when it passes the §14.1 structural group
+  (`sigs` present and well formed, the body schema); a declaration without `sigs` or
+  without `key_type` used to supply it. An owner resolves (§9.1 rule 3) only through a
+  structural declaration whose signatures other than its subject key's all pass, also at
+  §4.4 step 5 (`docs/h1-findings.md` F85: an owner declaration cosigned by an undeclared
+  key used to resolve, giving `E_KEY_DECLARED_NOT_COSIGNED` instead of `E_KEY_UNKNOWN`).
+- **S2-FIX4** (F83, F84) and the S2-FIX5 grant order: no change; the Rust verifier
+  already followed them.
+
 ## S2 round, revision 5 (S2-FIX5) — 2026-11-16 — DRAFT, UNRELEASED
 
 Decision 2026-11-16 #9 (decided by the founder): the two specification ambiguities the
