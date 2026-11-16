@@ -32,7 +32,7 @@ Read this before using anything in this repository:
   the round trips.
 - **Two implementations: the Python reference verifier and the Rust verifier;
   both have followed revision 3, including the S2 round, its revisions S2-FIX1 to
-  S2-FIX5 and the supplement S2-FIX2b.** The Python
+  S2-FIX6 and the supplement S2-FIX2b.** The Python
   reference verifier lives in `verifiers/python/`; the second, independent
   implementation (milestone H1, `verifiers/rust/`) was written from the
   specification and the conformance vectors only. Its revisions H1-FIX1 to
@@ -40,11 +40,11 @@ Read this before using anything in this repository:
   findings (`docs/h1-findings.md`) led to the S2 round of revision 3 (decision
   2026-11-15 #8) and its revisions S2-FIX1 and S2-FIX2 (decisions 2026-11-15 #18
   and #22, the supplement S2-FIX2b, decision 2026-11-15 #32, S2-FIX3, decision
-  2026-11-16 #1, and S2-FIX4 and S2-FIX5, decisions 2026-11-16 #4 and #9), which both
-  verifiers now implement (the Rust follow-ups H1-S2 and H1-S3, decisions 2026-11-15 #20
-  and 2026-11-16 #10): each passes all 731 main vectors and the 202 candidate regression
-  vectors, and their reports are byte-identical on every case (the gate-3 allow list is
-  empty). Passing the same vectors is necessary but not sufficient
+  2026-11-16 #1, and S2-FIX4, S2-FIX5 and S2-FIX6, decisions 2026-11-16 #4, #9 and #13),
+  which both verifiers now implement (the Rust follow-ups H1-S2 to H1-S5, decisions
+  2026-11-15 #20 and 2026-11-16 #10, #13 and #14): each passes all 749 main vectors and the
+  202 candidate regression vectors, and their reports are byte-identical on every case (the
+  gate-3 allow list is empty). Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
@@ -59,7 +59,9 @@ Read this before using anything in this repository:
   2026-11-10 #34), revision 2 (decision 2026-11-10 #42) and revision 3 (decision
   2026-11-11 #2) with its five follow-up rounds S1-FIX1 to S1-FIX5 (decisions
   2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1, #2 and #3) and the S2 round
-  (decision 2026-11-15 #8). Independent reviews found wire-semantics
+  (decision 2026-11-15 #8) with its revisions S2-FIX1 to S2-FIX6 and the supplement
+  S2-FIX2b (decisions 2026-11-15 #18, #22 and #32, and 2026-11-16 #1, #4, #9 and #13).
+  Independent reviews found wire-semantics
   defects, and the revisions changed the format rules, the error-code registry,
   the trust-root model, the resource limits, the verifier and the vectors.
   Revision 3 reacts to the review of the second (Rust) implementation, which

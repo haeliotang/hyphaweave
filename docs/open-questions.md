@@ -1038,7 +1038,9 @@ round (T11); they carry the status
     applies to manifest signatures as well", while §11.3 says that "a declared but
     untrusted signing key … does not make the manifest signature unverifiable". The
     current implementations follow §11.3. Which sentence governs is **not decided**; it is
-    left for a later round (Inceptless decision 2026-11-12 #1).
+    left for a later round (Inceptless decision 2026-11-12 #1). **Decided in S2-FIX6**
+    (decision 2026-11-16 #13, §7.9 item 1): §11.3 governs; §9.4 no longer says its rule
+    applies to manifest signatures and refers to §11.3 and §5.3 instead.
 
 Status updates in this revision:
 
@@ -1459,8 +1461,9 @@ candidate set changes.
 
 ### 7.8 S2-FIX5 (decision 2026-11-16 #9)
 
-The differential fuzzing of S2-FIX4 left two specification ambiguities; the founder decided
-both.
+The differential fuzzing of S2-FIX4 left two specification ambiguities, both **decided by
+principle**; the founder can overturn them. Item 1's wording "on another record" was too
+wide and is narrowed by S2-FIX6 (§7.9 item 1).
 
 1. **Verification material (§5.3).** §5.3 asked for semantic validity of a declaration that
    supplies material, while §11.3 (T17/A-L8) let a declared but untrusted key verify an
@@ -1477,3 +1480,65 @@ both.
    `E_GRANT_REVOKED` (the more specific, stronger fact); §5.4 takes the order of §5.5.2.
    Vectors `grant/revoked-and-expired`, `erasure/actor-program-basis-revoked-and-expired`.
 
+### 7.9 S2-FIX6 (decision 2026-11-16 #13)
+
+The two pre-merge reviews of the S2 round (one run against the implementations, one against
+the specification text) left the items below, all **decided by principle**; the founder can
+overturn them. No error code is added and no frozen conclusion changes.
+
+1. **Where the S2-FIX5 material rule applies (§5.3, §9.4).** §5.3 asked for semantic
+   validity "for the key material a declaration supplies", the S2-FIX5 paragraph let a
+   structurally valid declaration supply it "on another record" without trust, and §9.4
+   said untrusted declarations do not make a key usable, "this applies to manifest
+   signatures as well" (against §11.3). Ruling: the semantic-validity sentence covers
+   governing a window, establishing trust and rotation material; the S2-FIX5 rule covers
+   exactly a cosignature on another declaration, an owner lookup, the manifest signature
+   and a supplied previous manifest's signature; a signature on any other record needs a
+   trusted or semantically valid declaration (`E_KEY_UNKNOWN`, `N_KEY_UNDECLARED`); §9.4
+   refers to §11.3. Both implementations already behaved this way. Vectors
+   `key-lifecycle/note-by-untrusted-declared-key-forged`,
+   `cosignature-by-untrusted-declared-key-forged`, and the positive case
+   `container/manifest-signer-declaration-class-conflict` (a declaration invalid with
+   `E_KEY_CLASS_CONFLICT` still supplies manifest material).
+2. **Rooted material (§5.3).** "Supplies material exactly when every other signature
+   passes" referred to itself through cosignature cycles; both implementations took the
+   least fixed point. Ruling: a declaration's other signatures are verified only against
+   material that does not depend on it and was itself obtained this way. Vector
+   `container/manifest-signer-mutual-cosignature-cycle` (`E_KEY_UNKNOWN`).
+3. **Owner lookup before the owner cosignature (§9.1 rule 3; F85).** With an owner that
+   does not resolve and no owner cosignature, the result depended on §14.5's "a signer rule
+   whose signers are defined by another record follows the lookup of that record". Ruling:
+   the lookup comes first — `E_KEY_UNKNOWN`, not `E_KEY_DECLARED_NOT_COSIGNED`, and not the
+   §4.4 step 5 outcome. Vectors `key-lifecycle/owner-unresolved-device-self-signed`,
+   `owner-unresolved-device-unknown-algorithm-only`, `owner-resolves-device-self-signed`,
+   `owner-resolves-device-unknown-algorithm-only`,
+   `owner-declaration-cosignature-fails-device-owner-cosigned`.
+4. **Grant chain: revocation before windows across links (§5.5.2 step 6).** S2-FIX5 put
+   revocation before the window for one grant; across links the order was unwritten and
+   both implementations walked link by link (an expired cited grant hid a revoked root).
+   Ruling: the whole chain is judged for revocation first — the same principle as S2-FIX5,
+   revocation is the more specific and stronger fact. The Python verifier changed. Vectors
+   `grant/ancestor-revoked-cited-expired`, `sub-grant-record-ancestor-revoked-cited-expired`
+   and their controls.
+5. **Governing window from an invalid declaration (§5.3).** The text already says a
+   declaration that is not semantically valid governs no window; a review found that the
+   Rust verifier took the window from such a declaration. No text change. Vectors
+   `key-lifecycle/window-not-from-invalid-declaration-undeclared`, `-compromised` and their
+   controls; and, for an untrusted declaration (§9.1 rule 4: "an untrusted declaration MUST
+   NOT make any other declaration invalid"; F87 of the Rust follow-up),
+   `key-lifecycle/window-not-from-untrusted-declaration`.
+6. **`E_GRANT_GRANTER`** no longer lists a parent outside its window or revoked (registry,
+   `weave.grant.md`): §5.5.2 step 6 makes those `E_GRANT_EXPIRED` / `E_GRANT_REVOKED`.
+
+Open item (not changed in this round):
+
+- **Verification time of long declaration chains.** A chain of human declarations, each
+  cosigned by the previous key, verifies in polynomial but steep time in both
+  implementations: the Python verifier needs about 13 s, 58 s and 115 s for chains of 100,
+  200 and 300 declarations, the Rust verifier about 1.7 s, 6.3 s and 55 s for 100, 200 and
+  600 (pre-merge review A). Both stay inside the §13 limits (`MAX_RECORDS` 100,000 is far
+  away), so it is not a conformance issue, but a container of a few hundred declarations
+  takes minutes. To do: a bound on verification time and an algorithm that does not redo
+  the record-set fixed point per pass (for example an indexed closure); the Rust
+  verifier's exponential case on branching cosignature graphs is handled on its follow-up
+  branch, not in this snapshot.

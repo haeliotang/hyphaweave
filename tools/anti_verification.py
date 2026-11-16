@@ -397,27 +397,18 @@ def _build_catalogue() -> None:
            r'if parent_until is not None and \(\n\s*child\.valid_until is None\n\s*or timestamp_sort_key\(child\.valid_until\) > parent_until\n\s*\):',
            'if False:  # ablation: delegation valid_until bound disabled',
            ("grant/sub-grant-window-ends-after-parent",), review_a_survivor=True),
+        # S2-FIX6: the parent's revocation and window are judged with the whole chain in
+        # validate_grant_chain (one site each); _check_delegation keeps steps 2-5 only.
         _m("grant-parent-revoked", "grants.py", "grants.delegation.parent-revoked",
-           "ignore revocation of the parent grant",
-           r'if context\.grant_state\.revocation_as_of\(parent\.digest, at_time\) is not None:',
-           'if False:  # ablation: parent grant revocation check disabled',
-           ("grant/parent-revoked",), review_a_survivor=True,
-           equivalent_reason="reviewed-equivalent: the delegation-layer revocation check is mirrored by "
-           "validate_grant_chain's own revocation guard (same E_GRANT_REVOKED) and by the "
-           "agent-authorisation path that resolves the same cited grant; non-agent sub-grants are "
-           "unconstructible (the envelope forbids actor.grant on non-agent actors), so the "
-           "E_GRANT_REVOKED outcome is pinned by grant/parent-revoked, grant/revoked and "
-           "grant/revoked-boundary-equal"),
+           "ignore revocation of any grant in the chain (the parent included)",
+           r'if context\.grant_state\.revocation_as_of\(link\.digest, when\) is not None:',
+           'if False:  # ablation: chain revocation check disabled',
+           ("grant/parent-revoked",), review_a_survivor=True),
         _m("grant-parent-expired", "grants.py", "grants.delegation.parent-window",
-           "ignore that the parent grant is not yet valid",
-           r'if timestamp_sort_key\(at_time\) < timestamp_sort_key\(parent\.valid_from\):',
-           'if False:  # ablation: parent grant lower-window check disabled',
-           ("grant/parent-expired",), review_a_survivor=True,
-           equivalent_reason="reviewed-equivalent: the delegation-layer validity check is mirrored by "
-           "_check_window during the recursive parent-chain validation (same E_GRANT_EXPIRED, covering "
-           "both not-yet-valid and expired parents), and the delegating record is necessarily an agent "
-           "record whose actor.grant goes through the same agent-authorisation path; the vectors "
-           "grant/parent-expired and grant/sub-grant-parent-expired pin the E_GRANT_EXPIRED outcome"),
+           "ignore that a grant in the chain (the parent included) is outside its window",
+           r'        _check_window\(link, when\)\n',
+           '        pass  # ablation: chain window check disabled\n',
+           ("grant/parent-expired",), review_a_survivor=True),
         # FIX2 recheck counterexample (R1): literal old §5.5.2 step 6 - ancestors judged at
         # the descendant grant's claimed recorded_at instead of the verified record's.
         # FIX2 recheck counterexample (R1): literal old §5.5.2 step 6 - every ancestor is
@@ -1931,12 +1922,11 @@ def _build_s2_catalogue() -> None:
              "    while True:\n        if links > MAX_CHAIN_DEPTH:\n"
              "            raise WeaveError(\"E_GRANT_UNRESOLVED\", \"ablation\")\n"
              "        if grant.digest in seen:\n",
-             ("grant/chain-depth-9-root-revoked", "grant/chain-depth-9-root-not-transferable"),
-             equivalent_reason="a link beyond the bound is reached only after step 1 of the link "
-             "below it resolved a valid grant record, whose own verification already judged "
-             "steps 1-5 of that link and whose parent's window and revocation step 6 checks at "
-             "the link below; the walk past the bound therefore cannot change an outcome "
-             "(docs/open-questions.md §7.3; vectors chain-depth-9-*)"),
+             # S2-FIX6: step 6 is judged after the walk, so stopping the walk at the bound
+             # now turns the step-6 outcomes beyond it into the depth code (no longer an
+             # equivalent mutant).
+             ("grant/chain-depth-9-root-revoked", "grant/chain-depth-9-expired",
+              "grant/chain-depth-10-grant-root-revoked", "grant/chain-depth-10-grant-expired")),
         _lit("fix1-t3-real", "timestamps.py", "fix1.t3.real",
              "T3: judge REAL by its framing only",
              "        elif tag_number == 9:\n            _check_der_real(data, position, content_end)\n",
@@ -2298,13 +2288,100 @@ def _build_s2_catalogue() -> None:
              ("container/manifest-signer-declaration-not-structural",)),
         _lit("fix5-grant-revoked-first", "grants.py", "fix5.grant-order",
              "S2-FIX5: report E_GRANT_EXPIRED for a grant that is both revoked and expired",
-             "        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:\n"
-             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n"
-             "        _check_window(grant, at_time)\n",
-             "        _check_window(grant, at_time)\n"
-             "        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:\n"
-             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n",
+             "    for link, when in chain:\n"
+             "        if context.grant_state.revocation_as_of(link.digest, when) is not None:\n",
+             "    for link, when in chain:\n"
+             "        _check_window(link, when)\n"
+             "        if context.grant_state.revocation_as_of(link.digest, when) is not None:\n",
              ("grant/revoked-and-expired", "erasure/actor-program-basis-revoked-and-expired")),
+        # S2-FIX6 (decision 2026-11-16 #13): material scope, rooted material, owner
+        # lookup first, grant chain order.
+        _lit("fix6-material-other-records", "verifier.py", "fix6.material-scope",
+             "S2-FIX6: verify a signature on a non-declaration record against an untrusted "
+             "structural declaration's material",
+             "    material = context.key_state.public_key(key)\n"
+             "    if material is not None:\n"
+             "        return (material, True)\n"
+             "    return (None, False)\n",
+             "    material = context.key_state.public_key(key)\n"
+             "    if material is not None:\n"
+             "        return (material, True)\n"
+             "    declared_material = context.declaration_material(key)\n"
+             "    if declared_material is not None:\n"
+             "        return (declared_material[0], False)\n"
+             "    return (None, False)\n",
+             (_KL + "note-by-untrusted-declared-key-forged",)),
+        _lit("fix6-material-cosignature-needs-trust", "verifier.py", "fix6.material-scope",
+             "S2-FIX6: verify a cosignature on a declaration only against trusted or "
+             "semantically valid declarations",
+             "        declared_material = context.declaration_material(key)\n"
+             "        if declared_material is not None:\n"
+             "            return (declared_material[0], False)\n"
+             "    if envelope.kind == kinds.KIND_ROTATED:\n",
+             "    if envelope.kind == kinds.KIND_ROTATED:\n",
+             (_KL + "cosignature-by-untrusted-declared-key-forged",)),
+        _lit("fix6-manifest-material-semantic", "container.py", "fix6.material-scope",
+             "S2-FIX6: take manifest material only from semantically valid declarations",
+             "        if view.envelope.kind == kinds.KIND_DECLARED and view.nonsubject_signature_failed:\n",
+             "        if view.envelope.kind == kinds.KIND_DECLARED and (\n"
+             "            view.nonsubject_signature_failed\n"
+             "            or (view.verdict != \"valid\" and view.admitted_declaration is None)\n"
+             "        ):\n",
+             ("container/manifest-signer-declaration-class-conflict",)),
+        _lit("fix6-material-rooted", "verifier.py", "fix6.material-rooted",
+             "S2-FIX6: start the material fixed point from every structural declaration "
+             "(greatest fixed point)",
+             "        envelope = view.envelope\n"
+             "        if envelope is None or envelope.kind != kinds.KIND_DECLARED:\n"
+             "            return\n"
+             "        if view.nonsubject_signature_failed:\n",
+             "        envelope = view.envelope\n"
+             "        if envelope is None and view.verdict is None:\n"
+             "            try:\n"
+             "                envelope = envelope_module.validate_envelope(view.loaded.value)\n"
+             "            except Exception:\n"
+             "                return\n"
+             "        if envelope is None or envelope.kind != kinds.KIND_DECLARED:\n"
+             "            return\n"
+             "        if view.nonsubject_signature_failed:\n",
+             ("container/manifest-signer-mutual-cosignature-cycle",)),
+        _lit("fix6-owner-cosignature-before-lookup", "keys.py", "fix6.owner-first",
+             "S2-FIX6: report the missing owner cosignature before the owner lookup",
+             "        owner_material = context.owner_declaration(owner)\n"
+             "        if owner_material is None:\n",
+             "        if owner not in verified_signature_keys and not signer_rules_deferred:\n"
+             "            raise WeaveError(\"E_KEY_DECLARED_NOT_COSIGNED\", \"ablation\")\n"
+             "        owner_material = context.owner_declaration(owner)\n"
+             "        if owner_material is None:\n",
+             (_KL + "owner-unresolved-device-self-signed",
+              _KL + "owner-declaration-cosignature-fails-device-owner-cosigned")),
+        _lit("fix6-owner-step5-before-lookup", "keys.py", "fix6.owner-first",
+             "S2-FIX6: report the §4.4 step 5 outcome before the owner lookup",
+             "        if owner_material is None:\n"
+             "            # Owner key is not declared anywhere in the context: unverifiable.\n",
+             "        if owner_material is None and signer_rules_deferred:\n"
+             "            raise WeaveError(\"E_SIG_UNVERIFIABLE\", \"ablation\")\n"
+             "        if owner_material is None:\n"
+             "            # Owner key is not declared anywhere in the context: unverifiable.\n",
+             (_KL + "owner-unresolved-device-unknown-algorithm-only",)),
+        _lit("fix6-grant-chain-per-link", "grants.py", "fix6.grant-chain-order",
+             "S2-FIX6: judge each link's revocation and window together, link by link",
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n"
+             "    for link, when in chain:\n"
+             "        _check_window(link, when)\n",
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n"
+             "        _check_window(link, when)\n",
+             ("grant/ancestor-revoked-cited-expired",
+              "grant/sub-grant-record-ancestor-revoked-cited-expired")),
+        _lit("fix6-grant-record-parent-window-first", "grants.py", "fix6.grant-chain-order",
+             "S2-FIX6: judge a grant record's parent window with the delegation checks, "
+             "before the chain's revocations",
+             "            \"E_GRANT_DELEGATION_EXCEEDS\", \"sub-grant ends after the parent grant\"\n"
+             "        )\n",
+             "            \"E_GRANT_DELEGATION_EXCEEDS\", \"sub-grant ends after the parent grant\"\n"
+             "        )\n"
+             "    _check_window(parent, child.recorded_at)\n",
+             ("grant/sub-grant-record-ancestor-revoked-cited-expired",)),
     )
 
 

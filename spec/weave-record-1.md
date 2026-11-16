@@ -949,8 +949,10 @@ is never displaced by a container or record-target declaration, however early th
 claimed `recorded_at`: for a keyset key the keyset declaration governs the class and the
 validity window, and context declarations cannot change either [S1] decided (Inceptless
 decision 2026-11-11 #2; S1; T4). Declarations that are not themselves semantically valid
-never govern the window or establish trust. For this purpose, and for the key material a
-`weave.key.declared` or `weave.key.rotated` record supplies, a record is semantically valid
+never govern the window or establish trust, and a `weave.key.rotated` record supplies
+key material only when it is semantically valid (which declarations supply material is
+stated in "Material for a signature check" below) [S2-FIX6] decided by principle
+(Inceptless decision 2026-11-16 #13). For these purposes a record is semantically valid
 when it passes every check **other than** the §9.4 effects on the signature of its
 **subject key** — the key the record states for itself: `body.key` of a declaration,
 `body.new_key` of a rotation. §9.4 judges that signature for the record's own verdict
@@ -985,18 +987,32 @@ further down that chain.
 a declaration never keeps itself trusted [S2-FIX3/F72] decided by principle (Inceptless decision 2026-11-16 #1). This is declaration resolution, not root selection [Q12] decided (Inceptless decision
 2026-11-10 #34; Q12).
 
-**Material for a signature check.** A `weave.key.declared` record supplies the material a
-signature by its key is verified against — on another record, as a cosignature on another
-declaration, on the manifest or on a supplied previous manifest — and resolves its key as
-an owner (§9.1 rule 3) exactly when it passes the §14.1 structural group (the same group
+**Material for a signature check.** A `weave.key.declared` record supplies the material
+that a signature by its key is verified against in exactly these places — a cosignature on
+another declaration (an owner cosignature included), the manifest signature (§11.3) and
+the manifest signature of a supplied previous container (§11.5) — and resolves its key as
+an owner (§9.1 rule 3), exactly when it passes the §14.1 structural group (the same group
 the governing class is taken from) **and** every signature other than its subject key's
-passes in the sense above. It does not have to be trusted for that (§11.3, T17/A-L8);
-governing a window and establishing trust still need semantic validity as defined above. A
-declaration that fails the structural group — no `sigs` member, a body that fails its
-schema such as a missing `key_type` — supplies no material, so a signature whose key has
-no other source is `unverified` with `E_KEY_UNKNOWN` (the declaration's own signatures are
-still checked against the key it states for itself) [S2-FIX5] decided (Inceptless decision
-2026-11-16 #9; as S2-FIX3/F73 for owners).
+passes in the sense above. It does not have to be trusted, or otherwise semantically valid,
+for that (§11.3, T17/A-L8): a declaration that is invalid for another reason, for example
+`E_KEY_CLASS_CONFLICT`, still supplies it. Governing a window and establishing trust still
+need semantic validity as defined above. A declaration that fails the structural group —
+no `sigs` member, a body that fails its schema such as a missing `key_type` — supplies no
+material, so a signature whose key has no other source is `unverified` with
+`E_KEY_UNKNOWN` (the declaration's own signatures are still checked against the key it
+states for itself) [S2-FIX5] decided by principle (Inceptless decision 2026-11-16 #9; as
+S2-FIX3/F73 for owners). A signature on any other record — a record of another kind, or a
+`weave.key.rotated` record — is verified only against the material of a declaration that
+is trusted or semantically valid in the sense above (or of a rotation, as stated above);
+when the key has no such declaration the signature is `unverified`, the record is
+`unverifiable` with `E_KEY_UNKNOWN` and carries `N_KEY_UNDECLARED` (§9.4), even when an
+untrusted declaration of the key exists [S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13).
+The material is rooted: a declaration's other signatures are verified only against
+material from declarations that do not depend on the declaration being judged and that
+have already obtained material this way, starting from the keyset and never assuming a
+declaration's own outcome — the least fixed point. Two declarations that only cosign each
+other therefore supply no material, neither to each other nor to a manifest signature
+[S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13).
 
 ### 5.4 Agent authorisation: every agent record needs a covering grant
 
@@ -1029,7 +1045,7 @@ revocation state (unverifiable) [S2/F69] decided by principle (Inceptless decisi
   (`valid_from <= recorded_at <= valid_until`, `null` meaning unbounded); otherwise
   `E_GRANT_EXPIRED` (unverifiable, including the not-yet-valid case). The two bullets are
   in the order of §5.5.2 step 6: a grant that is both revoked and outside its window is
-  `E_GRANT_REVOKED` [S2-FIX5] decided (Inceptless decision 2026-11-16 #9);
+  `E_GRANT_REVOKED` [S2-FIX5] decided by principle (Inceptless decision 2026-11-16 #9);
 - the whole grant chain, including all ancestors, is judged at the claimed `recorded_at`
   of the record being verified (and, when the record being verified is itself a
   `weave.grant`, at that grant's own claimed `recorded_at`), per §5.5.2 step 6
@@ -1143,6 +1159,11 @@ first failing check determines the error [S3][Q10] decided (Inceptless decision 
    `unverifiable` with `E_GRANT_REVOKED`; a grant or ancestor outside its validity window
    makes it `unverifiable` with `E_GRANT_EXPIRED`; the equality boundaries count as
    revoked. Any such failure anywhere in the chain makes the whole chain unverifiable.
+   The whole chain is judged for revocation first and for the windows after: a link
+   revoked anywhere in the chain gives `E_GRANT_REVOKED` even when a nearer link (the
+   cited grant included) is already outside its window, as one grant both revoked and
+   outside its window is `E_GRANT_REVOKED` (§5.4): revocation is the more specific and
+   the stronger fact [S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13).
    This rule replaces the earlier per-link evaluation time: there is one time for the whole
    chain, the verification time of the record, which is exactly the same time used for the
    directly cited grant [R1] decided (Inceptless decision 2026-11-10 #42; R1). Step 6 covers
@@ -1648,7 +1669,13 @@ Semantic rules:
    R2). An owner resolves only through a declaration that passes the §14.1 structural
    group, the declarations its class is taken from (§5.3), and that supplies material
    under §5.3: an owner whose only declaration fails that group — for example one without
-   `sigs` — cannot be resolved, `E_KEY_UNKNOWN` [S2-FIX3/F73] decided by principle (Inceptless decision 2026-11-16 #1).
+   `sigs` — cannot be resolved, `E_KEY_UNKNOWN` [S2-FIX3/F73] decided by principle (Inceptless decision 2026-11-16 #1)
+   [S2-FIX5] decided by principle (Inceptless decision 2026-11-16 #9). The owner lookup
+   comes first: an owner that cannot be resolved gives `E_KEY_UNKNOWN` even when no `sigs`
+   entry is by the owner key, so the missing owner cosignature of rule 4
+   (`E_KEY_DECLARED_NOT_COSIGNED`) is not reported; the cosignature rule follows the lookup
+   of the owner's declaration (§14.5), and so does the §4.4 step 5 outcome of a declaration
+   signed only with unknown algorithms [S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13).
 4. **Cosignature and trust roots.** A declaration is trusted as follows:
    - **Keyset declarations (local trust input).** A `weave.key.declared` record supplied
      through `--keys` whose `key_type` is `human` or `organization` and which passes its own
@@ -1881,7 +1908,10 @@ A signature by a key with no **trusted** declaration and no explicit rotation-re
 material anywhere in the verification context is `unverifiable` (`E_KEY_UNKNOWN`): only
 trusted declarations enter key state, so a declaration that exists but is untrusted does
 not make its key usable, and signatures by it stay in the "key cannot be established"
-bucket rather than becoming invalid; this applies to manifest signatures as well. The two
+bucket rather than becoming invalid. The cosignatures, owner lookups and manifest
+signatures that §5.3 ("Material for a signature check") lists are verified against any
+declaration that supplies material there, trusted or not (§11.3, T17/A-L8)
+[S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13). The two
 codes have different subjects: an untrusted **declaration** is itself `unverifiable` with
 `E_KEY_UNTRUSTED`, while a **signature** by the key of an untrusted declaration is
 `unverifiable` with `E_KEY_UNKNOWN` [E4][Q12][M-12][R2] decided (Inceptless decision
@@ -4011,12 +4041,24 @@ text); the founder can overturn them.
 
 The following rows are fixed by Inceptless decision **2026-11-16 #9** (S2-FIX5, the fifth
 revision of the S2 round): the two specification ambiguities the S2-FIX4 differential
-fuzzing left; the founder decided them.
+fuzzing left, **decided by principle**; the founder can overturn them.
 
 | ruling | topic | normative location |
 |---|---|---|
 | S2-FIX5 (material) | a declaration supplies verification material, and resolves an owner, only when it passes the §14.1 structural group and every signature other than its subject key's passes; trust is not required | §5.3 |
 | S2-FIX5 (grant order) | a grant both revoked and outside its window at the evaluated time is `E_GRANT_REVOKED`; §5.4 lists the revocation rule first, as §5.5.2 step 6 does | §5.4 |
+
+The following rows are fixed by Inceptless decision **2026-11-16 #13** (S2-FIX6, the sixth
+revision of the S2 round): the pre-merge reviews of the S2 round, **decided by principle**;
+the founder can overturn them.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S2-FIX6 (material scope) | the S2-FIX5 material rule covers cosignatures on declarations, owner lookups, the manifest signature and a supplied previous manifest's signature; a signature on any other record needs a trusted or semantically valid declaration (`E_KEY_UNKNOWN`, `N_KEY_UNDECLARED`); a declaration invalid for another reason (`E_KEY_CLASS_CONFLICT`) still supplies material for those places; the semantic-validity sentence covers windows, trust and rotation material only | §5.3, §9.4 |
+| S2-FIX6 (rooted material) | a declaration's other signatures are verified only against material that does not depend on it (least fixed point): declarations that only cosign each other supply none | §5.3 |
+| S2-FIX6 (owner lookup first) | an owner that cannot be resolved is `E_KEY_UNKNOWN` before the owner-cosignature rule and before the §4.4 step 5 outcome | §9.1 |
+| S2-FIX6 (grant chain order) | the whole grant chain is judged for revocation before any link's window: a revoked link anywhere is `E_GRANT_REVOKED` | §5.5.2, `weave.grant.md` |
+| S2-FIX6 (registry) | `E_GRANT_GRANTER` no longer lists a parent outside its window or revoked (those are `E_GRANT_EXPIRED` / `E_GRANT_REVOKED`, §5.5.2 step 6) | registry, `weave.grant.md` |
 
 ### A.2 PROVISIONAL implementation shapes
 

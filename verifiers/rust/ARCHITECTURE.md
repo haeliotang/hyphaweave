@@ -13,8 +13,7 @@ vectors only**. The following must never be read by any workstream:
 - `verifiers/python/**` — the Python reference verifier;
 - `tools/**` — the vector generators contain implementation details;
 - `git log -p` / `git show` output touching those paths;
-- `~/.claude/plans/hyphaweave-h0/**`;
-- `/Users/hao/Documents/epiweave/docs/design/**`.
+- the internal planning and design notes (not public).
 
 The Python verifier may be executed as a **black box** only for gate 3 (the two
 implementation report comparison), and only after the Rust verifier has passed
@@ -24,7 +23,7 @@ Repository text is English. Every source file carries the two SPDX header lines.
 
 ## Building and testing
 
-Run from the repository root (`/Users/hao/Documents/hyphaweave`). The DSH file
+Run from the repository root. The DSH file
 sandbox only allows writes inside the repository, so the cargo registry cache is
 kept in the already-ignored `.tmp-work/` directory:
 

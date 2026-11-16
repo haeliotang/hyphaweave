@@ -191,9 +191,12 @@ def _check_delegation(
     child: GrantRecord,
     parent: GrantRecord,
     context: GrantContext,
-    at_time: str,
 ) -> None:
-    """Steps 2-7 of the delegated sub-grant rules (fixed order)."""
+    """Steps 2-5 of the delegated sub-grant rules (fixed order).
+
+    The parent's revocation and window at the evaluated time are step 6, which
+    :func:`validate_grant_chain` judges over the whole chain (S2-FIX6).
+    """
     if "weave.grant" not in parent.kind_names or "grant" not in parent.actions:
         raise WeaveError(
             "E_GRANT_GRANTER", "parent grant does not authorise granting weave.grant"
@@ -229,15 +232,6 @@ def _check_delegation(
         raise WeaveError(
             "E_GRANT_DELEGATION_EXCEEDS", "sub-grant ends after the parent grant"
         )
-    # Step 7: parent revoked / outside its own window at the evaluation time.
-    if context.grant_state.revocation_as_of(parent.digest, at_time) is not None:
-        raise WeaveError("E_GRANT_REVOKED", "parent grant is revoked")
-    if timestamp_sort_key(at_time) < timestamp_sort_key(parent.valid_from):
-        raise WeaveError("E_GRANT_EXPIRED", "parent grant is not yet valid")
-    if parent.valid_until is not None and timestamp_sort_key(at_time) > timestamp_sort_key(
-        parent.valid_until
-    ):
-        raise WeaveError("E_GRANT_EXPIRED", "parent grant is expired")
 
 
 def validate_grant_chain(
@@ -254,17 +248,20 @@ def validate_grant_chain(
     links beyond the depth bound included, stopped only by a cycle; the depth
     bound of step 7 is decided after the walk. ``depth`` is the number of links
     already counted before ``grant``.
+
+    S2-FIX6 (decision 2026-11-16 #13; §5.5.2 step 6): step 6 is judged over the
+    whole chain once the walk is done, every link's revocation before any
+    link's window, so a revoked link anywhere is ``E_GRANT_REVOKED`` even when
+    a nearer link is already outside its window. Within one grant this is the
+    S2-FIX5 order (decision 2026-11-16 #9; §5.4): revoked before expired.
     """
     links = depth
+    chain: list[tuple[GrantRecord, str]] = []
     while True:
         if grant.digest in seen:
             raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is cyclic")
         seen = seen | {grant.digest}
-        # S2-FIX5 (decision 2026-11-16 #9; §5.4, §5.5.2 step 6): a grant that is
-        # both revoked and outside its window at the evaluated time is revoked.
-        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:
-            raise WeaveError("E_GRANT_REVOKED", "grant is revoked")
-        _check_window(grant, at_time)
+        chain.append((grant, at_time))
         if grant.actor_type in ("human", "organization"):
             break  # root grant
         parent, _parent_digest = _resolve_grant(grant.parent_reference, context)
@@ -273,9 +270,14 @@ def validate_grant_chain(
         # verification anchor for the old §5.5.2 step-6 reading: mutating it to the
         # grant's own time must make grant/ancestor-revoked-before-record fail.
         ancestor_time = at_time
-        _check_delegation(grant, parent, context, ancestor_time)
+        _check_delegation(grant, parent, context)
         grant, at_time = parent, ancestor_time
         links += 1
+    for link, when in chain:
+        if context.grant_state.revocation_as_of(link.digest, when) is not None:
+            raise WeaveError("E_GRANT_REVOKED", "grant is revoked")
+    for link, when in chain:
+        _check_window(link, when)
     if links > MAX_CHAIN_DEPTH:
         raise WeaveError("E_GRANT_UNRESOLVED", "grant chain is too deep")
 
@@ -315,7 +317,7 @@ def check_grant_semantics(
     # to the root, so the grant record being verified is not itself a link of its
     # own chain: the parent chain starts at depth 0.
     parent, _ = _resolve_grant(envelope.actor_grant, context)
-    _check_delegation(grant, parent, context, envelope.recorded_at)
+    _check_delegation(grant, parent, context)
     validate_grant_chain(parent, context, envelope.recorded_at, depth=0, seen=frozenset({digest}))
     return grant
 
