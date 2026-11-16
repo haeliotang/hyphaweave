@@ -1024,13 +1024,16 @@ impl World {
     /// a record at §4.4 step 5 (S2-FIX1/Q3): owner binding (rule 3) and the
     /// governing class (rule 4). The self-signature and the trust that needs
     /// a verified cosignature are not evaluated; `None` when both pass.
-    pub(crate) fn decl_issue_without_signatures(&self, index: usize) -> Option<Code> {
-        let decl = self.slots[index].decl.as_ref()?;
+    pub(crate) fn decl_issue_without_signatures(&mut self, index: usize) -> Option<Code> {
+        let decl = self.slots[index].decl.clone()?;
         let key = self.decl_key(index)?;
         if !matches!(decl.class.as_str(), "human" | "organization") {
             let Some(owner) = decl.owner.as_deref() else {
                 return Some(e::KEY_OWNER_MISSING);
             };
+            if !self.owner_resolves(owner) {
+                return Some(e::KEY_UNKNOWN);
+            }
             match self.governing_class_of(owner) {
                 None => return Some(e::KEY_UNKNOWN),
                 Some(class) if !matches!(class, "human" | "organization") => {
@@ -1066,11 +1069,14 @@ impl World {
     }
 
     /// Public-key material of a key from any `weave.key.declared` record of the
-    /// context whose envelope and `sigs` format passed and whose `body.key`/`body.public_key`
-    /// are well formed and consistent (the key id is the derivation of the
-    /// public key). Trust and the other body rules are not required: §11.3 and
-    /// §4.4 ask whether a key "resolves through a declaration", which is a
-    /// question of available material (F41). A keyset declaration that fails
+    /// context that passes the §14.1 structural group (`sigs` present and well
+    /// formed, the body schema; §5.3 "Material for a signature check", S2-FIX5)
+    /// and whose `body.key`/`body.public_key` are consistent (the key id is the
+    /// derivation of the public key). Trust and the other body rules are not
+    /// required: §11.3 and §4.4 ask whether a key "resolves through a
+    /// declaration", which is a question of available material (F41), and the
+    /// signatures other than the subject key's are judged by
+    /// [`World::declaration_admitted`]. A keyset declaration that fails
     /// its own checks is ignored (§14.1: it "does not establish trust and is
     /// ignored"), so it supplies no material either (S2 review A low-1).
     pub(crate) fn declared_material(&self, key: &str) -> Option<DeclaredMaterial> {
@@ -1100,8 +1106,13 @@ impl World {
                 if from_keyset && slot.decl_issue != DeclIssue::None {
                     return None;
                 }
-                // The record's own structure (envelope and `sigs` format) passed.
-                envelope::parse_sigs(&record.object).ok()?;
+                // §5.3 "Material for a signature check" (S2-FIX5): only a
+                // declaration that passes the §14.1 structural group (`sigs`
+                // present and well formed, the body schema such as `key_type`
+                // and `algorithm`) supplies material: the group the governing
+                // class is taken from, so `decl_schema` is set (`build_trust`)
+                // exactly for these declarations.
+                slot.decl_schema.as_ref()?;
                 let text = envelope.body.get_str("public_key")?;
                 let bytes = crate::b64::decode_exact(text, 32).ok()?;
                 if digest::derive_key_id(&bytes) != key {
@@ -1709,9 +1720,41 @@ impl World {
         self.slots[index].body_error
     }
 
-    /// The declaration trust outcome of a slot.
-    pub(crate) fn decl_issue(&self, index: usize) -> DeclIssue {
-        self.slots[index].decl_issue
+    /// The declaration trust outcome of a slot, as the record's §9.1 check
+    /// reports it: the trust closure's outcome, except that an owner whose
+    /// declarations all fail §5.3 does not resolve (rule 3 comes after the
+    /// self-signature, rule 2, and before everything else).
+    pub(crate) fn decl_issue(&mut self, index: usize) -> DeclIssue {
+        let issue = self.slots[index].decl_issue;
+        if matches!(issue, DeclIssue::SelfSignature | DeclIssue::BodyInvalid) {
+            return issue;
+        }
+        let owner = self.slots[index]
+            .decl
+            .as_ref()
+            .filter(|decl| !matches!(decl.class.as_str(), "human" | "organization"))
+            .and_then(|decl| decl.owner.clone());
+        match owner {
+            Some(owner) if !self.owner_resolves(&owner) => DeclIssue::OwnerUnknown,
+            _ => issue,
+        }
+    }
+
+    /// §9.1 rule 3 with §5.3 "Material for a signature check" (S2-FIX5; as
+    /// S2-FIX3/F73 for the structural half): an owner key resolves only
+    /// through a `weave.key.declared` record that passes the §14.1
+    /// structural group (`decl_schema`) and whose signatures other than its
+    /// subject key's all pass (`declaration_admitted`); trust is not
+    /// required. The trust closure runs before §9.4 can be evaluated, so
+    /// this is applied where the declaration's own check is reported, as
+    /// the rest of §5.3 is applied where material is used (F72).
+    pub(crate) fn owner_resolves(&mut self, owner: &str) -> bool {
+        let sources: Vec<usize> = (0..self.slots.len())
+            .filter(|&index| self.decl_key(index).as_deref() == Some(owner))
+            .collect();
+        sources
+            .into_iter()
+            .any(|index| self.declaration_admitted(index))
     }
 }
 
