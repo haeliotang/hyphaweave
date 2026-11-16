@@ -1668,12 +1668,39 @@ def _check_records_listing(
 
 
 def _check_blobs(manifest: manifest_module.Manifest, container_input: ContainerInput) -> None:
+    """§14.5 step (9): ``blobs/`` must agree exactly with ``manifest.blobs`` (§11.7).
+
+    Every file in ``blobs/`` or ``blobs/sha256/`` that is not a listed blob is an
+    extra file, whatever its name (§11.1, S3). Only ``blobs/sha256/<64 lowercase
+    hex>`` files are streamed into ``blobs``; any other file there is held as a
+    presence marker in ``files``, and a blob above ``MAX_BLOB_BYTES`` is held in
+    ``oversized``, so both are counted here as files that are not listed blobs.
+    A deeper directory below ``blobs/`` never reaches this step: entry
+    enumeration rejects it (``E_CONTAINER_ENTRY``). ``blobs/`` is present when
+    any file or directory entry lies in it (the zip form needs no directory
+    entry).
+    """
     blob_files = dict(container_input.blobs)
+    unstreamed = sorted(
+        path
+        for path in (*container_input.files, *container_input.oversized)
+        if path.startswith("blobs/")
+    )
+    tree_present = (
+        bool(blob_files)
+        or bool(unstreamed)
+        or any(
+            directory == "blobs" or directory.startswith("blobs/")
+            for directory in container_input.directory_entries
+        )
+    )
     listed = {blob.digest: blob for blob in manifest.blobs}
     if not listed:
-        if blob_files or "blobs" in container_input.directory_entries:
+        if tree_present:
             raise WeaveError("E_MANIFEST_BLOB", "blobs directory present without listed blobs")
         return
+    if unstreamed:
+        raise WeaveError("E_MANIFEST_BLOB", "blobs/ holds a file that is not a listed blob")
     for digest, blob in listed.items():
         expected_path = "blobs/sha256/%s" % digest.partition(":")[2]
         streamed = blob_files.pop(expected_path, None)
