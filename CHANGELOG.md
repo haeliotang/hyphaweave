@@ -76,6 +76,23 @@ added; the registry stays at revision 7. No conclusion of the frozen candidate s
   747 of the 749 main cases; `grant/ancestor-revoked-cited-expired` and
   `grant/sub-grant-record-ancestor-revoked-cited-expired` are its next increment.
 
+## H1-S5 (Rust follow-up of S2-FIX6) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #14: the Rust verifier follows S2-FIX6 (decision 2026-11-16 #13). No
+specification, schema, vector, tool or Python change. Both implementations now follow
+revision 3 including S2-FIX6: each passes the 749 main and the 202 candidate regression
+vectors, and the gate-3 allow list stays empty.
+
+### Changed (Rust verifier and its scripts)
+
+- **Grant chain order** (§5.5.2 step 6): the whole chain is judged for revocation before
+  any link's window, so a link revoked anywhere is `E_GRANT_REVOKED` even when a nearer
+  link (the cited grant included) is already outside its window; it used to be judged link
+  by link (`E_GRANT_EXPIRED`).
+- **The rest of S2-FIX6** (material scope, rooted material, owner lookup first, the
+  governing window): no change; the Rust verifier already followed it.
+- **`scripts/diff_fuzz.py`**: exits 1 when any mutant's conclusions differ.
+
 ## H1-S4 (Rust fixes from the H1-S3 reviews) — 2026-11-16 — DRAFT, UNRELEASED
 
 Decision 2026-11-16 #13: the Rust verifier fixes the two defects the pre-merge reviews of

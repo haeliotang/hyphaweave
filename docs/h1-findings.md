@@ -2258,6 +2258,48 @@ outcome was valid or untrusted, without asking §5.3 admission. The claim made h
 that no vector, probe or fuzzing run reaches a difference was wrong: the pre-merge reviews
 of H1-S3 built two containers that reach one, and H1-S4 changed the rule (F86, F87).
 
+## H1-S5 follow-up (decision 2026-11-16 #14)
+
+Branch `r2/rust-s2` merged `s2/spec-revision` at `3b4f18b` (S2-FIX6, decision 2026-11-16
+#13, and the F87 vector; 749 main cases, 202 frozen) as `a8988e2`; no specification,
+schema, vector, tool or Python change on this branch.
+
+### S2-FIX6 dispositions (decision 2026-11-16 #13)
+
+| item | S2-FIX6 ruling | Rust |
+|---|---|---|
+| material scope (§5.3, §9.4) | a structurally valid declaration supplies material without trust only for a cosignature on another declaration, an owner lookup, the manifest and a supplied previous manifest; any other record's signature needs a trusted or semantically valid declaration. This narrows the S2-FIX5 wording quoted in the H1-S3 table above ("on another record") | none (already: only declarations and the manifest checks take material from an untrusted declaration) |
+| rooted material (§5.3) | least fixed point: two declarations that only cosign each other supply no material | none (already, F83's cycle fix; settled per component since H1-S4, F88) |
+| owner lookup first (§9.1 rule 3) | an unresolvable owner is `E_KEY_UNKNOWN` before the owner cosignature rule and the §4.4 step 5 outcome | none (already, F85) |
+| governing window (§5.3, §9.1 rule 4) | vectors for F86 and F87 | none (already, H1-S4) |
+| grant chain order (§5.5.2 step 6) | the whole chain is judged for revocation before any link's window: a link revoked anywhere is `E_GRANT_REVOKED` even when a nearer link is outside its window | **changed** (`b2cea87`): `grant_chain_validity` walks the chain first, then judges every link's revocation, then every link's window; it judged link by link and reported `E_GRANT_EXPIRED` (`grant/ancestor-revoked-cited-expired`, `sub-grant-record-ancestor-revoked-cited-expired`) |
+| `E_GRANT_GRANTER` registry row | no parent window or revocation clause | none (the Rust verifier never reported `E_GRANT_GRANTER` for those) |
+
+Also in H1-S5: `scripts/diff_fuzz.py` exits 1 when any mutant's conclusions differ (review
+A low 2; `e7d68c0`), and the S2-FIX5 provenance in the H1-S3 section reads "decided by
+principle".
+
+## H1-S5 gate results
+
+Recorded 2026-11-16 on branch `r2/rust-s2` at `c75cd34` (Rust code `b2cea87`, merged
+`3b4f18b`: 749 main cases, 202 frozen); the final gates before the merge. Both ci.yml jobs
+ran from the repository root, the reference verifier installed with the ci.yml commands
+into a venv (Python always by the venv's absolute path) and used only as a black box.
+Local differences from ci.yml, none semantic: the target directory outside the repository
+(crash fuzz `--binary`, gate 3 `--rust-binary`/`--python-cli`), `-j 2` / `--jobs 2`;
+rustup stable 1.100.0.
+
+| gate | result |
+|---|---|
+| 1. CI, Python job | install steps and all 16 steps exit 0: generators `--check` (4), pytest 420 passed 1 skipped, vectors 749/749, SHA256SUMS and `CHECK_FROZEN: PASS`, frozen 202/202, schemas, external, ablation (348 mutations, 315 killed, 24 documented equivalent, 0 unpinned, 9 documented redundant, 0 catalogue errors), byte-flip (437,311 mutants, 0 survivors), crash fuzz (1,956 mutants, 0 crashes), spec examples, REUSE 3.3 |
+| 1. CI, Rust job | every step exit 0: fmt, clippy all targets, clippy library, `cargo test --workspace` (18 test binaries, 126 passed, 0 failed, 3 ignored), both `vectors` runs, `cargo deny check` (advisories, bans, licenses, sources ok), `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz (2,000 mutants, 0 failures), gate 3 |
+| 2. vectors | Rust 749/749 main and 202/202 frozen |
+| 3. two-implementation comparison | allow list empty; 951 cases (749 + 202), 951 byte-identical, PASS |
+| 4. red checks | each change removed on its own turns red and is restored (`cmp` equal, then `touch`): the grant chain judged link by link — exactly the two S2-FIX6 order cases mismatch; windows before revocations — those two and the two S2-FIX5 revoked-and-expired cases; the S2-FIX5 material and owner changes (H1-S3, four mutations) and the H1-S4 window, untrusted-window, settle and memo changes (four mutations) as recorded in their sections |
+| 5. differential fuzzing | 10 classes × 400, release binary of `c75cd34`: seed **151115** 3,763 mutants, **777001** 3,783, **4242017** 3,781 — every one byte-identical, 0 conclusion and 0 report-detail differences, each run exit 0; both verifiers exit 0 or 1 only, no Rust stderr, no timeout. The exit status was checked once against a wrapper that reports every `valid` verdict as `invalid` (29 mutants, 0 equal conclusions): exit 1 |
+| 6. other gates | stress probes (release, seconds): branch-16/18/20/22 0.03 each, chain-100 0.07, chain-200 0.16, chain-300 0.28, chain-600 0.84; the window probes w1, w2, w1c, w2c byte-identical with the reference; `cargo check -p hyphaweave-verify --target aarch64-linux-android` exit 0, no warning; `reuse lint` compliant |
+| 7. other workstreams untouched | `git diff --stat 3b4f18b..r2/rust-s2 -- spec schemas vectors verifiers/python tools` is empty |
+
 ## H1-S4 follow-up (decision 2026-11-16 #13)
 
 The two pre-merge reviews of H1-S3 (`0a231e0`) found two Rust defects: a validity window
@@ -2502,3 +2544,5 @@ black box, installed non-editable from `git archive origin/main`.
   for the S2-FIX5 material rule, F85, and the H1-S3 gate results.
 - **2026-11-16 (H1-S4)** — corrected F85's "Not changed" paragraph (its claim that nothing
   reaches the window difference was wrong); added F86–F88 and the H1-S4 gate results.
+- **2026-11-16 (H1-S5)** — S2-FIX5 provenance corrected to "decided by principle"; added
+  the S2-FIX6 dispositions and the H1-S5 gate results.

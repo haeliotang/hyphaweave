@@ -24,7 +24,8 @@ S2-FIX1, S2-FIX2 and S2-FIX3 and the supplement S2-FIX2b (decisions 2026-11-15
 #8, #18, #22 and #32, 2026-11-16 #1), so both implementations now follow
 revision 3 including S2; H1-S3 (decision 2026-11-16 #10) follows S2-FIX4 and
 S2-FIX5 (decisions 2026-11-16 #4 and #9), and H1-S4 (decision 2026-11-16 #13) fixes
-what the pre-merge reviews of H1-S2 and H1-S3 found. H1-S4 has not itself been
+what the pre-merge reviews of H1-S2 and H1-S3 found; H1-S5 (decision 2026-11-16 #14)
+follows S2-FIX6 (decision 2026-11-16 #13). H1-S4 and H1-S5 have not themselves been
 reviewed yet. The format
 `weave-record/1` v0.1 is still a draft and has not passed J1/J2 acceptance, so
 the candidate regression set in `vectors/frozen/v0.1-candidate/` is not frozen
