@@ -16582,6 +16582,393 @@ declare(
 )
 
 
+# ---------------------------------------------------------------------------
+# S3 round: blob listing and blob file codes (§11.1, §11.2, §11.7, §13, §14.5)
+# ---------------------------------------------------------------------------
+#
+# A malformed manifest.blobs (not an array, more than MAX_BLOBS entries, an entry
+# that is not a closed {digest,size} object, a digest without the §2.7 digest-string
+# grammar, a size that is not a non-negative integer) is E_MANIFEST_SCHEMA. A
+# well-formed listing that names a digest other than sha256:<64 lowercase hex>, or
+# whose digests are not strictly ascending, is E_MANIFEST_BLOB. Both are decided at
+# the manifest-structure step, in a fixed order (the array, the count, then each
+# entry in array order: shape, digest grammar and size, then the sha256 form; then
+# the order), so the report carries records: []. The comparison with the files is
+# step (9): every file in blobs/ or blobs/sha256/ that is not a listed blob,
+# whatever its name, is E_MANIFEST_BLOB, in both container forms. A directory below
+# blobs/ other than blobs/sha256/, or inside blobs/sha256/, is outside the layout:
+# E_CONTAINER_ENTRY at step (1), in both forms.
+
+_S3 = "S3 (blob codes; decision 2026-11-16 #44; MW2 reviews A and B)"
+_S3_BLOB_A = b"s3 blob a\n"
+_S3_BLOB_B = b"s3 blob b\n"
+_S3_ABSENT = object()
+_S3_RECORDS_VERIFIED = ({"id": "key-declared-human-1", "verdict": "valid", "errors": []},)
+
+
+def _s3_entry(data: bytes) -> dict[str, Any]:
+    return {"digest": recordlib.blob_digest(data), "size": len(data)}
+
+
+def _s3_hex_digest(index: int) -> str:
+    """A well-formed sha256 digest string; ascending with ``index``."""
+    return "sha256:%064x" % index
+
+
+def _s3_container(*blobs: bytes) -> dict[str, bytes]:
+    """A sealed L0 container of SIMPLE_RECORDS whose blobs are listed and stored."""
+    return recordlib.build_container(
+        SIMPLE_RECORDS(), blobs=[(data, b"") for data in blobs] or None
+    )
+
+
+def _s3_listing(files: dict[str, bytes], listing: Any) -> dict[str, bytes]:
+    """Set manifest.blobs to *listing* (``_S3_ABSENT`` removes it) and re-seal."""
+
+    def mutator(manifest: dict[str, Any]) -> dict[str, Any]:
+        result = dict(manifest)
+        if listing is _S3_ABSENT:
+            result.pop("blobs", None)
+        else:
+            result["blobs"] = listing
+        return result
+
+    return mutate(files, mutator)
+
+
+def _s3_listed_a_plus(path: str, data: bytes) -> dict[str, bytes]:
+    """Blob A listed and stored, plus one more file at *path* (not listed)."""
+    files = _s3_container(_S3_BLOB_A)
+    files[path] = data
+    return files
+
+
+def _s3_hex_a() -> str:
+    return recordlib.blob_digest(_S3_BLOB_A)[len("sha256:") :]
+
+
+def _s3_form(as_zip_form: bool) -> Callable[[dict[str, bytes]], dict[str, bytes]]:
+    return zip_wrap if as_zip_form else (lambda files: files)
+
+
+# -- Malformed listings: E_MANIFEST_SCHEMA at the manifest-structure step.
+
+for _s3_name, _s3_listing_value, _s3_what in (
+    ("blobs-listing-null", None, "manifest.blobs is null, which is not an array"),
+    (
+        "blobs-listing-entry-unknown-member",
+        [{**_s3_entry(_S3_BLOB_A), "media_type": "text/plain"}],
+        "the entry carries a third member (an entry is a closed {digest,size} object)",
+    ),
+    (
+        "blobs-listing-size-string",
+        [{"digest": recordlib.blob_digest(_S3_BLOB_A), "size": str(len(_S3_BLOB_A))}],
+        "size is a string, not an integer",
+    ),
+    (
+        "blobs-listing-size-negative",
+        [{"digest": recordlib.blob_digest(_S3_BLOB_A), "size": -1}],
+        "size is negative",
+    ),
+    (
+        "blobs-listing-uppercase-hex",
+        [{"digest": "sha256:" + _s3_hex_a().upper(), "size": len(_S3_BLOB_A)}],
+        "the digest has uppercase hex digits, so it is not a digest string (§2.7 requires "
+        "lowercase hex): a malformed value, not an unsupported algorithm",
+    ),
+    (
+        "blobs-listing-digest-without-algorithm",
+        [{"digest": _s3_hex_a(), "size": len(_S3_BLOB_A)}],
+        "the digest is bare hex without '<alg>:', so it is not a digest string (§2.7)",
+    ),
+    (
+        "blobs-listing-algorithm-name-malformed",
+        [{"digest": "sha--256:" + _s3_hex_a(), "size": len(_S3_BLOB_A)}],
+        "the algorithm name 'sha--256' does not match the §2.7 algorithm-name grammar "
+        "(a hyphen is followed by at least one letter or digit)",
+    ),
+    (
+        "blobs-listing-hex-too-long",
+        [{"digest": "sha512:" + "0" * 129, "size": 0}],
+        "the hexadecimal part has 129 characters; §2.7 allows at most 128, so this is not "
+        "a digest string (a well-formed sha512 digest is E_MANIFEST_BLOB, see "
+        "blobs-listing-unsupported-algorithm)",
+    ),
+    (
+        "blobs-listing-malformed-then-unsupported",
+        [
+            {"digest": recordlib.blob_digest(_S3_BLOB_A), "size": "1"},
+            {"digest": "sha512:" + "0" * 128, "size": 0},
+        ],
+        "the first entry's size is a string and the second entry names sha512: the entries "
+        "are checked in array order and the first failing check decides (the converse is "
+        "blobs-listing-unsupported-then-malformed)",
+    ),
+    (
+        "blobs-listing-malformed-and-out-of-order",
+        [
+            {"digest": _s3_hex_digest(2), "size": 0},
+            {"digest": _s3_hex_digest(1), "size": -1},
+        ],
+        "the digests are descending and the second entry's size is negative: the order is "
+        "checked only after every entry",
+    ),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_SCHEMA",),
+        build=lambda case_dir, listing=_s3_listing_value: _s3_listing(
+            _s3_container(), listing
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3 + ": " + _s3_what + ". A malformed manifest.blobs is E_MANIFEST_SCHEMA "
+        "(§11.2, §11.7), decided at the manifest-structure step, so records is [].",
+    )
+
+
+def _s3_many_entries(count: int) -> list[dict[str, Any]]:
+    return [{"digest": _s3_hex_digest(index), "size": 0} for index in range(count)]
+
+
+declare(
+    "container",
+    "blobs-listing-too-many",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _s3_listing(_s3_container(), _s3_many_entries(10_001)),
+    args=("--keys", "@keyset"),
+    records=(),
+    notes=_S3 + ": manifest.blobs has 10,001 well-formed, ascending, unique sha256 "
+    "entries, one above MAX_BLOBS. The §13 table fixes MAX_BLOBS to E_MANIFEST_SCHEMA "
+    "(Q24); the count is checked before any entry, at the manifest-structure step, so "
+    "records is []. The boundary is blobs-listing-at-limit-files-missing.",
+)
+
+declare(
+    "container",
+    "blobs-listing-at-limit-files-missing",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: _s3_listing(_s3_container(), _s3_many_entries(10_000)),
+    args=("--keys", "@keyset"),
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": manifest.blobs has exactly MAX_BLOBS (10,000) well-formed, ascending, "
+    "unique sha256 entries, so the listing passes the manifest-structure step; none of "
+    "the listed files exists, which the blob step (9) reports as E_MANIFEST_BLOB after "
+    "the records were verified. The boundary of blobs-listing-too-many.",
+)
+
+# -- Well-formed listings that break §11.7: E_MANIFEST_BLOB at the manifest-structure step.
+
+for _s3_name, _s3_build, _s3_what in (
+    (
+        "blobs-listing-unsupported-algorithm",
+        lambda: _s3_listing(
+            _s3_container(), [{"digest": "sha512:" + "0" * 128, "size": 0}]
+        ),
+        "the only entry names a well-formed sha512 digest string: structurally valid but "
+        "unsupported (§2.7), and H0 blobs are sha256-only (§11.7, Q23)",
+    ),
+    (
+        "blobs-listing-sha256-wrong-length",
+        lambda: _s3_listing(
+            _s3_container(), [{"digest": "sha256:" + "0" * 63, "size": 0}]
+        ),
+        "the only entry is a well-formed digest string 'sha256:' with 63 hex digits, which "
+        "is not sha256:<64 lowercase hex> (§11.7)",
+    ),
+    (
+        "blobs-listing-out-of-order",
+        lambda: _s3_listing(
+            _s3_container(_S3_BLOB_A, _S3_BLOB_B),
+            sorted(
+                [_s3_entry(_S3_BLOB_A), _s3_entry(_S3_BLOB_B)],
+                key=lambda entry: entry["digest"],
+                reverse=True,
+            ),
+        ),
+        "two listed and stored blobs, listed in descending digest order",
+    ),
+    (
+        "blobs-listing-duplicate-digest",
+        lambda: _s3_listing(
+            _s3_container(_S3_BLOB_A), [_s3_entry(_S3_BLOB_A), _s3_entry(_S3_BLOB_A)]
+        ),
+        "one stored blob listed twice: the digests are not unique (not strictly ascending)",
+    ),
+    (
+        "blobs-listing-unsupported-then-malformed",
+        lambda: _s3_listing(
+            _s3_container(),
+            [
+                {"digest": "sha512:" + "0" * 128, "size": 0},
+                {"digest": "sha512:" + "1" * 128, "size": "0"},
+            ],
+        ),
+        "the first entry names sha512 and the second entry's size is a string: the entries "
+        "are checked in array order (shape, digest grammar and size, then the sha256 form) "
+        "and the first failing check decides",
+    ),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_BLOB",),
+        build=lambda case_dir, build=_s3_build: build(),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3 + ": " + _s3_what + ". A well-formed manifest.blobs that breaks a §11.7 "
+        "rule is E_MANIFEST_BLOB, decided at the manifest-structure step, so records is [].",
+    )
+
+# -- The empty listing means no blobs.
+
+declare(
+    "container",
+    "blobs-listing-empty-array",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _s3_listing(_s3_container(), []),
+    args=("--keys", "@keyset"),
+    limitations=("L_OFFLINE_CONTEXT",),
+    expected_container={"level_claimed": "L0", "level_verified": "L0"},
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": manifest.blobs is the empty array and the container has no blobs/: an "
+    "empty listing means no blobs, like an absent member (§11.2, §11.7).",
+)
+
+declare(
+    "container",
+    "blobs-listing-empty-array-with-blob-file",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: _s3_listing(_s3_container(_S3_BLOB_A), []),
+    args=("--keys", "@keyset"),
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": manifest.blobs is the empty array while blobs/sha256/ holds a blob: a "
+    "present blobs/ requires a non-empty listing (§11.7), reported by the blob step (9).",
+)
+
+# -- Files in blobs/ that are not listed blobs, whatever their names: E_MANIFEST_BLOB at
+#    the blob step (9), in both container forms.
+
+for _s3_name, _s3_path, _s3_zip, _s3_what in (
+    (
+        "blobs-extra-file-not-a-digest",
+        "blobs/sha256/not-a-digest",
+        False,
+        "blobs/sha256/not-a-digest",
+    ),
+    (
+        "blobs-extra-file-not-a-digest-zip",
+        "blobs/sha256/not-a-digest",
+        True,
+        "blobs/sha256/not-a-digest, in the zip form",
+    ),
+    (
+        "blobs-extra-file-hex-65",
+        "blobs/sha256/" + "a" * 65,
+        False,
+        "a blobs/sha256/ file named by 65 hex digits",
+    ),
+    (
+        "blobs-extra-file-at-blobs-root",
+        "blobs/stray",
+        False,
+        "a file directly in blobs/ (blobs/stray)",
+    ),
+    (
+        "blobs-extra-file-uppercase-hex-zip",
+        None,
+        True,
+        "a copy of the listed blob under its name in uppercase hex, in the zip form (the "
+        "directory form cannot hold both names on a case-insensitive file system)",
+    ),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container.zip" if _s3_zip else "container",
+        "invalid",
+        errors=("E_MANIFEST_BLOB",),
+        build=lambda case_dir, path=_s3_path, as_zip_form=_s3_zip: _s3_form(as_zip_form)(
+            _s3_listed_a_plus(
+                path if path is not None else "blobs/sha256/" + _s3_hex_a().upper(),
+                b"not listed\n" if path is not None else _S3_BLOB_A,
+            )
+        ),
+        args=("--keys", "@keyset"),
+        records=_S3_RECORDS_VERIFIED,
+        notes=_S3 + ": blob A is listed and stored; the container also holds "
+        + _s3_what
+        + ". Every file in blobs/ or blobs/sha256/ that is not a listed blob is an extra "
+        "file, whatever its name (§11.1), and the blob step (9) reports it as "
+        "E_MANIFEST_BLOB after the records were verified.",
+    )
+
+declare(
+    "container",
+    "blobs-no-listing-extra-file-zip",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: zip_wrap(
+        {**_s3_container(), "blobs/sha256/not-a-digest": b"not listed\n"}
+    ),
+    args=("--keys", "@keyset"),
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": a zip container without manifest.blobs and without directory entries "
+    "holds blobs/sha256/not-a-digest. blobs/ is present (the file is in it) while no blob "
+    "is listed, and the file is an extra file (§11.1, §11.7): E_MANIFEST_BLOB at the blob "
+    "step (9).",
+)
+
+# -- A directory below blobs/ other than blobs/sha256/ is outside the layout:
+#    E_CONTAINER_ENTRY at entry enumeration (step 1), in both container forms.
+
+for _s3_name, _s3_path, _s3_zip in (
+    ("blobs-unknown-directory", "blobs/sha512/" + "0" * 128, False),
+    ("blobs-unknown-directory-zip", "blobs/sha512/" + "0" * 128, True),
+    ("blobs-sha256-subdirectory-zip", "blobs/sha256/sub/" + "0" * 64, True),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container.zip" if _s3_zip else "container",
+        "invalid",
+        errors=("E_CONTAINER_ENTRY",),
+        build=lambda case_dir, path=_s3_path, as_zip_form=_s3_zip: _s3_form(as_zip_form)(
+            _s3_listed_a_plus(path, b"not listed\n")
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3 + ": blob A is listed and stored; the container also holds "
+        + _s3_path
+        + (", in the zip form" if _s3_zip else "")
+        + ". A directory below blobs/ other than blobs/sha256/, or inside blobs/sha256/, is "
+        "a directory the layout does not list (§11.1): E_CONTAINER_ENTRY at entry "
+        "enumeration, in the directory and the zip form alike (§11.9).",
+    )
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,

@@ -2385,7 +2385,75 @@ def _build_s2_catalogue() -> None:
     )
 
 
+_C = "container/"
+_S3_UNSUPPORTED = (
+    "        if not encoding.is_supported_digest(blob[\"digest\"]):\n"
+    "            _fail(\"E_MANIFEST_BLOB\", \"manifest.blobs digest is not sha256:<64 lowercase hex>\")\n"
+)
+
+
+def _build_s3_catalogue() -> None:
+    """S3 blob codes (decision 2026-11-16 #44): each change of the round turned off."""
+    _add(
+        _lit("s3-blob-digest-grammar", "manifest.py", "s3.blob-listing-schema",
+             "S3: drop the §2.7 digest-string grammar check of manifest.blobs (a malformed "
+             "digest falls through to the sha256 form, E_MANIFEST_BLOB)",
+             "        if not _is_digest_string(blob[\"digest\"]):\n",
+             "        if False:  # ablation: digest-string grammar not checked\n",
+             (_C + "blobs-listing-uppercase-hex", _C + "blobs-listing-digest-without-algorithm",
+              _C + "blobs-listing-algorithm-name-malformed", _C + "blobs-listing-hex-too-long")),
+        _lit("s3-blob-digest-grammar-lax", "manifest.py", "s3.blob-listing-schema",
+             "S3: use the laxer encoding.is_digest_string (no algorithm-name grammar, no "
+             "128-digit bound) for manifest.blobs digests",
+             "        if not _is_digest_string(blob[\"digest\"]):\n",
+             "        if not encoding.is_digest_string(blob[\"digest\"]):\n",
+             (_C + "blobs-listing-algorithm-name-malformed", _C + "blobs-listing-hex-too-long")),
+        _lit("s3-blob-unsupported-schema", "manifest.py", "s3.blob-listing-blob",
+             "S3: report a well-formed non-sha256 blob digest as E_MANIFEST_SCHEMA",
+             _S3_UNSUPPORTED,
+             "        if not encoding.is_supported_digest(blob[\"digest\"]):\n"
+             "            _fail(\"E_MANIFEST_SCHEMA\", \"ablation\")\n",
+             (_C + "blobs-listing-unsupported-algorithm", _C + "blobs-listing-sha256-wrong-length",
+              _C + "blobs-listing-unsupported-then-malformed")),
+        _lit("s3-blob-unsupported-after-entries", "manifest.py", "s3.blob-listing-order",
+             "S3: check the sha256 form only after every entry is well-formed (two passes)",
+             _S3_UNSUPPORTED
+             + "        blobs.append(BlobEntry(digest=blob[\"digest\"], size=size))\n",
+             "        blobs.append(BlobEntry(digest=blob[\"digest\"], size=size))\n"
+             "    for blob_entry in blobs:\n"
+             "        if not encoding.is_supported_digest(blob_entry.digest):\n"
+             "            _fail(\"E_MANIFEST_BLOB\", \"ablation\")\n",
+             (_C + "blobs-listing-unsupported-then-malformed",)),
+        _lit("s3-blob-order-schema", "manifest.py", "s3.blob-listing-blob",
+             "S3: report an out-of-order or repeated blob digest as E_MANIFEST_SCHEMA",
+             "                \"E_MANIFEST_BLOB\",\n"
+             "                \"manifest.blobs must be sorted by digest ascending with unique "
+             "digests\",\n",
+             "                \"E_MANIFEST_SCHEMA\",\n"
+             "                \"manifest.blobs must be sorted by digest ascending with unique "
+             "digests\",\n",
+             (_C + "blobs-listing-out-of-order", _C + "blobs-listing-duplicate-digest")),
+        _lit("s3-blob-misnamed-files-ignored", "container.py", "s3.blob-files",
+             "S3: ignore the files in blobs/ that are not blobs/sha256/<64 lowercase hex> "
+             "when blobs are listed",
+             "    if unstreamed:\n"
+             "        raise WeaveError(\"E_MANIFEST_BLOB\", \"blobs/ holds a file that is not a "
+             "listed blob\")\n",
+             "",
+             (_C + "blobs-extra-file-not-a-digest", _C + "blobs-extra-file-not-a-digest-zip",
+              _C + "blobs-extra-file-hex-65", _C + "blobs-extra-file-at-blobs-root",
+              _C + "blobs-extra-file-uppercase-hex-zip")),
+        _lit("s3-blob-tree-from-files-only", "container.py", "s3.blob-files",
+             "S3: decide that blobs/ is present from streamed blobs and directory entries "
+             "only (a zip without listing whose only blobs/ file is misnamed passes)",
+             "        or bool(unstreamed)\n",
+             "",
+             (_C + "blobs-no-listing-extra-file-zip",)),
+    )
+
+
 _build_s2_catalogue()
+_build_s3_catalogue()
 
 
 # ----------------------------------------------------------------------------- runner
