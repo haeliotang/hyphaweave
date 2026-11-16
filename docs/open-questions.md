@@ -401,11 +401,22 @@ otherwise.
   a well-formed digest other than `sha256:<64 lowercase hex>`, digests out of order or
   repeated, and every disagreement with the files are `E_MANIFEST_BLOB`; any file in
   `blobs/` or `blobs/sha256/` that is not a listed blob is extra, whatever its name;
-  a deeper directory is `E_CONTAINER_ENTRY`. The order of the checks is in §11.7.
+  a file below a deeper directory is `E_CONTAINER_ENTRY`. The order of the checks is
+  in §11.7.
+- **Refined (FIX1 of the S3 round, Inceptless decision 2026-11-17 #5, decided by
+  principle).** In the zip form a zero-data directory entry is ignored for the layout
+  and for whether `blobs/` is present (§11.9 rule 4): `blobs/` is present when a file
+  entry lies in it, and a zip whose only extra entry is `blobs/sha512/` or
+  `blobs/sha256/sub/` is not a layout violation. The directory form is unchanged: a
+  real directory outside the layout is `E_CONTAINER_ENTRY`, empty or not.
 - **Reasoning.** Blobs are content-addressed attachments; H0 needs no agility
-  there, and one code keeps negative vectors deterministic.
-- **Where.** `spec/weave-record-1.md` §11.7; `vectors/container/`; verifier
-  `container.py`.
+  there. Each violation has exactly one code, chosen by what is needed to see it: the
+  listing alone (`E_MANIFEST_SCHEMA` when it is malformed, `E_MANIFEST_BLOB` when it is
+  well-formed but breaks §11.7), the files (`E_MANIFEST_BLOB`) or the layout
+  (`E_CONTAINER_ENTRY`), so every negative vector has one deterministic code.
+- **Where.** `spec/weave-record-1.md` §11.1, §11.2, §11.7, §11.9; `spec/error-codes.md`;
+  `vectors/container/`; verifiers `manifest.py` and `container.py` (Python),
+  `container.rs` (H1).
 
 ### Q24. Error-code mapping for size limits
 

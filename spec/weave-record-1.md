@@ -21,7 +21,8 @@ revision (Inceptless decision 2026-11-15 #18, the founder's rulings Q1–Q5 and 
 items of the S2 round, marked `[S2-FIX1]`); like the S1 rounds, it implements rulings of a
 later decision inside revision 3 (§0.3). The **S3 round** (Inceptless decision 2026-11-16
 #44) settles the error codes of blob violations (§11.1, §11.2, §11.7), marked
-`[S3/B1]`–`[S3/B4]`.
+`[S3/B1]`–`[S3/B4]`, with its revision (Inceptless decision 2026-11-17 #5), marked
+`[S3-FIX1/…]`.
 **Editors:** Inceptless.
 **Licence:** this specification text is licensed CC BY 4.0; code and test vectors for the
 format are licensed Apache-2.0.
@@ -115,7 +116,8 @@ revision 7 carries decisions 2026-11-15 #8, #18 and #22). Neither changes the `f
 identifier [S2] decided by principle (Inceptless decision 2026-11-15 #8; S2); the
 registry-numbering sentence is corrected to the registry's own history [S2-FIX1/T7] decided
 by principle (Inceptless decision 2026-11-15 #18). The S3 round opens registry revision 8
-[S3] decided by principle (Inceptless decision 2026-11-16 #44).
+[S3] decided by principle (Inceptless decision 2026-11-16 #44). Its revision (Inceptless decision 2026-11-17 #5)
+only revises that round and is folded into registry revision 8.
 
 ### 0.4 Normative references
 
@@ -402,6 +404,18 @@ ASCII token matching `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`, at most 32 bytes; its he
 part is one or more lowercase hexadecimal characters (at most 128). The algorithm name is
 the algorithm-agility interface; new names (`sha3-256:`, …) may be added by proposal
 [B3][K4].
+
+The grammar is the algorithm-name token, one `:`, and one to 128 lowercase hexadecimal
+characters; nothing else. The 64 digits of `sha256` are a requirement of that algorithm,
+not of the grammar: `sha256:` followed by another number of lowercase hexadecimal digits
+is a well-formed digest string that is not a `sha256` digest the format can compute, and
+every rule that needs a supported digest treats it like an unsupported algorithm (below).
+Every reader of a digest string applies the whole grammar — the algorithm-name pattern,
+its 32-byte bound and the 1–128 hexadecimal digits: a reference `digest` (§6.1), an erased
+placeholder's `digest` (§4.5) or a `manifest.blobs` digest (§11.7) that breaks it is a
+malformed value, reported by that member's code (`E_ENV_REFS`, `E_KIND_BODY_SCHEMA`,
+`E_MANIFEST_SCHEMA`) [S3-FIX1/D1] decided by principle (Inceptless decision 2026-11-16 #50;
+2026-11-17 #5).
 
 A digest string whose algorithm is structurally valid but not implemented is **not** a
 malformed value: it is *structurally valid but unsupported*. A reference with an unknown
@@ -1067,7 +1081,14 @@ the ruling [Q11] decided (Inceptless decision 2026-11-10 #34; Q11).
 records with the same `origin` and the same `actor.idempotency_key` are claimed to be the
 same action. A container containing such a pair is still valid, but the report carries the
 notice `N_IDEMPOTENCY_DUPLICATE`; H0 does not define replay or deduplication semantics
-beyond the notice [Q17] decided (Inceptless decision 2026-11-10 #34; Q17).
+beyond the notice [Q17] decided (Inceptless decision 2026-11-10 #34; Q17). The pair is
+decided by the `origin` (its `project` and `instance`) and the `actor.idempotency_key`
+alone: `actor.key` and the signatures are not compared, so two records of the same action
+signed by different keys are a pair. Every record of the container whose envelope structure
+passes (§14.5 record step (2)) takes part, whatever its verdict: a record whose `sigs` fail
+step (3), or that is invalid or unverifiable for a later reason, still carries the claim;
+an erased placeholder and a record that fails steps (1)–(2) do not [S3-FIX1/R1] decided by
+principle (Inceptless decision 2026-11-17 #5).
 
 **Only agents carry delegated authority.** The envelope forbids `actor.grant` on
 `human`, `program` and `device` actors (§4.2). The delegated-authority rules of this section
@@ -1554,7 +1575,11 @@ public** inputs is acceptable.
 
 A container is an export. Any record in a container whose sensitivity is `local-only` makes
 the container invalid with `E_LABEL_LOCAL_ONLY_EXPORTED` (export refused); there is no
-exception for agent-generated records and no override flag [H2]. A `local-only` record
+exception for agent-generated records and no override flag [H2]. "Any record" is every
+record whose envelope structure passes (§14.5 record step (2)), whatever its verdict: a
+record whose `sigs` fail step (3), or that is invalid for a later reason, still carries
+the label it was exported with [S3-FIX1/R3] decided by principle, by the reading that Inceptless
+decision 2026-11-17 #5 (R1) fixes for the §5.4 idempotency notice. A `local-only` record
 verified as a **single record** (not inside a container) is not an export and does not
 trigger this error; the export refusal applies to containers. Implementations should model
 this after the "assert export may leave" check of the source projects.
@@ -1679,6 +1704,11 @@ Semantic rules:
    (`E_KEY_DECLARED_NOT_COSIGNED`) is not reported; the cosignature rule follows the lookup
    of the owner's declaration (§14.5), and so does the §4.4 step 5 outcome of a declaration
    signed only with unknown algorithms [S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13).
+   Whether a resolving owner is trusted needs no signature of the declaration, so it is
+   one of the other step-(7) rules of §4.4 step 5: a declaration signed only with unknown
+   algorithms whose owner resolves but is not trusted is `unverifiable` with
+   `E_KEY_UNTRUSTED`, not with the step-5 `E_SIG_UNVERIFIABLE` [S3-FIX1/R2] decided by
+   principle (Inceptless decision 2026-11-17 #5).
 4. **Cosignature and trust roots.** A declaration is trusted as follows:
    - **Keyset declarations (local trust input).** A `weave.key.declared` record supplied
      through `--keys` whose `key_type` is `human` or `organization` and which passes its own
@@ -2141,6 +2171,12 @@ or `blobs/sha256/` that is not a listed blob, whatever its name (for example
 directory inside `blobs/` (such as `blobs/sha512/<name>` or `blobs/sha256/<dir>/<name>`)
 lies in a directory not listed here and is `E_CONTAINER_ENTRY`, in the directory and the
 zip form alike [S3/B3][S3/B4] decided by principle (Inceptless decision 2026-11-16 #44).
+In the directory form a directory is a real directory, so an existing directory not
+listed here is `E_CONTAINER_ENTRY` even when it is empty. In the zip form the layout is
+judged on the file entries only: a zero-data directory entry is ignored for the layout
+(§11.9 rule 4), so a zip whose only extra entry is `foo/`, `blobs/sha512/` or
+`blobs/sha256/sub/` is not a layout violation; it still passes the path-safety checks of
+§11.9 [S3-FIX1/Z1][S3-FIX1/Z2] decided by principle (Inceptless decision 2026-11-17 #5).
 The `readable/` directory and anything below it is ignored
 entirely: it is never parsed, never hashed, never decompressed in the zip form, its CRC is
 never checked, it is never trusted, and it is never part of the manifest
@@ -2483,10 +2519,14 @@ not JSON and are not canonicalised; they are hashed as raw bytes.
    twice).
 3. **The listing and the files disagree: `E_MANIFEST_BLOB`.** A listed blob file is
    missing; a file's sha256 or byte length differs from its entry; a listed `size` or a
-   file exceeds `MAX_BLOB_BYTES`; a file in `blobs/` or `blobs/sha256/` is not a listed
-   blob, whatever its name (§11.1); `blobs/` is present while `manifest.blobs` is absent or
-   empty. `blobs/` is present when the directory exists in the directory form, and in the
-   zip form when the name of some entry, a directory entry included, starts with `blobs/`.
+   file exceeds `MAX_BLOB_BYTES` (a listed `size` above it can be seen in `manifest.json`
+   alone, but it is this rule, decided at the blob step, not rule 1 or 2); a file in
+   `blobs/` or `blobs/sha256/` is not a listed blob, whatever its name (§11.1); `blobs/` is
+   present while `manifest.blobs` is absent or empty. `blobs/` is present when the
+   directory exists in the directory form (an empty `blobs/` included), and in the zip form
+   when the name of some **file** entry starts with `blobs/`: a zero-data directory entry,
+   such as `blobs/` or `blobs/sha256/` alone, does not make it present (§11.9 rule 4)
+   [S3-FIX1/Z1] decided by principle (Inceptless decision 2026-11-17 #5).
 
 **Check order.** Rules 1 and 2 read `manifest.json` only and are decided at the
 manifest-structure step (§14.5 step (3)), so a failure there reports `records: []`. They
@@ -2494,12 +2534,22 @@ run in this order, and the first failing check is the only one reported: the arr
 entry count, then every entry in array order — its shape, its digest grammar and its size
 (rule 1), then its sha256 form (rule 2) — and last the order of the digests (rule 2). An
 entry with an unsupported algorithm therefore reports `E_MANIFEST_BLOB` even when a later
-entry is malformed, and a malformed entry before it reports `E_MANIFEST_SCHEMA`. Rule 3 is
+entry is malformed, and a malformed entry before it reports `E_MANIFEST_SCHEMA`. Step (3)
+checks the manifest as a closed object (§4): members in the order of the §11.2 table, and
+the first failing member decides, so `blobs`, the last member of the table, is checked
+after every other member, and step (3) reports exactly one code. This does not contradict
+§14.5, under which `container.errors` carries every violation *found* in the failing
+stage: step (3) stops at its first failure and so finds one, while a stage such as the
+records listing (§11.6) checks independent conditions and reports all it finds. Rule 3 is
 the blob step (§14.5 step (9)): it runs after the records are verified and reports
-`E_MANIFEST_BLOB` once, whatever the number of disagreements. A directory below `blobs/`
-other than `blobs/sha256/`, or inside `blobs/sha256/`, is a layout violation,
-`E_CONTAINER_ENTRY` at entry enumeration (§11.1) [S3/B4] decided by principle (Inceptless
-decision 2026-11-16 #44).
+`E_MANIFEST_BLOB` once, whatever the number of disagreements. A **file** below a
+directory inside `blobs/` other than `blobs/sha256/`, or below a directory inside
+`blobs/sha256/`, is a layout violation, `E_CONTAINER_ENTRY` at entry enumeration (§11.1)
+[S3/B4] decided by principle (Inceptless decision 2026-11-16 #44). In the directory form
+such a directory is itself outside the layout, empty or not (§11.1); in the zip form a
+zero-data directory entry (`blobs/sha512/`, `blobs/sha256/sub/`) is ignored for the
+layout and for whether `blobs/` is present, and only the entry checks of §11.9 (path
+safety, symbolic link, duplicate name) apply to it (§11.9 rule 4) [S3-FIX1/Z1] decided by principle (Inceptless decision 2026-11-17 #5).
 
 ### 11.8 `readable/`
 
@@ -2581,7 +2631,13 @@ stated otherwise (T6):
    records, locators and extra fields; entry counts and declared sizes remain subject to
    §13 [S5].
 4. **Entry classes.** Entries MAY be stored or deflated; directory entries (names ending
-   `/`) with zero data are ignored. An entry whose name ends with `/` but carries data is
+   `/`) with zero data are ignored: they take no part in the layout of §11.1 and do not
+   make `blobs/` present (§11.7 rule 3), so a zip whose only extra entry is `foo/` is not a
+   layout violation. Ignored does not mean unchecked: a directory entry passes the
+   path-safety, symbolic-link and duplicate-name checks at the head of this section like
+   every other entry, its path being its name without the final `/`, so `../x/`,
+   `a/../../x/` and `/abs/` are `E_CONTAINER_ENTRY` [S3-FIX1/Z1][S3-FIX1/Z2] decided by principle
+   (Inceptless decision 2026-11-17 #5). An entry whose name ends with `/` but carries data is
    `E_CONTAINER_ZIP`, with or without the DOS directory attribute; an entry carrying the DOS
    directory attribute but non-zero data is likewise `E_CONTAINER_ZIP` (U12/L6). Encrypted
    entries and unsupported compression methods are rejected [Q25]. This rule is checked for
@@ -4114,8 +4170,24 @@ founder can overturn them.
 |---|---|---|
 | S3/B1 | a malformed `manifest.blobs` (not an array, an entry that is not a closed `{digest,size}` object, a digest without the §2.7 digest-string grammar, a size that is not a non-negative integer) is `E_MANIFEST_SCHEMA`; a well-formed listing with a digest other than `sha256:<64 lowercase hex>` (an unsupported algorithm included) or digests that are not strictly ascending (a repeated digest included) is `E_MANIFEST_BLOB`; both are decided at the manifest-structure step in a fixed order (array, count, each entry in array order: shape, grammar and size, then sha256 form; then order); an empty array means no blobs | §11.2, §11.7 |
 | S3/B2 | more than `MAX_BLOBS` entries stays `E_MANIFEST_SCHEMA` as the §13 table fixes it (Q24); §11.7 no longer says that all blob violations are `E_MANIFEST_BLOB` | §11.7, §13 |
-| S3/B3 | every file directly in `blobs/` or `blobs/sha256/` that is not a listed blob is an extra blob file, whatever its name (`E_MANIFEST_BLOB`, blob step); `blobs/` is present in the zip form when some entry name starts with `blobs/` | §11.1, §11.7 |
+| S3/B3 | every file directly in `blobs/` or `blobs/sha256/` that is not a listed blob is an extra blob file, whatever its name (`E_MANIFEST_BLOB`, blob step); `blobs/` is present in the zip form when some **file** entry name starts with `blobs/` (revised by S3-FIX1/Z1: a zero-data directory entry no longer counts) | §11.1, §11.7 |
 | S3/B4 | a file below another directory inside `blobs/` (other than `blobs/sha256/`, or inside `blobs/sha256/`) lies in a directory the layout does not list: `E_CONTAINER_ENTRY` at entry enumeration, in the directory and the zip form alike | §11.1, §11.7 |
+
+The following rows are fixed by Inceptless decision **2026-11-17 #5** (the revision of the
+S3 round: the two reviews of the round, and the two older disagreements between the
+reference verifiers that the differential fuzz found), **decided by principle**; the
+founder can overturn them. S3-FIX1/R3 is not named by that decision: it applies the
+reading of R1 to the one other cross-record rule that read only fully parsed envelopes, and
+is marked here so that it can be overturned on its own.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S3-FIX1/Z1 | in the zip form a zero-data directory entry takes no part in the layout of §11.1 or in whether `blobs/` is present (§11.9 rule 4): a zip whose only extra entry is `foo/`, `blobs/sha512/` or `blobs/sha256/sub/` is not a layout violation, and `blobs/` is present only through a file entry; the directory form is unchanged (a real directory outside the layout is `E_CONTAINER_ENTRY`, empty or not) | §11.1, §11.7, §11.9 |
+| S3-FIX1/Z2 | a zero-data directory entry still passes the path-safety, symbolic-link and duplicate-name checks of §11.9, its path being its name without the final `/`: `../x/`, `a/../../x/` and `/abs/` are `E_CONTAINER_ENTRY` | §11.9 |
+| S3-FIX1/R1 | `N_IDEMPOTENCY_DUPLICATE` compares the `origin` and `actor.idempotency_key` only (not `actor.key`), over every record whose envelope structure passes (§14.5 record step (2)), whatever its verdict | §5.4 |
+| S3-FIX1/R2 | whether a resolving owner is trusted is one of the other step-(7) rules of a declaration at §4.4 step 5: `E_KEY_UNTRUSTED` (unverifiable) is reported instead of the step-5 `E_SIG_UNVERIFIABLE` | §9.1, §4.4 |
+| S3-FIX1/R3 | `E_LABEL_LOCAL_ONLY_EXPORTED` counts every record whose envelope structure passes, whatever its verdict, as R1 does | §8.5 |
+| S3-FIX1/D1 | every reader of a digest string applies the whole §2.7 grammar (algorithm-name pattern, 32-byte bound, 1–128 lowercase hexadecimal digits); the 64 digits of `sha256` are a requirement of that algorithm, not of the grammar | §2.7 |
 
 ### A.2 PROVISIONAL implementation shapes
 
