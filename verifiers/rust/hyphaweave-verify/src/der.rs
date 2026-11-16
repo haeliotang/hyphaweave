@@ -70,14 +70,22 @@ pub mod universal {
     pub const NULL: u64 = 5;
     /// OBJECT IDENTIFIER.
     pub const OID: u64 = 6;
+    /// ObjectDescriptor (a GraphicString, X.690 §8.23.5).
+    pub const OBJECT_DESCRIPTOR: u64 = 7;
     /// EXTERNAL (constructed form only, X.690 §8.18).
     pub const EXTERNAL: u64 = 8;
+    /// REAL (X.690 §8.5, §11.3).
+    pub const REAL: u64 = 9;
     /// ENUMERATED.
     pub const ENUMERATED: u64 = 10;
-    /// EMBEDDED PDV (constructed form only, X.690 §8.19).
+    /// EMBEDDED PDV (constructed form only, X.690 §8.17).
     pub const EMBEDDED_PDV: u64 = 11;
     /// UTF8String.
     pub const UTF8_STRING: u64 = 12;
+    /// RELATIVE-OID (X.690 §8.20).
+    pub const RELATIVE_OID: u64 = 13;
+    /// TIME (X.690 §8.25; rejected by §12.2 1a).
+    pub const TIME: u64 = 14;
     /// SEQUENCE / SEQUENCE OF.
     pub const SEQUENCE: u64 = 16;
     /// SET / SET OF.
@@ -86,9 +94,15 @@ pub mod universal {
     pub const UTC_TIME: u64 = 23;
     /// GeneralizedTime.
     pub const GENERALIZED_TIME: u64 = 24;
+    /// UniversalString (four-octet units, X.690 §8.23.7).
+    pub const UNIVERSAL_STRING: u64 = 28;
     /// CHARACTER STRING, the unrestricted character string type
-    /// (constructed form only, X.690 §8.21.1).
+    /// (constructed form only, X.690 §8.24).
     pub const CHARACTER_STRING: u64 = 29;
+    /// BMPString (two-octet units, X.690 §8.23.8).
+    pub const BMP_STRING: u64 = 30;
+    /// DURATION (X.690 §8.25; rejected by §12.2 1a).
+    pub const DURATION: u64 = 34;
 }
 
 impl Tlv<'_> {
@@ -282,9 +296,27 @@ pub fn check_universal_rules(input: &[u8]) -> Result<(), DerError> {
     Ok(())
 }
 
+/// Framing only (§12.2 1c, open types; §14.1 anchors): `input` is exactly one
+/// TLV, every TLV has a valid identifier and a definite minimal length, and
+/// the content of every constructed TLV is a sequence of such TLVs. No
+/// content rule of 1a is applied. The walk is iterative.
+///
+/// # Errors
+/// The first framing violation found.
+pub fn check_framing(input: &[u8]) -> Result<(), DerError> {
+    let root = read_single(input)?;
+    let mut work: Vec<Tlv<'_>> = vec![root];
+    while let Some(tlv) = work.pop() {
+        if tlv.tag.constructed {
+            work.extend(children(tlv.content)?);
+        }
+    }
+    Ok(())
+}
+
 /// The universal primitive types that DER encodes in the primitive form only.
 /// EXTERNAL (8), EMBEDDED PDV (11) and CHARACTER STRING (29) are the
-/// opposite: X.690 §8.18, §8.19 and §8.21.1 define them as constructed
+/// opposite: X.690 §8.18, §8.17 and §8.24 define them as constructed
 /// encodings, so `check_primitive_content` rejects their primitive form.
 fn is_primitive_only(number: u64) -> bool {
     matches!(
@@ -312,19 +344,74 @@ fn check_universal_tlv(tlv: &Tlv<'_>) -> Result<(), DerError> {
     check_primitive_content(number, tlv.content)
 }
 
+/// True for the universal character string types: their content octets are
+/// re-emitted as decoded by 1c (§12.2), so 1c judges no content rule of
+/// theirs; 1a does.
+fn is_character_string(number: u64) -> bool {
+    matches!(number, 7 | 12 | 18..=22 | 25..=28 | 30)
+}
+
+/// The canonical-content rules that §12.2 1c applies to a typed primitive of
+/// the schema ("rebuilt from its content octets by the X.690 rules for its
+/// type"): every universal primitive rule of 1a except those of the character
+/// string types, whose content 1c re-emits as decoded.
+///
+/// # Errors
+/// The violated rule.
+pub fn check_typed_content(number: u64, content: &[u8]) -> Result<(), DerError> {
+    if is_character_string(number) {
+        return Ok(());
+    }
+    check_primitive_content(number, content)
+}
+
 /// The canonical content rules of a universal primitive type (X.690 §8, §10,
-/// §11). Also used by the schema walker for implicitly tagged primitives.
+/// §11), tag by tag as §12.2 1a lists them (S2-FIX1/T3). Also used by the
+/// schema walker for implicitly tagged primitives.
 ///
 /// # Errors
 /// The violated rule.
 pub fn check_primitive_content(number: u64, content: &[u8]) -> Result<(), DerError> {
     match number {
         0 => Err(DerError("universal tag 0")),
-        // X.690 §8.18.1, §8.19.1, §8.21.1: these types are encoded as the
+        // X.690 §8.18.1, §8.17.1, §8.24.1: these types are encoded as the
         // constructed encoding of their associated SEQUENCE type.
         universal::EXTERNAL | universal::EMBEDDED_PDV | universal::CHARACTER_STRING => {
             Err(DerError("primitive form of a constructed-only type"))
         }
+        // §12.2 1a: TIME and DURATION are rejected wherever they occur, and so
+        // are DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI
+        // (S2-FIX2/U4 ③): none occurs in the RFC 3161, 5652 or 5280 modules.
+        universal::TIME | universal::DURATION | 31 | 32 | 33 | 35 | 36 => {
+            Err(DerError("type rejected by this profile"))
+        }
+        universal::REAL => check_real(content),
+        universal::RELATIVE_OID => check_relative_oid(content),
+        // §12.2 1a (X.690 §11.4, §8.23.5; S2-FIX2/U4 ②): the ISO 2022
+        // register types.
+        7 | 20 | 21 | 25 | 27 => check_iso2022(number, content),
+        // X.690 §8.23.5.3 and Table 3, §8.23.10 (S2-FIX2/U4 ①): NumericString,
+        // PrintableString, IA5String, VisibleString and UTF8String carry no
+        // explicit escape sequence, so no ESC octet.
+        18 | 19 | 22 | 26 if content.contains(&0x1B) => {
+            Err(DerError("ESC in a string type without escape sequences"))
+        }
+        // X.690 §8.23.7 / §8.23.8: whole four-octet / two-octet units.
+        universal::UNIVERSAL_STRING => {
+            if content.len().is_multiple_of(4) {
+                Ok(())
+            } else {
+                Err(DerError("UniversalString partial unit"))
+            }
+        }
+        universal::BMP_STRING => {
+            if content.len().is_multiple_of(2) {
+                Ok(())
+            } else {
+                Err(DerError("BMPString partial unit"))
+            }
+        }
+
         universal::BOOLEAN => {
             if content == [0x00] || content == [0xFF] {
                 Ok(())
@@ -342,9 +429,14 @@ pub fn check_primitive_content(number: u64, content: &[u8]) -> Result<(), DerErr
             }
         }
         universal::OID => check_oid(content),
-        universal::UTF8_STRING => std::str::from_utf8(content)
-            .map(|_| ())
-            .map_err(|_| DerError("UTF8String not UTF-8")),
+        universal::UTF8_STRING => {
+            if content.contains(&0x1B) {
+                return Err(DerError("ESC in a string type without escape sequences"));
+            }
+            std::str::from_utf8(content)
+                .map(|_| ())
+                .map_err(|_| DerError("UTF8String not UTF-8"))
+        }
         universal::UTC_TIME => {
             if is_utc_time_form(content) {
                 Ok(())
@@ -421,6 +513,217 @@ pub fn check_oid(content: &[u8]) -> Result<(), DerError> {
         return Err(DerError("truncated OID sub-identifier"));
     }
     Ok(())
+}
+
+/// A register entry named by a designating escape sequence: the class of
+/// set and the octets that follow the class intermediates (further
+/// intermediates and the final octet).
+type RegisterEntry<'a> = (SetClass, &'a [u8]);
+
+/// The class of a designated set (ISO/IEC 2022).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SetClass {
+    /// 94-character graphic set.
+    G94,
+    /// 96-character graphic set.
+    G96,
+    /// 94^n-character graphic set.
+    G94N,
+    /// 96^n-character graphic set.
+    G96N,
+    /// C0 control set.
+    C0,
+    /// C1 control set.
+    C1,
+}
+
+/// The ISO 2022 register types of §12.2 1a (S2-FIX2/U4 ②): starting from the
+/// designations X.690 Table 3 assumes for the type (§8.23.5.2), every ESC
+/// begins a complete escape sequence (intermediates `0x20`–`0x2F`, then a
+/// final `0x30`–`0x7E`); no announcer (`ESC 2/0 F`, §8.23.5.4); and a
+/// designating sequence neither names an entry already designated as G0–G3,
+/// C0 or C1 nor designates into a G set other than the smallest one for its
+/// class (G0 for 94-character sets, G1 for 96-character sets) (§11.4).
+/// Whether an escape sequence is needed, and whether its entry is among the
+/// type's registrations (§8.23.5.1), is not judged.
+///
+/// # Errors
+/// The violated rule.
+fn check_iso2022(number: u64, content: &[u8]) -> Result<(), DerError> {
+    // G0, G1, G2, G3, C0, C1.
+    let mut designated: [Option<RegisterEntry<'_>>; 6] = [None; 6];
+    match number {
+        // TeletexString: G0 102 (ESC 2/8 7/5), C0 106 (ESC 2/1 4/5), C1 107
+        // (ESC 2/2 4/8).
+        20 => {
+            designated[0] = Some((SetClass::G94, &[0x75]));
+            designated[4] = Some((SetClass::C0, &[0x45]));
+            designated[5] = Some((SetClass::C1, &[0x48]));
+        }
+        // VideotexString: G0 102, C0 1 (ESC 2/1 4/0), C1 73 (ESC 2/2 4/1).
+        21 => {
+            designated[0] = Some((SetClass::G94, &[0x75]));
+            designated[4] = Some((SetClass::C0, &[0x40]));
+            designated[5] = Some((SetClass::C1, &[0x41]));
+        }
+        // GeneralString: G0 6 (ESC 2/8 4/2), C0 1.
+        27 => {
+            designated[0] = Some((SetClass::G94, &[0x42]));
+            designated[4] = Some((SetClass::C0, &[0x40]));
+        }
+        // GraphicString and ObjectDescriptor (a GraphicString): G0 6.
+        _ => designated[0] = Some((SetClass::G94, &[0x42])),
+    }
+    let mut position = 0usize;
+    while let Some(offset) = content[position..].iter().position(|octet| *octet == 0x1B) {
+        let start = position + offset + 1;
+        let mut end = start;
+        while content
+            .get(end)
+            .is_some_and(|octet| (0x20..=0x2F).contains(octet))
+        {
+            end += 1;
+        }
+        if !content
+            .get(end)
+            .is_some_and(|octet| (0x30..=0x7E).contains(octet))
+        {
+            return Err(DerError("incomplete ISO 2022 escape sequence"));
+        }
+        let sequence = &content[start..=end];
+        position = end + 1;
+        let (class, target, entry): (SetClass, usize, &[u8]) = match sequence {
+            [0x20, ..] => return Err(DerError("ISO 2022 announcer")),
+            [0x21, rest @ ..] => (SetClass::C0, 4, rest),
+            [0x22, rest @ ..] => (SetClass::C1, 5, rest),
+            [0x24, second @ 0x28..=0x2B, rest @ ..] => {
+                (SetClass::G94N, usize::from(second - 0x28), rest)
+            }
+            [0x24, second @ 0x2D..=0x2F, rest @ ..] => {
+                (SetClass::G96N, usize::from(second - 0x2C), rest)
+            }
+            [0x24, rest @ ..] => (SetClass::G94N, 0, rest),
+            [first @ 0x28..=0x2B, rest @ ..] => (SetClass::G94, usize::from(first - 0x28), rest),
+            [first @ 0x2D..=0x2F, rest @ ..] => (SetClass::G96, usize::from(first - 0x2C), rest),
+            // Not a designation (an invocation, for example): not judged.
+            _ => continue,
+        };
+        let key = (class, entry);
+        if designated.contains(&Some(key)) {
+            return Err(DerError("ISO 2022 re-designation of an entry in force"));
+        }
+        let smallest = match class {
+            SetClass::G94 | SetClass::G94N => Some(0),
+            SetClass::G96 | SetClass::G96N => Some(1),
+            SetClass::C0 | SetClass::C1 => None,
+        };
+        if smallest.is_some_and(|smallest| smallest != target) {
+            return Err(DerError("ISO 2022 designation into a larger G set"));
+        }
+        designated[target] = Some(key);
+    }
+    Ok(())
+}
+
+/// RELATIVE-OID: at least one sub-identifier, each in the fewest octets and
+/// complete, as for OBJECT IDENTIFIER (X.690 §8.20).
+///
+/// # Errors
+/// The violated rule.
+pub fn check_relative_oid(content: &[u8]) -> Result<(), DerError> {
+    check_oid(content).map_err(|_| DerError("RELATIVE-OID not canonical"))
+}
+
+/// REAL in DER (X.690 §8.5, §11.3; §12.2 1a): primitive (the caller), plus
+/// zero as no content octets; binary base 2 with scaling factor 0, exponent
+/// and mantissa each in the fewest octets (the long exponent format only for
+/// four or more exponent octets), mantissa odd; decimal only in the NR3 form
+/// of §11.3.2; special values exactly one octet `0x40`–`0x43`.
+///
+/// # Errors
+/// The violated rule.
+pub fn check_real(content: &[u8]) -> Result<(), DerError> {
+    let Some((&first, rest)) = content.split_first() else {
+        // §8.5.2: plus zero.
+        return Ok(());
+    };
+    if first & 0x80 != 0 {
+        // §8.5.7: binary. §11.3.1: base 2, F = 0.
+        if first & 0x30 != 0 {
+            return Err(DerError("REAL base other than 2"));
+        }
+        if first & 0x0C != 0 {
+            return Err(DerError("REAL scaling factor not 0"));
+        }
+        let (exponent, mantissa) = match first & 0x03 {
+            format @ 0..=2 => {
+                let count = usize::from(format) + 1;
+                if rest.len() < count {
+                    return Err(DerError("REAL truncated exponent"));
+                }
+                rest.split_at(count)
+            }
+            _ => {
+                // §8.5.7.4 d: a length octet X, then X exponent octets; DER
+                // uses this format only when the fewest octets are four or more.
+                let (&count, tail) = rest
+                    .split_first()
+                    .ok_or(DerError("REAL truncated exponent"))?;
+                let count = usize::from(count);
+                if count < 4 {
+                    return Err(DerError("REAL long exponent format below four octets"));
+                }
+                if tail.len() < count {
+                    return Err(DerError("REAL truncated exponent"));
+                }
+                tail.split_at(count)
+            }
+        };
+        check_integer(exponent).map_err(|_| DerError("REAL exponent not minimal"))?;
+        // §8.5.7.5, §11.3.1: N unsigned, fewest octets, odd.
+        match (mantissa.first(), mantissa.last()) {
+            (None, _) | (_, None) => Err(DerError("REAL empty mantissa")),
+            (Some(0x00), _) => Err(DerError("REAL mantissa not minimal")),
+            (_, Some(last)) if last & 1 == 0 => Err(DerError("REAL mantissa even")),
+            _ => Ok(()),
+        }
+    } else if first & 0x40 == 0 {
+        // §8.5.8, §11.3.2: decimal, NR3 only.
+        if first != 0x03 {
+            return Err(DerError("REAL decimal form other than NR3"));
+        }
+        if is_der_nr3(rest) {
+            Ok(())
+        } else {
+            Err(DerError("REAL NR3 text not in DER form"))
+        }
+    } else {
+        // §8.5.9: special values, exactly one content octet.
+        if rest.is_empty() && (0x40..=0x43).contains(&first) {
+            Ok(())
+        } else {
+            Err(DerError("REAL reserved special value"))
+        }
+    }
+}
+
+/// The DER NR3 text of X.690 §11.3.2.2–6:
+/// `-?[1-9]([0-9]*[1-9])?.E(+0|-?[1-9][0-9]*)`.
+fn is_der_nr3(text: &[u8]) -> bool {
+    let text = text.strip_prefix(b"-").unwrap_or(text);
+    let Some(mark) = text.windows(2).position(|pair| pair == b".E") else {
+        return false;
+    };
+    let (mantissa, exponent) = (&text[..mark], &text[mark + 2..]);
+    let mantissa_ok = !mantissa.is_empty()
+        && mantissa.iter().all(u8::is_ascii_digit)
+        && mantissa.first() != Some(&b'0')
+        && mantissa.last() != Some(&b'0');
+    let exponent_ok = exponent == b"+0" || {
+        let digits = exponent.strip_prefix(b"-").unwrap_or(exponent);
+        !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) && digits[0] != b'0'
+    };
+    mantissa_ok && exponent_ok
 }
 
 /// UTCTime DER form `YYMMDDHHMMSSZ`, matched against the whole content.
@@ -539,7 +842,7 @@ mod tests {
         assert!(check_universal_rules(&[0x31, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02]).is_ok());
     }
 
-    /// X.690 §8.18, §8.19, §8.21.1: EXTERNAL (8), EMBEDDED PDV (11) and
+    /// X.690 §8.18, §8.17, §8.24: EXTERNAL (8), EMBEDDED PDV (11) and
     /// CHARACTER STRING (29) only have a constructed encoding (H1-FIX2 Y4).
     #[test]
     fn constructed_only_universal_types() {
@@ -569,6 +872,137 @@ mod tests {
         assert!(check_universal_rules(&[0x3E, 0x04, 0x1E, 0x02, 0x00, 0x41]).is_err());
         assert!(check_universal_rules(&[0x1C, 0x04, 0x00, 0x00, 0x00, 0x41]).is_ok());
         assert!(check_universal_rules(&[0x3C, 0x00]).is_err());
+    }
+
+    fn real(content: &[u8]) -> bool {
+        check_universal_rules(&encode(0x09, content)).is_ok()
+    }
+
+    /// §12.2 1a, X.690 §8.5 and §11.3 (S2-FIX1/T3): REAL in DER.
+    #[test]
+    fn real_values() {
+        // Plus zero; binary base 2, F = 0, minimal exponent, odd mantissa.
+        assert!(real(&[]));
+        assert!(real(&[0x80, 0x00, 0x01]));
+        assert!(real(&[0xC0, 0xFF, 0x03]));
+        assert!(real(&[0x81, 0x01, 0x00, 0x01]));
+        assert!(real(&[0x83, 0x04, 0x01, 0x00, 0x00, 0x00, 0x01]));
+        // Base 8 / 16, scaling factor, even, empty or padded mantissa.
+        assert!(!real(&[0x90, 0x00, 0x01]));
+        assert!(!real(&[0xA0, 0x00, 0x01]));
+        assert!(!real(&[0x84, 0x00, 0x01]));
+        assert!(!real(&[0x80, 0x00, 0x02]));
+        assert!(!real(&[0x80, 0x00]));
+        assert!(!real(&[0x80, 0x00, 0x00, 0x01]));
+        // Exponent not in the fewest octets; long format below four octets.
+        assert!(!real(&[0x81, 0x00, 0x01, 0x01]));
+        assert!(!real(&[0x81, 0xFF, 0x80, 0x01]));
+        assert!(!real(&[0x83, 0x03, 0x01, 0x00, 0x00, 0x01]));
+        assert!(!real(&[0x83, 0x01, 0x01, 0x01]));
+        assert!(!real(&[0x83, 0x05, 0x00, 0x00, 0x80, 0x00, 0x00, 0x01]));
+        assert!(!real(&[0x82, 0x01, 0x00]));
+        // Decimal: NR3 only, in the §11.3.2 form.
+        assert!(real(b"\x031.E+0"));
+        assert!(real(b"\x03-12.E-3"));
+        assert!(real(b"\x03105.E7"));
+        assert!(!real(b"\x011"));
+        assert!(!real(b"\x0210.5"));
+        assert!(!real(b"\x0310.E+0"));
+        assert!(!real(b"\x0301.E+0"));
+        assert!(!real(b"\x031.E+1"));
+        assert!(!real(b"\x031.E-0"));
+        assert!(!real(b"\x031.E01"));
+        assert!(!real(b"\x03 1.E+0"));
+        assert!(!real(b"\x031E+0"));
+        assert!(!real(b"\x03.E+0"));
+        // Special values: one octet 0x40-0x43; the rest reserved.
+        for special in 0x40..=0x43u8 {
+            assert!(real(&[special]));
+        }
+        assert!(!real(&[0x44]));
+        assert!(!real(&[0x7F]));
+        assert!(!real(&[0x40, 0x00]));
+        // Constructed REAL.
+        assert!(check_universal_rules(&[0x29, 0x00]).is_err());
+    }
+
+    /// §12.2 1a by universal tag number (S2-FIX1/T3), apart from REAL.
+    #[test]
+    fn universal_rules_by_tag_number() {
+        // 0: never, whatever its length or form.
+        assert!(check_universal_rules(&[0x00, 0x00]).is_err());
+        assert!(check_universal_rules(&[0x20, 0x00]).is_err());
+        // 13 RELATIVE-OID: as OBJECT IDENTIFIER.
+        assert!(check_universal_rules(&[0x0D, 0x02, 0x81, 0x01]).is_ok());
+        assert!(check_universal_rules(&[0x0D, 0x00]).is_err());
+        assert!(check_universal_rules(&[0x0D, 0x02, 0x80, 0x01]).is_err());
+        assert!(check_universal_rules(&[0x0D, 0x01, 0x81]).is_err());
+        // 14 TIME, 34 DURATION: rejected.
+        assert!(check_universal_rules(&[0x0E, 0x00]).is_err());
+        assert!(check_universal_rules(&[0x1F, 0x22, 0x02, 0x31, 0x59]).is_err());
+        // 7, 20, 21, 25, 27: complete escape sequences, no announcer, no
+        // re-designation, smallest G set (S2-FIX2/U4 ②).
+        for tag in [0x07u8, 0x14, 0x15, 0x19, 0x1B] {
+            let ok = |content: &[u8]| check_universal_rules(&encode(tag, content)).is_ok();
+            assert!(ok(&[0x41, 0x42]), "{tag:#04x}");
+            assert!(!ok(&[0x41, 0x1B]), "{tag:#04x}");
+            assert!(!ok(&[0x1B, 0x28, 0x1B]), "{tag:#04x}");
+            assert!(!ok(&[0x1B, 0x20, 0x41]), "{tag:#04x}");
+            // Registration 87 (94-set, final 4/9) into G0: a new designation.
+            assert!(ok(&[0x1B, 0x28, 0x49]), "{tag:#04x}");
+            // The same entry into G1: not the smallest G set for a 94-set.
+            assert!(!ok(&[0x1B, 0x29, 0x49]), "{tag:#04x}");
+            // Designating it twice: the second is a re-designation.
+            assert!(!ok(&[0x1B, 0x28, 0x49, 0x1B, 0x28, 0x49]), "{tag:#04x}");
+            // A 96-set (final 4/1) into G1 is the smallest; into G2 it is not.
+            assert!(ok(&[0x1B, 0x2D, 0x41]), "{tag:#04x}");
+            assert!(!ok(&[0x1B, 0x2E, 0x41]), "{tag:#04x}");
+            // A locking shift (no intermediate) is not a designation.
+            assert!(ok(&[0x1B, 0x6E]), "{tag:#04x}");
+        }
+        // The assumed G0 of TeletexString is 102 (final 7/5), of GeneralString
+        // 6 (final 4/2), and GeneralString's C0 is 1 (final 4/0): designating
+        // an entry in force is a violation; 6 into a TeletexString's G0 is not.
+        assert!(check_universal_rules(&[0x14, 0x03, 0x1B, 0x28, 0x75]).is_err());
+        assert!(check_universal_rules(&[0x14, 0x03, 0x1B, 0x28, 0x42]).is_ok());
+        assert!(check_universal_rules(&[0x1B, 0x03, 0x1B, 0x28, 0x42]).is_err());
+        assert!(check_universal_rules(&[0x1B, 0x03, 0x1B, 0x21, 0x40]).is_err());
+        // 28 UniversalString, 30 BMPString: whole units.
+        assert!(check_universal_rules(&[0x1C, 0x03, 0x00, 0x00, 0x00]).is_err());
+        assert!(check_universal_rules(&[0x1E, 0x03, 0x00, 0x41, 0x00]).is_err());
+        // 31-33, 35, 36: rejected like TIME and DURATION (S2-FIX2/U4 ③).
+        for tag in [0x1F, 0x20, 0x21, 0x23, 0x24] {
+            assert!(
+                check_universal_rules(&[0x1F, tag, 0x01, 0x41]).is_err(),
+                "{tag:#04x}"
+            );
+        }
+        // 12, 18, 19, 22, 26: no ESC (S2-FIX2/U4 ①).
+        for tag in [0x0C, 0x12, 0x13, 0x16, 0x1A] {
+            assert!(
+                check_universal_rules(&[tag, 0x01, 0x31]).is_ok(),
+                "{tag:#04x}"
+            );
+            assert!(
+                check_universal_rules(&[tag, 0x01, 0x1B]).is_err(),
+                "{tag:#04x}"
+            );
+        }
+        // 15 and 37 or more: framing only.
+        assert!(check_universal_rules(&[0x0F, 0x01, 0xFF]).is_ok());
+        assert!(check_universal_rules(&[0x1F, 0x25, 0x01, 0xFF]).is_ok());
+        assert!(check_universal_rules(&[0x3F, 0x25, 0x01, 0xFF]).is_err());
+    }
+
+    /// Framing only (§12.2 1c open types; §14.1 anchors): no content rule.
+    #[test]
+    fn framing_ignores_content_rules() {
+        let bad_utf8 = [0x30, 0x03, 0x0C, 0x01, 0xB9];
+        assert!(check_framing(&bad_utf8).is_ok());
+        assert!(check_universal_rules(&bad_utf8).is_err());
+        assert!(check_framing(&[0x30, 0x03, 0x0C, 0x02, 0xB9]).is_err());
+        assert!(check_framing(&[0x30, 0x01, 0x0C]).is_err());
+        assert!(check_framing(&[0x30, 0x00, 0x00]).is_err());
     }
 
     #[test]

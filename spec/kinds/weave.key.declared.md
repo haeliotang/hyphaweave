@@ -77,7 +77,9 @@ permitted (additive evolution, K3, parent specification §7.5).
    owning principal), but the owner key **MUST** be in the trusted set: an owner that
    resolves but is untrusted makes the declaration `unverifiable` with `E_KEY_UNTRUSTED`.
    An owner that cannot be resolved makes the declaration `unverifiable` with
-   `E_KEY_UNKNOWN`.
+   `E_KEY_UNKNOWN`. An owner resolves only through a declaration that passes the
+   structural group of parent specification §14.1 (`sigs` presence included); an owner
+   whose only declaration fails it cannot be resolved [S2-FIX3/F73] decided by principle (Inceptless decision 2026-11-16 #1).
 4. **Cosignature and trust roots.** Trust roots come only from the verifier's local keyset
    (`--keys`), never from a container:
    - a keyset `weave.key.declared` of class `human`/`organization` that passes its own
@@ -113,7 +115,19 @@ permitted (additive evolution, K3, parent specification §7.5).
    MUST be less than or equal to `valid_until`; otherwise `E_KEY_VALIDITY` (invalid). A
    signature made outside the declared window (either before `valid_from` or after
    `valid_until`) is `E_KEY_EXPIRED` (invalid) [Q20] decided (Inceptless decision
-   2026-11-10 #34; Q20).
+   2026-11-10 #34; Q20). This includes the declaration's own self-signature and its
+   cosignatures: parent specification §9.4 judges every signature of this record (window,
+   retired revocations, and the key-compromise rescue rule) for this record's verdict
+   [S2/F38/F61-1] decided by principle (Inceptless decision 2026-11-15 #8; S2). When only the
+   self-signature (by `body.key`) fails §9.4, the declaration still supplies its key's
+   material, class and window (§5.3); when a cosignature fails §9.4, the declaration supplies
+   no material and establishes no trust, so a signature by the declared key is
+   `E_KEY_UNKNOWN` unless another record supplies the key [S2-FIX1/Q2] decided (Inceptless
+   decision 2026-11-15 #18; Q2). The same holds when a cosignature's key cannot be resolved
+   or its equation fails: the declaration then supplies no material of any kind — not for
+   its key's signatures on other records, not for a cosignature on another declaration, not
+   as an owner — so trust is never handed on through it (parent specification §5.3)
+   [S2-FIX3/F72] decided by principle (Inceptless decision 2026-11-16 #1).
 6. **Multiple declarations.** The governing class, the governing validity window and the
    declaration-resolution order (smallest claimed `recorded_at`, ties by the
    lexicographically smallest record digest) are defined once in parent specification §5.3;

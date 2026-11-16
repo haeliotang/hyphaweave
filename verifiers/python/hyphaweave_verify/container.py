@@ -101,6 +101,9 @@ class ContainerInput:
     readable_present: bool = False
     directory_entries: set[str] = field(default_factory=set)
     oversized_timestamps: frozenset[str] = frozenset()
+    #: S2-FIX3 F75 (§11.9, §14.5): further step-(1) violations found together
+    #: with ``error`` (a layout violation beside a member CRC failure).
+    extra_errors: tuple[str, ...] = ()
 
 
 #: Streamed read chunk.
@@ -175,6 +178,22 @@ def read_container(path: Path) -> ContainerInput:
         return ContainerInput(files={}, error="E_CONTAINER_ZIP")
     if is_zip:
         return _read_zip_container(path)
+    # S2/F40 (§14.6): a file target is a zip container whatever its first
+    # bytes; its input identity is the archive bytes, even when the archive
+    # does not start with a zip signature (prefix bytes, §11.9 phase 1).
+    try:
+        if path.is_file():
+            with path.open("rb") as handle:
+                sha_hex, archive_size, _truncated = _stream_sha256(handle)
+            return ContainerInput(
+                files={},
+                error="E_CONTAINER_ZIP",
+                input_sha256="sha256:" + sha_hex,
+                input_size=archive_size,
+                is_zip=True,
+            )
+    except OSError:
+        pass
     return ContainerInput(files={}, error="E_CONTAINER_ZIP")
 
 
@@ -210,6 +229,11 @@ def _read_directory_container(path: Path) -> ContainerInput:
     manifest_identity: tuple[str, int] | None = None
     manifest_preloaded = False
     try:
+        # S2-FIX3 F78 (§11.1, §14.6 S14): entry names are compared exactly. On a
+        # case-insensitive file system ``Manifest.json`` would open as
+        # ``manifest.json``; it is not that entry, so the manifest is absent.
+        if "manifest.json" not in os.listdir(path):
+            raise FileNotFoundError("manifest.json")
         manifest_stat = manifest_path.lstat()
     except OSError:
         manifest_stat = None
@@ -273,9 +297,11 @@ def _read_directory_container(path: Path) -> ContainerInput:
             if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
                 error = error or "E_CONTAINER_ENTRY"
                 continue
-            if relative_path == "readable" or relative_path.startswith("readable/"):
+            if relative_path.startswith("readable/"):
                 # spec §11.8/§13: readable/ is ignored entirely; never read and
-                # never counted (T15: the total counts streamed bytes only).
+                # never counted (T15: the total counts streamed bytes only). A
+                # regular file named `readable` at the root is not a readable/
+                # entry: it is outside the layout (S2-FIX1 T8, E_CONTAINER_ENTRY).
                 readable_present = True
                 continue
             if _TSA_CERT_FILE.fullmatch(relative_path):
@@ -356,6 +382,8 @@ def _read_zip_container(path: Path) -> ContainerInput:
     readable_present = False
     error: str | None = None
     actual_total = 0
+    #: S2-FIX3 F75: the entry names once every entry passed its entry checks.
+    enumerated: list[Any] | None = None
     try:
         with path.open("rb") as handle:
             # V7/W7: the parser locates the EOCD, frames the central directory,
@@ -366,6 +394,38 @@ def _read_zip_container(path: Path) -> ContainerInput:
                 max_entries=MAX_CONTAINER_ENTRIES,
                 max_declared_total=MAX_CONTAINER_UNCOMPRESSED_BYTES,
             )
+            # S2/F49 (§11.9 W7): entry paths, symbolic links and duplicate
+            # names are judged for *every* entry before any member content is
+            # decompressed or CRC-checked, so an entry-check failure is reported
+            # as E_CONTAINER_ENTRY even when another member's data is damaged.
+            entry_error: str | None = None
+            precheck_names: set[str] = set()
+            for entry in archive.entries:
+                if entry.is_directory:
+                    continue
+                if (
+                    stat.S_ISLNK(entry.unix_mode)
+                    or not _is_safe_relative_path(entry.name)
+                    or entry.name in precheck_names
+                ):
+                    entry_error = "E_CONTAINER_ENTRY"
+                    precheck_names.add(entry.name)
+                    continue
+                precheck_names.add(entry.name)
+                # §14.6 N_READABLE_PRESENT: only an entry that passed its own
+                # entry checks is an observed readable/ entry (T6, F32).
+                if entry.name.startswith("readable/"):
+                    readable_present = True
+            if entry_error is not None:
+                return ContainerInput(
+                    files={},
+                    error=entry_error,
+                    input_sha256=input_sha,
+                    input_size=archive_size,
+                    is_zip=True,
+                    readable_present=readable_present,
+                )
+            enumerated = list(archive.entries)
             for entry in archive.entries:
                 name = entry.name
                 if entry.is_directory:
@@ -385,9 +445,10 @@ def _read_zip_container(path: Path) -> ContainerInput:
                     error = error or "E_CONTAINER_ENTRY"
                     continue
                 seen_names.add(name)
-                if name == "readable" or name.startswith("readable/"):
+                if name.startswith("readable/"):
                     # T6: readable/ entries still passed the path/symlink/duplicate
-                    # checks above, but are never decompressed or CRC-checked.
+                    # checks above, but are never decompressed or CRC-checked. A file
+                    # entry named `readable` is outside the layout (S2-FIX1 T8).
                     readable_present = True
                     continue
                 if _TSA_CERT_FILE.fullmatch(name):
@@ -408,6 +469,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
                         return ContainerInput(
                             files={}, error="E_CONTAINER_SIZE",
                             input_sha256=input_sha, input_size=archive_size, is_zip=True,
+                            readable_present=readable_present,
                         )
                     continue
                 data = zipread.read_entry_data(handle, entry)
@@ -417,6 +479,7 @@ def _read_zip_container(path: Path) -> ContainerInput:
                     return ContainerInput(
                         files={}, error="E_CONTAINER_SIZE",
                         input_sha256=input_sha, input_size=archive_size, is_zip=True,
+                        readable_present=readable_present,
                     )
     except zipread.ZipLimitError:
         # V7/L7: the §13 limits are size errors, not structural zip errors.
@@ -428,12 +491,35 @@ def _read_zip_container(path: Path) -> ContainerInput:
             is_zip=True,
         )
     except zipread.ZipStructureError as structure_error:
+        # S2-FIX2 U7 (§11.8, §14.6): a failure of phases 1-4 of the zip check
+        # order leaves no entry observed (``readable_present`` is still false);
+        # a member-level failure after the entries were enumerated (CRC-32,
+        # decompression) still reports an observed readable/ entry.
+        # S2-FIX3 F75 (§11.9, §14.5): a member that fails as it is read (CRC-32,
+        # decompression) is found in step (1) after the entries were enumerated;
+        # the layout of the enumerated entries (§11.1, an entry outside the
+        # layout such as a root file named `readable`) is an independent
+        # violation of the same step, and both are reported together.
+        extra: tuple[str, ...] = ()
+        if enumerated is not None:
+            names = ContainerInput(
+                files={entry.name: b"" for entry in enumerated if not entry.is_directory},
+                directory_entries={
+                    entry.name.rstrip("/") for entry in enumerated if entry.is_directory
+                },
+            )
+            try:
+                _validate_layout(names)
+            except WeaveError as layout_error:
+                extra = (layout_error.code,)
         return ContainerInput(
             files={},
             error=structure_error.code,
             input_sha256=input_sha,
             input_size=archive_size,
             is_zip=True,
+            readable_present=readable_present,
+            extra_errors=extra,
         )
     except (OSError, ValueError, EOFError, zlib.error):  # pragma: no cover
         return ContainerInput(
@@ -520,17 +606,65 @@ def _validate_layout(container: ContainerInput) -> None:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _InternalRecordState:
+    """Timestamp evidence and record verdicts computed ahead of their report steps."""
+
+    archive: Any
+    verified_timestamps: tuple[VerifiedTimestamp, ...]
+    timestamp_evidence_present: bool
+    listing: "_RecordListing"
+    views: list[verifier.RecordView]
+
+
+def _records_without_material(
+    views: Iterable[verifier.RecordView], *, rotations: bool = True
+) -> frozenset[int]:
+    """The container key-lifecycle records that supply no key material (S2-FIX4 F83).
+
+    §5.3 (S2-FIX1 Q2, S2-FIX3 F72): a declaration with a signature other than
+    its subject key's that does not pass (unresolved key, failed §3.4
+    equation, failed §9.4) supplies no material of any kind, and only a valid
+    ``weave.key.rotated`` record supplies its explicit material (a rotation
+    that fails only through the §9.4 effects on its new key's own signature is
+    admitted, S2/F38); so neither can verify a manifest signature. Identified
+    by ``id()`` of the loaded record, as the views keep the objects they were
+    built from. ``rotations=False`` leaves the rotations to a caller with a
+    stricter rule of its own (the previous-manifest link, X5: only *valid*
+    rotations).
+    """
+    withheld: set[int] = set()
+    for view in views:
+        if view.envelope is None:
+            continue
+        if view.envelope.kind == kinds.KIND_DECLARED and view.nonsubject_signature_failed:
+            withheld.add(id(view.loaded))
+        elif (
+            rotations
+            and view.envelope.kind == kinds.KIND_ROTATED
+            and view.verdict != "valid"
+            and view.admitted_rotation is None
+        ):
+            withheld.add(id(view.loaded))
+    return frozenset(withheld)
+
+
 def _candidate_manifest_keys(
     container_records: list[verifier.LoadedRecord],
     keyset_views: list[verifier.RecordView],
+    *,
+    withheld: frozenset[int] = frozenset(),
 ) -> tuple[dict[str, bytes], dict[str, str]]:
-    """Keys usable for manifest-signature verification before record verdicts exist.
+    """Keys usable for manifest-signature verification.
 
     Keys come from (a) the externally supplied keyset (already verified), and
-    (b) structurally valid key-lifecycle records inside the container itself.
-    A record's *validity* can only be established later, but the manifest
-    signature is checked at step 5, so only key material whose key-id derivation
-    matches its declared public key is used.
+    (b) key-lifecycle records inside the container itself whose key-id
+    derivation matches their declared public key, a declaration only when it
+    passes the §14.1 structural group (S2-FIX5). Trust is not
+    required for the equation (§11.3), but a record in ``withheld`` (``id()``
+    of the loaded record) supplies nothing: §5.3 lets a declaration whose
+    other signature fails supply no material of any kind, and only a valid
+    rotation supply its explicit material (S2-FIX4 F83).
     """
     candidates: dict[str, bytes] = {}
     #: T10: material admitted from the local keyset is not context-trusted; a
@@ -544,6 +678,8 @@ def _candidate_manifest_keys(
         candidates[key_id] = declaration.public_key
         sources[key_id] = "keyset"
     for record in container_records:
+        if id(record) in withheld:
+            continue
         value = record.value
         try:
             envelope = verifier.envelope_module.validate_envelope(value)
@@ -552,6 +688,10 @@ def _candidate_manifest_keys(
         body = envelope.body
         try:
             if envelope.kind == kinds.KIND_DECLARED:
+                # S2-FIX5 (decision 2026-11-16 #9; §5.3): only a declaration that
+                # passes the §14.1 structural group supplies material.
+                if verifier._structural_declaration_class(verifier.RecordView(loaded=record)) is None:
+                    continue
                 raw = verifier.decode_public_key_material(body.get("public_key"))
                 if encoding.key_id_from_public_key(raw) == body.get("key"):
                     candidates.setdefault(body["key"], raw)
@@ -622,6 +762,7 @@ def verify_container(
     # Step 1: entry enumeration and layout safety.
     if container_input.error is not None:
         errors.append(container_input.error)
+        errors.extend(container_input.extra_errors)
         return _finish_container(
             container_input, container, errors, notices, [], limitations_iter, active_skipper,
             manifest_context_trusted=manifest_context_trusted,
@@ -692,7 +833,90 @@ def verify_container(
         }
     )
 
+    internal_state: list[_InternalRecordState] = []
+
+    def _internal_record_state() -> _InternalRecordState:
+        """The timestamp archive and the record verdicts, computed once.
+
+        Step (5) needs them for the material of the manifest signature (S2-FIX4
+        F83) and for its §9.4 judgement (S2-FIX3 F79); they are pure and are
+        reported at their own steps.
+        """
+        if internal_state:
+            return internal_state[0]
+        # Step 11 is computed before per-record verification: a verified L2
+        # timestamp can rescue a key-compromise signature (S2). The *reported*
+        # timestamp errors are still appended after the record pass, so the
+        # deterministic container check order is unchanged.
+        trust_fingerprints = None
+        if tsa_trust is not None:
+            # W4/§14.1: the anchors were validated as operator input before the
+            # pipeline started; parsing them again cannot fail here.
+            trust_fingerprints = timestamps_module.parse_trust_anchors(tsa_trust)
+        archive = verify_timestamp_archive(
+            listed=[
+                {"path": entry.path, "digest": entry.digest, "renews": entry.renews}
+                for entry in attestation.timestamps
+            ],
+            files=container_input.files,
+            manifest_digest=manifest_digest,
+            trust_anchor_fingerprints=trust_fingerprints,
+            oversized=frozenset(
+                path
+                for path in container_input.oversized
+                if _TIMESTAMP_FILE.fullmatch(path)
+            ),
+            present=frozenset(
+                path
+                for path in (*container_input.files, *container_input.oversized)
+                if _TIMESTAMP_FILE.fullmatch(path)
+            ),
+        )
+        # Rescue evidence keeps every verified receipt together with its
+        # accuracy; the compromise rule is genTime + accuracy < effective_at (strict).
+        verified_timestamps: tuple[VerifiedTimestamp, ...] = tuple(
+            VerifiedTimestamp(
+                gen_time=result.gen_time or "",
+                gen_time_ms=result.gen_time_ms or 0,
+                gen_time_us=result.gen_time_us
+                if result.gen_time_us is not None
+                else (result.gen_time_ms or 0) * 1000,
+                accuracy_us=result.accuracy_us,
+            )
+            for result in archive.verified_results()
+        )
+        timestamp_evidence_present = bool(attestation.timestamps)
+        # S2-FIX3 F79 (§9.4, §14.5): the §9.4 judgement of the manifest signature
+        # belongs to step (5), before the level/chain and records-listing stages,
+        # and §9.4 counts only *valid* revocations. Record validity is computed
+        # internally first (the listed order governs reporting and stopping, not
+        # the internal computation order): the records present in records/ are
+        # verified with the timestamp evidence, and only the revocations that are
+        # valid there (and the keyset's valid revocations) affect the manifest
+        # signature. The same record views are reported at step (7).
+        present_listing = _load_container_records(container_input)
+        internal_record_views = verifier.verify_record_set(
+            present_listing.records,
+            verified_timestamps=verified_timestamps,
+            timestamp_evidence_present=timestamp_evidence_present,
+            context_views=keyset_verified,
+        )
+        internal_state.append(
+            _InternalRecordState(
+                archive=archive,
+                verified_timestamps=verified_timestamps,
+                timestamp_evidence_present=timestamp_evidence_present,
+                listing=present_listing,
+                views=internal_record_views,
+            )
+        )
+        return internal_state[0]
+
     # Step 4-5: manifest digest and signature.
+    # S2-FIX2b (§11.3, decision 2026-11-15 #32 by principle, as U5 and S2-FIX1 T2):
+    # beside an undeclared key the verified entries keep their keys, so their §9.4
+    # effects are still judged below; an invalid outcome there replaces E_KEY_UNKNOWN.
+    manifest_unknown_signer_keys: tuple[str, ...] = ()
     try:
         manifest_digest = encoding.manifest_digest(canonical.canonicalize(manifest_value))
         container["manifest_digest"] = manifest_digest
@@ -704,14 +928,27 @@ def verify_container(
             raise WeaveError("E_MANIFEST_DIGEST", "attestation digest does not match the manifest")
         if not attestation.signatures:
             raise WeaveError("E_MANIFEST_UNSIGNED", "manifest attestation has no signatures")
+        # S2-FIX4 F83 (§5.3, Q2/F72): a declaration in which a signature other
+        # than its subject key's does not pass supplies no material of any
+        # kind, the material for the manifest signature included, and only a
+        # valid rotation supplies its explicit material; both are record-level
+        # facts, so the record set is verified first.
+        internal = _internal_record_state()
         manifest_candidates, manifest_candidate_sources = _candidate_manifest_keys(
-            _load_container_records(container_input).records, keyset_verified
+            internal.listing.records,
+            keyset_verified,
+            withheld=_records_without_material(internal.views),
         )
-        manifest_signature_keys = _verify_manifest_signatures(
+        manifest_signature_keys, manifest_unknown_key = _judge_manifest_signatures(
             attestation.signatures,
             manifest_digest,
             manifest_candidates,
         )
+        if manifest_unknown_key:
+            manifest_unknown_signer_keys = manifest_signature_keys
+            raise WeaveError(
+                "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
+            )
         manifest_context_trusted = any(
             manifest_candidate_sources.get(key) == "context"
             for key in manifest_signature_keys
@@ -730,6 +967,54 @@ def verify_container(
             return _finish_container(
                 container_input, container, errors, notices, [], limitations_iter, active_skipper,
             manifest_context_trusted=manifest_context_trusted
+            )
+
+    internal = _internal_record_state()
+    archive = internal.archive
+    verified_timestamps = internal.verified_timestamps
+    timestamp_evidence_present = internal.timestamp_evidence_present
+    present_listing = internal.listing
+    internal_record_views = internal.views
+    manifest_key_state = _candidate_key_state(
+        present_listing.records, keyset_verified, internal_record_views
+    )
+    # S2 for the manifest signature: judge it with the manifest timestamp chain.
+    try:
+        _check_manifest_signer_effects(
+            manifest_signature_keys,
+            manifest_key_state,
+            manifest.created_at,
+            verified_timestamps,
+            timestamp_evidence_present,
+        )
+    except WeaveError as error:
+        errors.append(error.code)
+        return _finish_container(
+            container_input, container, errors, notices, [], limitations_iter, active_skipper,
+            manifest_context_trusted=manifest_context_trusted,
+            **finish_flags,
+        )
+    # S2-FIX2b (§11.3): an entry of a declared key whose §9.4 outcome is invalid
+    # (retired, compromised without rescue, outside its validity window) decides
+    # the manifest signature even beside an undeclared key; an unverifiable §9.4
+    # outcome leaves E_KEY_UNKNOWN as the code and the record pipeline runs.
+    try:
+        _check_manifest_signer_effects(
+            manifest_unknown_signer_keys,
+            manifest_key_state,
+            manifest.created_at,
+            verified_timestamps,
+            timestamp_evidence_present,
+        )
+    except WeaveError as error:
+        if error.effect == "invalid":
+            errors.remove("E_KEY_UNKNOWN")
+            errors.append(error.code)
+            return _finish_container(
+                container_input, container, errors, notices, [], limitations_iter,
+                active_skipper,
+                manifest_context_trusted=manifest_context_trusted,
+                **finish_flags,
             )
 
     # Step 6: level/chain completeness.
@@ -754,16 +1039,7 @@ def verify_container(
         for path in container_input.oversized
         if path.startswith("records/")
     )
-    listing = _load_container_records(container_input)
-    finish_flags["placeholder_seen"] = any(
-        verifier.erase.looks_like_placeholder(record.value)
-        for record in listing.records
-        if isinstance(record.value, dict)
-    )
-    finish_flags["labels_seen"] = any(
-        isinstance(record.value, dict) and "labels" in record.value
-        for record in listing.records
-    )
+    listing = present_listing
     listing_errors = _check_records_listing(manifest, listing, container_input)
     if oversized_records:
         # U8/T16: an oversize records/ file is one more independent violation of
@@ -784,70 +1060,23 @@ def verify_container(
             **finish_flags,
         )
     loaded_records = listing.records
+    # S2-FIX1 (§14.5, §14.9): L_ERASED_PLACEHOLDER and L_LABELS_ARE_CLAIMS describe
+    # the records that are verified; when the records-listing phase stops the
+    # container, no record is verified and neither is reported.
+    finish_flags["placeholder_seen"] = any(
+        verifier.erase.looks_like_placeholder(record.value)
+        for record in listing.records
+        if isinstance(record.value, dict)
+    )
+    finish_flags["labels_seen"] = any(
+        isinstance(record.value, dict) and "labels" in record.value
+        for record in listing.records
+    )
 
-    # Step 11 is computed before per-record verification: a verified L2
-    # timestamp can rescue a key-compromise signature (S2). The *reported*
-    # timestamp errors are still appended after the record pass, so the
-    # deterministic container check order is unchanged.
-    trust_fingerprints = None
-    if tsa_trust is not None:
-        # W4/§14.1: the anchors were validated as operator input before the
-        # pipeline started; parsing them again cannot fail here.
-        trust_fingerprints = timestamps_module.parse_trust_anchors(tsa_trust)
-    archive = verify_timestamp_archive(
-        listed=[
-            {"path": entry.path, "digest": entry.digest, "renews": entry.renews}
-            for entry in attestation.timestamps
-        ],
-        files=container_input.files,
-        manifest_digest=manifest_digest,
-        trust_anchor_fingerprints=trust_fingerprints,
-        oversized=frozenset(
-            path
-            for path in container_input.oversized
-            if _TIMESTAMP_FILE.fullmatch(path)
-        ),
-    )
-    # Rescue evidence keeps every verified receipt together with its
-    # accuracy; the compromise rule is genTime + accuracy < effective_at (strict).
-    verified_timestamps: tuple[VerifiedTimestamp, ...] = tuple(
-        VerifiedTimestamp(
-            gen_time=result.gen_time or "",
-            gen_time_ms=result.gen_time_ms or 0,
-            gen_time_us=result.gen_time_us
-            if result.gen_time_us is not None
-            else (result.gen_time_ms or 0) * 1000,
-            accuracy_us=result.accuracy_us,
-        )
-        for result in archive.verified_results()
-    )
-    timestamp_evidence_present = bool(attestation.timestamps)
-    # S2 for the manifest signature: judge it with the manifest timestamp chain.
-    try:
-        _check_manifest_signer_effects(
-            manifest_signature_keys,
-            _candidate_key_state(
-                _load_container_records(container_input).records, keyset_verified
-            ),
-            manifest.created_at,
-            verified_timestamps,
-            timestamp_evidence_present,
-        )
-    except WeaveError as error:
-        errors.append(error.code)
-        return _finish_container(
-            container_input, container, errors, notices, [], limitations_iter, active_skipper,
-            manifest_context_trusted=manifest_context_trusted,
-            **finish_flags,
-        )
-
-    # Step 7 (continued): per-record verification.
-    record_views = verifier.verify_record_set(
-        loaded_records,
-        verified_timestamps=verified_timestamps,
-        timestamp_evidence_present=timestamp_evidence_present,
-        context_views=keyset_verified,
-    )
+    # Step 7 (continued): per-record verification. The views were computed
+    # before the manifest signature's §9.4 judgement (S2-FIX3 F79) over the
+    # same records/ files the listing loaded.
+    record_views = internal_record_views
 
     def _finish_after_records() -> ContainerVerification:
         """Report a container whose pipeline stopped after the record phase.
@@ -1180,6 +1409,27 @@ def _verify_manifest_signatures(
     candidates: dict[str, bytes],
 ) -> tuple[str, ...]:
     """Verify the manifest CMS-less Ed25519 signatures; return the signer key ids."""
+    signer_keys, unknown_key = _judge_manifest_signatures(
+        signatures, manifest_digest, candidates
+    )
+    if unknown_key:
+        raise WeaveError(
+            "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
+        )
+    return signer_keys
+
+
+def _judge_manifest_signatures(
+    signatures: Iterable[manifest_module.ManifestSignature],
+    manifest_digest: str,
+    candidates: dict[str, bytes],
+) -> tuple[tuple[str, ...], bool]:
+    """Judge every manifest signature entry.
+
+    Returns the key ids of the entries that verify and whether some entry's key
+    is undeclared; raises for an entry that fails its equation or for no
+    known-algorithm entry at all.
+    """
     message = encoding.manifest_sig_message(manifest_digest)
     signer_keys: list[str] = []
     known = [signature for signature in signatures if signature.is_ed25519]
@@ -1190,29 +1440,50 @@ def _verify_manifest_signatures(
             "E_SIG_UNVERIFIABLE",
             "manifest attestation has no known-algorithm signature",
         )
+    # S2-FIX2 U5 (§11.3, decision 2026-11-15 #22 by principle, as T2 for records):
+    # every ed25519 entry is judged; an entry of a declared key that fails the
+    # equation is E_MANIFEST_SIG_INVALID even when another entry's key is
+    # undeclared, so an invented key id sorted first cannot turn a forged
+    # signature into an unverifiable one. E_KEY_UNKNOWN only when no entry is
+    # invalid.
+    from . import ed25519
+
+    first_invalid: WeaveError | None = None
+    unknown_key = False
     for signature in known:
         material = candidates.get(signature.key)
         if material is None:
-            raise WeaveError(
-                "E_KEY_UNKNOWN", "manifest signature key is not declared in the context"
-            )
+            unknown_key = True
+            continue
         try:
-            from . import ed25519
-
             ed25519.verify_signature(material, message, signature.raw)
         except WeaveError as error:
-            raise WeaveError(
-                "E_MANIFEST_SIG_INVALID", "manifest signature does not verify"
-            ) from error
+            if first_invalid is None:
+                first_invalid = WeaveError(
+                    "E_MANIFEST_SIG_INVALID", "manifest signature does not verify"
+                )
+                first_invalid.__cause__ = error
+            continue
         signer_keys.append(signature.key)
-    return tuple(signer_keys)
+    if first_invalid is not None:
+        raise first_invalid
+    return tuple(signer_keys), unknown_key
 
 
 def _candidate_key_state(
     container_records: list[verifier.LoadedRecord],
     keyset_views: list[verifier.RecordView],
+    record_views: list[verifier.RecordView],
 ) -> keys_module.KeyState:
-    """Key lifecycle state usable before record verdicts exist (manifest S2)."""
+    """Key lifecycle state for the manifest signature's §9.4 judgement (S2).
+
+    Declarations are taken from every structurally usable record (the
+    manifest signer's material and window); revocations only from the
+    revocation records that are *valid* (S2-FIX3 F79, §9.4: "the verifier
+    collects every valid revocation"): the keyset's valid revocations (already
+    in the keyset context's state) and the container revocations whose record
+    verdict is ``valid`` in ``record_views``.
+    """
     state = keys_module.KeyState()
     keyset_context = verifier.Context()
     for view in keyset_views:
@@ -1227,6 +1498,19 @@ def _candidate_key_state(
             envelope = verifier.envelope_module.validate_envelope(value)
         except WeaveError:
             continue
+        if envelope.kind in (kinds.KIND_DECLARED, kinds.KIND_REVOKED):
+            # F51/F61-2/F67 (§13, §15: a report, never a crash): a lifecycle
+            # record whose body fails its kind schema (a missing ``key``,
+            # ``key_type`` or ``effective_at``, or a malformed TS literal)
+            # supplies no candidate state; its own verdict reports the error.
+            # ``public_key`` is excluded here: §9.1 rule 1 owns that member.
+            body_for_schema = dict(envelope.body)
+            if envelope.kind == kinds.KIND_DECLARED:
+                body_for_schema.setdefault("public_key", "")
+            try:
+                kinds.validate_body_schema(envelope.kind, body_for_schema)
+            except WeaveError:
+                continue
         if envelope.kind == kinds.KIND_DECLARED:
             try:
                 public_key = verifier.decode_public_key_material(
@@ -1249,21 +1533,9 @@ def _candidate_key_state(
                 )
             except WeaveError:
                 continue
-        elif envelope.kind == kinds.KIND_REVOKED:
-            try:
-                effective_at = envelope.body["effective_at"]
-                state.add_revocation(
-                    keys_module.KeyRevocation(
-                        key_id=envelope.body["key"],
-                        reason=envelope.body["reason"],
-                        effective_at=effective_at,
-                        effective_at_ms=keys_module._timestamp_ms(effective_at),
-                        recorded_at=envelope.recorded_at,
-                        record_digest=record.digest or "",
-                    )
-                )
-            except WeaveError:
-                continue
+    for view in record_views:
+        if view.verdict == "valid" and view.key_revocation is not None:
+            state.add_revocation(view.key_revocation)
     return state
 
 
@@ -1307,10 +1579,14 @@ def _load_container_records(container_input: ContainerInput) -> _RecordListing:
         raw = container_input.files[relative_path]
         try:
             record = verifier.load_record_bytes(raw, source="container")
-        except WeaveError:
+        except WeaveError as error:
             record = verifier.LoadedRecord(
                 raw=raw, value=None, digest=None, source="container"
             )
+            # S2/F60 (§1.9, §14.5 U8): nesting above MAX_JSON_DEPTH is a size
+            # violation like any other; the records-listing phase reports it as
+            # E_JSON_SIZE, not as an unconfirmable digest.
+            record.size_violation = error.code == "E_JSON_SIZE"
         record.container_path = relative_path
         records.append(record)
         by_path[relative_path] = record
@@ -1343,9 +1619,11 @@ def _check_records_listing(
             continue
         if match.group(1) not in listed_hex:
             errors.add("E_MANIFEST_RECORD_EXTRA")
+            if record.size_violation:
+                errors.add("E_JSON_SIZE")
             continue
         if record.value is None or record.digest is None:
-            errors.add("E_MANIFEST_RECORD_DIGEST")
+            errors.add("E_JSON_SIZE" if record.size_violation else "E_MANIFEST_RECORD_DIGEST")
             continue
         if match.group(1) != record.digest.partition(":")[2]:
             errors.add("E_MANIFEST_RECORD_DIGEST")
@@ -1363,6 +1641,15 @@ def _check_records_listing(
             continue
         if record_entry.id != value.get("id") or record_entry.kind != value.get("kind"):
             errors.add("E_MANIFEST_RECORDS")
+    for relative_path in sorted(container_input.oversized):
+        # S2/F55 (§11.6 item 5, §13, §14.5 U8): a records/ file is subject to
+        # MAX_RECORD_BYTES whether or not it is listed; an unlisted or misnamed
+        # oversize file reports E_MANIFEST_RECORD_EXTRA as well as E_JSON_SIZE.
+        if not relative_path.startswith("records/"):
+            continue
+        match = _RECORDS_FILE.fullmatch(relative_path)
+        if match is None or match.group(1) not in listed_hex:
+            errors.add("E_MANIFEST_RECORD_EXTRA")
     for entry in manifest.records:
         expected_path = "records/%s.json" % entry.digest.partition(":")[2]
         if expected_path in listing.by_path:
@@ -1444,6 +1731,7 @@ class _PreviousLinkContext:
         candidates, sources = _candidate_manifest_keys(
             [record for record in container_records if id(record) not in invalid_rotations],
             keyset_views,
+            withheld=_records_without_material(record_views, rotations=False),
         )
         context = verifier.Context()
         for view in keyset_views:
@@ -1834,27 +2122,73 @@ def _cross_record_checks(
 
     # Erasure cross-checks (spec §10.3).
     if not errors:
-        erase_error = _erasure_cross_checks(record_views)
-        if erase_error is not None:
-            errors.append(erase_error)
+        errors.extend(_erasure_cross_checks(record_views))
     return errors, notices
 
 
-def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None:
+def _erasure_record_structural(view: verifier.RecordView) -> bool:
+    """Whether a ``weave.erasure`` record passes the §14.1 structural group.
+
+    S2-FIX3 (§10.3): canonical form, envelope structure, ``sigs`` presence and
+    format, and the kind body schema. A record that fails the group is not an
+    erasure record for the cross-checks, as a placeholder that fails §4.5 is
+    not a placeholder (S2/F48).
+    """
+    envelope = view.envelope
+    if envelope is None or envelope.kind != kinds.KIND_ERASURE:
+        return False
+    if verifier.envelope_module.signing_required(envelope.kind, envelope.stage) and not envelope.sigs:
+        return False
+    try:
+        kinds.validate_body_schema(envelope.kind, envelope.body)
+    except WeaveError:
+        return False
+    return True
+
+
+def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> list[str]:
+    """§10.3 cross-checks; every rule is evaluated independently (S2/F48).
+
+    §14.5: the failing stage reports every violation it finds, so a container
+    can carry E_ERASE_DIGEST_MISMATCH, E_ERASE_ATTESTATION and
+    E_ERASE_CONTRADICTION together. Only placeholders that pass §4.5 are
+    placeholders here: a malformed one is an invalid record (F69), and only
+    erasure records that pass the §14.1 structural group are erasure records
+    (S2-FIX3).
+
+    Rule 1 is evaluated for every structurally sound erasure record that is
+    valid, or that a placeholder's ``attestation`` names (S2-FIX3 F82): a valid
+    erasure whose erased identity has no well-formed placeholder in the
+    container (none, or only a malformed one, S2-FIX3 F80) is
+    E_ERASE_DIGEST_MISMATCH, and so is an erasure attested by a placeholder
+    whose ``origin``/``id`` differ from the ``erased`` reference, whatever the
+    erasure's own verdict.
+    """
+    found: set[str] = set()
     placeholders = [view for view in record_views if view.placeholder is not None]
-    erasures = [
-        view
-        for view in record_views
-        if view.envelope is not None and view.envelope.kind == kinds.KIND_ERASURE
-    ]
+    erasures = [view for view in record_views if _erasure_record_structural(view)]
+
+    def _attested(erasure: verifier.RecordView) -> bool:
+        envelope = erasure.envelope
+        assert envelope is not None
+        for placeholder_view in placeholders:
+            attestation = placeholder_view.placeholder.attestation  # type: ignore[union-attr]
+            if (
+                erasure.digest is not None
+                and attestation.digest == erasure.digest
+                and attestation.origin == envelope.origin
+                and attestation.id == envelope.record_id
+            ):
+                return True
+        return False
+
     # Deterministic order: placeholders and erasures are already in manifest order.
     for erasure in erasures:
         body = erasure.envelope.body  # type: ignore[union-attr]
-        if erasure.verdict != "valid":
-            # The erasure record is already invalid with its own code (for
-            # example E_KIND_BODY_SCHEMA for a missing body.erased, S7); the
-            # container is invalid regardless, so the cross-check never crashes
-            # on a member the record's own validation did not establish.
+        if erasure.verdict != "valid" and not _attested(erasure):
+            # An erasure record that is not valid (for example E_ERASE_ACTOR)
+            # and that no placeholder attests is judged by its own verdict; the
+            # container is not valid regardless.
             continue
         erased_value = body.get("erased")
         try:
@@ -1869,11 +2203,13 @@ def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None
             and placeholder.placeholder.record_id == reference.id
         ]
         if not matching:
-            return "E_ERASE_DIGEST_MISMATCH"
+            found.add("E_ERASE_DIGEST_MISMATCH")
+            continue
         placeholder = matching[0].placeholder
         assert placeholder is not None
         if placeholder.digest != reference.digest:
-            return "E_ERASE_DIGEST_MISMATCH"
+            found.add("E_ERASE_DIGEST_MISMATCH")
+            continue
         # The placeholder's attestation must resolve back to this erasure record.
         attestation_reference = placeholder.attestation
         target_matches = (
@@ -1883,19 +2219,27 @@ def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None
             and attestation_reference.id == erasure.envelope.record_id  # type: ignore[union-attr]
         )
         if not target_matches:
-            return "E_ERASE_ATTESTATION"
+            found.add("E_ERASE_ATTESTATION")
+            continue
     for placeholder_view in placeholders:
         placeholder = placeholder_view.placeholder
         assert placeholder is not None
         resolved = _find_view(record_views, placeholder.attestation)
         if resolved is None or resolved.envelope is None:
-            return "E_ERASE_ATTESTATION"
-        if resolved.envelope.kind != kinds.KIND_ERASURE:
-            return "E_ERASE_ATTESTATION"
+            found.add("E_ERASE_ATTESTATION")
+            continue
+        if not _erasure_record_structural(resolved):
+            # S2-FIX3: a weave.erasure record that fails the structural group
+            # (for example one whose sigs is absent) is not the erasure record
+            # the placeholder attests: E_ERASE_ATTESTATION.
+            found.add("E_ERASE_ATTESTATION")
+            continue
         if resolved.digest != placeholder.attestation.digest:
-            return "E_ERASE_ATTESTATION"
+            found.add("E_ERASE_ATTESTATION")
+            continue
         if resolved.envelope.body.get("erased", {}).get("digest") != placeholder.digest:
-            return "E_ERASE_DIGEST_MISMATCH"
+            found.add("E_ERASE_DIGEST_MISMATCH")
+            continue
     # The original live record must not also be present.
     for placeholder_view in placeholders:
         placeholder = placeholder_view.placeholder
@@ -1908,15 +2252,15 @@ def _erasure_cross_checks(record_views: list[verifier.RecordView]) -> str | None
                 and view.envelope.record_id == placeholder.record_id
                 and view.digest == placeholder.digest
             ):
-                return "E_ERASE_CONTRADICTION"
+                found.add("E_ERASE_CONTRADICTION")
     origin_ids = [
         (placeholder_view.placeholder.origin, placeholder_view.placeholder.record_id)
         for placeholder_view in placeholders
         if placeholder_view.placeholder is not None
     ]
     if len(origin_ids) != len(set(origin_ids)):
-        return "E_ERASE_CONTRADICTION"
-    return None
+        found.add("E_ERASE_CONTRADICTION")
+    return sorted(found)
 
 
 def _find_view(

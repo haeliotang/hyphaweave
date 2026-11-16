@@ -40,7 +40,7 @@ nuisance.
 | `check_schemas.py` | schemas-writer | JSON Schema self-check gate over the vectors. |
 | `anti_verification.py` | QA | Gate 3: true source-level ablation of verifier checks over the whole vector suite. |
 | `byte_flip_gate.py` | QA | Gate 3(a): flips every input byte of every positive case; documented exemptions live in `vectors/GATE-3-EXCEPTIONS.md` (for `.tsr` receipts only four named DER fields, by byte range; S1-FIX4 W8). |
-| `crash_fuzz.py` | QA | Gate 3(c): deterministic crash fuzzing over six input classes (fixed CI seed, `--seed` for any other deterministic batch), plus a replay of the committed 146-input regression corpus under `tools/crash_corpus/`. A non-{0,1,2,3} exit code or a `Traceback` on stderr is a gate failure. |
+| `crash_fuzz.py` | QA | Gate 3(c): deterministic crash fuzzing over six input classes (fixed CI seed, `--seed` for any other deterministic batch), plus a replay of the committed 154-input regression corpus under `tools/crash_corpus/`. A non-{0,1,2} exit code or a `Traceback` on stderr is a gate failure. |
 
 **Load.** `anti_verification.py`, `byte_flip_gate.py` and `crash_fuzz.py` default
 to `--jobs min(8, cpu_count)`. Each worker runs one verifier at a time, but the
@@ -55,8 +55,9 @@ each. CI runs them one after another on its own runner.
 malformed inputs and requires every mutant to be rejected **cleanly**. Each
 mutant is executed as a **real CLI subprocess** (`python -m
 hyphaweave_verify.cli`, 60 s timeout, parallel workers), so the gate observes
-exactly what a user would: the process exit code must be `0`, `1`, `2` or `3`
-and stderr must not contain `Traceback`. A non-conforming exit code, a
+exactly what a user would: the process exit code must be `0`, `1` or `2`
+and stderr must not contain `Traceback` (exit code `3` is the §14.7 test-only
+hook, active only behind `--test-hooks`, which the gate never passes). A non-conforming exit code, a
 traceback, a timeout or a signal is a crash and makes the gate fail; a crash is
 never an accepted rejection.
 
@@ -78,8 +79,11 @@ never an accepted rejection.
 * The committed regression corpus under `tools/crash_corpus/` holds the 145
   crash inputs found by the S1-FIX2 recheck (6 `previous` + 139 `tsa`) and the
   `--tsa-trust` PEM with an invalid certificate version found with seed 777 by
-  the S1-FIX3 recheck (`tsa-s777-00048`, now a usage error). Each run replays it
-  first and requires zero crashes. `index.json` records the recheck
+  the S1-FIX3 recheck (`tsa-s777-00048`, now a usage error), plus the eight
+  record-body crash inputs of the H1 findings F51, F61-2 and F67 (`s2-00000` to
+  `s2-00007`; each is a committed `key-lifecycle/crash-*` vector replayed as-is,
+  so its `overlay` is empty). Each run replays it first and requires zero
+  crashes. `index.json` records the recheck
   seed, category and index for traceability; `file_id` directories contain only
   the mutated (overlay) files, and the base container is copied from `vectors/`.
   Regeneration uses the recheck2 helper scripts (`make_job` in `fuzz.py`,

@@ -165,11 +165,15 @@ vectors.
    that the canonical-bytes/UTF-8 handling rejects earlier.
 3. **Timestamp calendar validity.** The pattern pins exactly
    `YYYY-MM-DDTHH:MM:SS.sssZ`, years 0000-9999, seconds 00-59, but not month/day
-   combinations (e.g. `2026-02-30...` matches the pattern).
+   combinations (e.g. `2026-02-30...` matches the pattern). `tools/check_schemas.py`
+   checks the calendar validity of the TS members at the top level of the key-lifecycle
+   and consent bodies as a supplementary predicate (S2).
 4. **Ordering and uniqueness across array entries.** JSON Schema cannot sort array
-   items or compare fields between items. Enforced by supplementary predicates in
-   `tools/check_schemas.py`: duplicate `refs` entries (same `rel` and target
-   `origin`/`id`/`digest`), `sigs` and manifest `signatures` sorted by key with
+   items or compare fields between items. Duplicate `refs` entries are identical
+   `(rel, ref)` pairs, the reference objects compared as whole JSON values (§6.1,
+   S2-FIX3 F76), which `uniqueItems` in `envelope.json` expresses; entries that differ
+   only in `kind` or `hints` are not duplicates. Enforced by supplementary predicates in
+   `tools/check_schemas.py`: `sigs` and manifest `signatures` sorted by key with
    unique keys, the per-entry signature geometry condition, `manifest.records`
    sorted by digest with unique digests and unique `chain_index` for L1/L2,
    `manifest.records[].id`/`kind` equal to the listed `records/<digest>.json`,

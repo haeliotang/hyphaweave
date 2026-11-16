@@ -261,10 +261,11 @@ def _run_record_case(
                 if target_view.envelope is not None
                 else False
             ),
-            placeholder=target_view.placeholder is not None,
+            # S2-FIX3 F78 (§14.9): the record as parsed, as for a container.
+            placeholder=verifier.erase.looks_like_placeholder(target_view.loaded.value),
             has_labels=(
-                target_view.envelope is not None
-                and target_view.envelope.labels is not None
+                isinstance(target_view.loaded.value, dict)
+                and "labels" in target_view.loaded.value
             ),
             standalone=True,
         ),

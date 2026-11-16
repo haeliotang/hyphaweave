@@ -1,0 +1,1 @@
+{"created_at":"2026-11-01T00:00:00.000Z","format":"weave-record/1","level":"L0","manifest_version":1,"origin":{"instance":"ed25519:333f90d1d9dfb653b78df977b9b13ff2","project":"example"},"previous_manifest":null,"records":[{"digest":"sha256:e354859647aab8252a5339d90a60453736654b680faec5450eab79c142c8333c","id":"consent-fix1-bad-window","kind":"weave.consent.granted"}]}

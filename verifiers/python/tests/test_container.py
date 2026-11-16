@@ -400,7 +400,9 @@ def test_oversized_record_file_is_json_size(tmp_path) -> None:
     result = verify(container)
     report = result.report
     assert report["verdict"] == "invalid"
-    assert report["container"]["errors"] == ["E_JSON_SIZE"]
+    # S2/F55: the oversize file is not listed, so the records-listing phase also
+    # reports it as an extra file (§11.6 item 5, §13, §14.5 U8).
+    assert report["container"]["errors"] == ["E_JSON_SIZE", "E_MANIFEST_RECORD_EXTRA"]
     assert report["records"] == []
     # T16: the manifest-derived container fields stay filled and the report shape
     # is the records-listing failure shape.
@@ -459,10 +461,12 @@ def test_erasure_cross_checks_tolerate_a_missing_body_erased() -> None:
         verdict="invalid",
         digest="sha256:" + "aa" * 32,
         placeholder=None,
-        envelope=SimpleNamespace(kind=kinds.KIND_ERASURE, body={}, origin=None),
+        envelope=SimpleNamespace(
+            kind=kinds.KIND_ERASURE, body={}, origin=None, stage="accepted", sigs=("sig",)
+        ),
     )
     # S7.3: an invalid erasure record must never crash the cross-record phase.
-    assert container_module._erasure_cross_checks([fake_view]) is None
+    assert container_module._erasure_cross_checks([fake_view]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -512,12 +516,28 @@ def test_unparseable_embedded_previous_manifest_is_manifest_chain(tmp_path) -> N
 
 def test_manifest_signer_trust_is_not_part_of_the_crypto_check() -> None:
     """A-L8: a declared-but-untrusted manifest key does not add E_KEY_UNKNOWN."""
-    case = VECTORS / "container" / "manifest-context-trusted-tofu" / "container"
-    # Without a keyset the device declaration establishes no trust, but the
-    # manifest signature equation still verifies against the declared material.
-    result = verify(case, keyset_pair=([], []))
+    case = VECTORS / "container" / "manifest-signer-declared-untrusted" / "container"
+    # The self-attested declaration establishes no trust (no keyset root
+    # cosigns it), but it has no other signature that could fail, so it
+    # supplies its material and the manifest equation verifies against it.
+    result = verify(case)
     report = result.report
     assert "E_KEY_UNKNOWN" not in report["container"]["errors"]
+    assert "L_KEY_TRUST_TOFU" in report["limitations"]
+
+
+def test_manifest_signer_without_material_is_key_unknown() -> None:
+    """S2-FIX4 F83 (§5.3): no material from a declaration whose cosignature fails.
+
+    Without a keyset the owner cosignature on the device declaration has no
+    key to resolve, so the declaration supplies no material of any kind and
+    the manifest entry by the device key is an undeclared key's.
+    """
+    case = VECTORS / "container" / "manifest-context-trusted-tofu" / "container"
+    result = verify(case, keyset_pair=([], []))
+    report = result.report
+    assert report["container"]["errors"] == ["E_KEY_UNKNOWN"]
+    assert "L_KEY_TRUST_TOFU" not in report["limitations"]
 
 
 def test_previous_directory_without_manifest_is_manifest_chain(tmp_path) -> None:

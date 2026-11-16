@@ -72,7 +72,7 @@ jobs:
       - name: Byte-flip gate (every byte of every positive vector)
         run: python tools/byte_flip_gate.py
 
-      - name: Crash fuzz gate (deterministic malformed-input batch + corpus)
+      - name: Crash fuzz gate (deterministic malformed-input batch + corpus, exit codes 0-2)
         run: python tools/crash_fuzz.py
 
       - name: Specification examples

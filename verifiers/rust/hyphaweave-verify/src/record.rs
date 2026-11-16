@@ -259,18 +259,16 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
         notices.push(n::KEY_TOFU);
     }
 
+    // §14.5 steps (4)/(5), §4.4 step 2 (S2-FIX1/T2): the record's code is
+    // chosen invalid-first. The first entry in array order with an invalid
+    // outcome (a §3.4 failure or an invalid §9.4 outcome) decides; only when
+    // no entry is invalid does an unresolved key give `E_KEY_UNKNOWN`, and
+    // only then the first unverifiable §9.4 outcome. `N_KEY_UNDECLARED`
+    // states a fact about an entry ("a signing key has no declaration in the
+    // verification context"), so it is reported whichever code decides; it is
+    // paired with `E_KEY_UNKNOWN` only when that code is the record's.
     if !facts.unknown_keys.is_empty() && !world.options.skipped(e::KEY_UNKNOWN) {
-        // §3.6: an entry whose key cannot be established is not ignored.
         notices.push(n::KEY_UNDECLARED);
-        return finish(
-            world,
-            report,
-            index,
-            Some(e::KEY_UNKNOWN),
-            notices,
-            facts.states,
-            Vec::new(),
-        );
     }
     if let Some(code) = facts.first_invalid {
         if !world.options.skipped(code) {
@@ -284,6 +282,18 @@ pub(crate) fn evaluate_normalized(world: &mut World, index: usize) -> RecordRepo
                 Vec::new(),
             );
         }
+    }
+    if !facts.unknown_keys.is_empty() && !world.options.skipped(e::KEY_UNKNOWN) {
+        // §3.6: an entry whose key cannot be established is not ignored.
+        return finish(
+            world,
+            report,
+            index,
+            Some(e::KEY_UNKNOWN),
+            notices,
+            facts.states,
+            Vec::new(),
+        );
     }
     if let Some(code) = facts.first_unverifiable {
         if !world.options.skipped(code) {
@@ -488,6 +498,16 @@ fn collect_signatures(
     } else {
         None
     };
+    // §5.3, §9.4 (S2-FIX1/Q2): the keys whose signatures fail a §9.4 effect
+    // are recorded for the admission of a key-lifecycle record as a material
+    // source; while that admission is decided, the subject key's own
+    // signature (a rotation's `new_key`) is exempt from §9.4.
+    let mut lifecycle_failed: Vec<String> = Vec::new();
+    let exempt_key = if world.exempt_subject == Some(index) {
+        envelope.body.get_str("new_key").map(str::to_owned)
+    } else {
+        None
+    };
     for entry in sigs {
         if !entry.known_algorithm {
             facts.states.push(SigReportEntry {
@@ -513,6 +533,21 @@ fn collect_signatures(
             revocation_cutoff: cutoff.as_ref(),
             allow_untrusted_declaration: owner_cosignature,
         });
+        let lifecycle_outcome = match &resolution.state {
+            SigState::Invalid(code) => {
+                matches!(*code, e::KEY_EXPIRED | e::KEY_REVOKED | e::KEY_COMPROMISED)
+            }
+            SigState::Unverified(code) => *code == e::TS_UNTRUSTED,
+            SigState::Valid => false,
+        };
+        if lifecycle_outcome {
+            lifecycle_failed.push(entry.key.clone());
+        }
+        let state = if lifecycle_outcome && exempt_key.as_deref() == Some(entry.key.as_str()) {
+            SigState::Valid
+        } else {
+            resolution.state
+        };
         if resolution.material_from_context
             && (entry.key == envelope.actor.key
                 || !matches!(
@@ -522,7 +557,7 @@ fn collect_signatures(
         {
             facts.tofu = true;
         }
-        match &resolution.state {
+        match &state {
             SigState::Valid => {
                 facts
                     .valid_keys
@@ -565,6 +600,9 @@ fn collect_signatures(
                 });
             }
         }
+    }
+    if world.exempt_subject != Some(index) {
+        world.slots[index].lifecycle_failed = lifecycle_failed;
     }
     facts
 }
@@ -645,12 +683,18 @@ fn check_kind_semantics(
     match body {
         KindBody::Opaque => Ok(()),
         KindBody::KeyDeclared(declared) => {
+            if !facts.has_verifiable_known_signature() {
+                // §4.4 step 5, §14.5 (S2-FIX1/Q3): the signer rule and the
+                // trust that needs a verified cosignature are not evaluated;
+                // the rules that consult other records (owner, governing
+                // class) are, and the step-5 code comes last.
+                if let Some(code) = world.decl_issue_without_signatures(index) {
+                    return Err(code);
+                }
+                return Err(e::SIG_UNVERIFIABLE);
+            }
             if !facts.any_valid(&declared.key) {
-                return Err(if facts.has_verifiable_known_signature() {
-                    e::KEY_DECLARED_NOT_SELF_SIGNED
-                } else {
-                    e::SIG_UNVERIFIABLE
-                });
+                return Err(e::KEY_DECLARED_NOT_SELF_SIGNED);
             }
             match world.decl_issue(index) {
                 DeclIssue::None => Ok(()),
@@ -706,12 +750,15 @@ fn check_kind_semantics(
         }
         KindBody::Grant(grant) => match grant.action {
             GrantActionKind::Grant => {
+                if !facts.has_verifiable_known_signature() {
+                    // §4.4 step 5 (S2-FIX1/Q3, weave.grant page): the granter
+                    // signer rule is not evaluated; the delegated-chain checks
+                    // run, and the step-5 code waits until they all passed.
+                    world.check_grant_record_chain(index, envelope.recorded_at)?;
+                    return Err(e::SIG_UNVERIFIABLE);
+                }
                 if !facts.any_valid(&envelope.actor.key) {
-                    return Err(if facts.has_verifiable_known_signature() {
-                        e::GRANT_GRANTER
-                    } else {
-                        e::SIG_UNVERIFIABLE
-                    });
+                    return Err(e::GRANT_GRANTER);
                 }
                 world.check_grant_record_chain(index, envelope.recorded_at)
             }
@@ -758,7 +805,13 @@ fn check_kind_semantics(
         },
         KindBody::ConsentGranted(_) => check_consent_signer(envelope, facts),
         KindBody::ConsentRevoked(revoked) => {
-            check_consent_signer(envelope, facts)?;
+            // §14.5 (S2-FIX1/Q3): the `actor.type` rule and the signer rule,
+            // then the lookup of the revoked consent; a §4.4 step-5 outcome
+            // is reported only after that lookup passed.
+            let signer = check_consent_signer(envelope, facts);
+            if signer != Err(e::SIG_UNVERIFIABLE) {
+                signer?;
+            }
             let resolution = world.resolve(&revoked.revokes);
             let Some(target) = resolution.target_slot else {
                 return Err(e::CONSENT_REVOKE_REF);
@@ -767,46 +820,50 @@ fn check_kind_semantics(
                 return Err(e::CONSENT_REVOKE_REF);
             }
             let _ = target;
-            Ok(())
+            signer
         }
         KindBody::Erasure(erasure) => {
-            if !facts.any_valid(&envelope.actor.key) {
-                return Err(if facts.has_verifiable_known_signature() {
-                    e::ERASE_ACTOR
+            // Order inside step (7) (weave.erasure page, S2-FIX1/Q1, Q3): an
+            // agent without `actor.grant` or a program/device without
+            // `body.basis` (and any other actor type); the signer rule; the
+            // lookup of the authorising grant in two tiers and its coverage
+            // of the actor key, the kind and the actions; the validity of the
+            // grant chain at `recorded_at` last. A §4.4 step-5 outcome is
+            // reported only after all of them passed.
+            let step5 = !facts.has_verifiable_known_signature();
+            let basis = match envelope.actor.actor_type.as_str() {
+                "human" | "organization" => None,
+                "agent" => Some(envelope.actor.grant.as_ref().ok_or(e::ERASE_ACTOR)?),
+                "program" | "device" => Some(erasure.basis.as_ref().ok_or(e::ERASE_ACTOR)?),
+                _ => return Err(e::ERASE_ACTOR),
+            };
+            if !step5 && !facts.any_valid(&envelope.actor.key) {
+                return Err(e::ERASE_ACTOR);
+            }
+            if let Some(reference) = basis {
+                // A grant record that is present but itself invalid is a
+                // disallowed basis; one that cannot be established gives the
+                // grant codes (unverifiable).
+                if world.reference_target_invalid(reference) {
+                    return Err(e::ERASE_ACTOR);
+                }
+                let (grant_index, spec) = world.grant_resolve(reference)?;
+                let covered = if envelope.actor.actor_type == "agent" {
+                    spec.kinds.iter().any(|kind| kind == "weave.erasure")
+                        && spec.actions.iter().any(|action| action == "erase")
+                        && spec.actions.iter().any(|action| action == "accept")
                 } else {
-                    e::SIG_UNVERIFIABLE
-                });
-            }
-            match envelope.actor.actor_type.as_str() {
-                "human" | "organization" => Ok(()),
-                "agent" => {
-                    let Some(grant_ref) = envelope.actor.grant.as_ref() else {
-                        return Err(e::ERASE_ACTOR);
-                    };
-                    let usable = world.grant_lookup(grant_ref, envelope.recorded_at)?;
-                    if usable.spec.grantee_key != envelope.actor.key
-                        || !usable.spec.kinds.iter().any(|kind| kind == "weave.erasure")
-                        || !usable.spec.actions.iter().any(|action| action == "erase")
-                        || !usable.spec.actions.iter().any(|action| action == "accept")
-                    {
-                        return Err(e::ERASE_ACTOR);
-                    }
-                    Ok(())
+                    spec.actions.iter().any(|action| action == "erase")
+                };
+                if spec.grantee_key != envelope.actor.key || !covered {
+                    return Err(e::ERASE_ACTOR);
                 }
-                "program" | "device" => {
-                    let Some(basis) = erasure.basis.as_ref() else {
-                        return Err(e::ERASE_ACTOR);
-                    };
-                    let usable = world.grant_lookup(basis, envelope.recorded_at)?;
-                    if usable.spec.grantee_key != envelope.actor.key
-                        || !usable.spec.actions.iter().any(|action| action == "erase")
-                    {
-                        return Err(e::ERASE_ACTOR);
-                    }
-                    Ok(())
-                }
-                _ => Err(e::ERASE_ACTOR),
+                world.grant_usable_at(grant_index, envelope.recorded_at)?;
             }
+            if step5 {
+                return Err(e::SIG_UNVERIFIABLE);
+            }
+            Ok(())
         }
     }
 }
@@ -815,7 +872,14 @@ fn check_consent_signer(envelope: &Envelope, facts: &SigFacts) -> Result<(), Cod
     if !matches!(envelope.actor.actor_type.as_str(), "human" | "organization") {
         return Err(e::ACTOR_KEY_TYPE_MISMATCH);
     }
-    if facts.any_valid_of_class(&["human", "organization"]) {
+    // Consent kind pages (S2-FIX3/F81): the required signer is `actor.key`
+    // (§4.4); a valid signature by another human or organization key does not
+    // satisfy the rule.
+    if facts.any_valid(&envelope.actor.key)
+        && facts
+            .class_of(&envelope.actor.key)
+            .is_none_or(|class| matches!(class, "human" | "organization"))
+    {
         Ok(())
     } else if facts.has_verifiable_known_signature() {
         Err(e::ACTOR_KEY_TYPE_MISMATCH)
@@ -870,22 +934,22 @@ fn check_actor(
         let Some(grant_ref) = envelope.actor.grant.as_ref() else {
             return Err(e::ENV_ACTOR_GRANT_MISSING);
         };
-        let usable = world.grant_lookup(grant_ref, envelope.recorded_at)?;
-        if usable.spec.grantee_key != envelope.actor.key {
+        // §5.4 (S2/F69): the coverage checks in the order of the list —
+        // resolution, grantee, kind/action, then the chain's window and
+        // revocation state at `recorded_at`.
+        let (grant_index, spec) = world.grant_resolve(grant_ref)?;
+        if spec.grantee_key != envelope.actor.key {
             return Err(e::GRANT_GRANTEE_MISMATCH);
         }
         let Some(action) = stage_action(&envelope.stage) else {
             return Err(e::GRANT_NOT_APPLICABLE);
         };
-        if !usable.spec.kinds.iter().any(|kind| kind == &envelope.kind)
-            || !usable
-                .spec
-                .actions
-                .iter()
-                .any(|candidate| candidate == action)
+        if !spec.kinds.iter().any(|kind| kind == &envelope.kind)
+            || !spec.actions.iter().any(|candidate| candidate == action)
         {
             return Err(e::GRANT_NOT_APPLICABLE);
         }
+        world.grant_usable_at(grant_index, envelope.recorded_at)?;
     }
     Ok(())
 }

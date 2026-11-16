@@ -37,7 +37,23 @@ The erasure attestation may be executed by:
 | `agent` | `actor.grant` MUST resolve to a valid `weave.grant` covering kind `weave.erasure` and **both** actions `accept` (generic stage coverage for an accepted record) and `erase` (kind-specific); the chain is checked at the record's `recorded_at` (parent specification §5.4) |
 | `program`, `device` | `body.basis` MUST resolve to a valid `weave.grant` covering the actor's key with action `erase`; this is the intended route for automatic `retention-expired` erasure |
 
-Any other combination is `E_ERASE_ACTOR` (invalid). Human keys remain bound by the rule
+Any other combination is `E_ERASE_ACTOR` (invalid). The authorising grant record (the
+agent's `actor.grant`, a program's or device's `body.basis`) is judged in two tiers: a grant
+record that is **present but itself invalid** is a disallowed basis, `E_ERASE_ACTOR`
+(invalid); a grant that **cannot be established** — not in the verification context,
+present but not valid for another reason (for example `unverifiable`), outside its validity
+window or revoked at the erasure's `recorded_at`, or beyond the chain-depth bound — gives the
+grant codes of the error table (`E_GRANT_UNRESOLVED`, `E_GRANT_EXPIRED`, `E_GRANT_REVOKED`;
+unverifiable). Inside step (7) the order is: an agent without `actor.grant` or a
+program/device without `body.basis` (`E_ERASE_ACTOR`); the signer rule (the dedicated
+`E_ERASE_ACTOR` of §4.4 step 4); the lookup of the grant (the two tiers above) and its
+coverage of the actor key, the kind and the actions (`E_ERASE_ACTOR`); for **every**
+authorising grant — an agent's `actor.grant` and a program's or device's `body.basis`
+alike — the validity of its grant chain at the erasure's `recorded_at` last (parent
+specification §5.4, §5.5.2, §14.5): a grant outside its window or revoked at that time gives
+`E_GRANT_EXPIRED` or `E_GRANT_REVOKED` (unverifiable), and an invalid outcome of the chain
+walk is `E_ERASE_ACTOR` [S2-FIX1/Q1] decided (Inceptless decision 2026-11-15 #18; Q1)
+[S2-FIX2/U1] decided (Inceptless decision 2026-11-15 #22; the program/device half of Q1). Human keys remain bound by the rule
 that human keys sign human acts: an automated erasure is signed by the automated actor and
 authorised by a grant, never by a human key acting as the automation [G3a][G3d][M-10]
 decided (Inceptless decision 2026-11-10 #34; M-10).
@@ -67,7 +83,12 @@ kind-checked (parent specification §6.3).
    (`E_ERASE_ATTESTATION`); and the original live record is not also present
    (`E_ERASE_CONTRADICTION`). These rules make the erase assertion self-consistent and
    prevent a container from carrying both the data and a claim that it was erased (parent
-   specification §10.3).
+   specification §10.3). The checks see only an erasure record that passes the §14.1
+   structural group (a placeholder that names one that fails it, for example one without
+   `sigs`, is `E_ERASE_ATTESTATION`); the placeholder check is applied to a valid erasure
+   record — a missing placeholder, or only a malformed one, is `E_ERASE_DIGEST_MISMATCH` —
+   and to any erasure record a placeholder names, whatever its own verdict
+   [S2-FIX3/F80/F82] decided by principle (Inceptless decision 2026-11-16 #1).
 3. **Attestation is a claim, not proof of deletion.** A signed attestation is the format's
    best available evidence that an erasure happened; there is no cryptographic proof of
    absence. The verifier reports the erased entry with its attestation integrity
@@ -89,7 +110,7 @@ kind-checked (parent specification §6.3).
 | `E_ERASE_CONTRADICTION` | invalid | the original live record is also present |
 | `E_REF_KIND_MISMATCH` | invalid | a reference kind claim contradicts a live target kind |
 | `E_KIND_BODY_SCHEMA` | invalid | body shape, reason vocabulary or reference grammar violation |
-| `E_GRANT_UNRESOLVED`, `E_GRANT_REVOKED`, `E_GRANT_EXPIRED` | unverifiable | the authorising grant cannot be established |
+| `E_GRANT_UNRESOLVED`, `E_GRANT_REVOKED`, `E_GRANT_EXPIRED` | unverifiable | the authorising grant cannot be established (absent, not valid for a reason other than being invalid, outside its window, revoked, or too deep); a grant record that is present but invalid is `E_ERASE_ACTOR` |
 | `E_SIG_REQUIRED`, `E_SIG_UNVERIFIABLE`, `E_SIG_INVALID` | invalid / unverifiable | per parent specification §4.4 |
 | `E_KEY_UNKNOWN` | unverifiable | a signer's key is not available in context |
 | `N_REF_MISSING`, `N_REF_UNVERIFIABLE` | notice | `basis` or `erased` reference not resolvable in a record-only target |

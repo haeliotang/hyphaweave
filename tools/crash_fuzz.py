@@ -5,8 +5,10 @@
 
 The gate feeds the verifier a fixed batch of malformed inputs and requires that
 **every** mutant is rejected *cleanly*: the process exit code must be one of
-``0``/``1``/``2``/``3`` and nothing may be written to stderr that contains a
-``Traceback``. An escaping exception is a crash and makes the gate fail; a crash
+``0``/``1``/``2`` and nothing may be written to stderr that contains a
+``Traceback``. Exit code ``3`` belongs to the §14.7 test-only check hook, which
+is only active behind ``--test-hooks``; the gate never passes that switch, so a
+``3`` here is a failure (S2, the same accepted set as the Rust crash-fuzz gate). An escaping exception is a crash and makes the gate fail; a crash
 is never an accepted rejection (spec S1-FIX3 V2d).
 
 Input classes (each ``--count`` >= 300 deterministic mutants that actually change
@@ -35,15 +37,18 @@ exist, so the batch stays deterministic.
 Every mutant is executed through the **real CLI process** (``python -m
 hyphaweave_verify.cli``): the gate observes the process exit code and stderr, so
 a crash is exactly what a user would see. The criterion is the S1-FIX3 V8 rule:
-the exit code must be in ``{0, 1, 2, 3}`` and stderr must not contain
+the exit code must be in ``{0, 1, 2}`` and stderr must not contain
 ``Traceback``; anything else (including a timeout or a signal) is a crash and
 fails the gate. A crash is never an accepted rejection.
 
 The committed regression corpus under ``tools/crash_corpus/`` holds the 145
 crash inputs found by the S1-FIX2 recheck (6 ``previous`` + 139 ``tsa``) and the
 ``--tsa-trust`` PEM with an invalid certificate version found by the S1-FIX3
-recheck with seed 777 (S1-FIX4 W4); every run replays it first and requires zero
-crashes. ``index.json`` records the original seed/category/index for
+recheck with seed 777 (S1-FIX4 W4), plus the eight record-body crash inputs of the
+H1 findings F51, F61-2 and F67 (S2; the committed ``key-lifecycle/crash-*`` vectors
+replayed as-is), and the two keyset files with ``"sigs": []`` of S2-FIX1 T5 (a
+usage error, replayed through a private keyset copy, ``keyset_overlay``); every run
+replays it first and requires zero crashes. ``index.json`` records the original seed/category/index for
 traceability.
 
 Load: every worker runs one CLI subprocess at a time. When this gate runs next
@@ -77,7 +82,9 @@ TMP_ROOT = REPO / ".tmp-work" / "crash-fuzz"
 
 DEFAULT_SEED = 20261111
 DEFAULT_COUNT = 300
-ACCEPTED_EXIT_CODES = (0, 1, 2, 3)
+#: §14.8: 0 valid, 1 invalid/unverifiable, 2 usage error. 3 is the §14.7 test-only
+#: hook, reachable only with ``--test-hooks``, which this gate never passes (S2).
+ACCEPTED_EXIT_CODES = (0, 1, 2)
 
 #: Fixed base cases per class (all committed conformance vectors).
 BASE_CASES: dict[str, list[str]] = {
@@ -777,8 +784,16 @@ def materialize_corpus_case(case: dict, work_root: Path) -> tuple[Path, list[str
         target = case_dir / relative
         if target.exists():
             target.unlink()
+    keyset = KEYSET
+    if case.get("keyset_overlay"):
+        # S2-FIX1 T5: a corpus input may replace files of a private keyset copy
+        # (stored under <file_id>/_keyset/ in the corpus), replayed as --keys.
+        keyset = case_dir / "_keyset"
+        shutil.copytree(KEYSET, keyset)
+        for relative in case["keyset_overlay"]:
+            shutil.copyfile(CORPUS / case["file_id"] / "_keyset" / relative, keyset / relative)
     expected = load_case(case["base_case"])
-    return case_dir, expand_args(expected, case_dir, KEYSET)
+    return case_dir, expand_args(expected, case_dir, keyset)
 
 
 def run_corpus_job(task: tuple[dict, str]) -> dict:
@@ -923,7 +938,7 @@ def main(argv: list[str] | None = None) -> int:
         % (
             total,
             sum(1 for item in results if item["crash"]),
-            sum(1 for item in results if not item["crash"] and item["rc"] in (1, 2, 3)),
+            sum(1 for item in results if not item["crash"] and item["rc"] in (1, 2)),
             sum(1 for item in results if not item["crash"] and item["rc"] == 0),
         )
     )

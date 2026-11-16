@@ -66,8 +66,15 @@ class _DeclaredContext:
     def declaration_material(self, key_id: str):
         return self._material
 
+    def owner_declaration(self, key_id: str):
+        return self._material
+
     def trusted_human_org(self) -> frozenset[str]:
         return self._trusted
+
+    def trusted_by_another_record(self, key_id: str, record_digest: str, source: str) -> bool:
+        # The trusted keys of this fake come from records other than the one judged.
+        return key_id in self._trusted
 
     def is_declared_key(self, key_id: str) -> bool:
         return self._material is not None
@@ -473,6 +480,10 @@ def test_keyset_semantic_failure_is_not_a_usage_error(tmp_path) -> None:
             "kind": "weave.key.revoked",
             "origin": {"instance": "ed25519:" + "33" * 16, "project": "example"},
             "recorded_at": "2026-11-01T00:00:00.000Z",
+            # S2-FIX1 T5: a keyset record that must be signed carries a structurally
+            # valid sigs entry (absent or empty sigs is itself a usage error, §14.1);
+            # the signature value does not verify, which is not a usage error either.
+            "sigs": [{"alg": "ed25519", "key": "ed25519:" + "33" * 16, "value": "A" * 86}],
             "stage": "accepted",
         },
         separators=(",", ":"),

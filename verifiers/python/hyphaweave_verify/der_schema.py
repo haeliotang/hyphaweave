@@ -908,3 +908,126 @@ def signer_certificate(context: WalkContext) -> bytes | None:
         elif issuer == wanted_issuer and serial == wanted_serial:
             return certificate
     return None
+
+
+# ---------------------------------------------------------------------------
+# 1e: facts of a walked certificate (no parsing library, S2/F62/F63)
+# ---------------------------------------------------------------------------
+
+
+class CertificateFacts:
+    """The fields of an RFC 5280 certificate that checks 1e and 10-12 read.
+
+    Read by position from a certificate that already passed the 1b/1c walk
+    under :data:`CERTIFICATE`, so every component has the module shape. No
+    parsing library takes part: a certificate whose subject is a
+    ``PrintableString`` outside that type's character set, or whose
+    ``AlgorithmIdentifier.parameters`` is any well-framed value, is still a
+    certificate here, because those components are open types (1c).
+    """
+
+    __slots__ = (
+        "version",
+        "issuer_unique_id",
+        "subject_unique_id",
+        "subject_public_key_info",
+        "not_before",
+        "not_after",
+        "extensions",
+    )
+
+    def __init__(self) -> None:
+        #: 0 for v1 (the absent DEFAULT), otherwise the encoded INTEGER value.
+        self.version = 0
+        self.issuer_unique_id = False
+        self.subject_unique_id = False
+        #: The DER TLV of ``subjectPublicKeyInfo``.
+        self.subject_public_key_info = b""
+        #: ``(universal tag number, content octets)`` of the validity times.
+        self.not_before: tuple[int, bytes] = (0, b"")
+        self.not_after: tuple[int, bytes] = (0, b"")
+        #: ``(extnID content octets, critical, extnValue content octets)``.
+        self.extensions: list[tuple[bytes, bool, bytes]] = []
+
+
+def certificate_facts(certificate: bytes) -> CertificateFacts:
+    """Read :class:`CertificateFacts` from a walked certificate (see above)."""
+    facts = CertificateFacts()
+    outer = _children(certificate, 0, len(certificate))
+    if len(outer) != 1:
+        raise DerViolation("not a certificate")
+    certificate_fields = _children(certificate, outer[0][3], outer[0][4])
+    tbs = _children(certificate, certificate_fields[0][3], certificate_fields[0][4])
+    if tbs and (tbs[0][0], tbs[0][1]) == (_CONTEXT, 0):
+        version_tlv = _children(certificate, tbs[0][3], tbs[0][4])
+        content = certificate[version_tlv[0][3] : version_tlv[0][4]]
+        facts.version = int.from_bytes(content, "big", signed=True)
+        tbs = tbs[1:]
+    validity = _children(certificate, tbs[3][3], tbs[3][4])
+    facts.not_before = (validity[0][1], certificate[validity[0][3] : validity[0][4]])
+    facts.not_after = (validity[1][1], certificate[validity[1][3] : validity[1][4]])
+    facts.subject_public_key_info = certificate[tbs[5][2] : tbs[5][4]]
+    for tag_class, number, _start, content_start, content_end in tbs[6:]:
+        if (tag_class, number) == (_CONTEXT, 1):
+            facts.issuer_unique_id = True
+        elif (tag_class, number) == (_CONTEXT, 2):
+            facts.subject_unique_id = True
+        elif (tag_class, number) == (_CONTEXT, 3):
+            extensions = _children(certificate, content_start, content_end)[0]
+            for extension in _children(certificate, extensions[3], extensions[4]):
+                parts = _children(certificate, extension[3], extension[4])
+                critical = False
+                if len(parts) == 3:
+                    critical = certificate[parts[1][3] : parts[1][4]] == b"\xff"
+                facts.extensions.append(
+                    (
+                        certificate[parts[0][3] : parts[0][4]],
+                        critical,
+                        certificate[parts[-1][3] : parts[-1][4]],
+                    )
+                )
+    return facts
+
+
+def check_certificate_version(facts: CertificateFacts) -> None:
+    """1e (S2/F62): the RFC 5280 version constraints of the certificate module.
+
+    ``version`` is v1 (absent: an explicit v1 is the encoded DEFAULT, already a
+    1c violation), v2 or v3; any other value is not an X.509 certificate under
+    this profile. ``extensions`` require v3 (RFC 5280 §4.1.2.1, §4.1.2.9) and
+    the unique identifiers v2 or v3 (§4.1.2.8).
+    """
+    if facts.version not in (0, 1, 2):
+        raise DerViolation("certificate version is not v1, v2 or v3")
+    if facts.extensions and facts.version != 2:
+        raise DerViolation("certificate extensions require version v3")
+    if (facts.issuer_unique_id or facts.subject_unique_id) and facts.version == 0:
+        raise DerViolation("certificate unique identifiers require version v2 or v3")
+
+
+def oid_content(dotted: str) -> bytes:
+    """Content octets of an OBJECT IDENTIFIER (public helper for checks 11-12)."""
+    return _oid_content(dotted)
+
+
+def sequence_of_oids(value: bytes) -> list[bytes]:
+    """Content octets of each OBJECT IDENTIFIER in a ``SEQUENCE OF OBJECT IDENTIFIER``."""
+    outer = _children(value, 0, len(value))
+    if len(outer) != 1 or (outer[0][0], outer[0][1]) != (_UNIVERSAL, 16):
+        raise DerViolation("not a SEQUENCE OF OBJECT IDENTIFIER")
+    out = []
+    for tag_class, number, _start, content_start, content_end in _children(
+        value, outer[0][3], outer[0][4]
+    ):
+        if (tag_class, number) != (_UNIVERSAL, 6):
+            raise DerViolation("not a SEQUENCE OF OBJECT IDENTIFIER")
+        out.append(value[content_start:content_end])
+    return out
+
+
+def bit_string_content(value: bytes) -> bytes:
+    """Content octets (unused-bits octet first) of a single BIT STRING TLV."""
+    outer = _children(value, 0, len(value))
+    if len(outer) != 1 or (outer[0][0], outer[0][1]) != (_UNIVERSAL, 3):
+        raise DerViolation("not a BIT STRING")
+    return value[outer[0][3] : outer[0][4]]

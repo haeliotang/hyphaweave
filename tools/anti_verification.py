@@ -289,8 +289,8 @@ def _build_catalogue() -> None:
            ("sig/missing-required-signature", "erasure/unsigned")),
         _m("record-sig-unverifiable", "verifier.py", "verifier.sig.unverifiable",
            "report invalid instead of unverifiable when the required signature only has unknown-alg entries",
-           r'"E_SIG_UNVERIFIABLE",\n\s*"the required signature only has unknown-algorithm entries",',
-           '"E_SIG_INVALID",\n            "ablation: unknown-alg required signature treated as invalid",',
+           r'"E_SIG_UNVERIFIABLE",\n\s*"no known-algorithm signature by a declared key exists",',
+           '"E_SIG_INVALID",\n        "ablation: unknown-alg required signature treated as invalid",',
            ("sig/unknown-alg",)),
         _m("record-sig-unknown-alg-ignored", "verifier.py", "verifier.sig.q13-unknown-alg",
            "treat unknown-algorithm signature entries as invalid instead of ignored",
@@ -299,8 +299,8 @@ def _build_catalogue() -> None:
            ("sig/unknown-alg-with-known-valid", "sig/unknown-alg-optional")),
         _m("record-sig-cross-purpose-domain", "verifier.py", "verifier.sig.domain-separation",
            "accept a record signature made over the manifest domain prefix",
-           r'            try:\n                ed25519\.verify_signature\(material, message, signature\.raw or b""\)\n            except WeaveError:\n                states\.append\(\{"key": signature\.key, "state": "invalid"\}\)\n                raise',
-           '            try:\n                ed25519.verify_signature(material, message, signature.raw or b"")\n            except WeaveError:\n                try:\n                    ed25519.verify_signature(\n                        material, encoding.manifest_sig_message(digest), signature.raw or b""\n                    )\n                except WeaveError:\n                    states.append({"key": signature.key, "state": "invalid"})\n                    raise',
+           r'        try:\n            ed25519\.verify_signature\(material, message, signature\.raw or b""\)\n        except WeaveError as error:\n            states\.append\(\{"key": signature\.key, "state": "invalid"\}\)\n            first_invalid = first_invalid or error\n            continue',
+           '        try:\n            try:\n                ed25519.verify_signature(material, message, signature.raw or b"")\n            except WeaveError:\n                ed25519.verify_signature(\n                    material, encoding.manifest_sig_message(digest), signature.raw or b""\n                )  # ablation: manifest-domain signature accepted\n        except WeaveError as error:\n            states.append({"key": signature.key, "state": "invalid"})\n            first_invalid = first_invalid or error\n            continue',
            ("sig/manifest-prefix-in-record",), review_a_survivor=True),
         _m("record-ref-kind-mismatch", "verifier.py", "verifier.refs.kind-mismatch",
            "ignore contradicting kind claims on references",
@@ -397,27 +397,18 @@ def _build_catalogue() -> None:
            r'if parent_until is not None and \(\n\s*child\.valid_until is None\n\s*or timestamp_sort_key\(child\.valid_until\) > parent_until\n\s*\):',
            'if False:  # ablation: delegation valid_until bound disabled',
            ("grant/sub-grant-window-ends-after-parent",), review_a_survivor=True),
+        # S2-FIX6: the parent's revocation and window are judged with the whole chain in
+        # validate_grant_chain (one site each); _check_delegation keeps steps 2-5 only.
         _m("grant-parent-revoked", "grants.py", "grants.delegation.parent-revoked",
-           "ignore revocation of the parent grant",
-           r'if context\.grant_state\.revocation_as_of\(parent\.digest, at_time\) is not None:',
-           'if False:  # ablation: parent grant revocation check disabled',
-           ("grant/parent-revoked",), review_a_survivor=True,
-           equivalent_reason="reviewed-equivalent: the delegation-layer revocation check is mirrored by "
-           "validate_grant_chain's own revocation guard (same E_GRANT_REVOKED) and by the "
-           "agent-authorisation path that resolves the same cited grant; non-agent sub-grants are "
-           "unconstructible (the envelope forbids actor.grant on non-agent actors), so the "
-           "E_GRANT_REVOKED outcome is pinned by grant/parent-revoked, grant/revoked and "
-           "grant/revoked-boundary-equal"),
+           "ignore revocation of any grant in the chain (the parent included)",
+           r'if context\.grant_state\.revocation_as_of\(link\.digest, when\) is not None:',
+           'if False:  # ablation: chain revocation check disabled',
+           ("grant/parent-revoked",), review_a_survivor=True),
         _m("grant-parent-expired", "grants.py", "grants.delegation.parent-window",
-           "ignore that the parent grant is not yet valid",
-           r'if timestamp_sort_key\(at_time\) < timestamp_sort_key\(parent\.valid_from\):',
-           'if False:  # ablation: parent grant lower-window check disabled',
-           ("grant/parent-expired",), review_a_survivor=True,
-           equivalent_reason="reviewed-equivalent: the delegation-layer validity check is mirrored by "
-           "_check_window during the recursive parent-chain validation (same E_GRANT_EXPIRED, covering "
-           "both not-yet-valid and expired parents), and the delegating record is necessarily an agent "
-           "record whose actor.grant goes through the same agent-authorisation path; the vectors "
-           "grant/parent-expired and grant/sub-grant-parent-expired pin the E_GRANT_EXPIRED outcome"),
+           "ignore that a grant in the chain (the parent included) is outside its window",
+           r'        _check_window\(link, when\)\n',
+           '        pass  # ablation: chain window check disabled\n',
+           ("grant/parent-expired",), review_a_survivor=True),
         # FIX2 recheck counterexample (R1): literal old §5.5.2 step 6 - ancestors judged at
         # the descendant grant's claimed recorded_at instead of the verified record's.
         # FIX2 recheck counterexample (R1): literal old §5.5.2 step 6 - every ancestor is
@@ -431,13 +422,14 @@ def _build_catalogue() -> None:
            ("grant/ancestor-revoked-before-record",)),
         _m("grant-chain-depth", "grants.py", "grants.chain.depth",
            "remove the grant chain depth guard",
-           r'if depth > MAX_CHAIN_DEPTH or grant\.digest in seen:',
-           'if grant.digest in seen:  # ablation: chain depth guard removed',
+           # S2-FIX1 Q5: the walk is not bounded; the depth is decided after it.
+           r'    if links > MAX_CHAIN_DEPTH:\n',
+           '    if False:  # ablation: chain depth guard removed\n',
            ("grant/chain-depth-9-links", "grant/chain-depth-exceeded",)),
         _m("grant-chain-cycle", "grants.py", "grants.chain.cycle",
            "remove the grant chain cycle guard",
-           r'if depth > MAX_CHAIN_DEPTH or grant\.digest in seen:',
-           'if depth > MAX_CHAIN_DEPTH:  # ablation: chain cycle guard removed',
+           r'        if grant\.digest in seen:\n',
+           '        if False:  # ablation: chain cycle guard removed\n',
            (),
            equivalent_reason="a grant-chain cycle is unconstructible in an authenticated "
            "content-addressed DAG (chain references point at already-signed grant digests); "
@@ -563,13 +555,13 @@ def _build_catalogue() -> None:
            ("key-lifecycle/revoke-effective-after-recorded",)),
         _m("key-revoke-signer", "keys.py", "keys.revocation.signer",
            "accept revocations from any signature",
-           r'raise WeaveError\("E_KEY_REVOKE_SIGNER", "revocation lacks an acceptable signer"\)',
-           'pass  # ablation: revocation signer rule disabled',
+           r'    if not \(allowed & verified_keys\):',
+           '    if False:  # ablation: revocation signer rule disabled',
            ("key-lifecycle/revoke-signer-unqualified",)),
         _m("key-declared-not-self-signed", "keys.py", "keys.declaration.self-signature",
            "accept a declaration with no valid signature by the declared key",
-           r'raise WeaveError\(\n\s*"E_KEY_DECLARED_NOT_SELF_SIGNED",\n\s*"no valid signature by the declared key",?\n\s*\)',
-           'pass  # ablation: self-signature requirement disabled',
+           r'    if declared_key not in verified_signature_keys:',
+           '    if False:  # ablation: self-signature requirement disabled',
            ("key-lifecycle/declared-not-self-signed",)),
         _m("key-agent-not-cosigned", "keys.py", "keys.declaration.cosignature",
            "accept an agent/program/device declaration without the owner cosignature",
@@ -595,13 +587,16 @@ def _build_catalogue() -> None:
            ("container/manifest-unsigned",)),
         _m("container-manifest-signature", "container.py", "container.manifest.signature",
            "accept a manifest signature that does not verify",
-           r'raise WeaveError\(\n\s*"E_MANIFEST_SIG_INVALID", "manifest signature does not verify"\n\s*\) from error',
-           'pass  # ablation: manifest signature verification disabled',
+           # retargeted by S2-FIX2 U5 (every entry is judged, the first invalid one raised last)
+           r'            if first_invalid is None:\n                first_invalid = WeaveError\(\n'
+           r'                    "E_MANIFEST_SIG_INVALID", "manifest signature does not verify"\n'
+           r'                \)\n                first_invalid\.__cause__ = error\n            continue\n',
+           '            pass  # ablation: manifest signature verification disabled\n',
            ("container/manifest-sig-invalid",)),
         _m("container-manifest-cross-purpose-domain", "container.py", "container.manifest.domain-separation",
            "accept a manifest signature made over the record domain prefix",
-           r'        try:\n            from \. import ed25519\n\n            ed25519\.verify_signature\(material, message, signature\.raw\)\n        except WeaveError as error:',
-           '        try:\n            from . import ed25519\n\n            try:\n                ed25519.verify_signature(material, message, signature.raw)\n            except WeaveError:\n                ed25519.verify_signature(\n                    material, encoding.record_sig_message(manifest_digest), signature.raw\n                )\n        except WeaveError as error:',
+           r'        try:\n            ed25519\.verify_signature\(material, message, signature\.raw\)\n        except WeaveError as error:',
+           '        try:\n            try:\n                ed25519.verify_signature(material, message, signature.raw)\n            except WeaveError:\n                ed25519.verify_signature(\n                    material, encoding.record_sig_message(manifest_digest), signature.raw\n                )\n        except WeaveError as error:',
            ("container/manifest-sig-record-prefix",), review_a_survivor=True),
         _m("container-previous-origin", "container.py", "container.chain.origin",
            "accept a previous manifest from a different origin",
@@ -666,20 +661,20 @@ def _build_catalogue() -> None:
            occurrences=2, replace_all=True),
         _m("container-erase-digest", "container.py", "container.erasure.digest-cross-check",
            "skip the erasure/placeholder digest cross-check",
-           r'return "E_ERASE_DIGEST_MISMATCH"',
-           'return None  # ablation: erasure digest cross-check disabled',
+           r'found\.add\("E_ERASE_DIGEST_MISMATCH"\)',
+           'pass  # ablation: erasure digest cross-check disabled',
            ("erasure/digest-mismatch",), review_a_survivor=True,
            occurrences=3, replace_all=True),
         _m("container-erase-attestation", "container.py", "container.erasure.attestation-backref",
            "skip the placeholder attestation back-reference check",
-           r'return "E_ERASE_ATTESTATION"',
-           'return None  # ablation: attestation back-reference check disabled',
+           r'found\.add\("E_ERASE_ATTESTATION"\)',
+           'pass  # ablation: attestation back-reference check disabled',
            ("erasure/attestation-missing",), review_a_survivor=True,
            occurrences=4, replace_all=True),
         _m("container-erase-contradiction", "container.py", "container.erasure.contradiction",
            "skip live-record/placeholder contradiction detection",
-           r'return "E_ERASE_CONTRADICTION"',
-           'return None  # ablation: erasure contradiction check disabled',
+           r'found\.add\("E_ERASE_CONTRADICTION"\)',
+           'pass  # ablation: erasure contradiction check disabled',
            ("erasure/contradiction",), occurrences=2, replace_all=True),
         # -------------------------------------------------------------------- timestamps
         _m("ts-status-granted", "timestamps.py", "timestamps.status",
@@ -862,9 +857,17 @@ def _build_catalogue() -> None:
            ("container/manifest-unsigned-missing-sigfile",)),
         _m("declared-missing-public-key", "verifier.py", "verifier.declared.public-key",
            "verify a declaration's self-signature against a placeholder key when body.public_key is absent",
-           r'    if envelope\.kind == kinds\.KIND_DECLARED:\n        if body\.get\("key"\) == key:\n            return \(decode_public_key_material\(body\.get\("public_key"\)\), False\)',
-           '    if envelope.kind == kinds.KIND_DECLARED:\n        if body.get("key") == key:\n            return (decode_public_key_material(body["public_key"]) if "public_key" in body else bytes(32), False)  # ablation',
-           ("key-lifecycle/declared-missing-public-key",)),
+           # S2/F39: the public_key decision now precedes key resolution, so the
+           # ablation disables that pre-check and lets the self-signature resolve
+           # against a placeholder key.
+           r'            decode_public_key_material\(envelope\.body\.get\("public_key"\)\)\n        if envelope\.kind == kinds\.KIND_ROTATED:',
+           '            pass  # ablation: public_key pre-check disabled\n        if envelope.kind == kinds.KIND_ROTATED:',
+           ("key-lifecycle/declared-missing-public-key",),
+           co_mutations=(
+               ("verifier.py",
+                r'            return \(decode_public_key_material\(body\.get\("public_key"\)\), False\)',
+                '            return (decode_public_key_material(body["public_key"]) if "public_key" in body else bytes(32), False)  # co-ablation'),
+           )),
         _m("key-class-conflict", "keys.py", "keys.declared.class-conflict",
            "accept a container declaration that reclassifies a trusted key",
            r'if governing_class is not None and governing_class != key_type:',
@@ -904,8 +907,8 @@ def _build_catalogue() -> None:
            ("grant/invalid-revocation-ineffective",)),
         _m("grant-chain-depth-endpoint", "grants.py", "grants.chain.depth",
            "accept one more grant-chain link than the inclusive depth bound",
-           r'if depth > MAX_CHAIN_DEPTH or grant\.digest in seen:',
-           'if depth > MAX_CHAIN_DEPTH + 1 or grant.digest in seen:  # ablation: off-by-one depth bound',
+           r'    if links > MAX_CHAIN_DEPTH:\n',
+           '    if links > MAX_CHAIN_DEPTH + 1:  # ablation: off-by-one depth bound\n',
            ("grant/chain-depth-9-links",)),
         _m("ts-accuracy-bound", "timestamps.py", "timestamps.accuracy.bound",
            "accept a receipt whose accuracy exceeds MAX_TS_ACCURACY",
@@ -914,13 +917,13 @@ def _build_catalogue() -> None:
            ("integrity-levels/l2-accuracy-over-limit", "integrity-levels/l2-accuracy-overflow")),
         _m("ts-file-before-renewal", "timestamps.py", "timestamps.archive.file-first",
            "judge renewal-chain structure before the listed TSR file digests",
-           r'    # Phase 1: every listed TSR must exist, be within the class limit and hash\n    # to the digest the attestation lists \(§11\.3 file-level checks\)\.',
-           '    _abl_chain, _abl_error = _build_renewal_chain(entries)  # ablation: renewal structure judged first\n    if _abl_error is not None:\n        archive.errors.append("E_TS_RENEWAL")\n        archive.results = [\n            TimestampResult(path, str(entries[path].get("digest", "")), STATE_INVALID, None, None, "E_TS_RENEWAL")\n            for path in sorted(entries)\n        ]\n        return archive\n    # Phase 1: every listed TSR must exist, be within the class limit and hash\n    # to the digest the attestation lists (§11.3 file-level checks).',
+           r'    # Phase 1: every listed TSR must exist, be within the class limit and hash\n    # to the digest the attestation lists \(§11\.3 file-level checks\), and every',
+           '    _abl_chain, _abl_error = _build_renewal_chain(entries)  # ablation: renewal structure judged first\n    if _abl_error is not None:\n        archive.errors.append("E_TS_RENEWAL")\n        archive.results = [\n            TimestampResult(path, str(entries[path].get("digest", "")), STATE_INVALID, None, None, "E_TS_RENEWAL")\n            for path in sorted(entries)\n        ]\n        return archive\n    # Phase 1: every listed TSR must exist, be within the class limit and hash\n    # to the digest the attestation lists (§11.3 file-level checks), and every',
            ("integrity-levels/l2-ts-file-before-renewal",)),
         _m("crypto-before-lifecycle", "verifier.py", "verifier.crypto.order",
            "run lifecycle effects before the cryptographic check",
-           r'try:\n\s*ed25519\.verify_signature\(material, message, signature\.raw or b""\)',
-           'if from_context:  # ablation: lifecycle effects before the crypto check\n                context.key_state.check_signature_effects(\n                    signature.key,\n                    envelope.recorded_at,\n                    verified_timestamps=context.verified_timestamps,\n                    timestamp_evidence_present=context.timestamp_evidence_present,\n                )\n            try:\n                ed25519.verify_signature(material, message, signature.raw or b"")',
+           r'        try:\n            ed25519\.verify_signature\(material, message, signature\.raw or b""\)',
+           '        if from_context:  # ablation: lifecycle effects before the crypto check\n            context.key_state.check_signature_effects(\n                signature.key,\n                envelope.recorded_at,\n                verified_timestamps=context.verified_timestamps,\n                timestamp_evidence_present=context.timestamp_evidence_present,\n            )\n        try:\n            ed25519.verify_signature(material, message, signature.raw or b"")',
            ("sig/invalid-value", "sig/wrong-key-value"),
         ),
         _m("limitations-identifiers", "report.py", "report.limitations.identifiers",
@@ -945,8 +948,9 @@ def _build_catalogue() -> None:
            ("labels/sensitivity-wrong-type",)),
         _m("env-sig-key-code", "envelope.py", "envelope.sigs.key-type-code",
            "report a non-string sigs[].key with the key-id code",
-           r'raise WeaveError\("E_ENV_SIGS", "signature key must be a string"\)',
-           'raise WeaveError("E_ENV_SIG_KEY", "signature key must be a string")',
+           # S2/F67: member JSON types are now judged for all three members first.
+           r'raise WeaveError\(\n                    "E_ENV_SIGS", "signature entry member %r is not a string" % member\n                \)',
+           'raise WeaveError(\n                    "E_ENV_SIG_KEY" if member == "key" else "E_ENV_SIGS", "ablation" \n                )',
            ("sig/key-not-string",)),
         _m("env-actor-grant-code", "envelope.py", "envelope.actor.grant-code",
            "report a malformed actor.grant reference with the actor code",
@@ -961,8 +965,8 @@ def _build_catalogue() -> None:
            occurrences=2, replace_all=True),
         _m("blocking-condition-terminal", "verifier.py", "verifier.blocking.terminal",
            "make the undeclared-signing-key blocking condition non-terminal",
-           r'raise WeaveError\(\n                    "E_KEY_UNKNOWN", "signing key is not declared in the context"\n                \)',
-           'view.errors.append("E_KEY_UNKNOWN")  # ablation: blocking condition downgraded\n                continue',
+           r'    if unknown_key:\n        raise WeaveError\("E_KEY_UNKNOWN", "signing key is not declared in the context"\)',
+           '    if unknown_key:\n        view.errors.append("E_KEY_UNKNOWN")  # ablation: blocking condition downgraded',
            ("sig/unknown-key-terminal",)),
         _m("no-human-signature-notice", "verifier.py", "verifier.notice.no-human-signature",
            "report N_NO_HUMAN_SIGNATURE on a record that a blocking condition made unverifiable",
@@ -1118,9 +1122,17 @@ def _build_catalogue() -> None:
            ("container/zip64-locator-corrupt-offset",)),
         _m("zip-readable-duplicate", "container.py", "container.zip.readable-duplicate",
            "accept duplicate zip entry names under readable/",
-           r'                if name in seen_names:',
-           '                if False:  # ablation: duplicate-name check disabled',
-           ("container/readable-duplicate-name",)),
+           # S2/F49: entry checks run for every entry before decompression; the
+           # duplicate-name rule lives in that pre-check and (unreachably) in the
+           # read loop, so both are disabled together.
+           r'                    or entry\.name in precheck_names',
+           '                    or False  # ablation: duplicate-name check disabled',
+           ("container/readable-duplicate-name",),
+           co_mutations=(
+               ("container.py",
+                r'                if name in seen_names:',
+                '                if False:  # co-ablation: duplicate-name check disabled'),
+           )),
         _m("oversized-record-shape", "container.py", "container.report.oversized-record",
            "let an oversized record file fall through the records-listing checks (T16)",
            r'    if oversized_records:',
@@ -1450,19 +1462,19 @@ def _build_catalogue() -> None:
            ("integrity-levels/l2-ts-der-setof-opaque-unsorted",
             "integrity-levels/l2-ts-der-tstinfo-opaque-unsorted")),
         _m("ts-certificates-decode", "timestamps.py", "timestamps.der.certificates",
-           "do not decode the carried certificates in check 1 (W3/W6, check 1e)",
-           r'        _load_der_certificate\(signer_certificate_der\)\n',
+           "do not decode the carried certificates in check 1 (W3/W6, check 1e; S2/F62: the RFC 5280 version rules)",
+           r'        der_schema\.check_certificate_version\(facts\)\n',
            '        pass  # ablation: the signer certificate is not decoded in check 1\n',
            ("integrity-levels/l2-ts-certificate-undecodable",)),
         _m("ts-extension-value-der", "timestamps.py", "timestamps.der.extension-values",
            "do not scan certificate extension values (W3, check 1e)",
-           r'            _validate_strict_der\(extension_value\)\n',
-           '            pass  # ablation: extension values not scanned\n',
+           r'        _validate_strict_der\(extension_value\)\n',
+           '        pass  # ablation: extension values not scanned\n',
            ("integrity-levels/l2-ts-der-extension-value-nonminimal",)),
         _m("ts-key-type-check10", "timestamps.py", "timestamps.cms.key-type",
            "report an algorithm/key-type mismatch as E_TS_CERT instead of check 10 (W6)",
-           r'                raise WeaveError\("E_TS_CMS", "signature algorithm does not match the key"\)\n            digest_class = _RSA_PKCS1V15_OIDS',
-           '                raise WeaveError("E_TS_CERT", "ablation: key-type mismatch as check 6")\n            digest_class = _RSA_PKCS1V15_OIDS',
+           r'                raise WeaveError\("E_TS_CMS", "signature algorithm does not match the key"\)\n            _check_rsa_key_bounds\(public_key\)',
+           '                raise WeaveError("E_TS_CERT", "ablation: key-type mismatch as check 6")\n            _check_rsa_key_bounds(public_key)',
            ("integrity-levels/l2-ts-signature-key-type-mismatch",)),
         _m("zip-prefix-phase-1", "zipread.py", "container.zip.prefix-phase",
            "judge bytes before the first local header after the §13 limits (W7 phase 1)",
@@ -1625,8 +1637,8 @@ def _build_catalogue() -> None:
             "integrity-levels/l2-ts-non-signer-certificate-undecodable")),
         _m("signer-certificate-walk", "timestamps.py", "timestamps.der.signer-certificate-walk",
            "skip the 1b/1c walk of the signer certificate (X7/M3)",
-           r'        certificate_walk = _require_der_reencoding\(\n            der_schema\.CERTIFICATE, signer_certificate_der, "signer certificate"\n        \)\n',
-           '        certificate_walk = der_schema.WalkContext()  # ablation: no typed walk\n',
+           r'    certificate_walk = _require_der_reencoding\(der_schema\.CERTIFICATE, certificate_der, label\)\n',
+           '    certificate_walk = der_schema.WalkContext()  # ablation: no typed walk\n',
            ("integrity-levels/l2-ts-der-extension-value-nonminimal",)),
         _m("operator-path-kind", "operator_input.py", "operator.path-kind",
            "open operator paths without examining their kind first (X3)",
@@ -1648,6 +1660,732 @@ def _build_catalogue() -> None:
 
 
 _build_catalogue()
+
+
+def _lit(
+    mid: str,
+    module: str,
+    check: str,
+    description: str,
+    old: str,
+    new: str,
+    pinned_by: tuple[str, ...] = (),
+    **kwargs: object,
+) -> Mutation:
+    """A mutation given as literal source text (S2, S2-FIX1): ``old`` -> ``new``."""
+    return _m(
+        mid, module, check, description, re.escape(old), new.replace("\\", "\\\\"),
+        pinned_by, **kwargs,  # type: ignore[arg-type]
+    )
+
+
+_KL = "key-lifecycle/"
+_IL = "integrity-levels/"
+
+
+def _build_s2_catalogue() -> None:
+    """S2 (#8), S2-FIX1 (#18) and S2-FIX2 (#22) corrections (decisions of 2026-11-15).
+
+    The S2 ablations were first run from an out-of-tree script (review A low-2); they
+    are catalogue entries now, so the CI ablation gate keeps them pinned.
+    """
+    _add(
+        # ------------------------------------------------------------------ S2 (#8)
+        _lit("s2-a1-own-signature-effects", "verifier.py", "s2.a1.own-effects",
+             "S2/F38/F61-1: leave the §9.4 effects off every body-supplied signature of a "
+             "declaration or rotation (the security defect)",
+             "        if from_context or own_effects or signature.key != subject_key:\n",
+             "        if from_context:\n",
+             tuple(_KL + name for name in (
+                 "declaration-compromised-receipt-trailing-byte",
+                 "declaration-compromised-receipt-signature-tampered",
+                 "declaration-compromised-receipt-imprint-mismatch",
+                 "declaration-compromised-receipt-no-anchor",
+                 "declaration-compromised-receipt-unusable-accuracy",
+                 "declaration-compromised-receipt-after-compromise",
+                 "declaration-compromised-l0", "declaration-before-own-valid-from",
+                 "declaration-cosigner-retired", "rotation-old-key-retired"))),
+        _lit("s2-a1-admission", "verifier.py", "s2.a1.admission",
+             "S2/F38: never admit the facts of a declaration or rotation that fails only "
+             "through §9.4 (state from the reported verdict only)",
+             '    if probe.verdict == "valid":\n        view.admitted_declaration',
+             '    if False:\n        view.admitted_declaration',
+             (_KL + "declaration-before-own-valid-from",
+              _KL + "rotation-new-key-compromised-note-by-new-key")),
+        _lit("s2-f52-unverified-state", "verifier.py", "s2.f52.sig-state",
+             "S2/F52: report a signature whose key state fails §9.4 as valid",
+             '                states.append({"key": signature.key, "state": "unverified"})\n'
+             '                if record_verdict([error.code]) == "invalid":',
+             '                states.append({"key": signature.key, "state": "valid"})\n'
+             '                if record_verdict([error.code]) == "invalid":',
+             (_KL + "declaration-compromised-l0", _KL + "declaration-compromised-receipt-no-anchor")),
+        # S2/F51/F61-2/F67 (the candidate key-state schema guard) is not an ablation
+        # entry: removing it makes the verifier crash on the guarded inputs, and a
+        # crash is a catalogue error (V2d). Those inputs are replayed by
+        # tools/crash_fuzz.py from tools/crash_corpus/ (s2-00000 to s2-00007), which
+        # fails on a traceback.
+        _lit("s2-f40-file-identity", "container.py", "s2.f40.identity",
+             "S2/F40: stop reporting the archive identity of a file target that is not a zip",
+             "    try:\n        if path.is_file():\n            with path.open(\"rb\") as handle:",
+             "    try:\n        if False:\n            with path.open(\"rb\") as handle:",
+             ("container/zip-prefix-input-identity",)),
+        _lit("s2-f42-tofu-after-equation", "verifier.py", "s2.f42.tofu",
+             "S2/F42: decide TOFU only after a passing equation",
+             "        if (\n            _signature_context_trusted(",
+             "        if (\n            False and _signature_context_trusted(",
+             (_KL + "tofu-on-failed-equation",)),
+        _lit("s2-f44-raw-identity", "verifier.py", "s2.f44.identity",
+             "S2/F44: a structurally failed record has no identity",
+             "        if self.envelope is not None or self.placeholder is not None:\n            return None",
+             "        if True:\n            return None",
+             ("container/reference-to-structurally-invalid-target",)),
+        _lit("s2-f45-agent-presence", "envelope.py", "s2.f45.agent-presence",
+             "S2/F45/F67: decide the agent-only actor members in the grammar phase",
+             '    if value["type"] == "agent" and not kinds.is_key_lifecycle(kind):',
+             "    if False:",
+             ("actor/agent-missing-idempotency-before-on-behalf-grammar",
+              "actor/agent-missing-grant-before-on-behalf-type",
+              "actor/agent-missing-on-behalf-before-key-type")),
+        _lit("s2-f67-sigs-member-types", "envelope.py", "s2.f67.sigs-types",
+             "S2/F67: judge a sigs member's grammar before its JSON type",
+             "            if not isinstance(entry[member], str):\n                raise WeaveError(",
+             "            if False:\n                raise WeaveError(",
+             ("sig/ed25519-value-wrong-json-type", "sig/ed25519-value-wrong-type-before-key-grammar")),
+        _lit("s2-f46-step4-step5", "verifier.py", "s2.f46.step5",
+             "S2/F46: give the dedicated signer code even with no verified signature at all",
+             '    if view.verified_keys:\n        return WeaveError(code, "no valid signature by the required signer")',
+             '    if True:\n        return WeaveError(code, "no valid signature by the required signer")',
+             (_KL + "declared-only-unknown-algorithm-entries",)),
+        _lit("s2-f49-entry-precheck", "container.py", "s2.f49.zip-order",
+             "S2/F49: decompress members before every entry is checked",
+             "            if entry_error is not None:\n                return ContainerInput(",
+             "            if False:\n                return ContainerInput(",
+             ("container/zip-entry-check-before-crc",)),
+        _lit("s2-f39-public-key-first", "verifier.py", "s2.f39.public-key",
+             "S2/F39/F50: decide a malformed public_key after the signatures",
+             '            decode_public_key_material(envelope.body.get("public_key"))\n'
+             "        if envelope.kind == kinds.KIND_ROTATED:",
+             "            pass\n        if envelope.kind == kinds.KIND_ROTATED:",
+             (_KL + "declared-public-key-before-body-key",)),
+        _lit("s2-f54-unlisted-tsr", "timestamps.py", "s2.f54.unlisted-tsr",
+             "S2/F54: ignore an unlisted .tsr",
+             "    if any(path not in entries for path in present):", "    if False:",
+             ("container/unlisted-receipt-file-l0", _IL + "l2-unlisted-receipt-file")),
+        _lit("s2-f55-unlisted-oversize", "container.py", "s2.f55.extra",
+             "S2/F55: report an unlisted oversize records/ file as E_JSON_SIZE only",
+             '        if match is None or match.group(1) not in listed_hex:\n'
+             '            errors.add("E_MANIFEST_RECORD_EXTRA")',
+             '        if False:\n            errors.add("E_MANIFEST_RECORD_EXTRA")',
+             ("container/oversize-record-file-misnamed",)),
+        _lit("s2-f56-l1-timestamps", "manifest.py", "s2.f56.l1",
+             "S2/F56: accept an L1 manifest that lists timestamps",
+             '    if manifest.level == "L1" and timestamps_listed:', "    if False:",
+             (_IL + "l1-lists-timestamp",)),
+        _lit("s2-f60-depth-as-size", "container.py", "s2.f60.depth",
+             "S2/F60: report a too-deep records/ file as an unconfirmable digest",
+             '            record.size_violation = error.code == "E_JSON_SIZE"',
+             "            record.size_violation = False",
+             ("container/record-nesting-above-limit",)),
+        _lit("s2-f61-3-rotation-key-ids", "keys.py", "s2.f61-3.key-ids",
+             "S2/F61-3: skip the rotation key-id grammar before the material rule",
+             "        if member not in body or not encoding.is_key_id(body[member]):",
+             "        if False:",
+             (_KL + "rotation-old-key-malformed", _KL + "rotation-new-key-wrong-type")),
+        _lit("s2-f57-universal-tag-zero", "timestamps.py", "s2.f57.tag-zero",
+             "S2/F57: accept universal tag number 0",
+             "        if tag_number == 0:\n            # S2/F57",
+             "        if False:\n            # S2/F57",
+             (_IL + "l2-ts-der-universal-tag-zero", _IL + "l2-ts-der-universal-tag-zero-nested")),
+        _lit("s2-f57-enumerated", "timestamps.py", "s2.f57.enumerated",
+             "S2/F57: judge ENUMERATED without the INTEGER rule",
+             "        elif tag_number in (2, 10):", "        elif tag_number in (2,):",
+             (_IL + "l2-ts-der-enumerated-nonminimal",)),
+        _lit("s2-f66-constructed-only", "timestamps.py", "s2.f66.constructed-only",
+             "S2/F66: accept the primitive form of EXTERNAL, EMBEDDED PDV, CHARACTER STRING",
+             "_DER_CONSTRUCTED_ONLY_UNIVERSAL = frozenset({8, 11, 29})",
+             "_DER_CONSTRUCTED_ONLY_UNIVERSAL = frozenset()",
+             (_IL + "l2-ts-der-external-primitive", _IL + "l2-ts-der-embedded-pdv-primitive",
+              _IL + "l2-ts-der-character-string-primitive")),
+        _lit("s2-f62-version-constraints", "timestamps.py", "s2.f62.version",
+             "S2/F62: skip the RFC 5280 version constraints",
+             "        der_schema.check_certificate_version(facts)", "        pass",
+             (_IL + "l2-ts-signer-cert-v1-with-extensions",
+              _IL + "l2-ts-signer-cert-v1-with-issuer-unique-id", _IL + "l2-ts-signer-cert-version-v4")),
+        _lit("s2-f48-independent-rules", "container.py", "s2.f48.independent",
+             "S2/F48: stop the §10.3 cross-checks at the first failing rule",
+             '        if placeholder.digest != reference.digest:\n'
+             '            found.add("E_ERASE_DIGEST_MISMATCH")\n            continue',
+             '        if placeholder.digest != reference.digest:\n'
+             '            found.add("E_ERASE_DIGEST_MISMATCH")\n            return sorted(found)',
+             ("erasure/cross-checks-reported-independently",)),
+        # ------------------------------------------------------------ S2-FIX1 (#18)
+        _lit("fix1-q2-subject-key-only", "verifier.py", "fix1.q2.subject-only",
+             "Q2/T1: exempt every body-supplied signature (cosignature, old key) from §9.4 "
+             "when admission is decided",
+             "        if from_context or own_effects or signature.key != subject_key:\n",
+             "        if from_context or own_effects:\n",
+             tuple(_KL + name for name in (
+                 "rotation-old-key-compromised-backdated-note-by-new-key",
+                 "rotation-old-key-retired-note-by-new-key",
+                 "declaration-cosigner-retired-note-by-device",
+                 "declaration-cosigner-compromised-note-by-device"))),
+        _lit("fix1-t2-invalid-first", "verifier.py", "fix1.t2.invalid-first",
+             "T2: let an unresolved key's E_KEY_UNKNOWN precede an invalid entry",
+             "    if first_invalid is not None:\n        raise first_invalid\n"
+             "    if unknown_key:\n",
+             "    if unknown_key:\n        raise WeaveError(\"E_KEY_UNKNOWN\", \"x\")\n"
+             "    if first_invalid is not None:\n        raise first_invalid\n    if unknown_key:\n",
+             (_KL + "signature-key-resolution-before-equation",
+              _KL + "signature-revoked-entry-beats-unknown-key")),
+        _lit("fix1-t5-keyset-empty-sigs", "verifier.py", "fix1.t5.keyset-sigs",
+             "T5: accept a keyset record with sigs absent or empty",
+             "            if envelope_module.signing_required(envelope.kind, envelope.stage) and not envelope.sigs:\n",
+             "            if False:\n",
+             (), equivalent_reason="a usage error (exit 2, no report) cannot be expressed in "
+             "the vector expectation schema; pinned by the unit tests "
+             "test_keyset_declaration_with_empty_sigs_is_a_usage_error and "
+             "test_keyset_declaration_without_sigs_member_is_a_usage_error"),
+        _lit("fix1-q1-present-invalid", "verifier.py", "fix1.q1.present-invalid",
+             "Q1: report a present but invalid authorising grant with the grant code",
+             '        if target is not None and target.verdict == "invalid":\n',
+             "        if False:\n",
+             ("erasure/actor-agent-grant-present-invalid", "erasure/actor-program-basis-present-invalid")),
+        _lit("fix1-q1-not-established", "verifier.py", "fix1.q1.unresolved",
+             "Q1: report an absent authorising grant as E_ERASE_ACTOR",
+             '        raise WeaveError("E_GRANT_UNRESOLVED", "the authorising grant cannot be established")',
+             '        raise WeaveError("E_ERASE_ACTOR", "the authorising grant cannot be established")',
+             ("erasure/actor-agent-grant-absent", "erasure/actor-program-basis-absent")),
+        _lit("fix1-q1-chain-codes", "verifier.py", "fix1.q1.chain-codes",
+             "Q1: wrap the grant-chain codes of an agent erasure into E_ERASE_ACTOR",
+             "            if error.code in _GRANT_ESTABLISHMENT_CODES:\n                raise\n",
+             "            if False:\n                raise\n",
+             ("erasure/actor-agent-grant-expired", "erasure/actor-agent-grant-revoked")),
+        _lit("fix1-q1-erase-coverage", "verifier.py", "fix1.q1.coverage",
+             "Q1: drop the erase-action coverage of an agent erasure grant",
+             '            or "erase" not in grant.actions\n',
+             "            or False\n",
+             ("erasure/actor-agent-grant-expired-and-lacks-erase",)),
+        _lit("fix1-q3-erasure-signer-before-lookup", "verifier.py", "fix1.q3.erasure-order",
+             "Q1/Q3: look the erasure basis up before the signer rule",
+             "    signer_check()\n    reference = refs.validate_reference(basis)\n"
+             "    target_envelope, basis_digest = _erasure_grant_envelope(reference, context)\n",
+             "    reference = refs.validate_reference(basis)\n"
+             "    target_envelope, basis_digest = _erasure_grant_envelope(reference, context)\n"
+             "    signer_check()\n",
+             ("erasure/actor-program-signer-rule-before-basis-lookup",)),
+        _lit("fix1-q3-step5-deferred", "verifier.py", "fix1.q3.step5",
+             "Q3: report the §4.4 step-5 outcome where the signer rule sits",
+             "    if view.deferred_signer_error is None:\n        view.deferred_signer_error = error\n"
+             "    return None\n",
+             "    return error\n",
+             ("labels/consent-validity-before-step5-outcome",
+              "grant/sub-grant-expands-kinds-step5-outcome-last",
+              _KL + "declaration-class-conflict-before-step5-outcome")),
+        _lit("fix1-q3-consent-window-first", "verifier.py", "fix1.q3.consent-order",
+             "Q3/F69-2: decide the consent signer rule before the consent window",
+             "        # S2-FIX1 Q3 (F69-2): the consent window is a rule of the record itself\n",
+             '        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")\n'
+             "        # S2-FIX1 Q3 (F69-2): the consent window is a rule of the record itself\n",
+             ("labels/consent-validity-before-signer-rule",)),
+        _lit("fix1-q3-granter-before-chain", "grants.py", "fix1.q3.granter-order",
+             "Q3/F55-1: skip the granter signer rule before the delegated chain",
+             "    if granter_check is not None:\n        granter_check()\n", "",
+             ("grant/sub-grant-granter-signer-before-delegation",)),
+        _lit("fix1-q3-no-step9-notice", "verifier.py", "fix1.q3.step9-notice",
+             "Q3/F55-3: keep the propagation notice of a record that fails step (9)",
+             "    propagation_notices = labels.check_label_propagation(envelope, context)\n",
+             "    view.notices.extend(labels.check_label_propagation(envelope, context))\n"
+             "    propagation_notices: list[str] = []\n",
+             ("labels/consent-kind-mismatch-reports-no-propagation-notice",)),
+        _lit("fix1-q4-rsa-modulus", "timestamps.py", "fix1.q4.rsa-modulus",
+             "Q4: accept any RSA modulus size the library accepts",
+             "    if not _RSA_MIN_MODULUS_BITS <= public_key.key_size <= _RSA_MAX_MODULUS_BITS:\n",
+             "    if False:\n",
+             (_IL + "l2-ts-check10-rsa-1024",)),
+        _lit("fix1-q4-rsa-exponent", "timestamps.py", "fix1.q4.rsa-exponent",
+             "Q4: accept any RSA public exponent the library accepts",
+             "    if exponent % 2 == 0 or not _RSA_MIN_EXPONENT <= exponent < _RSA_EXPONENT_LIMIT:\n",
+             "    if False:\n",
+             (_IL + "l2-ts-check10-rsa-exponent-3", _IL + "l2-ts-check10-rsa-exponent-2-pow-256-plus-1")),
+        _lit("fix1-q4-ecdsa-der", "timestamps.py", "fix1.q4.ecdsa-der",
+             "Q4: hand the ECDSA signature value to the library without the DER check",
+             "            _check_ecdsa_signature_encoding(signature, public_key)\n", "",
+             (_IL + "l2-ts-check10-ecdsa-r-nonminimal", _IL + "l2-ts-check10-ecdsa-trailing-octet",
+              _IL + "l2-ts-check10-ecdsa-s-plus-order"),
+             equivalent_reason="the cryptography/OpenSSL ECDSA verification re-encodes the "
+             "Ecdsa-Sig-Value and rejects non-DER input and r, s outside [1, n - 1] with the "
+             "same E_TS_CMS outcome; the explicit check is pinned by the unit test "
+             "test_ecdsa_signature_encoding"),
+        _lit("fix1-q5-walk-bounded", "grants.py", "fix1.q5.walk",
+             "Q5: stop the grant-chain walk at the depth bound",
+             "    while True:\n        if grant.digest in seen:\n",
+             "    while True:\n        if links > MAX_CHAIN_DEPTH:\n"
+             "            raise WeaveError(\"E_GRANT_UNRESOLVED\", \"ablation\")\n"
+             "        if grant.digest in seen:\n",
+             # S2-FIX6: step 6 is judged after the walk, so stopping the walk at the bound
+             # now turns the step-6 outcomes beyond it into the depth code (no longer an
+             # equivalent mutant).
+             ("grant/chain-depth-9-root-revoked", "grant/chain-depth-9-expired",
+              "grant/chain-depth-10-grant-root-revoked", "grant/chain-depth-10-grant-expired")),
+        _lit("fix1-t3-real", "timestamps.py", "fix1.t3.real",
+             "T3: judge REAL by its framing only",
+             "        elif tag_number == 9:\n            _check_der_real(data, position, content_end)\n",
+             "        elif False:\n            _check_der_real(data, position, content_end)\n",
+             tuple(_IL + "l2-ts-der-1a-real-" + name for name in (
+                 "base-8", "scaling-factor", "even-mantissa", "mantissa-leading-zero",
+                 "exponent-nonminimal", "long-exponent-format", "decimal-nr1",
+                 "decimal-trailing-zero", "decimal-plus-exponent", "special-reserved")) ),
+        _lit("fix1-t3-relative-oid", "timestamps.py", "fix1.t3.relative-oid",
+             "T3: judge RELATIVE-OID by its framing only",
+             "        elif tag_number == 13:\n", "        elif False:\n",
+             (_IL + "l2-ts-der-1a-relative-oid-nonminimal", _IL + "l2-ts-der-1a-relative-oid-truncated",
+              _IL + "l2-ts-der-1a-relative-oid-empty")),
+        _lit("fix1-t3-utf8-types", "timestamps.py", "fix1.t3.utf8",
+             "T3 (retargeted by S2-FIX2 U4): skip the UTF-8 check of UTF8String",
+             "_DER_UTF8_UNIVERSAL = frozenset({12})",
+             "_DER_UTF8_UNIVERSAL = frozenset()",
+             (_IL + "l2-ts-der-1a-utf8-string-not-utf8",)),
+        _lit("fix1-t3-primitive-only", "timestamps.py", "fix1.t3.primitive",
+             "T3: let ObjectDescriptor and the date/time/IRI types use the constructed form",
+             "    {1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,\n"
+             "     30, 31, 32, 33, 34, 35, 36}",
+             "    {1, 2, 3, 4, 5, 6, 9, 10, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30}",
+             (_IL + "l2-ts-der-1a-object-descriptor-constructed", _IL + "l2-ts-der-1a-date-time-constructed")),
+        _lit("fix1-t3-time-duration", "timestamps.py", "fix1.t3.time",
+             "T3: accept TIME and DURATION values",
+             "_DER_REJECTED_UNIVERSAL = frozenset({14, 31, 32, 33, 34, 35, 36})",
+             "_DER_REJECTED_UNIVERSAL = frozenset({31, 32, 33, 35, 36})",
+             (_IL + "l2-ts-der-1a-time-rejected", _IL + "l2-ts-der-1a-duration-rejected")),
+        _lit("fix1-t3-string-units", "timestamps.py", "fix1.t3.units",
+             "T3: accept partial UniversalString and BMPString code units",
+             "        elif tag_number == 28 and length % 4:\n", "        elif False:\n",
+             (_IL + "l2-ts-der-1a-universal-string-partial-unit",)),
+        _lit("fix1-t3-bmp-units", "timestamps.py", "fix1.t3.units",
+             "T3: accept partial BMPString code units",
+             "        elif tag_number == 30 and length % 2:\n", "        elif False:\n",
+             (_IL + "l2-ts-der-1a-bmp-string-partial-unit",)),
+        _lit("fix1-t3-iso2022-escape", "timestamps.py", "fix1.t3.escape",
+             "T3: accept an ESC octet in the ISO 2022 register string types",
+             "        elif tag_number in _DER_ISO2022_UNIVERSAL and 0x1B in data[position:content_end]:\n",
+             "        elif False:\n",
+             (_IL + "l2-ts-der-1a-object-descriptor-escape", _IL + "l2-ts-der-1a-general-string-escape")),
+        _lit("fix1-t8-readable-file-dir", "container.py", "fix1.t8.readable-file",
+             "T8: treat a root regular file named readable as a readable/ entry (directory form)",
+             '            if relative_path.startswith("readable/"):\n'
+             "                # spec §11.8/§13",
+             '            if relative_path == "readable" or relative_path.startswith("readable/"):\n'
+             "                # spec §11.8/§13",
+             ("container/readable-root-regular-file",)),
+        _lit("fix1-t8-readable-file-zip", "container.py", "fix1.t8.readable-file",
+             "T8: treat a root file entry named readable as a readable/ entry (zip form)",
+             '                if name.startswith("readable/"):\n                    # T6',
+             '                if name == "readable" or name.startswith("readable/"):\n                    # T6',
+             ("container/readable-root-regular-file-zip",)),
+        _lit("fix1-limitations-after-listing", "container.py", "fix1.limitations.stopped",
+             "review A low-1: report L_ERASED_PLACEHOLDER and L_LABELS_ARE_CLAIMS when the "
+             "records-listing phase stops the container",
+             "    listing_errors = _check_records_listing(manifest, listing, container_input)\n",
+             "    listing_errors = _check_records_listing(manifest, listing, container_input)\n"
+             "    finish_flags[\"placeholder_seen\"] = finish_flags[\"labels_seen\"] = True\n",
+             ("container/erased-placeholder-limitation-not-reported-after-listing-failure",
+              "container/labels-limitation-not-reported-after-listing-failure")),
+        # ------------------------------------------------------------ S2-FIX2 (#22)
+        _lit("fix2-u1-basis-chain", "verifier.py", "fix2.u1.basis-chain",
+             "U1: do not judge a program/device erasure basis grant's chain at recorded_at",
+             "        validate_grant_chain(\n"
+             "            basis_grant, context, envelope.recorded_at, depth=0, seen=frozenset()\n"
+             "        )\n",
+             "        pass\n",
+             ("erasure/actor-program-basis-expired", "erasure/actor-program-basis-revoked",
+              "erasure/actor-device-basis-expired")),
+        _lit("fix2-u1-basis-chain-codes", "verifier.py", "fix2.u1.basis-chain",
+             "U1: wrap a basis grant's window/revocation codes into E_ERASE_ACTOR",
+             "        if error.code in _GRANT_ESTABLISHMENT_CODES:\n            raise\n",
+             "        if False:\n            raise\n",
+             ("erasure/actor-program-basis-expired", "erasure/actor-program-basis-revoked",
+              "erasure/actor-device-basis-expired")),
+        _lit("fix2-u2-first-tier", "grants.py", "fix2.u2.step1",
+             "U2/Q6: report a present but invalid parent or cited grant as E_GRANT_UNRESOLVED",
+             '    if target is not None and target.verdict == "invalid":\n',
+             "    if False:\n",
+             ("grant/agent-record-cited-grant-present-invalid", "grant/sub-grant-parent-present-invalid",
+              "grant/chain-depth-10-root-present-invalid", "grant/chain-depth-9-root-not-transferable",
+              "grant/chain-depth-9-first-link-exceeds")),
+        _lit("fix2-u2-second-tier", "grants.py", "fix2.u2.step1",
+             "U2/Q6: report every present parent that is not valid as E_GRANT_GRANTER",
+             '    if target is not None and target.verdict == "invalid":\n',
+             "    if target is not None:\n",
+             ("grant/sub-grant-parent-present-unverifiable",)),
+        _lit("fix2-u4-no-escape-types", "timestamps.py", "fix2.u4.no-escape",
+             "U4: accept ESC in NumericString, PrintableString, IA5String and VisibleString",
+             "        elif tag_number in _DER_NO_ESCAPE_UNIVERSAL and 0x1B in data[position:content_end]:\n",
+             "        elif False:\n",
+             tuple(_IL + "l2-ts-der-1a-%s-string-escape" % name
+                   for name in ("printable", "ia5", "visible", "numeric"))),
+        _lit("fix2-u4-utf8-escape", "timestamps.py", "fix2.u4.no-escape",
+             "U4: accept ESC in a UTF8String",
+             "            if 0x1B in data[position:content_end]:\n"
+             "                raise _DerViolation(\"an escape sequence in a UTF8String (X.690 §8.23.10)\")\n",
+             "",
+             (_IL + "l2-ts-der-1a-utf8-string-escape",)),
+        _lit("fix2-u4-iso2022-reject-all", "timestamps.py", "fix2.u4.iso2022",
+             "U4: reject every ESC octet in the ISO 2022 register types again (S2-FIX1 reading)",
+             "            _check_der_iso2022(tag_number, data[position:content_end])\n",
+             "            raise _DerViolation(\"ablation\")\n",
+             (_IL + "l2-ts-der-1a-teletex-string-designation",
+              _IL + "l2-ts-der-1a-general-string-designation-switch")),
+        _lit("fix2-u4-iso2022-redundant", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept the designation of an entry already designated",
+             "        if (size, entry) in designated.values():\n",
+             "        if False:\n",
+             (_IL + "l2-ts-der-1a-teletex-string-redundant-designation",
+              _IL + "l2-ts-der-1a-object-descriptor-escape", _IL + "l2-ts-der-1a-general-string-escape")),
+        _lit("fix2-u4-iso2022-smallest-set", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept a designation into a G set other than the smallest one",
+             '        if target.startswith("G") and target != _ISO2022_SMALLEST_G[size]:\n',
+             "        if False:\n",
+             (_IL + "l2-ts-der-1a-teletex-string-not-smallest-set",)),
+        _lit("fix2-u4-iso2022-announcer", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept an ISO 2022 announcer",
+             "        if sequence[1] == 0x20:\n",
+             "        if False:\n",
+             (_IL + "l2-ts-der-1a-graphic-string-announcer",)),
+        _lit("fix2-u4-iso2022-incomplete", "timestamps.py", "fix2.u4.iso2022",
+             "U4: accept an incomplete escape sequence",
+             '            raise _DerViolation("an incomplete ISO 2022 escape sequence")\n',
+             "            return\n",
+             (_IL + "l2-ts-der-1a-teletex-string-incomplete-escape",)),
+        _lit("fix2-u4-dates-rejected", "timestamps.py", "fix2.u4.dates",
+             "U4: accept DATE, TIME-OF-DAY, DATE-TIME, OID-IRI and RELATIVE-OID-IRI values",
+             "_DER_REJECTED_UNIVERSAL = frozenset({14, 31, 32, 33, 34, 35, 36})",
+             "_DER_REJECTED_UNIVERSAL = frozenset({14, 34})",
+             tuple(_IL + "l2-ts-der-1a-%s-rejected" % name for name in (
+                 "date", "time-of-day", "date-time", "oid-iri", "relative-oid-iri"))),
+        _lit("fix2-u5-manifest-first-failing-entry", "container.py", "fix2.u5.manifest-sig",
+             "U5: let an undeclared manifest signature key decide at its array position",
+             "        if material is None:\n            unknown_key = True\n            continue\n",
+             "        if material is None:\n            raise WeaveError(\"E_KEY_UNKNOWN\", \"ablation\")\n",
+             ("container/manifest-sig-invalid-beats-unknown-key",)),
+        _lit("fix2-u5-manifest-unknown-dropped", "container.py", "fix2.u5.manifest-sig",
+             "U5: ignore an undeclared manifest signature key beside a verified entry "
+             "(anchor moved to step (5) by S2-FIX2b)",
+             "        if manifest_unknown_key:\n"
+             "            manifest_unknown_signer_keys = manifest_signature_keys\n",
+             "        if False:\n"
+             "            manifest_unknown_signer_keys = manifest_signature_keys\n",
+             ("container/manifest-sig-unknown-key-beside-valid-entry",)),
+        # ---------------------------------------------------- S2-FIX2b (#32)
+        _lit("fix2b-manifest-effects-beside-unknown", "container.py", "fix2b.manifest-effects",
+             "S2-FIX2b: skip the §9.4 effects of the verified manifest entries when another "
+             "entry's key is undeclared (E_KEY_UNKNOWN masks a retired or compromised key)",
+             "            manifest_unknown_signer_keys = manifest_signature_keys\n",
+             "            manifest_unknown_signer_keys = ()\n",
+             ("container/manifest-sig-retired-key-beats-unknown-key",
+              "container/manifest-sig-compromised-key-beats-unknown-key")),
+        _lit("fix2b-manifest-effects-keep-unknown", "container.py", "fix2b.manifest-effects",
+             "S2-FIX2b: report the invalid §9.4 code beside E_KEY_UNKNOWN instead of in its place",
+             "            errors.remove(\"E_KEY_UNKNOWN\")\n",
+             "            pass\n",
+             ("container/manifest-sig-retired-key-beats-unknown-key",
+              "container/manifest-sig-compromised-key-beats-unknown-key")),
+        _lit("fix2b-manifest-effects-unverifiable", "container.py", "fix2b.manifest-effects",
+             "S2-FIX2b: let an unverifiable §9.4 outcome (E_TS_UNTRUSTED) replace E_KEY_UNKNOWN "
+             "and stop the pipeline",
+             "        if error.effect == \"invalid\":\n            errors.remove(",
+             "        if True:\n            errors.remove(",
+             ("container/manifest-sig-untrusted-receipt-keeps-unknown-key",)),
+        _lit("fix2-u7-member-failure-notice", "container.py", "fix2.u7.readable",
+             "U7: drop N_READABLE_PRESENT after a member-level zip failure (S2-FIX1 reading)",
+             "            error=structure_error.code,\n            input_sha256=input_sha,\n"
+             "            input_size=archive_size,\n            is_zip=True,\n"
+             "            readable_present=readable_present,\n",
+             "            error=structure_error.code,\n            input_sha256=input_sha,\n"
+             "            input_size=archive_size,\n            is_zip=True,\n",
+             ("container/readable-reported-after-member-crc-failure",)),
+        # ---------------------------------------------------- S2-FIX3 (2026-11-16 #1)
+        _lit("fix3-f72-nonsubject-flag", "verifier.py", "fix3.f72.material",
+             "F72: let a declaration whose cosignature did not pass still supply its "
+             "structural material (cosigner lookup, owner, trust is handed on)",
+             "    view.nonsubject_signature_failed = any(\n",
+             "    view.nonsubject_signature_failed = False and any(\n",
+             (_KL + "declaration-cosigner-retired-trust-not-handed-on",
+              _KL + "declaration-cosigner-retired-trust-not-handed-on-twice")),
+        _lit("fix3-f72-material-registration", "verifier.py", "fix3.f72.material",
+             "F72: register the structural material of a declaration whose cosignature "
+             "did not pass",
+             "        if view.nonsubject_signature_failed:\n            return\n",
+             "        if False:\n            return\n",
+             (_KL + "declaration-cosigner-retired-trust-not-handed-on",
+              _KL + "declaration-cosigner-retired-trust-not-handed-on-twice")),
+        _lit("fix3-f72-self-trust", "keys.py", "fix3.f72.self-trust",
+             "F72: let a declaration keep itself trusted through its own earlier verdict",
+             "            if declared_key in trusted and context.trusted_by_another_record(\n"
+             "                declared_key, record_digest, source\n            ):\n",
+             "            if declared_key in trusted:\n",
+             (_KL + "declaration-cosigner-retired-trust-not-handed-on-twice",),
+             equivalent_reason="defence in depth: with the F72 material rule every transient "
+             "trust the committed vectors can build is withdrawn together with the cosigner's "
+             "material, so the record already fails at key resolution (§14.5 step (4)); "
+             "pinned by verifiers/python/tests/test_s2_fix3.py::"
+             "test_a_declaration_never_keeps_itself_trusted"),
+        _lit("fix3-f73-owner-structural", "keys.py", "fix3.f73.owner",
+             "F73: resolve an owner through a declaration that fails the structural group",
+             "        owner_material = context.owner_declaration(owner)\n",
+             "        owner_material = context.declaration_material(owner)\n",
+             (_KL + "owner-declaration-sigs-absent",),
+             equivalent_reason="S2-FIX5 (decision 2026-11-16 #9) made every declared material "
+             "come from a structurally valid declaration, so the owner lookup and the "
+             "signature lookup read the same map; the structural rule itself is pinned by "
+             "fix5-material-structural"),
+        _lit("fix3-f74-missing-new-public-key", "keys.py", "fix3.f74.rotation",
+             "F74: let a rotation without new_public_key reach the signature layer",
+             "    new_key = body.get(\"new_key\")\n    try:\n",
+             "    new_key = body.get(\"new_key\")\n    if \"new_public_key\" not in body:\n"
+             "        return b\"\", None\n    try:\n",
+             (_KL + "rotation-new-public-key-missing", _KL + "rotation-new-public-key-renamed")),
+        _lit("fix3-f75-layout-beside-member", "container.py", "fix3.f75.step1",
+             "F75: report only the member read failure, not the layout violation beside it",
+             "        errors.extend(container_input.extra_errors)\n",
+             "        pass\n",
+             ("container/readable-root-regular-file-zip-member-crc",)),
+        _lit("fix3-f76-refs-whole-value", "refs.py", "fix3.f76.refs",
+             "F76: compare refs entries by rel, origin, id and digest only",
+             "        identity = json.dumps(raw_entry, sort_keys=True, ensure_ascii=False)\n",
+             "        identity = repr((entry.rel, *entry.ref.subject_key(), entry.ref.digest))\n",
+             ("ref/refs-differ-only-in-kind", "ref/refs-differ-only-in-hint-order")),
+        _lit("fix3-f77-actor-class", "verifier.py", "fix3.f77.actor",
+             "F77: compare actor.type with actor.key's class only through a verified signature",
+             "        actor_class is not None\n",
+             "        False\n",
+             ("actor/agent-with-human-key-unknown-alg-only",)),
+        _lit("fix3-f78-target-labels", "vectors_runner.py", "fix3.f78.limitations",
+             "F78: count a record target's labels only when its envelope passed",
+             "                isinstance(target_view.loaded.value, dict)\n"
+             "                and \"labels\" in target_view.loaded.value\n",
+             "                target_view.envelope is not None\n"
+             "                and target_view.envelope.labels is not None\n",
+             ("labels/labels-on-record-failing-envelope",)),
+        _lit("fix3-f78-target-placeholder", "vectors_runner.py", "fix3.f78.limitations",
+             "F78: count a record target as a placeholder only when it passes §4.5",
+             "            placeholder=verifier.erase.looks_like_placeholder(target_view.loaded.value),\n",
+             "            placeholder=target_view.placeholder is not None,\n",
+             ("erasure/placeholder-malformed-record-target",)),
+        _lit("fix3-f79-valid-revocations", "container.py", "fix3.f79.manifest",
+             "F79: let every revocation record whose body parses affect the manifest "
+             "signature, valid or not",
+             "        if view.verdict == \"valid\" and view.key_revocation is not None:\n",
+             "        envelope = view.envelope\n"
+             "        if (\n"
+             "            view.key_revocation is None\n"
+             "            and envelope is not None\n"
+             "            and envelope.kind == kinds.KIND_REVOKED\n"
+             "        ):\n"
+             "            try:\n"
+             "                body = envelope.body\n"
+             "                state.add_revocation(keys_module.KeyRevocation(\n"
+             "                    key_id=body[\"key\"], reason=body[\"reason\"],\n"
+             "                    effective_at=body[\"effective_at\"],\n"
+             "                    effective_at_ms=keys_module._timestamp_ms(body[\"effective_at\"]),\n"
+             "                    recorded_at=envelope.recorded_at,\n"
+             "                    record_digest=view.digest or \"\"))\n"
+             "            except Exception:\n"
+             "                pass\n"
+             "            continue\n"
+             "        if view.verdict == \"valid\" and view.key_revocation is not None:\n",
+             (_KL + "mutual-revocation-order-a-manifest-after-both",
+              "container/manifest-sig-invalid-compromise-revocation-not-counted",
+              "container/manifest-sig-invalid-compromise-revocation-keeps-unknown-key")),
+        _lit("fix3-f79-step5-before-listing", "container.py", "fix3.f79.manifest",
+             "F79: judge the manifest signature's §9.4 effects only when the records "
+             "listing passes (after step (7))",
+             "    # S2 for the manifest signature: judge it with the manifest timestamp chain.\n"
+             "    try:\n",
+             "    # S2 for the manifest signature: judge it with the manifest timestamp chain.\n"
+             "    if _check_records_listing(manifest, present_listing, container_input):\n"
+             "        manifest_signature_keys = ()\n"
+             "    try:\n",
+             ("container/manifest-sig-compromised-key-before-records-listing",)),
+        _lit("fix3-f80-missing-placeholder", "container.py", "fix3.f80.erasure",
+             "F80: report no §10.3 code for a valid erasure whose placeholder is missing "
+             "or malformed",
+             "        if not matching:\n            found.add(\"E_ERASE_DIGEST_MISMATCH\")\n"
+             "            continue\n",
+             "        if not matching:\n            continue\n",
+             ("erasure/placeholder-malformed-only", "erasure/erasure-without-placeholder")),
+        _lit("fix3-f81-consent-signer", "verifier.py", "fix3.f81.consent",
+             "F81: accept a consent signed by any verified key instead of actor.key",
+             "            raise WeaveError(\"E_CONSENT_VALIDITY\", \"consent valid_from is after valid_until\")\n"
+             "        _require_valid_signer(view, context, envelope.actor_key, \"E_ACTOR_KEY_TYPE_MISMATCH\")\n",
+             "            raise WeaveError(\"E_CONSENT_VALIDITY\", \"consent valid_from is after valid_until\")\n"
+             "        if not view.verified_keys:\n"
+             "            _require_valid_signer(view, context, envelope.actor_key, \"E_ACTOR_KEY_TYPE_MISMATCH\")\n",
+             ("actor/consent-signed-by-other-human-key",)),
+        _lit("fix3-f82-attested-erasure", "container.py", "fix3.f82.erasure",
+             "F82: evaluate §10.3 rule 1 for valid erasure records only",
+             "        if erasure.verdict != \"valid\" and not _attested(erasure):\n",
+             "        if erasure.verdict != \"valid\":\n",
+             ("erasure/placeholder-other-id-attests-unverifiable-erasure",)),
+        _lit("fix3-erasure-structural", "container.py", "fix3.erasure.structural",
+             "S2-FIX3: let a placeholder attest a weave.erasure record that fails the "
+             "structural group (sigs absent, body schema)",
+             "        if not _erasure_record_structural(resolved):\n",
+             "        if resolved.envelope.kind != kinds.KIND_ERASURE:\n",
+             ("erasure/attested-erasure-sigs-absent", "erasure/attested-erasure-body-schema")),
+        # S2-FIX4 (decision 2026-11-16 #4): F83 manifest material, F84 TOFU predicate.
+        _lit("fix4-f83-manifest-material", "container.py", "fix4.f83.manifest",
+             "F83: verify the manifest signature with material from records that supply "
+             "none under §5.3",
+             "            withheld=_records_without_material(internal.views),\n",
+             "            withheld=frozenset(),\n",
+             ("container/manifest-signer-declaration-owner-altered",
+              "container/manifest-signer-declaration-key-type-absent",
+              "container/manifest-signer-rotation-old-signature-fails")),
+        _lit("fix4-f83-previous-material", "container.py", "fix4.f83.previous",
+             "F83: verify a supplied previous's signature with material from a declaration "
+             "whose other signature did not pass",
+             "            withheld=_records_without_material(record_views, rotations=False),\n",
+             "            withheld=frozenset(),\n",
+             ("container/previous-signer-owner-declaration-body-absent",)),
+        _lit("fix4-f83-declaration", "container.py", "fix4.f83.manifest",
+             "F83: let a declaration whose other signature did not pass supply manifest "
+             "material",
+             "        if view.envelope.kind == kinds.KIND_DECLARED and view.nonsubject_signature_failed:\n",
+             "        if False:\n",
+             ("container/manifest-signer-declaration-owner-altered",
+              "container/manifest-signer-declaration-key-type-absent",
+              "container/previous-signer-owner-declaration-body-absent")),
+        _lit("fix4-f83-rotation", "container.py", "fix4.f83.manifest",
+             "F83: let a rotation that is not valid supply manifest material",
+             "            rotations\n            and view.envelope.kind == kinds.KIND_ROTATED\n",
+             "            False\n            and view.envelope.kind == kinds.KIND_ROTATED\n",
+             ("container/manifest-signer-rotation-old-signature-fails",)),
+        _lit("fix4-f84-cosignature", "verifier.py", "fix4.f84.tofu",
+             "F84: count a key-lifecycle record's cosignature for the TOFU predicate",
+             "    if envelope.kind in kinds.KEY_LIFECYCLE_KINDS and key != envelope.actor_key:\n",
+             "    if False:\n",
+             (_KL + "revocation-context-cosignature-not-tofu",
+              _KL + "device-declaration-context-owner-cosignature-not-tofu")),
+        _lit("fix4-f84-declaration-actor", "verifier.py", "fix4.f84.tofu",
+             "F84: never count a declaration's actor.key signature verified against another "
+             "context declaration's material",
+             "        if source is not None:\n            return source == \"context\"\n",
+             "        if source is not None:\n            return False\n",
+             (_KL + "declaration-body-key-absent-actor-tofu",
+              _KL + "declaration-body-key-absent-actor-tofu-equation-fails")),
+        # S2-FIX5 (decision 2026-11-16 #9): material precondition, grant code order.
+        _lit("fix5-material-structural", "verifier.py", "fix5.material",
+             "S2-FIX5: let a declaration that fails the §14.1 structural group supply "
+             "verification material",
+             "        if _structural_declaration_class(view) is None:\n            return\n"
+             "        try:\n",
+             "        if False:\n            return\n        try:\n",
+             (_KL + "owner-declaration-sigs-absent", _KL + "cosigner-declaration-key-type-absent")),
+        _lit("fix5-manifest-structural", "container.py", "fix5.material",
+             "S2-FIX5: let a declaration that fails the structural group supply manifest "
+             "material",
+             "                if verifier._structural_declaration_class(verifier.RecordView(loaded=record)) is None:\n",
+             "                if False:\n",
+             ("container/manifest-signer-declaration-not-structural",)),
+        _lit("fix5-grant-revoked-first", "grants.py", "fix5.grant-order",
+             "S2-FIX5: report E_GRANT_EXPIRED for a grant that is both revoked and expired",
+             "    for link, when in chain:\n"
+             "        if context.grant_state.revocation_as_of(link.digest, when) is not None:\n",
+             "    for link, when in chain:\n"
+             "        _check_window(link, when)\n"
+             "        if context.grant_state.revocation_as_of(link.digest, when) is not None:\n",
+             ("grant/revoked-and-expired", "erasure/actor-program-basis-revoked-and-expired")),
+        # S2-FIX6 (decision 2026-11-16 #13): material scope, rooted material, owner
+        # lookup first, grant chain order.
+        _lit("fix6-material-other-records", "verifier.py", "fix6.material-scope",
+             "S2-FIX6: verify a signature on a non-declaration record against an untrusted "
+             "structural declaration's material",
+             "    material = context.key_state.public_key(key)\n"
+             "    if material is not None:\n"
+             "        return (material, True)\n"
+             "    return (None, False)\n",
+             "    material = context.key_state.public_key(key)\n"
+             "    if material is not None:\n"
+             "        return (material, True)\n"
+             "    declared_material = context.declaration_material(key)\n"
+             "    if declared_material is not None:\n"
+             "        return (declared_material[0], False)\n"
+             "    return (None, False)\n",
+             (_KL + "note-by-untrusted-declared-key-forged",)),
+        _lit("fix6-material-cosignature-needs-trust", "verifier.py", "fix6.material-scope",
+             "S2-FIX6: verify a cosignature on a declaration only against trusted or "
+             "semantically valid declarations",
+             "        declared_material = context.declaration_material(key)\n"
+             "        if declared_material is not None:\n"
+             "            return (declared_material[0], False)\n"
+             "    if envelope.kind == kinds.KIND_ROTATED:\n",
+             "    if envelope.kind == kinds.KIND_ROTATED:\n",
+             (_KL + "cosignature-by-untrusted-declared-key-forged",)),
+        _lit("fix6-manifest-material-semantic", "container.py", "fix6.material-scope",
+             "S2-FIX6: take manifest material only from semantically valid declarations",
+             "        if view.envelope.kind == kinds.KIND_DECLARED and view.nonsubject_signature_failed:\n",
+             "        if view.envelope.kind == kinds.KIND_DECLARED and (\n"
+             "            view.nonsubject_signature_failed\n"
+             "            or (view.verdict != \"valid\" and view.admitted_declaration is None)\n"
+             "        ):\n",
+             ("container/manifest-signer-declaration-class-conflict",)),
+        _lit("fix6-material-rooted", "verifier.py", "fix6.material-rooted",
+             "S2-FIX6: start the material fixed point from every structural declaration "
+             "(greatest fixed point)",
+             "        envelope = view.envelope\n"
+             "        if envelope is None or envelope.kind != kinds.KIND_DECLARED:\n"
+             "            return\n"
+             "        if view.nonsubject_signature_failed:\n",
+             "        envelope = view.envelope\n"
+             "        if envelope is None and view.verdict is None:\n"
+             "            try:\n"
+             "                envelope = envelope_module.validate_envelope(view.loaded.value)\n"
+             "            except Exception:\n"
+             "                return\n"
+             "        if envelope is None or envelope.kind != kinds.KIND_DECLARED:\n"
+             "            return\n"
+             "        if view.nonsubject_signature_failed:\n",
+             ("container/manifest-signer-mutual-cosignature-cycle",)),
+        _lit("fix6-owner-cosignature-before-lookup", "keys.py", "fix6.owner-first",
+             "S2-FIX6: report the missing owner cosignature before the owner lookup",
+             "        owner_material = context.owner_declaration(owner)\n"
+             "        if owner_material is None:\n",
+             "        if owner not in verified_signature_keys and not signer_rules_deferred:\n"
+             "            raise WeaveError(\"E_KEY_DECLARED_NOT_COSIGNED\", \"ablation\")\n"
+             "        owner_material = context.owner_declaration(owner)\n"
+             "        if owner_material is None:\n",
+             (_KL + "owner-unresolved-device-self-signed",
+              _KL + "owner-declaration-cosignature-fails-device-owner-cosigned")),
+        _lit("fix6-owner-step5-before-lookup", "keys.py", "fix6.owner-first",
+             "S2-FIX6: report the §4.4 step 5 outcome before the owner lookup",
+             "        if owner_material is None:\n"
+             "            # Owner key is not declared anywhere in the context: unverifiable.\n",
+             "        if owner_material is None and signer_rules_deferred:\n"
+             "            raise WeaveError(\"E_SIG_UNVERIFIABLE\", \"ablation\")\n"
+             "        if owner_material is None:\n"
+             "            # Owner key is not declared anywhere in the context: unverifiable.\n",
+             (_KL + "owner-unresolved-device-unknown-algorithm-only",)),
+        _lit("fix6-grant-chain-per-link", "grants.py", "fix6.grant-chain-order",
+             "S2-FIX6: judge each link's revocation and window together, link by link",
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n"
+             "    for link, when in chain:\n"
+             "        _check_window(link, when)\n",
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n"
+             "        _check_window(link, when)\n",
+             ("grant/ancestor-revoked-cited-expired",
+              "grant/sub-grant-record-ancestor-revoked-cited-expired")),
+        _lit("fix6-grant-record-parent-window-first", "grants.py", "fix6.grant-chain-order",
+             "S2-FIX6: judge a grant record's parent window with the delegation checks, "
+             "before the chain's revocations",
+             "            \"E_GRANT_DELEGATION_EXCEEDS\", \"sub-grant ends after the parent grant\"\n"
+             "        )\n",
+             "            \"E_GRANT_DELEGATION_EXCEEDS\", \"sub-grant ends after the parent grant\"\n"
+             "        )\n"
+             "    _check_window(parent, child.recorded_at)\n",
+             ("grant/sub-grant-record-ancestor-revoked-cited-expired",)),
+    )
+
+
+_build_s2_catalogue()
 
 
 # ----------------------------------------------------------------------------- runner

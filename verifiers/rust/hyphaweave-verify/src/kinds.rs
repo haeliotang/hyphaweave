@@ -676,6 +676,21 @@ pub fn key_material_structural_error(envelope: &Envelope) -> Option<Code> {
             None => Some(e::KEY_PUBLIC_KEY),
         },
         "weave.key.rotated" => {
+            // §9.2 rule 2, §14.5 (S2/F61-3): the rule presupposes well-formed
+            // key ids, so a `new_key` or `old_key` that is missing, is not a
+            // key id (§2.5) or has another JSON type is a body-schema defect,
+            // decided in this same pre-signature check and before it.
+            for id_member in ["new_key", "old_key"] {
+                if !body.get_str(id_member).is_some_and(digest::is_valid_key_id) {
+                    return Some(e::KIND_BODY_SCHEMA);
+                }
+            }
+            // §9.2 rule 2 (S2-FIX3/F74): `new_public_key` is required; a
+            // rotation without it (absent, or only under another member name)
+            // fails the rule in this same pre-signature check.
+            if body.get("new_public_key").is_none() {
+                return Some(e::KEY_ROTATION_KEYS);
+            }
             for (id_member, key_member) in
                 [("new_key", "new_public_key"), ("old_key", "old_public_key")]
             {
@@ -706,7 +721,9 @@ fn parse_key_rotated(envelope: &Envelope) -> Result<KeyRotatedBody, Code> {
     let body = &envelope.body;
     // Body member table (§9.2): known-member grammar is check (6).
     let new_key = key_id_member(body, "new_key", CODE)?.to_owned();
-    let new_public_key = decode_public_key(required(body, "new_public_key", CODE)?)
+    // §9.2 rule 2 (S2-FIX3/F74): a missing `new_public_key` fails the
+    // key-material rule, not the generic body schema.
+    let new_public_key = decode_public_key(required(body, "new_public_key", e::KEY_ROTATION_KEYS)?)
         .map_err(|()| e::KEY_ROTATION_KEYS)?;
     let old_key = key_id_member(body, "old_key", CODE)?.to_owned();
     let old_public_key = match body.get("old_public_key") {

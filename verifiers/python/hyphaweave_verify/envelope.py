@@ -99,6 +99,14 @@ def _validate_sigs(value: Any) -> tuple[Signature, ...]:
         for member in SIG_MEMBERS:
             if member not in entry:
                 raise WeaveError("E_ENV_SIGS", "signature entry is missing a member")
+        # §4.3 (S2/F67): a member present with the wrong JSON type is a
+        # structural defect of the entry's closed shape (E_ENV_SIGS); the
+        # per-member codes apply only to the grammar of a string member.
+        for member in SIG_MEMBERS:
+            if not isinstance(entry[member], str):
+                raise WeaveError(
+                    "E_ENV_SIGS", "signature entry member %r is not a string" % member
+                )
         alg = entry["alg"]
         if not grammar.is_algorithm_name(alg):
             raise WeaveError("E_ENV_SIGS", "signature alg is not a well-formed algorithm name")
@@ -167,6 +175,21 @@ def _validate_actor(value: Any, *, kind: str) -> tuple[str, str, Reference | Non
         raise WeaveError("E_ENV_ACTOR_TYPE", "actor.type is required")
     if "key" not in value:
         raise WeaveError("E_ENV_ACTOR_KEY", "actor.key is required")
+    # S2/F45/F67 (§14.5 step (2): presence -> closedness -> grammar): the four
+    # agent-only members are required members of an agent actor, so their
+    # presence is decided here, in table order, before closedness and before
+    # the grammar of any member (including ``key``). Their obligation follows
+    # the literal ``type`` value; a malformed ``type`` creates no obligation and
+    # is reported by the grammar phase.
+    if value["type"] == "agent" and not kinds.is_key_lifecycle(kind):
+        for member, code in (
+            ("model", "E_ENV_ACTOR_MODEL_MISSING"),
+            ("on_behalf_of", "E_ENV_ACTOR_ON_BEHALF_MISSING"),
+            ("grant", "E_ENV_ACTOR_GRANT_MISSING"),
+            ("idempotency_key", "E_ENV_ACTOR_IDEMPOTENCY_MISSING"),
+        ):
+            if member not in value:
+                raise WeaveError(code, "agent actor requires %s" % member)
     # Closedness next.
     for member in value:
         if member not in ACTOR_MEMBERS:

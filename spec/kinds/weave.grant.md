@@ -86,11 +86,18 @@ authority comes from the signer and no parent grant is required (§8.2).
 
 ### Delegated sub-grant chain
 
-Checks on a delegated sub-grant, in fixed order (the first failure is the record's single
-error; the exact code precedence is PROVISIONAL, see the parent specification Appendix A):
+The granter signer rule (`E_GRANT_GRANTER` when `sigs` has a verified signature but none by
+`actor.key`) is decided after the grant variant's own window rule (`E_KEY_VALIDITY`) and
+before every check below, whose outcomes can be `unverifiable`; a §4.4 step-5 outcome waits
+until all of them have passed (parent specification §14.5) [S2-FIX1/Q3] decided (Inceptless
+decision 2026-11-15 #18; Q3). Checks on a delegated sub-grant, in fixed order (the first
+failure is the record's single error; the exact code precedence is PROVISIONAL, see the
+parent specification Appendix A):
 
-1. **Resolve.** Parent reference unresolvable, or parent verdict invalid → `E_GRANT_UNRESOLVED`
-   (unverifiable).
+1. **Resolve.** Two tiers: a parent record that is present but whose own verdict is
+   invalid → `E_GRANT_GRANTER` (invalid); a parent reference that is unresolvable, or a
+   parent whose verdict is not `valid` for any other reason (for example `unverifiable`) →
+   `E_GRANT_UNRESOLVED` (unverifiable) [S2-FIX2/U2] decided (Inceptless decision 2026-11-15 #22; Q6).
 2. **Authorising action and capability.** Parent `action` is not `grant`, or parent `kinds`
    lacks `weave.grant`, or parent `actions` lacks `grant` → `E_GRANT_GRANTER` (invalid).
 3. **Transferable.** Parent `transferable` is not `true` → `E_GRANT_NOT_TRANSFERABLE`.
@@ -107,13 +114,20 @@ error; the exact code precedence is PROVISIONAL, see the parent specification Ap
    At that time: a grant or ancestor revoked (`effective_at <= recorded_at`, equality
    counts) → `E_GRANT_REVOKED` (unverifiable); a grant or ancestor outside its validity
    window → `E_GRANT_EXPIRED` (unverifiable). Any failing link makes the whole chain
-   unverifiable (R1). When the verified record is itself a grant, its **own** window and its
+   unverifiable (R1). Revocation is judged over the whole chain before any window: a link
+   revoked anywhere is `E_GRANT_REVOKED` even when a nearer link is outside its window
+   [S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13). When the verified record is itself a grant, its **own** window and its
    own revocation are not compared against its own `recorded_at` — only its ancestors are —
    so a grant may be issued for future effect; a covered record is judged at its own
    `recorded_at`, so one before the grant's `valid_from` is `E_GRANT_EXPIRED` [S9] decided
    (Inceptless decision 2026-11-11 #2; S9).
 7. **Depth.** Up to 8 links from the grant used by a record to its root; deeper chains are
-   `unverifiable` (`E_GRANT_UNRESOLVED`). A cycle is not constructible for digest
+   `unverifiable` (`E_GRANT_UNRESOLVED`). Steps 1–6 walk the whole chain, links beyond
+   this bound included, stopped only by cycle detection; the depth is decided after them
+   (parent specification §5.5.2) [S2-FIX1/Q5] decided (Inceptless decision 2026-11-15 #18;
+   Q5). With the first tier of step 1, an invalid link beyond the bound makes every grant
+   above it, and the record citing the chain, invalid `E_GRANT_GRANTER` rather than
+   `E_GRANT_UNRESOLVED` [S2-FIX2/U2]. A cycle is not constructible for digest
    references; the key-id rotation graph used by the revocation rule is bounded separately.
 
 ### Authorisation of a record
@@ -127,7 +141,9 @@ whole chain is evaluated at that same time, the single verification time (R1). O
 (unverifiable); revoked → `E_GRANT_REVOKED` (unverifiable); outside window →
 `E_GRANT_EXPIRED` (unverifiable); grantee mismatch → `E_GRANT_GRANTEE_MISMATCH` (invalid);
 kind/action not covered → `E_GRANT_NOT_APPLICABLE` (invalid). A grant reference to a
-`action == "revoke"` record is `E_GRANT_GRANTER` (invalid).
+`action == "revoke"` record is `E_GRANT_GRANTER` (invalid), and so is a cited grant record
+that is present but whose own verdict is invalid; a cited grant present but not valid for
+any other reason is `E_GRANT_UNRESOLVED` (the two tiers of step 1 above) [S2-FIX2/U2].
 
 `scope` is not machine-evaluated for an individual record; it is used only for delegation
 subsetting above.
@@ -168,7 +184,7 @@ such signature exists the record is `unverifiable` (`E_SIG_UNVERIFIABLE`) or inv
 | `E_ENV_STAGE` | invalid | stage is not `accepted` |
 | `E_GRANT_SCHEMA` | invalid | body shape, variant pairing, member grammar, duplicate list elements |
 | `E_KEY_VALIDITY` | invalid | `valid_from > valid_until` in the `grant` variant |
-| `E_GRANT_GRANTER` | invalid | granter not permitted: parent not an authorising `weave.grant` covering `weave.grant`/`grant`, parent grantee not the sub-granter, parent outside window or revoked at evaluated time, or (non-empty `sigs`) required granter signature missing/wrong |
+| `E_GRANT_GRANTER` | invalid | granter not permitted: parent not an authorising `weave.grant` covering `weave.grant`/`grant`, parent grantee not the sub-granter, or (non-empty `sigs`) required granter signature missing/wrong |
 | `E_GRANT_NOT_TRANSFERABLE` | invalid | parent `transferable` is false |
 | `E_GRANT_DELEGATION_EXCEEDS` | invalid | child `kinds`/`actions`/`scope` not a subset, or window outside the parent |
 | `E_GRANT_REVOKE_SIGNER` | invalid | revocation signer not in the `revocation` list, not the granter, and not a provable rotation successor |

@@ -227,14 +227,22 @@ def _record_report_for_error(
 
 
 def _record_limitations(view: verifier.RecordView, verdict: str) -> list[str]:
-    """The record-target limitation identifiers (S12; same rule as containers)."""
+    """The record-target limitation identifiers (S12; same rule as containers).
+
+    S2-FIX3 F78 (§14.9, the S2 reading of F37): `L_LABELS_ARE_CLAIMS` and
+    `L_ERASED_*` are facts about the record as parsed, the same for a record
+    target as for the records of a container: a JSON object with a top-level
+    ``labels`` member, and one whose ``kind`` is ``weave.erased``, whether or
+    not the record then passes its envelope or §4.5 structure.
+    """
     envelope = view.envelope
+    value = view.loaded.value
     return report_module.record_limitations(
         notices=view.notices,
         verdict=verdict,
         kind_known=envelope.kind_known if envelope is not None else False,
-        placeholder=view.placeholder is not None,
-        has_labels=envelope is not None and envelope.labels is not None,
+        placeholder=verifier.erase.looks_like_placeholder(value),
+        has_labels=isinstance(value, dict) and "labels" in value,
         standalone=True,
     )
 

@@ -45,13 +45,26 @@ remains usable for existing records and must be revoked separately (usually with
    deliberately uses `E_KEY_ROTATION_KEYS`, not `E_KEY_PUBLIC_KEY` or
    `E_KEY_ID_MISMATCH` [M-11] decided (Inceptless decision 2026-11-10 #34; M-11). The
    encoding/length part of this check is **structural** (parent specification §14.1, V5),
-   and a `weave.key.rotated` record is never used to determine a governing class.
+   and a `weave.key.rotated` record is never used to determine a governing class. The rule
+   presupposes well-formed key ids: a `new_key` or `old_key` that is missing, is not a key id
+   (§2.5) or has another JSON type is a body-schema defect, `E_KIND_BODY_SCHEMA`, decided
+   in the same pre-signature structural check and before this rule (parent specification
+   §14.5) [S2/F61-3] decided by principle (Inceptless decision 2026-11-15 #8; S2).
+   `new_public_key` is required: a rotation without it (absent, or present only under
+   another member name) fails this rule, `E_KEY_ROTATION_KEYS` in the same pre-signature
+   check, and no signature check runs (`sigs` is `[]`) [S2-FIX3/F74] decided by principle (Inceptless decision 2026-11-16 #1).
 3. **Both signatures.** At least one valid signature by `old_key` and at least one valid
    signature by `new_key` MUST be present (`E_KEY_ROTATION_SIGS`). The new-key signature is
    verified against `body.new_public_key`; the old-key signature is verified against
    `body.old_public_key` when present, otherwise against the old key's declaration in
    context. If the needed key material is absent the record is `unverifiable`
-   (`E_KEY_UNKNOWN`).
+   (`E_KEY_UNKNOWN`). Both signatures are judged under parent specification §9.4 for this
+   record's verdict. The rotation supplies key material (§5.3) only when every check passes
+   apart from the §9.4 effects on the new key's own signature: a new-key signature that fails
+   §9.4 leaves the new key's material in place, so its later signatures are judged under its
+   own lifecycle, while an old-key signature that fails §9.4 makes the rotation supply no
+   material at all, so a signature by the new key is `E_KEY_UNKNOWN` unless another record
+   supplies it [S2-FIX1/Q2] decided (Inceptless decision 2026-11-15 #18; Q2).
 4. **Effect.** The rotation is evidence of succession; it does not revoke the old key and
    does not by itself give the new key a class (a separate declaration publishes that).
    A rotation to a key of a different class is not supported: the new key's signature must

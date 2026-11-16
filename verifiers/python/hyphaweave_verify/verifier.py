@@ -23,9 +23,9 @@ import os
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
-from . import ed25519, encoding, envelope as envelope_module, erase, kinds, labels, refs
+from . import ed25519, encoding, envelope as envelope_module, erase, grammar, kinds, labels, refs
 from . import keys as keys_module
 from . import operator_input
 from .errors import UsageError, WeaveError
@@ -35,6 +35,8 @@ from .grants import (
     GrantState,
     check_agent_authorization,
     check_grant_semantics,
+    grant_record_from_envelope,
+    validate_grant_chain,
 )
 from .keys import (
     KeyDeclaration,
@@ -74,6 +76,9 @@ class LoadedRecord:
     structural_envelope: Any = None
     structural_key_type: str | None = None
     container_path: str | None = None
+    #: S2/F60: the record file failed parsing with a size violation (nesting
+    #: above MAX_JSON_DEPTH), reported by the records-listing phase.
+    size_violation: bool = False
 
 
 def load_record_bytes(raw: bytes, *, source: str, size_code: str = "E_JSON_SIZE") -> LoadedRecord:
@@ -118,6 +123,28 @@ class RecordView:
     grant_record: GrantRecord | None = None
     grant_revocation: GrantRevocationRecord | None = None
     consent_revocation: ConsentRevocation | None = None
+    #: S2/F38/F61-1: the key-lifecycle facts of a ``weave.key.declared`` or
+    #: ``weave.key.rotated`` record whose checks pass when the §9.4 effects on
+    #: the signature of the record's *subject key* (``body.key`` of a
+    #: declaration, ``body.new_key`` of a rotation) are left out. §9.4 judges
+    #: every signature of the record for its reported verdict, but whether the
+    #: record supplies key material, governs a window or enters the trusted set
+    #: (§5.3) is decided without that one effect, so a declaration of a
+    #: compromised key keeps the key's lifecycle attached to every signature it
+    #: makes. A cosignature or a rotation's old-key signature must pass §9.4
+    #: for the record to be admitted at all (S2-FIX1 T1, Q2).
+    admitted_declaration: KeyDeclaration | None = None
+    admitted_rotation: KeyRotation | None = None
+    #: S2-FIX1 Q3 (§4.4 step 5, §14.5): the step-5 outcome of the first signer
+    #: rule of a signer-constrained kind, held back until every other rule of
+    #: the kind's step (7) has passed.
+    deferred_signer_error: WeaveError | None = None
+    #: S2-FIX3 F72 (§5.3, Q2): an ``ed25519`` signature other than the subject
+    #: key's did not pass: its key could not be resolved, its §3.4 equation
+    #: failed, or it failed §9.4. Such a declaration supplies no key material
+    #: at all, so its key can neither verify another record's signature nor be
+    #: resolved as an owner, and trust is not handed on through it.
+    nonsubject_signature_failed: bool = False
 
     @property
     def subject_key(self) -> tuple[str, str, str] | None:
@@ -127,7 +154,35 @@ class RecordView:
         if self.envelope is not None:
             origin = self.envelope.origin
             return (origin.project, origin.instance, self.envelope.record_id)
+        identity = self.raw_identity
+        if identity is not None:
+            return (identity[0].project, identity[0].instance, identity[1])
         return None
+
+    @property
+    def raw_identity(self) -> tuple[refs.Origin, str] | None:
+        """S2/F44 (§6.3): the identity of a record that failed its structure.
+
+        A record that parsed but failed a later structure check is still
+        *present* for reference resolution when its own ``origin`` and ``id``
+        are well formed (§4.1 grammar): a reference to it is ``unverifiable``
+        ("present but … itself not valid"), not ``missing``. A record whose
+        ``origin`` or ``id`` is itself malformed has no identity and is never a
+        resolution candidate.
+        """
+        value = self.loaded.value
+        if self.envelope is not None or self.placeholder is not None:
+            return None
+        if not isinstance(value, dict) or "origin" not in value or "id" not in value:
+            return None
+        try:
+            origin = refs.validate_origin(value["origin"])
+        except WeaveError:
+            return None
+        record_id = value["id"]
+        if not grammar.is_valid_id(record_id):
+            return None
+        return origin, record_id
 
     @property
     def kind(self) -> str | None:
@@ -148,6 +203,9 @@ class RecordView:
             ),
             tuple((entry.get("key"), entry.get("state")) for entry in self.sigs),
             None if self.attestation is None else tuple(sorted(self.attestation.items())),
+            self.admitted_declaration is not None,
+            self.admitted_rotation is not None,
+            self.nonsubject_signature_failed,
         )
 
 
@@ -175,6 +233,12 @@ class Context:
         self.pending_touched = False
         self._index: dict[tuple[str, str, str], list[RecordView]] = {}
         self._declared_material: dict[str, tuple[bytes, str]] = {}
+        #: S2-FIX4 F84: ``"keyset"`` or ``"context"`` for each entry of
+        #: ``_declared_material`` (the §14.9 TOFU predicate needs where the
+        #: material that verified a signature came from).
+        self._declared_material_source: dict[str, str] = {}
+        #: S2-FIX3 F72: which declarations (by digest) put a key in ``trusted``.
+        self._trust_sources: dict[str, set[tuple[str, str]]] = {}
         #: Where a key's governing declaration material came from: ``"keyset"``
         #: or ``"context"`` (S8.10: N_KEY_TOFU covers context declarations only).
         self._material_source: dict[str, str] = {}
@@ -201,20 +265,42 @@ class Context:
         self.grant_state = GrantState()
         self.consent_revocations = {}
         self._declared_material = {}
+        self._declared_material_source = {}
+        self._trust_sources = {}
         trusted: set[str] = set()
         self._material_source = {}
         self._rebuild_governing_classes()
         for view in self.views:
             self._register_declared_material(view)
+            source = "keyset" if view.loaded.source == "keyset" else "context"
             if view.verdict != "valid":
+                # S2/F38: a declaration or rotation that fails only through the
+                # §9.4 effects on its own signatures still supplies its facts.
+                if view.admitted_declaration is not None:
+                    self.key_state.add_declaration(view.admitted_declaration)
+                    declaration = view.admitted_declaration
+                    _record_source(self._material_source, declaration.key_id, source)
+                    if declaration.key_type in ("human", "organization"):
+                        trusted.add(declaration.key_id)
+                        self._trust_sources.setdefault(declaration.key_id, set()).add(
+                            (source, view.digest or "")
+                        )
+                if view.admitted_rotation is not None:
+                    self.key_state.add_rotation(view.admitted_rotation)
+                    rotation = view.admitted_rotation
+                    _record_source(self._material_source, rotation.new_key, source)
+                    if rotation.old_public_key is not None:
+                        _record_source(self._material_source, rotation.old_key, source)
                 continue
             self._apply_state(view)
-            source = "keyset" if view.loaded.source == "keyset" else "context"
             declaration = view.key_declaration
             if declaration is not None:
                 _record_source(self._material_source, declaration.key_id, source)
                 if declaration.key_type in ("human", "organization"):
                     trusted.add(declaration.key_id)
+                    self._trust_sources.setdefault(declaration.key_id, set()).add(
+                        (source, view.digest or "")
+                    )
             rotation = view.key_rotation
             if rotation is not None:
                 _record_source(self._material_source, rotation.new_key, source)
@@ -223,16 +309,33 @@ class Context:
         self._trusted_human_org = frozenset(trusted)
 
     def _register_declared_material(self, view: RecordView) -> None:
-        """Owner lookup material: any structurally usable declaration, valid or not."""
+        """Declared material: a structurally valid declaration, trusted or not.
+
+        S2-FIX5 (decision 2026-11-16 #9; §5.3): a declaration supplies the
+        material a signature is verified against only when it passes the §14.1
+        structural group (``sigs`` presence and the body schema included) and
+        every signature other than its subject key's passes; trust is not
+        required (T17/A-L8). The same declarations resolve an owner (F73).
+        S2-FIX3 F72 (§5.3, Q2): a declaration in which a signature other than
+        its subject key's fails §9.4 supplies no material at all, neither for
+        verifying signatures by its key nor for resolving it as an owner.
+        S2-FIX3 F73 (§5.3, §9.1 rule 3): an owner resolves only through a
+        declaration that passes the §14.1 structural group (``sigs`` presence
+        included), the declarations a governing class is taken from.
+        """
         envelope = view.envelope
         if envelope is None or envelope.kind != kinds.KIND_DECLARED:
+            return
+        if view.nonsubject_signature_failed:
             return
         body = envelope.body
         key_id = body.get("key")
         key_type = body.get("key_type")
-        if not isinstance(key_id, str) or key_id in self._declared_material:
+        if not isinstance(key_id, str):
             return
-        if key_type not in ("human", "organization", "agent", "program", "device"):
+        if key_id in self._declared_material:
+            return
+        if _structural_declaration_class(view) is None:
             return
         try:
             public_key = decode_public_key_material(body.get("public_key"))
@@ -241,8 +344,23 @@ class Context:
         if encoding.key_id_from_public_key(public_key) != key_id:
             return
         self._declared_material[key_id] = (public_key, key_type)
+        self._declared_material_source[key_id] = (
+            "keyset" if view.loaded.source == "keyset" else "context"
+        )
 
     def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
+        return self._declared_material.get(key_id)
+
+    def declaration_material_source(self, key_id: str) -> str | None:
+        """``"keyset"``/``"context"`` for :meth:`declaration_material` (S2-FIX4 F84)."""
+        return self._declared_material_source.get(key_id)
+
+    def owner_declaration(self, key_id: str) -> tuple[bytes, str] | None:
+        """S2-FIX3 F73: an owner's material and class from a structurally valid declaration.
+
+        Since S2-FIX5 every declared material comes from such a declaration, so
+        the owner lookup and the signature lookup read the same map.
+        """
         return self._declared_material.get(key_id)
 
     def is_declared_key(self, key_id: str) -> bool:
@@ -251,6 +369,18 @@ class Context:
     def trusted_human_org(self) -> frozenset[str]:
         """Human/organization keys trusted via the keyset and its closure."""
         return self._trusted_human_org
+
+    def trusted_by_another_record(self, key_id: str, record_digest: str, source: str) -> bool:
+        """S2-FIX3 F72 (§5.3): whether a record other than the one judged trusts *key_id*.
+
+        "Already trusted" never comes from the declaration being judged: the
+        fixed point must not keep a declaration valid on the strength of its
+        own verdict in an earlier pass. A record is identified by its source
+        (``keyset`` or ``context``) and digest, so a container copy of a keyset
+        declaration is trusted through the keyset.
+        """
+        own = ("keyset" if source == "keyset" else "context", record_digest)
+        return bool(self._trust_sources.get(key_id, set()) - {own})
 
     def material_source(self, key_id: str) -> str | None:
         """``"keyset"``/``"context"`` for a key's governing material (S8.10)."""
@@ -417,7 +547,20 @@ def _target_view(view: RecordView) -> refs.TargetView:
             is_placeholder=True,
             record=view,
         )
-    assert view.envelope is not None
+    if view.envelope is None:
+        identity = view.raw_identity
+        assert identity is not None
+        raw_kind = view.loaded.value.get("kind") if isinstance(view.loaded.value, dict) else None
+        return refs.TargetView(
+            origin=identity[0],
+            id=identity[1],
+            kind=raw_kind if kinds.is_kind_syntax(raw_kind) else None,
+            verdict=view.verdict or "unverifiable",
+            computed_digest=view.digest,
+            payload_digest=None,
+            is_placeholder=False,
+            record=view,
+        )
     return refs.TargetView(
         origin=view.envelope.origin,
         id=view.envelope.record_id,
@@ -454,16 +597,64 @@ def _check_signature_presence(
         raise WeaveError("E_SIG_REQUIRED", "record requires a per-record signature")
 
 
+def _declared_anywhere(
+    key: str, envelope: envelope_module.Envelope, context: "Context"
+) -> bool:
+    """§4.4 step 5: whether a ``sigs`` key is declared in the verification context.
+
+    A key is declared by a ``weave.key.declared`` record anywhere in the context
+    (including the record under verification) or by the explicit key material
+    of a ``weave.key.rotated`` record (§9.2 rule 5: those members are explicit
+    declarations of the two keys).
+    """
+    if context.is_declared_key(key) or context.declaration_material(key) is not None:
+        return True
+    body = envelope.body if isinstance(envelope.body, dict) else {}
+    if envelope.kind == kinds.KIND_DECLARED and body.get("key") == key:
+        return True
+    if envelope.kind == kinds.KIND_ROTATED:
+        if body.get("new_key") == key and "new_public_key" in body:
+            return True
+        if body.get("old_key") == key and body.get("old_public_key") is not None:
+            return True
+    return False
+
+
+def signer_obligation_error(
+    view: RecordView,
+    envelope: envelope_module.Envelope,
+    context: "Context",
+    code: str,
+    required: Iterable[str] | None = None,
+) -> WeaveError:
+    """§4.4 steps 4-5 when the required signer has no verified signature (S2/F46).
+
+    Step 4: some known-algorithm signature by a declared key verified (every
+    ``ed25519`` entry has been verified by step (5)), so the record carries
+    the dedicated signer *code*. Step 5: no such signature exists at all; the
+    record is ``unverifiable``: ``E_KEY_UNKNOWN`` when no required signer key
+    (``required``, default ``actor.key``) is declared anywhere in the context,
+    otherwise ``E_SIG_UNVERIFIABLE``. The undeclared key of an unknown-algorithm
+    entry that is not a required signer does not decide the code (pinned by
+    ``sig/unknown-alg``).
+    """
+    if view.verified_keys:
+        return WeaveError(code, "no valid signature by the required signer")
+    required_keys = [envelope.actor_key] if required is None else list(required)
+    if not any(_declared_anywhere(key, envelope, context) for key in required_keys):
+        return WeaveError("E_KEY_UNKNOWN", "the required signing key is not declared")
+    return WeaveError(
+        "E_SIG_UNVERIFIABLE",
+        "no known-algorithm signature by a declared key exists",
+    )
+
+
 def _unknown_algorithm_error(
     view: RecordView, context: "Context", key: str, fallback_code: str
 ) -> WeaveError:
-    """Q13: no verifiable required signature. Undeclared key -> E_KEY_UNKNOWN."""
-    if context.is_declared_key(key):
-        return WeaveError(
-            "E_SIG_UNVERIFIABLE",
-            "the required signature only has unknown-algorithm entries",
-        )
-    return WeaveError("E_KEY_UNKNOWN", "the required signing key is not declared")
+    """Q13 / §4.4 steps 4-5 for the required signer ``key``."""
+    assert view.envelope is not None
+    return signer_obligation_error(view, view.envelope, context, fallback_code, (key,))
 
 
 def _check_required_signers(
@@ -477,13 +668,15 @@ def _check_required_signers(
     actor_key = envelope.actor_key
     if actor_key in view.verified_keys:
         return
-    if envelope_module.ed25519_signatures(envelope.sigs):
-        raise WeaveError("E_SIG_REQUIRED", "no valid signature by actor.key")
-    raise _unknown_algorithm_error(view, context, actor_key, "E_SIG_REQUIRED")
+    raise signer_obligation_error(view, envelope, context, "E_SIG_REQUIRED")
 
 
 def _verify_signatures(
-    view: RecordView, envelope: envelope_module.Envelope, context: Context
+    view: RecordView,
+    envelope: envelope_module.Envelope,
+    context: Context,
+    *,
+    own_effects: bool = True,
 ) -> None:
     """Steps 4-5: key availability, lifecycle effects and Ed25519 verification."""
     digest = view.digest or ""
@@ -506,37 +699,68 @@ def _verify_signatures(
             timestamp_sort_key(envelope.recorded_at),
             digest,
         )
-    try:
-        for signature in envelope.sigs:
-            if not signature.is_ed25519:
-                # Q13: unknown algorithms are ignored, never invalidating.
-                states.append({"key": signature.key, "state": "ignored"})
-                continue
-            material, from_context = _resolve_signing_key(signature.key, envelope, context)
-            if material is None:
-                states.append({"key": signature.key, "state": "unverified"})
+    # S2 (§14.5 steps (4)-(5), §4.4 step 2, §14.6): step (4) resolves the key
+    # of every ed25519 entry before any cryptography, and every resolved entry
+    # is then judged in array order, first by the §3.4 equation and then by the
+    # §9.4 effects, and reports its own state. S2-FIX1 T2 ("invalid beats
+    # unverifiable", §4.4 step 2): the first entry with an invalid outcome
+    # decides the record's code even when another entry's key cannot be
+    # resolved; only without one is the record unverifiable, E_KEY_UNKNOWN for
+    # an unresolved key before any unverifiable §9.4 outcome.
+    subject_key = _lifecycle_subject_key(envelope)
+    resolved: list[tuple[Any, bytes | None, bool]] = []
+    for signature in envelope.sigs:
+        if not signature.is_ed25519:
+            resolved.append((signature, None, False))
+            continue
+        material, from_context = _resolve_signing_key(signature.key, envelope, context)
+        resolved.append((signature, material, from_context))
+    unknown_key = any(
+        signature.is_ed25519 and material is None for signature, material, _ in resolved
+    )
+    first_invalid: WeaveError | None = None
+    first_unverifiable: WeaveError | None = None
+    for signature, material, from_context in resolved:
+        if not signature.is_ed25519:
+            # Q13: unknown algorithms are ignored, never invalidating.
+            states.append({"key": signature.key, "state": "ignored"})
+            continue
+        if material is None:
+            states.append({"key": signature.key, "state": "unverified"})
+            if "N_KEY_UNDECLARED" not in view.notices:
                 view.notices.append("N_KEY_UNDECLARED")
-                raise WeaveError(
-                    "E_KEY_UNKNOWN", "signing key is not declared in the context"
-                )
-            # S8.11/§14.5: the Ed25519 cryptographic steps (§3.4) run before the
-            # §9.4 lifecycle/semantic effects, so a flipped signature on a
-            # compromised/expired/revoked key reports E_SIG_INVALID.
+            continue
+        # S8.10/F12.2: TOFU covers material admitted through context
+        # declarations, not material supplied by the local keyset. §14.6:
+        # the check counts once the context material is used, "even if that
+        # signature or the record then fails" (S2/F42), so the notice is
+        # decided before the equation.
+        if (
+            _signature_context_trusted(signature.key, envelope, context, from_context)
+            and "N_KEY_TOFU" not in view.notices
+        ):
+            view.notices.append("N_KEY_TOFU")
+        # S8.11/§14.5: the Ed25519 cryptographic steps (§3.4) run before the
+        # §9.4 lifecycle/semantic effects, so a flipped signature on a
+        # compromised/expired/revoked key reports E_SIG_INVALID.
+        try:
+            ed25519.verify_signature(material, message, signature.raw or b"")
+        except WeaveError as error:
+            states.append({"key": signature.key, "state": "invalid"})
+            first_invalid = first_invalid or error
+            continue
+        if from_context or own_effects or signature.key != subject_key:
+            # §9.4 judges every signature by its key's lifecycle, including
+            # the signatures of a declaration or rotation whose material
+            # the record itself supplies (S2/F38/F61-1): a declaration of a
+            # compromised key is rescued only by a verified trusted
+            # receipt, exactly like any other record the key signed.
+            # The admission pass (own_effects=False, §5.3) leaves out only
+            # the §9.4 effects on the signature of the key the record
+            # states (its subject key); a cosignature or a rotation's
+            # old-key signature that fails §9.4 gives the record's subject
+            # key neither material nor trust (S2-FIX1 T1, Q2).
             try:
-                ed25519.verify_signature(material, message, signature.raw or b"")
-            except WeaveError:
-                states.append({"key": signature.key, "state": "invalid"})
-                raise
-            states.append({"key": signature.key, "state": "valid"})
-            verified.add(signature.key)
-            if from_context:
-                # S8.10/F12.2: TOFU covers material admitted through context
-                # declarations, not material supplied by the local keyset.
-                if (
-                    context.material_source(signature.key) == "context"
-                    and "N_KEY_TOFU" not in view.notices
-                ):
-                    view.notices.append("N_KEY_TOFU")
                 context.key_state.check_signature_effects(
                     signature.key,
                     envelope.recorded_at,
@@ -548,15 +772,79 @@ def _verify_signatures(
                         else None
                     ),
                 )
-    finally:
-        for signature in envelope.sigs[len(states):]:
-            states.append(
-                {
-                    "key": signature.key,
-                    "state": "ignored" if not signature.is_ed25519 else "unverified",
-                }
-            )
-        view.verified_keys = frozenset(verified)
+            except WeaveError as error:
+                # §14.6 (S8.10/F12, F52): the equation passed but the key
+                # state fails a §9.4 rule, so the signature is unverified.
+                states.append({"key": signature.key, "state": "unverified"})
+                if record_verdict([error.code]) == "invalid":
+                    first_invalid = first_invalid or error
+                else:
+                    first_unverifiable = first_unverifiable or error
+                continue
+        states.append({"key": signature.key, "state": "valid"})
+        verified.add(signature.key)
+    view.verified_keys = frozenset(verified)
+    # S2-FIX3 F72 (§5.3, Q2): every signature other than the subject key's
+    # counts only when it passes (resolved key, §3.4 equation, §9.4).
+    view.nonsubject_signature_failed = any(
+        signature.is_ed25519
+        and signature.key != subject_key
+        and state["state"] != "valid"
+        for signature, state in zip(envelope.sigs, states)
+    )
+    if first_invalid is not None:
+        raise first_invalid
+    if unknown_key:
+        raise WeaveError("E_KEY_UNKNOWN", "signing key is not declared in the context")
+    if first_unverifiable is not None:
+        raise first_unverifiable
+
+
+def _signature_context_trusted(
+    key: str,
+    envelope: envelope_module.Envelope,
+    context: Context,
+    from_context: bool,
+) -> bool:
+    """The §14.9 TOFU predicate for one record signature check (S2-FIX4 F84).
+
+    On a key-lifecycle record only the signature by ``actor.key`` takes part
+    (§14.6): a cosignature never does, whatever material verified it. A
+    signature takes part when the material used for it came from a context
+    record other than the record itself: material a declaration or rotation
+    states for its own keys is not context material, and a declaration's
+    signature by a key it does not state is verified against another
+    declaration's material, which counts when that declaration is in the
+    context rather than the keyset. A key with no material (§5.3) has no
+    check to count; the caller only asks once material was found.
+    """
+    if envelope.kind in kinds.KEY_LIFECYCLE_KINDS and key != envelope.actor_key:
+        return False
+    if envelope.kind == kinds.KIND_DECLARED:
+        if envelope.body.get("key") == key:
+            return False
+        source = context.declaration_material_source(key)
+        if source is not None:
+            return source == "context"
+    if not from_context:
+        return False
+    return context.material_source(key) == "context"
+
+
+def _lifecycle_subject_key(envelope: envelope_module.Envelope) -> object:
+    """The key a declaration or rotation states for itself (§5.3, S2-FIX1 Q2).
+
+    ``body.key`` of a ``weave.key.declared`` record and ``body.new_key`` of a
+    ``weave.key.rotated`` record; ``None`` for every other kind. Only that
+    key's own signature is left out of §9.4 when the record's admission is
+    decided (:func:`attempt_record`).
+    """
+    body = envelope.body if isinstance(envelope.body, dict) else {}
+    if envelope.kind == kinds.KIND_DECLARED:
+        return body.get("key")
+    if envelope.kind == kinds.KIND_ROTATED:
+        return body.get("new_key")
+    return None
 
 
 def _resolve_signing_key(
@@ -598,6 +886,30 @@ def _resolve_signing_key(
     return (None, False)
 
 
+def _signer_rule_error(
+    view: RecordView,
+    envelope: envelope_module.Envelope,
+    context: Context,
+    code: str,
+    required: Iterable[str] | None = None,
+) -> WeaveError | None:
+    """The outcome of a failed signer rule of a signer-constrained kind.
+
+    §4.4 step 4 (some known-algorithm declared-key signature verified): the
+    dedicated *code*, reported where the signer rule sits. §4.4 step 5 (none
+    at all): S2-FIX1 Q3 holds the unverifiable outcome back until every other
+    rule of the kind's step (7) has passed, so ``None`` is returned (the rule
+    is not evaluated further) and the first such outcome is remembered on the
+    view; :func:`_check_kind_semantics` reports it last.
+    """
+    error = signer_obligation_error(view, envelope, context, code, required)
+    if view.verified_keys:
+        return error
+    if view.deferred_signer_error is None:
+        view.deferred_signer_error = error
+    return None
+
+
 def _require_valid_signer(
     view: RecordView, context: Context, key: str, code: str
 ) -> None:
@@ -605,14 +917,15 @@ def _require_valid_signer(
 
     A missing signature uses the kind's dedicated code; a present but
     unverifiable one (unknown algorithm only) is unverifiable: E_KEY_UNKNOWN
-    when the key is undeclared, E_SIG_UNVERIFIABLE otherwise.
+    when the key is undeclared, E_SIG_UNVERIFIABLE otherwise, reported after the
+    kind's other step-(7) rules (S2-FIX1 Q3).
     """
     if key in view.verified_keys:
         return
-    entries = view.signature_algs_by_key.get(key, frozenset())
-    if entries:
-        raise _unknown_algorithm_error(view, context, key, code)
-    raise WeaveError(code, "required signature by %s is missing" % key)
+    assert view.envelope is not None
+    error = _signer_rule_error(view, view.envelope, context, code, (key,))
+    if error is not None:
+        raise error
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +938,25 @@ def _check_kind_semantics(
     envelope: envelope_module.Envelope,
     context: Context,
 ) -> None:
+    _check_kind_rules(view, envelope, context)
+    if view.deferred_signer_error is not None:
+        # S2-FIX1 Q3 (§4.4 step 5): every other rule of step (7) passed.
+        raise view.deferred_signer_error
+
+
+def _check_kind_rules(
+    view: RecordView,
+    envelope: envelope_module.Envelope,
+    context: Context,
+) -> None:
+    """Step (7) rules of the eight registered kinds (see :func:`_check_kind_semantics`).
+
+    Inside a signer-constrained kind the order is (S2-FIX1 Q3, §14.5): the
+    kind's rules that read only the record itself, then the signer rule (the
+    dedicated code of §4.4 step 4), then the rules that consult other records;
+    a signer rule whose signer set is defined by another record follows the
+    lookup of that record.
+    """
     digest = view.digest or ""
     kind = envelope.kind
     if kind == kinds.KIND_DECLARED:
@@ -638,6 +970,9 @@ def _check_kind_semantics(
             record_digest=digest,
             context=context,
             source=view.loaded.source,
+            signer_error=lambda code: _signer_rule_error(
+                view, envelope, context, code, (envelope.body.get("key"),)
+            ),
         )
         view.key_declaration = declaration
     elif kind == kinds.KIND_ROTATED:
@@ -663,13 +998,20 @@ def _check_kind_semantics(
             recorded_at=envelope.recorded_at,
             record_digest=digest,
             verification_context=revocation_context,
+            signer_error=lambda code: _signer_rule_error(view, envelope, context, code),
         )
     elif kind == kinds.KIND_GRANT:
+        # S2-FIX1 Q3 (F55-1): the granter signer rule follows the grant's own
+        # body rule (E_KEY_VALIDITY) and precedes the delegated-chain checks,
+        # whose outcomes can be unverifiable (invalid first).
         state = check_grant_semantics(
-            envelope, digest, context, view.verified_keys
+            envelope, digest, context, view.verified_keys,
+            signer_error=lambda code: _signer_rule_error(view, envelope, context, code),
+            granter_check=lambda: _require_valid_signer(
+                view, context, envelope.actor_key, "E_GRANT_GRANTER"
+            ),
         )
         if isinstance(state, GrantRecord):
-            _require_valid_signer(view, context, envelope.actor_key, "E_GRANT_GRANTER")
             view.grant_record = state
         else:
             view.grant_revocation = state
@@ -679,14 +1021,16 @@ def _check_kind_semantics(
                 "E_ACTOR_KEY_TYPE_MISMATCH",
                 "consent.granted actor.type must be human or organization",
             )
-        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")
         from .times import timestamp_sort_key
 
+        # S2-FIX1 Q3 (F69-2): the consent window is a rule of the record itself
+        # and precedes the signer rule.
         valid_until = envelope.body["valid_until"]
         if valid_until is not None and timestamp_sort_key(
             envelope.body["valid_from"]
         ) > timestamp_sort_key(valid_until):
             raise WeaveError("E_CONSENT_VALIDITY", "consent valid_from is after valid_until")
+        _require_valid_signer(view, context, envelope.actor_key, "E_ACTOR_KEY_TYPE_MISMATCH")
     elif kind == kinds.KIND_CONSENT_REVOKED:
         if envelope.actor_type not in ("human", "organization"):
             raise WeaveError(
@@ -715,52 +1059,118 @@ def _check_kind_semantics(
             effective_at=envelope.body["effective_at"],
         )
     elif kind == kinds.KIND_ERASURE:
-        _check_erasure_actor(envelope, context)
-        _require_valid_signer(view, context, envelope.actor_key, "E_ERASE_ACTOR")
+        _check_erasure_actor(
+            envelope,
+            context,
+            signer_check=lambda: _require_valid_signer(
+                view, context, envelope.actor_key, "E_ERASE_ACTOR"
+            ),
+        )
 
 
-def _check_erasure_actor(envelope: envelope_module.Envelope, context: Context) -> None:
-    """Erasure signer rules (M-10): human/organization, or granted agent/program."""
+_GRANT_ESTABLISHMENT_CODES = ("E_GRANT_UNRESOLVED", "E_GRANT_EXPIRED", "E_GRANT_REVOKED")
+
+
+def _erasure_grant_envelope(
+    reference: refs.Reference, context: Context
+) -> tuple[envelope_module.Envelope, str]:
+    """Resolve an erasure's authorising grant record (S2-FIX1 Q1, F47).
+
+    A grant record that is present but itself ``invalid`` is a disallowed
+    signer basis: ``E_ERASE_ACTOR`` (invalid). A grant that cannot be
+    established (absent, or present but not valid for any other reason) is
+    ``E_GRANT_UNRESOLVED`` (unverifiable).
+    """
+    resolution = context.resolve(reference)
+    if resolution.state != refs.FOUND or resolution.target is None:
+        target = resolution.target
+        if target is not None and target.verdict == "invalid":
+            raise WeaveError(
+                "E_ERASE_ACTOR", "the authorising grant is present but itself invalid"
+            )
+        raise WeaveError("E_GRANT_UNRESOLVED", "the authorising grant cannot be established")
+    target = resolution.target
+    target_envelope = getattr(target.record, "envelope", None)
+    if (
+        target.kind != kinds.KIND_GRANT
+        or target_envelope is None
+        or target_envelope.body.get("action") != "grant"
+    ):
+        raise WeaveError("E_ERASE_ACTOR", "the erasure basis is not an authorising grant")
+    return target_envelope, target.computed_digest or ""
+
+
+def _check_erasure_actor(
+    envelope: envelope_module.Envelope,
+    context: Context,
+    *,
+    signer_check: Callable[[], None],
+) -> None:
+    """Erasure signer rules (M-10): human/organization, or granted agent/program.
+
+    Order (S2-FIX1 Q1/Q3, §14.5 step (7)): the rules that read only the record
+    (an agent without ``actor.grant``, a program/device without ``basis``:
+    ``E_ERASE_ACTOR``), then the signer rule (``signer_check``), then the
+    authorising grant: present but itself invalid, or not covering the
+    erasure, is ``E_ERASE_ACTOR`` (invalid); a grant that cannot be
+    established (absent, outside its window, revoked, chain too deep) gives the
+    grant codes (unverifiable), the chain being judged last for every
+    authorising grant, an agent's ``actor.grant`` and a program's or device's
+    ``body.basis`` alike (S2-FIX2 U1).
+    """
     actor_type = envelope.actor_type
     if actor_type in ("human", "organization"):
+        signer_check()
         return
     if actor_type == "agent":
         if envelope.actor_grant is None:
             raise WeaveError("E_ERASE_ACTOR", "agent erasure requires a grant")
+        signer_check()
+        grant_envelope, grant_digest = _erasure_grant_envelope(envelope.actor_grant, context)
+        grant = grant_record_from_envelope(grant_envelope, grant_digest)
+        if grant.grantee_key != envelope.actor_key:
+            raise WeaveError("E_ERASE_ACTOR", "the grant is not for this actor")
+        if (
+            kinds.KIND_ERASURE not in grant.kind_names
+            or "accept" not in grant.actions
+            or "erase" not in grant.actions
+        ):
+            raise WeaveError("E_ERASE_ACTOR", "agent erasure is not covered by an erase grant")
         try:
-            check_agent_authorization(envelope, context)
+            validate_grant_chain(grant, context, envelope.recorded_at, depth=0, seen=frozenset())
         except WeaveError as error:
+            if error.code in _GRANT_ESTABLISHMENT_CODES:
+                raise
             raise WeaveError(
                 "E_ERASE_ACTOR", "agent erasure is not covered by an erase grant"
             ) from error
-        grant = context.resolve(envelope.actor_grant)
-        if grant.target is not None:
-            target_envelope = getattr(grant.target.record, "envelope", None)
-            if target_envelope is not None:
-                grant_body = target_envelope.body.get("grant", {})
-                if "erase" not in grant_body.get("actions", ()):
-                    raise WeaveError("E_ERASE_ACTOR", "grant does not allow erase")
         return
     # program/device: body.basis must reference a valid grant covering the actor
     # key with the erase action.
     basis = envelope.body.get("basis")
     if basis is None:
         raise WeaveError("E_ERASE_ACTOR", "program/device erasure requires a basis grant")
+    signer_check()
     reference = refs.validate_reference(basis)
-    resolution = context.resolve(reference)
-    if resolution.state != refs.FOUND or resolution.target is None:
-        raise WeaveError("E_ERASE_ACTOR", "basis grant cannot be resolved")
-    target = resolution.target
-    if target.kind != kinds.KIND_GRANT:
-        raise WeaveError("E_ERASE_ACTOR", "basis does not reference a grant")
-    target_envelope = getattr(target.record, "envelope", None)
-    if target_envelope is None or target_envelope.body.get("action") != "grant":
-        raise WeaveError("E_ERASE_ACTOR", "basis does not reference an authorising grant")
-    grant = target_envelope.body["grant"]
-    if grant["grantee"]["key"] != envelope.actor_key:
+    target_envelope, basis_digest = _erasure_grant_envelope(reference, context)
+    basis_grant = grant_record_from_envelope(target_envelope, basis_digest)
+    if basis_grant.grantee_key != envelope.actor_key:
         raise WeaveError("E_ERASE_ACTOR", "basis grant is not for this actor")
-    if "erase" not in grant["actions"] or "weave.erasure" not in grant["kinds"]:
+    if "erase" not in basis_grant.actions or kinds.KIND_ERASURE not in basis_grant.kind_names:
         raise WeaveError("E_ERASE_ACTOR", "basis grant does not allow erase")
+    # S2-FIX2 U1 (decision 2026-11-15 #22): the basis grant's chain is judged at
+    # the erasure's recorded_at last, exactly like an agent's actor.grant: a basis
+    # outside its window or revoked cannot be established (unverifiable).
+    try:
+        validate_grant_chain(
+            basis_grant, context, envelope.recorded_at, depth=0, seen=frozenset()
+        )
+    except WeaveError as error:
+        if error.code in _GRANT_ESTABLISHMENT_CODES:
+            raise
+        raise WeaveError(
+            "E_ERASE_ACTOR", "program/device erasure is not covered by an erase grant"
+        ) from error
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +1213,24 @@ def _check_actor_and_authorization(
                     "E_ACTOR_KEY_TYPE_MISMATCH",
                     "a signing key's class is incompatible with actor.type",
                 )
+    # S2-FIX3 F77 (§5.1): actor.type is compared with the class of actor.key
+    # itself, which needs no verified signature by that key; the comparison
+    # is invalid and so precedes the grant coverage of an agent record, whose
+    # outcome may be unverifiable (invalid first). An ed25519 entry by
+    # actor.key was compared in the loop above, in array order.
+    actor_class = context.key_state.key_type(envelope.actor_key)
+    if (
+        actor_class is not None
+        and actor_class != envelope.actor_type
+        and not any(
+            signature.is_ed25519 and signature.key == envelope.actor_key
+            for signature in envelope.sigs
+        )
+    ):
+        raise WeaveError(
+            "E_ACTOR_KEY_TYPE_MISMATCH",
+            "the declared class of actor.key is incompatible with actor.type",
+        )
     if envelope.actor_type == "agent" and envelope.kind != kinds.KIND_GRANT:
         # Delegated weave.grant records are governed by the delegation rules;
         # every other agent record (any stage) needs grant coverage (M-3).
@@ -817,8 +1245,12 @@ def _check_actor_and_authorization(
 def _check_labels(
     view: RecordView, envelope: envelope_module.Envelope, context: Context
 ) -> None:
-    view.notices.extend(labels.check_label_propagation(envelope, context))
-    view.notices.extend(labels.check_consent_reference(envelope, context))
+    # S2-FIX1 Q3 (F55-3, §14.5): a record that fails in step (9) reports only
+    # its outcome, so the propagation notice is kept only when step (9) passes.
+    propagation_notices = labels.check_label_propagation(envelope, context)
+    consent_notices = labels.check_consent_reference(envelope, context)
+    view.notices.extend(propagation_notices)
+    view.notices.extend(consent_notices)
 
 
 def _check_references(
@@ -846,7 +1278,31 @@ def _check_references(
 
 
 def attempt_record(view: RecordView, context: Context) -> None:
-    """Re-run the full record pipeline, replacing the view's current result."""
+    """Re-run the full record pipeline, replacing the view's current result.
+
+    For ``weave.key.declared`` and ``weave.key.rotated`` the pipeline runs a
+    second time with the §9.4 effects on the subject key's own signature left
+    out (:func:`_lifecycle_subject_key`); when that pass is valid its facts are
+    *admitted* to the key state even if the reported verdict fails a §9.4 rule
+    (S2/F38). Every other signature, cosignatures and a rotation's old-key
+    signature included, keeps its §9.4 effects in that pass (S2-FIX1 Q2).
+    """
+    _attempt_record_pass(view, context, own_effects=True)
+    view.admitted_declaration = None
+    view.admitted_rotation = None
+    if view.verdict == "valid" or view.envelope is None:
+        return
+    if view.envelope.kind not in (kinds.KIND_DECLARED, kinds.KIND_ROTATED):
+        return
+    probe = RecordView(loaded=view.loaded)
+    _attempt_record_pass(probe, context, own_effects=False)
+    if probe.verdict == "valid":
+        view.admitted_declaration = probe.key_declaration
+        view.admitted_rotation = probe.key_rotation
+
+
+def _attempt_record_pass(view: RecordView, context: Context, *, own_effects: bool) -> None:
+    """One run of the record pipeline (see :func:`attempt_record`)."""
     view.digest = view.loaded.digest
     view.envelope = None
     view.placeholder = None
@@ -864,6 +1320,8 @@ def attempt_record(view: RecordView, context: Context) -> None:
     view.grant_record = None
     view.grant_revocation = None
     view.consent_revocation = None
+    view.deferred_signer_error = None
+    view.nonsubject_signature_failed = False
     try:
         value = view.loaded.value
         if value is None:
@@ -883,12 +1341,19 @@ def attempt_record(view: RecordView, context: Context) -> None:
         envelope = envelope_module.validate_envelope(value)
         view.envelope = envelope
         _check_signature_presence(view, envelope)
+        if envelope.kind == kinds.KIND_DECLARED:
+            # T1/§9.1 rule 1 (S2/F39/F50): a missing or malformed
+            # ``body.public_key`` is decided before key resolution (step (4)):
+            # the declared key's own material is what the self-signature would
+            # resolve to, so no signature check runs (``sigs`` stays ``[]``)
+            # and no other body defect (``body.key`` included) can precede it.
+            decode_public_key_material(envelope.body.get("public_key"))
         if envelope.kind == kinds.KIND_ROTATED:
             # T13: the declared key-material structure (strict base64url, 32
             # bytes, key-id derivation) is a body/kind check that runs before the
             # signature pass; curve-point decoding stays with the §3.4 crypto.
             check_rotated_material(envelope.body)
-        _verify_signatures(view, envelope, context)
+        _verify_signatures(view, envelope, context, own_effects=own_effects)
         _check_required_signers(view, envelope, context)
         kinds.validate_body_schema(envelope.kind, envelope.body)
         _check_kind_semantics(view, envelope, context)
@@ -1033,6 +1498,13 @@ def load_keyset_directory(path: Path) -> list[LoadedRecord]:
             if record.value is None or erase.looks_like_placeholder(record.value):
                 raise WeaveError("E_JSON_INVALID", "keyset file is not a normal record")
             envelope = envelope_module.validate_envelope(record.value)
+            # §14.1 structural group (S2-FIX1 T5): "sigs presence and format
+            # (§4.3, including a record that requires per-record signatures
+            # but has sigs absent or empty)"; every keyset kind is signed per
+            # record, so `"sigs": []` is an operator error, not a record that
+            # quietly establishes no trust.
+            if envelope_module.signing_required(envelope.kind, envelope.stage) and not envelope.sigs:
+                raise WeaveError("E_SIG_REQUIRED", "a keyset record requires per-record signatures")
             # S8.9/§14.1: the structural side of the boundary includes the
             # registered-kind body *schema*; a semantic, lifecycle, actor,
             # authorisation or cryptographic failure is not a usage error and

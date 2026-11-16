@@ -27,7 +27,7 @@ Implements the key-lifecycle rules (decisions #34 and #42):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 from . import encoding
 from .errors import WeaveError
@@ -322,11 +322,17 @@ class DeclarationContext(Protocol):
     def declaration_material(self, key_id: str) -> tuple[bytes, str] | None:
         """Public key and key class of any declared record, valid or not."""
 
+    def owner_declaration(self, key_id: str) -> tuple[bytes, str] | None:
+        """Public key and class of a structurally valid declaration (S2-FIX3 F73)."""
+
     def trusted_human_org(self) -> frozenset[str]:
         """Human/organization key ids trusted via the keyset and its closure."""
 
     def is_declared_key(self, key_id: str) -> bool:
         """Whether the key id is declared anywhere in the context."""
+
+    def trusted_by_another_record(self, key_id: str, record_digest: str, source: str) -> bool:
+        """Whether a declaration other than *record_digest* trusts the key (S2-FIX3 F72)."""
 
     def governing_class(self, key_id: str, exclude_digest: str) -> str | None:
         """The class of the key's governing declaration, excluding one digest (S1)."""
@@ -359,6 +365,7 @@ def check_declared_semantics(
     record_digest: str,
     context: DeclarationContext,
     source: str,
+    signer_error: "Callable[[str], WeaveError | None] | None" = None,
 ) -> KeyDeclaration:
     """Semantic checks for ``weave.key.declared`` (S4-style cosign, R2/R5).
 
@@ -396,15 +403,26 @@ def check_declared_semantics(
     if valid_from is not None and valid_until is not None:
         if timestamp_sort_key(valid_from) > timestamp_sort_key(valid_until):
             raise WeaveError("E_KEY_VALIDITY", "valid_from is after valid_until")
+    #: S2-FIX1 Q3: with no known-algorithm declared-key signature at all the
+    #: signer rules are not evaluated; their step-5 outcome is reported by the
+    #: caller after the other rules of step (7).
+    signer_rules_deferred = False
     if declared_key not in verified_signature_keys:
         # §4.4 rule 4 / S7.4: unknown-algorithm entries are ignored (Q13), so an
         # unknown-algorithm self-signature leaves the declared key without a
-        # valid self-signature. The dedicated kind code wins over a trust
-        # outcome (invalid is more conservative than unverifiable).
-        raise WeaveError(
-            "E_KEY_DECLARED_NOT_SELF_SIGNED",
-            "no valid signature by the declared key",
-        )
+        # valid self-signature. The dedicated kind code applies when some
+        # known-algorithm declared-key signature verified (step 4); with none at
+        # all, step 5 applies (S2/F46).
+        if signer_error is not None:
+            error = signer_error("E_KEY_DECLARED_NOT_SELF_SIGNED")
+            if error is not None:
+                raise error
+            signer_rules_deferred = True
+        else:
+            raise WeaveError(
+                "E_KEY_DECLARED_NOT_SELF_SIGNED",
+                "no valid signature by the declared key",
+            )
 
     # S1: a key id that already has a governing class (local keyset first, then
     # the earliest valid in-context declaration) may not be reclassified. A
@@ -421,7 +439,11 @@ def check_declared_semantics(
         # R5: owner must be resolvable and be a human/organization declaration.
         if owner is None:  # pragma: no cover - checked above
             raise WeaveError("E_KEY_OWNER_MISSING", "missing owner")
-        owner_material = context.declaration_material(owner)
+        # S2-FIX3 F73 (§5.3, §9.1 rule 3): the owner resolves only through a
+        # declaration that passes the §14.1 structural group; one that fails
+        # it (for example a missing ``sigs``) never takes part in class
+        # determination, so the owner is not resolved: E_KEY_UNKNOWN.
+        owner_material = context.owner_declaration(owner)
         if owner_material is None:
             # Owner key is not declared anywhere in the context: unverifiable.
             raise WeaveError("E_KEY_UNKNOWN", "owner key is not declared in the context")
@@ -431,7 +453,7 @@ def check_declared_semantics(
                 "E_KEY_OWNER_MISSING",
                 "owner declaration is not a human/organization key",
             )
-        if owner not in verified_signature_keys:
+        if owner not in verified_signature_keys and not signer_rules_deferred:
             raise WeaveError(
                 "E_KEY_DECLARED_NOT_COSIGNED",
                 "agent/program/device key declaration lacks the owner's cosignature",
@@ -447,10 +469,14 @@ def check_declared_semantics(
             pass
         else:
             trusted = context.trusted_human_org()
-            if declared_key in trusted:
+            if declared_key in trusted and context.trusted_by_another_record(
+                declared_key, record_digest, source
+            ):
                 pass  # duplicate declaration of an already trusted key
             elif (trusted & verified_signature_keys) - {declared_key}:
                 pass  # cosigned by a trusted human/organization key
+            elif signer_rules_deferred:
+                pass  # S2-FIX1 Q3: trust by cosignature needs a signature (step 5)
             else:
                 self_signed_only = verified_signature_keys == {declared_key}
                 raise WeaveError(
@@ -480,6 +506,15 @@ def check_rotated_material(body: dict) -> tuple[bytes, bytes | None]:
     ``E_KEY_ROTATION_KEYS``; curve-point decoding happens later, inside the §3.4
     signature check, and keeps its ``E_SIG_*`` code.
     """
+    # S2/F61-3: ``new_key`` and ``old_key`` are key ids of the body table; a
+    # missing or malformed key id is a body-schema defect (E_KIND_BODY_SCHEMA),
+    # decided before the key-material rule of §9.2 rule 2, which presupposes a
+    # well-formed key id to compare against.
+    for member in ("new_key", "old_key"):
+        if member not in body or not encoding.is_key_id(body[member]):
+            raise WeaveError(
+                "E_KIND_BODY_SCHEMA", "%s is missing or not a key id" % member
+            )
     new_key = body.get("new_key")
     try:
         new_public_key = encoding.decode_base64url(body["new_public_key"], 32)
@@ -549,6 +584,7 @@ def check_revoked_semantics(
     recorded_at: str,
     record_digest: str,
     verification_context: RevocationContext,
+    signer_error: "Callable[[str], WeaveError | None] | None" = None,
 ) -> KeyRevocation:
     """Semantic checks for ``weave.key.revoked``."""
     effective_at = body["effective_at"]
@@ -568,22 +604,32 @@ def check_revoked_semantics(
     if reason != "key-compromise":
         allowed.add(revoked_key)
     if not (allowed & verified_keys):
-        # Q13: when the only present entries by an allowed signer use unknown
-        # algorithms, the signer cannot be checked at all.
-        unverifiable_candidate = any(
-            key in allowed and verification_context.signature_entries_by_key.get(key)
-            for key in signature_keys
-        )
-        if unverifiable_candidate:
-            if any(verification_context.is_declared_key(key) for key in allowed & signature_keys):
-                raise WeaveError(
-                    "E_SIG_UNVERIFIABLE",
-                    "revocation signer only has unknown-algorithm entries",
-                )
-            raise WeaveError(
-                "E_KEY_UNKNOWN", "revocation signer is not declared in the context"
+        if signer_error is not None:
+            # §4.4 steps 4-5 (S2/F46): the dedicated code needs some verified
+            # known-algorithm signature; with none at all the record is
+            # unverifiable, reported by the caller after step (7) (S2-FIX1 Q3).
+            error = signer_error("E_KEY_REVOKE_SIGNER")
+            if error is not None:
+                raise error
+        else:
+            # Q13: when the only present entries by an allowed signer use unknown
+            # algorithms, the signer cannot be checked at all.
+            unverifiable_candidate = any(
+                key in allowed and verification_context.signature_entries_by_key.get(key)
+                for key in signature_keys
             )
-        raise WeaveError("E_KEY_REVOKE_SIGNER", "revocation lacks an acceptable signer")
+            if unverifiable_candidate:
+                if any(
+                    verification_context.is_declared_key(key) for key in allowed & signature_keys
+                ):
+                    raise WeaveError(
+                        "E_SIG_UNVERIFIABLE",
+                        "revocation signer only has unknown-algorithm entries",
+                    )
+                raise WeaveError(
+                    "E_KEY_UNKNOWN", "revocation signer is not declared in the context"
+                )
+            raise WeaveError("E_KEY_REVOKE_SIGNER", "revocation lacks an acceptable signer")
     return KeyRevocation(
         key_id=revoked_key,
         reason=reason,

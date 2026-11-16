@@ -132,6 +132,18 @@ fn kinds_record_target_kind_level_errors() {
         let input = expected.get_str("input").unwrap_or("record.json");
         let file = read_record(&case, input);
         let id = expected.get_str("id").unwrap_or("<unnamed>");
+        if let Some(partial) = file.invalid() {
+            // A malformed `weave.erased` placeholder is rejected by the envelope
+            // layer with `E_KIND_BODY_SCHEMA` (§4.5), before any body parse
+            // (S2-FIX3 vector `erasure/placeholder-malformed-record-target`).
+            assert!(
+                errors.contains(&partial.code.to_owned()),
+                "{id}: the envelope layer reports {} but {errors:?} is expected",
+                partial.code
+            );
+            checked += 1;
+            continue;
+        }
         match kinds::parse_body(&file) {
             Ok(_) => {
                 // Kind-level defects left to the pipeline need the verification

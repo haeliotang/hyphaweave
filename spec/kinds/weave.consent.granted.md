@@ -24,7 +24,9 @@ parent specification.
   `E_ACTOR_KEY_TYPE_MISMATCH` (the kind's signer rule; parent specification §5.1/Q30).
 - `sigs` **MUST** be present. If `sigs` is non-empty but the required human/organization
   signer is missing or wrong, `E_ACTOR_KEY_TYPE_MISMATCH` is reported instead of
-  `E_SIG_REQUIRED`; `E_SIG_REQUIRED` is used only when `sigs` is absent or empty.
+  `E_SIG_REQUIRED`; `E_SIG_REQUIRED` is used only when `sigs` is absent or empty. The required signer is `actor.key` (parent specification §4.4): a valid
+  signature by another human or organization key does not satisfy the rule
+  [S2-FIX3/F81] decided by principle (Inceptless decision 2026-11-16 #1).
 - `salt` is optional; `refs` and `labels` follow the parent specification.
 
 ## Body
@@ -41,7 +43,11 @@ parent specification.
 ## Semantic rules
 
 1. **Validity window ordering.** When `valid_until` is not `null`, `valid_from` MUST be less
-   than or equal to `valid_until`; otherwise `E_CONSENT_VALIDITY` (invalid) [H3].
+   than or equal to `valid_until`; otherwise `E_CONSENT_VALIDITY` (invalid) [H3]. The rule
+   reads only the record, so it is decided after the `actor.type` rule and **before** the
+   signer rule of the envelope requirements (`E_ACTOR_KEY_TYPE_MISMATCH` for a wrong signer)
+   and before any §4.4 step-5 outcome (parent specification §14.5) [S2-FIX1/Q3] decided
+   (Inceptless decision 2026-11-15 #18; Q3).
 2. **Signed claim.** The consent is a claim by the signing actor that the described consent
    was given. The verifier checks consistency, signatures and grammar; it does not prove that
    a real person was informed, nor that the terms are lawful (parent specification §8.8).
