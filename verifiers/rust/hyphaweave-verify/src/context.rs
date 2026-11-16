@@ -2261,31 +2261,27 @@ impl World {
     /// steps 1–5 (`grant_chain_check`), so the `break`s below are reached only
     /// beyond the bound: a link there that cannot be judged (not a grant,
     /// unresolved) ends the walk and is left to step 7.
+    ///
+    /// The whole chain is judged for revocation first and for the windows
+    /// after: a link revoked anywhere gives `E_GRANT_REVOKED` even when a
+    /// nearer link is already outside its window (S2-FIX6, decision
+    /// 2026-11-16 #13; it used to be judged link by link).
     fn grant_chain_validity(&mut self, slot: usize, at: Timestamp) -> Result<(), Code> {
         let mut current = Some(slot);
-        let mut visited: Vec<usize> = Vec::new();
+        let mut links: Vec<(usize, kinds::GrantSpec)> = Vec::new();
+        let mut cycle = false;
         while let Some(index) = current {
-            if visited.contains(&index) {
-                return Err(e::GRANT_UNRESOLVED);
+            if links.iter().any(|(visited, _)| *visited == index) {
+                cycle = true;
+                break;
             }
-            visited.push(index);
             let Some(KindBody::Grant(body)) = self.slots[index].body.clone() else {
                 break;
             };
             let Some(spec) = body.grant.clone() else {
                 break;
             };
-            if self.grant_revoked_at(index, at) {
-                return Err(e::GRANT_REVOKED);
-            }
-            if at < spec.valid_from {
-                return Err(e::GRANT_EXPIRED);
-            }
-            if let Some(valid_until) = spec.valid_until {
-                if at > valid_until {
-                    return Err(e::GRANT_EXPIRED);
-                }
-            }
+            links.push((index, spec));
             let Some(record) = self.slots[index].record.clone() else {
                 break;
             };
@@ -2300,6 +2296,19 @@ impl World {
                         None
                     }
                 });
+        }
+        for (index, _) in &links {
+            if self.grant_revoked_at(*index, at) {
+                return Err(e::GRANT_REVOKED);
+            }
+        }
+        for (_, spec) in &links {
+            if at < spec.valid_from || spec.valid_until.is_some_and(|until| at > until) {
+                return Err(e::GRANT_EXPIRED);
+            }
+        }
+        if cycle {
+            return Err(e::GRANT_UNRESOLVED);
         }
         Ok(())
     }
