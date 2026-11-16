@@ -97,6 +97,10 @@ existing main vector changes.
   (an oversized blob file not counted as an extra file) is a documented equivalent mutant:
   `MAX_BLOB_BYTES` equals `MAX_CONTAINER_UNCOMPRESSED_BYTES`, so such a file is reported as
   `E_CONTAINER_SIZE` at step (1) first.
+- **Schema**: `schemas/ref.json` `$defs.digest` is one pattern with the whole §2.7 grammar
+  (it accepted any number of hex digits for another algorithm and rejected `sha256:` with
+  another number of digits than 64); `tools/check_schemas.py` failed on the new `ref/`
+  vectors without it.
 - **REUSE**: the two SPDX lines that `tools/gen_vectors_extra.py` writes into the frozen
   README are wrapped in `REUSE-IgnoreStart` / `REUSE-IgnoreEnd`, so REUSE 6.x passes as well
   as the 5.0.2 that CI pins.
