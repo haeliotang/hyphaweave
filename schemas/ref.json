@@ -32,17 +32,9 @@
   "$defs": {
     "digest": {
       "title": "reference digest",
-      "description": "Digest string of the referenced record: <algorithm>:<lowercase hex>. H0 checks sha256 strictly (exactly 64 lowercase hex characters). Any other syntactically well-formed algorithm token is structurally valid but unsupported, so the reference resolves to unverifiable instead of producing a record error; unknown-algorithm entries are ignored semantically. Container positions, by contrast, require sha256.",
-      "oneOf": [
-        {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        {
-          "type": "string",
-          "pattern": "^(?!sha256:)(?=[a-z0-9-]{1,32}:)[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]+$"
-        }
-      ]
+      "description": "Digest string of the referenced record, with the whole digest-string grammar of specification section 2.7: an algorithm-name token of at most 32 bytes, a colon, and 1-128 lowercase hex characters; a string that breaks it is malformed (E_ENV_REFS). A well-formed digest other than sha256 with exactly 64 hex characters (another algorithm, or sha256 with another number of digits) is structurally valid but unsupported, so the reference resolves to unverifiable instead of producing a record error (S3-FIX1). Container positions, by contrast, require sha256.",
+      "type": "string",
+      "pattern": "^(?=[a-z0-9-]{1,32}:)[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]{1,128}$"
     }
   }
 }
