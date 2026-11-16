@@ -523,16 +523,25 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
     let mut content = Content::default();
     let mut codes: BTreeSet<Code> = BTreeSet::new();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    // Entry checks in central-directory order. Ignored directory entries are
-    // not entries of the layout; a `readable/` entry is "observed" once it
-    // passed its own checks, before any failing entry (§11.8, T12).
+    // Entry checks in central-directory order. A zero-data directory entry is
+    // ignored for the layout and for whether `blobs/` is present (§11.9 rule
+    // 4), but it passes the path-safety, symbolic-link and duplicate-name
+    // checks like any other entry (FIX1): `../x/` and `/abs/` are
+    // E_CONTAINER_ENTRY. Its path is its name without the final `/`. A
+    // `readable/` entry is "observed" once it passed its own checks, before
+    // any failing entry (§11.8, T12).
     for entry in &archive.entries {
-        if entry.is_directory {
-            continue;
-        }
-        if !is_safe_relative_path(&entry.name) || entry.is_symlink || !seen.insert(&entry.name) {
+        let checked_name = if entry.is_directory {
+            entry.name.strip_suffix('/').unwrap_or(&entry.name)
+        } else {
+            entry.name.as_str()
+        };
+        if !is_safe_relative_path(checked_name) || entry.is_symlink || !seen.insert(&entry.name) {
             codes.insert(e::CONTAINER_ENTRY);
             break;
+        }
+        if entry.is_directory {
+            continue;
         }
         if entry.name.starts_with("readable/") {
             content.readable_present = true;
@@ -546,11 +555,14 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
         });
     }
     for entry in &archive.entries {
-        if entry.name.starts_with("blobs/") {
-            content.blobs_dir_present = true;
-        }
+        // §11.7 rule 3 with §11.9 rule 4 (FIX1): in the zip form `blobs/` is
+        // present when a file lies in it; a zero-data directory entry (such
+        // as `blobs/sha256/`) takes no part in the layout or in that question.
         if entry.is_directory {
             continue;
+        }
+        if entry.name.starts_with("blobs/") {
+            content.blobs_dir_present = true;
         }
         let class = classify_path(&entry.name);
         match class {

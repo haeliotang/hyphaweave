@@ -1042,9 +1042,12 @@ impl World {
     }
 
     /// The §9.1 rules of a declaration that need no verified signature, for
-    /// a record at §4.4 step 5 (S2-FIX1/Q3): owner binding (rule 3) and the
-    /// governing class (rule 4). The self-signature and the trust that needs
-    /// a verified cosignature are not evaluated; `None` when both pass.
+    /// a record at §4.4 step 5 (S2-FIX1/Q3): owner binding (rule 3), the
+    /// governing class (rule 4) and, for an automated key, whether its
+    /// resolving owner is trusted (rule 3: `E_KEY_UNTRUSTED`, unverifiable,
+    /// which §4.4 step 5 reports instead of the step-5 code; FIX1 R2). The
+    /// self-signature and the trust that needs a verified cosignature are not
+    /// evaluated; `None` when all pass.
     pub(crate) fn decl_issue_without_signatures(&mut self, index: usize) -> Option<Code> {
         let decl = self.slots[index].decl.clone()?;
         let key = self.decl_key(index)?;
@@ -1065,6 +1068,15 @@ impl World {
         }
         if self.governing_class_of(&key) != Some(decl.class.as_str()) {
             return Some(e::KEY_CLASS_CONFLICT);
+        }
+        if let Some(owner) = decl
+            .owner
+            .as_deref()
+            .filter(|_| !matches!(decl.class.as_str(), "human" | "organization"))
+        {
+            if !self.trusted.contains_key(owner) {
+                return Some(e::KEY_UNTRUSTED);
+            }
         }
         None
     }
@@ -1896,10 +1908,11 @@ const UNVERIFIABLE: &str = "unverifiable";
 impl World {
     /// Resolves one reference against the context.
     pub(crate) fn resolve(&mut self, reference: &RefObject) -> Resolution {
-        let Some(parsed) = digest::parse_digest_string(&reference.digest) else {
-            return Resolution::simple(UNVERIFIABLE);
-        };
-        if parsed.algorithm != "sha256" {
+        // §2.7, §6.5 (S3-FIX1/D1): a digest the format cannot compute — an
+        // unsupported algorithm, or `sha256` with another number of digits
+        // than 64 (well-formed, but not a sha256 digest) — is unverifiable
+        // before any lookup, so an absent target is not `missing`.
+        if !digest::is_sha256_digest(&reference.digest) {
             return Resolution::simple(UNVERIFIABLE);
         }
         let lookup = identity_key(&reference.origin, &reference.id);
