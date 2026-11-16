@@ -42,7 +42,8 @@ Read this before using anything in this repository:
   and #22, the supplement S2-FIX2b, decision 2026-11-15 #32, S2-FIX3, decision
   2026-11-16 #1, and S2-FIX4, S2-FIX5 and S2-FIX6, decisions 2026-11-16 #4, #9 and #13),
   which both verifiers now implement (the Rust follow-ups H1-S2 to H1-S5, decisions
-  2026-11-15 #20 and 2026-11-16 #10, #13 and #14): each passes all 749 main vectors and the
+  2026-11-15 #20 and 2026-11-16 #10, #13 and #14), and the S3 round on blob error codes
+  (decision 2026-11-16 #44): each passes all 777 main vectors and the
   202 candidate regression vectors, and their reports are byte-identical on every case (the
   gate-3 allow list is empty). Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.

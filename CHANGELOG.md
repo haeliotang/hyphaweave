@@ -6,6 +6,82 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S3 round: blob error codes — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #44 (the founder asked for this round; its rules are **decided by
+principle** and the founder can overturn every item). The two MW2 reviews (Mnemoweave blob
+writer) found that the two reference verifiers gave different codes, and sometimes different
+verdicts, for blob listings and blob files that no main vector covered, and that §11.2,
+§11.7 and §13 contradicted each other on the codes: §11.7 said "at most 10,000 blobs … all
+violations … `E_MANIFEST_BLOB`", §13 fixed `MAX_BLOBS` to `E_MANIFEST_SCHEMA` (Q24), and
+§11.2 said a malformed `blobs` is `E_MANIFEST_SCHEMA`. The `format` identifier is unchanged;
+no error code is added; the registry moves to revision 8. No conclusion of the frozen
+candidate set changes and no existing main vector changes.
+
+### Wire-visible changes (specification and both verifiers)
+
+- **One rule for the listing codes (§11.2, §11.7, S3/B1).** A malformed `manifest.blobs` is
+  `E_MANIFEST_SCHEMA`: not an array (`null` included), more than `MAX_BLOBS` entries, an
+  entry that is not a closed `{digest,size}` object, a digest without the §2.7 digest-string
+  grammar (uppercase hex, no `:`, a malformed algorithm name, an empty or over-long
+  hexadecimal part), a size that is not a non-negative integer. A well-formed listing that
+  names a digest other than `sha256:<64 lowercase hex>` (an unsupported algorithm, which
+  §2.7 calls structurally valid, or `sha256` with another number of digits), or whose
+  digests are not strictly ascending (a repeated digest included), is `E_MANIFEST_BLOB`.
+  Both are decided at the manifest-structure step (`records: []`) in a fixed order: the
+  array, the count, each entry in array order (shape, grammar and size, then the sha256
+  form), then the order. An empty array means no blobs, like an absent member. **Python
+  changed:** it reported `E_MANIFEST_SCHEMA` for an unsupported algorithm, a wrong-length
+  sha256 digest, an out-of-order listing and a repeated digest; H1 already reported
+  `E_MANIFEST_BLOB` in this order. The Python digest check for blobs now uses the full §2.7
+  grammar (algorithm-name grammar, at most 128 hex digits), as H1 does.
+- **`MAX_BLOBS` stays `E_MANIFEST_SCHEMA` (§11.7, §13, S3/B2).** The §13 table is fixed by
+  Q24; §11.7 no longer claims that every blob violation is `E_MANIFEST_BLOB`. Both verifiers
+  already behaved this way.
+- **Extra blob files whatever their names (§11.1, §11.7, S3/B3).** Every file directly in
+  `blobs/` or `blobs/sha256/` that is not a listed blob is an extra file, `E_MANIFEST_BLOB` at
+  the blob step, in both container forms; `blobs/` is present in the zip form when some
+  entry name starts with `blobs/`. **Python changed:** it judged a container **valid** when
+  `blobs/` held a file whose name is not `blobs/sha256/<64 lowercase hex>` (for example
+  `blobs/stray`, `blobs/sha256/not-a-digest`, 65 hex digits, uppercase hex) next to a
+  non-empty listing, and in the zip form also without a listing; it now reports
+  `E_MANIFEST_BLOB`, as H1 did.
+- **Deeper directories in `blobs/` (§11.1, S3/B4).** A file below a directory inside `blobs/`
+  other than `blobs/sha256/`, or below a directory inside `blobs/sha256/`, is
+  `E_CONTAINER_ENTRY` at entry enumeration in both forms. **H1 changed:** in the zip form
+  (and for an in-memory file map) it reported such a file as an extra blob file,
+  `E_MANIFEST_BLOB`, although its directory walk already reported `E_CONTAINER_ENTRY`;
+  Python already reported `E_CONTAINER_ENTRY`. This is the only H1 change; embedders of an
+  older H1 differ from this revision only on such zip containers (invalid either way).
+- **Registry.** `E_MANIFEST_SCHEMA` lists the malformed listing, `E_MANIFEST_BLOB` the
+  well-formed listing violations and the extra files whatever their names,
+  `E_CONTAINER_ENTRY` the deeper directories in `blobs/`.
+
+### Vectors, tests and gates
+
+- **Vectors**: 28 new main cases under `container/` (749 → 777), no existing case changed:
+  - `E_MANIFEST_SCHEMA` at the manifest-structure step: `blobs-listing-null`,
+    `-entry-unknown-member`, `-size-string`, `-size-negative`, `-uppercase-hex`,
+    `-digest-without-algorithm`, `-algorithm-name-malformed`, `-hex-too-long`,
+    `-too-many` (10,001 entries), and the order cases `-malformed-then-unsupported`,
+    `-malformed-and-out-of-order`;
+  - `E_MANIFEST_BLOB` at the manifest-structure step: `blobs-listing-unsupported-algorithm`,
+    `-sha256-wrong-length`, `-out-of-order`, `-duplicate-digest`,
+    `-unsupported-then-malformed`;
+  - the blob step: `blobs-listing-at-limit-files-missing` (exactly 10,000 entries, the
+    boundary of `-too-many`), `blobs-listing-empty-array` (valid),
+    `blobs-listing-empty-array-with-blob-file`, `blobs-extra-file-not-a-digest` and its zip
+    form, `blobs-extra-file-hex-65`, `blobs-extra-file-at-blobs-root`,
+    `blobs-extra-file-uppercase-hex-zip`, `blobs-no-listing-extra-file-zip`;
+  - `E_CONTAINER_ENTRY`: `blobs-unknown-directory` and its zip form,
+    `blobs-sha256-subdirectory-zip`.
+- **Ablation catalogue**: seven S3 entries in `tools/anti_verification.py` (the Python
+  changes turned off one by one, each killed by the vectors it names).
+- **Rust probe**: `blob_tree_paths_are_judged_alike_in_every_input_form` judges seven blob
+  paths in the in-memory, zip and directory forms.
+- `vectors/README.md`: the counts, and the verdict distribution, which had not been
+  updated since 731 cases.
+
 ## Rust verifier MSRV 1.88 — 2026-11-16 — DRAFT, UNRELEASED
 
 The Rust verifier declared `rust-version = "1.87"`, but its locked dependency `sha2` 0.11.1
