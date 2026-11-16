@@ -2252,12 +2252,111 @@ cosignature present the difference was not observable: that cosignature has no m
 either, so step (4) already reports `E_KEY_UNKNOWN`. No vector pins the shape; a vector
 would.
 
-Not changed: the governing validity window (`World::governing_window`) still comes from the
-earliest context declaration whose closure outcome is valid or untrusted, without asking
-§5.3 admission ("governing a window … still need[s] semantic validity"). No vector, probe or
-fuzzing run reaches a difference there: a declaration that §5.3 does not admit supplies no
-material, so its window governs only signatures whose material came from another
-declaration of the same key.
+Not changed in H1-S3 — and **wrongly so**: the governing validity window
+(`World::governing_window`) still came from the earliest context declaration whose closure
+outcome was valid or untrusted, without asking §5.3 admission. The claim made here at H1-S3
+that no vector, probe or fuzzing run reaches a difference was wrong: the pre-merge reviews
+of H1-S3 built two containers that reach one, and H1-S4 changed the rule (F86, F87).
+
+## H1-S4 follow-up (decision 2026-11-16 #13)
+
+The two pre-merge reviews of H1-S3 (`0a231e0`) found two Rust defects: a validity window
+taken from a declaration that is not semantically valid (review A high 1, review B high-2)
+and exponential time on a branching cosignature graph (review A high 2). Writing the window
+test found a third, older one (F87). No specification, schema, vector, tool or Python
+change; `s2/spec-revision` was not merged in this round.
+
+### F86 — The window of a declaration that §5.3 does not admit (§5.3) — Rust was wrong
+
+§5.3: "Declarations that are not themselves semantically valid never govern the window",
+and a declaration with another signature that does not pass "governs no window". The Rust
+verifier took the governing window in the trust closure (`build_trust` step (4)) and in
+`governing_window` from the closure outcome alone, which checks the self-signature and the
+owner cosignature but not every other signature under §9.4. The reviews' containers (keyset
+human-1; device declaration D1 at T0 with `valid_until` T1, D2 of the same key at T2 with no
+window, a note by the device key at T3):
+
+| probe | D1 | reference | Rust before `f9db7cd` | Rust now |
+|---|---|---|---|---|
+| w1 | also cosigned by an undeclared key | D1 `E_KEY_UNKNOWN`; D2 valid; note valid, `N_KEY_TOFU` | D2 and note invalid `E_KEY_EXPIRED` | as the reference |
+| w2 | owned and cosigned by human-2, compromised at T1 (backdated) | D1 `E_KEY_COMPROMISED`; D2 valid; note valid, `N_KEY_TOFU` | D2 and note invalid `E_KEY_EXPIRED` | as the reference |
+| w1c, w2c | clean (controls) | D1 valid; D2 and note `E_KEY_EXPIRED` | the same | the same |
+
+Change: the trust closure no longer computes windows; `governing_window` takes the window
+of the earliest declaration that is valid in the closure **and** admitted under §5.3
+(`declaration_admitted`: every signature other than the subject key's passes, §9.4
+included), decided where material is used, as admission is (F72). Pinned by
+`tests/s4_followup.rs`,
+`a_declaration_that_is_not_admitted_governs_no_window_trusted_key` (w1 and w1c built in the
+test); the S2 workstream is turning w1, w2 and the controls into vectors (S2-FIX6).
+
+### F87 — An untrusted declaration governed the window (§9.1 rule 4) — Rust was wrong
+
+Found while writing the test for F86: two self-attested `human` declarations of one key,
+D1 at T0 with `valid_until` T1 and D2 at T2 with none. Since H1 (`032ba3e`) the Rust
+verifier let a declaration that is valid apart from trust (`E_KEY_UNTRUSTED`, untrusted
+self-attested or with an untrusted owner) govern the window, so D2's own signature was
+`E_KEY_EXPIRED` (invalid). §9.1 rule 4 says "an untrusted declaration MUST NOT make any
+other declaration invalid", and an untrusted declaration is not semantically valid; the
+reference reports D2 `E_KEY_UNTRUSTED` with `N_SELF_ATTESTED_ROOT_KEY`, and the Rust
+verifier now does too (`an_untrusted_declaration_governs_no_window`). No vector pins it;
+neither the vectors nor the H1-S2/H1-S3 differential fuzzing reached it. Spec reading:
+unique.
+
+### F88 — The cost of §5.3 admission (DoS) — Rust was wrong
+
+Admission recursed — `declaration_admitted` → `check_signature` → `admitted_trusted` /
+`admitted_declared_material` → `declaration_admitted` — without memoisation. On declarations
+each cosigned by the two before it this took time exponential in their number (review A:
+about ×1.6 per declaration); on a chain it took quadratic time (with the trust closure
+re-verifying the same signatures on every pass) and one level of call stack per link.
+
+Change (`f9db7cd`): `World::settle_admissions` settles every declaration once, before the
+first record is evaluated. It splits the cosignature graph (a declaration depends on every
+declaration of a key that makes one of its other signatures) into strongly connected
+components with an iterative Tarjan, dependencies first, so a chain is decided one link at a
+time; inside a component it reaches the least fixed point (S2-FIX3/F72: material must be
+grounded outside a cycle) with a worklist, each member computed at most once per settled
+dependency. Settled answers are memoised; an answer computed on demand is memoised only
+when it read no provisional answer of a cycle guard (a declaration or record already being
+decided further up). Ed25519 equations are memoised by (public key, signature, message).
+Limits: a dependency that only record evaluation reveals (a rotation's or a revocation's
+signer) is still computed on demand, recursively; that path is unchanged.
+
+Release builds, the reviews' containers (`probes/out-stress`), seconds:
+
+| container | Rust before (`0a231e0`) | Rust now (`f9db7cd`) | reference |
+|---|---|---|---|
+| branch-16 | 1.50 | 0.03 | 0.70 |
+| branch-18 | 3.84 | 0.03 | — |
+| branch-20 | 10.00 | 0.04 | 0.9 (review A) |
+| branch-22 | 26.02 | 0.03 | 1.01 |
+| chain-100 | 1.63 | 0.08 | 12.19 |
+| chain-200 | 6.06 | 0.16 | 58 (review A) |
+| chain-300 | 13.19 | 0.29 | 115 (review A) |
+| chain-600 | 52.04 | 0.86 | — |
+
+Every report is byte-identical before and after; branch-22 and chain-100 are byte-identical
+with the reference. Tests (`tests/s4_followup.rs`, debug): 40 declarations each cosigned by
+the two before (`branching_cosignature_graph_is_verified_in_bounded_time`), the same graph
+closed into an ungrounded cycle (`ungrounded_cosignature_cycle_is_settled_in_bounded_time`),
+and a 300-link chain on a 256 KiB thread (`long_cosignature_chain_on_a_small_stack`; the
+CI runner gives a spawned thread 2 MiB) all run in about a second together.
+
+## H1-S4 gate results
+
+Recorded 2026-11-16 on branch `r2/rust-s2` at `bdbd311` (code `f9db7cd`), before merging
+S2-FIX6: the ci.yml Rust job, gate 3, red checks, the reviews' probes and one
+differential-fuzzing seed. The Python job was not rerun (no Python, vector or tool change
+since H1-S3). Same local differences from ci.yml as at H1-S3 (target directory outside the
+repository, `-j 2` / `--jobs 2`); rustup stable 1.100.0.
+
+| gate | result |
+|---|---|
+| Rust job | every step exit 0: fmt, clippy all targets, clippy library, `cargo test --workspace` (18 test binaries, 126 passed, 0 failed, 3 ignored), both `vectors` runs (731/731, 202/202), `cargo deny check`, `cargo audit` (67 dependencies, no `--ignore`), release build, crash fuzz (2,000 mutants, 0 failures), gate 3 (allow list empty; 933 cases, 933 byte-identical, PASS); `cargo check --target aarch64-linux-android` exit 0, no warning |
+| red checks | each change removed on its own, then restored (`cmp` equal, `touch`): the window without §5.3 admission — the trusted-key window test fails; untrusted declarations governing again — the untrusted-window test fails; no settle pass and no memo — the branching test does not finish within 180 s; no settle pass with the on-demand memo kept — the 256 KiB chain test overflows its stack |
+| the reviews' probes | w1, w2, w1c, w2c byte-identical with the reference (F86 table); the stress containers as in the F88 table, every report byte-identical with the one before the change |
+| differential fuzzing | seed 151115, 10 classes × 400, release binary of `bdbd311`: 3,761 mutants, 3,761 byte-identical, 0 conclusion and 0 report-detail differences |
 
 ## H1-S3 gate results
 
@@ -2401,3 +2500,5 @@ black box, installed non-editable from `git archive origin/main`.
   S2-FIX3 dispositions, and the H1-S2 gate results.
 - **2026-11-16 (H1-S3)** — added the S2-FIX4 and S2-FIX5 dispositions, the Rust change
   for the S2-FIX5 material rule, F85, and the H1-S3 gate results.
+- **2026-11-16 (H1-S4)** — corrected F85's "Not changed" paragraph (its claim that nothing
+  reaches the window difference was wrong); added F86–F88 and the H1-S4 gate results.

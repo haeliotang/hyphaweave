@@ -6,6 +6,27 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## H1-S4 (Rust fixes from the H1-S3 reviews) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #13: the Rust verifier fixes the two defects the pre-merge reviews of
+H1-S3 found, and one more found while testing them. No specification, schema, vector, tool
+or Python change; the S2-FIX6 specification round is not merged here yet.
+
+### Changed (Rust verifier)
+
+- **Governing window** (§5.3, §9.1 rule 4; `docs/h1-findings.md` F86, F87): only a
+  declaration valid in the trust closure **and** admitted under §5.3 (every signature other
+  than the subject key's passes, §9.4 included) governs a key's validity window, decided
+  where material is used. A declaration with an undeclared or compromised cosigner, and an
+  untrusted declaration, used to govern it and could make later declarations and records
+  `E_KEY_EXPIRED`.
+- **Cost of §5.3 admission** (F88): admission is settled once per declaration, over the
+  strongly connected components of the cosignature graph (dependencies first, a worklist to
+  the least fixed point inside a component), and Ed25519 equations are memoised. A graph in
+  which every declaration is cosigned by the two before it took time exponential in its
+  length (22 declarations: 26 s), a chain took quadratic time (600 links: 52 s) and one call-
+  stack level per link; both now take under a second.
+
 ## H1-S3 (Rust follow-up of S2-FIX4 and S2-FIX5) — 2026-11-16 — DRAFT, UNRELEASED
 
 Decision 2026-11-16 #10: the Rust verifier follows S2-FIX4 and S2-FIX5 (decisions
