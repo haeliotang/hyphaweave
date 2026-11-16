@@ -114,7 +114,9 @@ parent specification Appendix A):
    At that time: a grant or ancestor revoked (`effective_at <= recorded_at`, equality
    counts) → `E_GRANT_REVOKED` (unverifiable); a grant or ancestor outside its validity
    window → `E_GRANT_EXPIRED` (unverifiable). Any failing link makes the whole chain
-   unverifiable (R1). When the verified record is itself a grant, its **own** window and its
+   unverifiable (R1). Revocation is judged over the whole chain before any window: a link
+   revoked anywhere is `E_GRANT_REVOKED` even when a nearer link is outside its window
+   [S2-FIX6] decided by principle (Inceptless decision 2026-11-16 #13). When the verified record is itself a grant, its **own** window and its
    own revocation are not compared against its own `recorded_at` — only its ancestors are —
    so a grant may be issued for future effect; a covered record is judged at its own
    `recorded_at`, so one before the grant's `valid_from` is `E_GRANT_EXPIRED` [S9] decided
@@ -182,7 +184,7 @@ such signature exists the record is `unverifiable` (`E_SIG_UNVERIFIABLE`) or inv
 | `E_ENV_STAGE` | invalid | stage is not `accepted` |
 | `E_GRANT_SCHEMA` | invalid | body shape, variant pairing, member grammar, duplicate list elements |
 | `E_KEY_VALIDITY` | invalid | `valid_from > valid_until` in the `grant` variant |
-| `E_GRANT_GRANTER` | invalid | granter not permitted: parent not an authorising `weave.grant` covering `weave.grant`/`grant`, parent grantee not the sub-granter, parent outside window or revoked at evaluated time, or (non-empty `sigs`) required granter signature missing/wrong |
+| `E_GRANT_GRANTER` | invalid | granter not permitted: parent not an authorising `weave.grant` covering `weave.grant`/`grant`, parent grantee not the sub-granter, or (non-empty `sigs`) required granter signature missing/wrong |
 | `E_GRANT_NOT_TRANSFERABLE` | invalid | parent `transferable` is false |
 | `E_GRANT_DELEGATION_EXCEEDS` | invalid | child `kinds`/`actions`/`scope` not a subset, or window outside the parent |
 | `E_GRANT_REVOKE_SIGNER` | invalid | revocation signer not in the `revocation` list, not the granter, and not a provable rotation successor |

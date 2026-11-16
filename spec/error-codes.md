@@ -62,7 +62,11 @@
 > material, F72), `E_KEY_ROTATION_KEYS` (a missing `new_public_key`, F74),
 > `E_CONTAINER_ENTRY` / `E_CONTAINER_ZIP` (reported together in step (1), F75), the §10.3
 > erasure codes (F80, F82 and the `sigs`-absent erasure record) and `L_LABELS_ARE_CLAIMS` /
-> `L_ERASED_*` (facts about the records as parsed, F78).
+> `L_ERASED_*` (facts about the records as parsed, F78). Decision 2026-11-16 #13 (S2-FIX6)
+> is folded into revision 7 too; it adds no code, removes from `E_GRANT_GRANTER` the
+> parent outside its window or revoked (those are `E_GRANT_EXPIRED` / `E_GRANT_REVOKED`,
+> §5.5.2 step 6) and sharpens `E_GRANT_REVOKED` (revocation is judged over the whole chain
+> before any window).
 
 > Every code is a fixed ASCII identifier. Human-readable messages are not part of the
 > format and MUST NOT be used for machine decisions (they may change without a format
@@ -179,13 +183,13 @@ as `valid`.
 | `E_KEY_REVOKED` | invalid | A signature was made after a `retired`/`other` revocation's `effective_at` (claimed `recorded_at`; equality counts as revoked). The `retired`/`other` family and the `key-compromise` family are independent: when this code applies it is the record's outcome and **no timestamp evidence can rescue it**, even if a compromise revocation also exists (T2). |
 | `E_KEY_COMPROMISED` | invalid | A signature by a `key-compromise`-revoked key cannot be rescued: either there is **no timestamp evidence at all** (single record target, no listed receipts, claimed level below L2), or verified trusted receipt evidence exists but none satisfies the strict `genTime + accuracy < T` bound. If receipts are present but none is verified, trusted and usable (for example no matching `--tsa-trust` anchor, or every receipt has an unusable accuracy per T3), the outcome is `unverifiable` with `E_TS_UNTRUSTED`, not this code. The claimed `recorded_at` is never evidence. |
 | `E_GRANT_SCHEMA` | invalid | A `weave.grant` body does not match its registered schema (wrong action variant, missing/extra variant members, invalid lists, duplicate list elements). |
-| `E_GRANT_GRANTER` | invalid | The granter is not permitted to issue this grant given the resolved context: the parent grant record is present but its own verdict is invalid (specification §5.5.2 step 1, first tier; likewise a record's cited grant, §5.4; S2-FIX2 U2), the resolved parent grant is not an authorising `weave.grant` covering kind `weave.grant`/action `grant`, its `grantee.key` is not the sub-granter's `actor.key`, the parent is outside its validity window or revoked at the evaluated time, the actor/signing-key class does not permit issuing a grant, or (for a `weave.grant` record with `action == "grant"` and non-empty `sigs`) the required granter signature is missing/wrong. An unresolvable parent is `E_GRANT_UNRESOLVED`. |
+| `E_GRANT_GRANTER` | invalid | The granter is not permitted to issue this grant given the resolved context: the parent grant record is present but its own verdict is invalid (specification §5.5.2 step 1, first tier; likewise a record's cited grant, §5.4; S2-FIX2 U2), the resolved parent grant is not an authorising `weave.grant` covering kind `weave.grant`/action `grant`, its `grantee.key` is not the sub-granter's `actor.key`, the actor/signing-key class does not permit issuing a grant, or (for a `weave.grant` record with `action == "grant"` and non-empty `sigs`) the required granter signature is missing/wrong. An unresolvable parent is `E_GRANT_UNRESOLVED`. |
 | `E_GRANT_NOT_TRANSFERABLE` | invalid | A delegated sub-grant cites a parent grant whose `transferable` is false. |
 | `E_GRANT_DELEGATION_EXCEEDS` | invalid | A delegated sub-grant exceeds its parent: `kinds`, `actions` or `scope` is not a subset, or its validity window extends outside the parent's. |
 | `E_GRANT_REVOKE_SIGNER` | invalid | A grant-revocation record is not signed by a key authorised to revoke: neither in the target grant's `grant.revocation` list (when present) nor the original granter's `actor.key` nor an explicit rotation successor of that key (a cycle in the key-id graph counts as no match). |
 | `E_GRANT_REVOKE_REF` | invalid | A grant-revocation record's `revokes` reference does not resolve to a `weave.grant` record with matching digest. |
 | `E_GRANT_UNRESOLVED` | unverifiable | A grant's parent, or a record's cited authorisation, cannot be resolved or checked in the verification context: absent, or present but not valid for a reason other than an invalid verdict (an invalid one is `E_GRANT_GRANTER`, S2-FIX2 U2) (including a chain deeper than the supported bound and a `program`/`device` grant record that cannot carry `actor.grant`). |
-| `E_GRANT_REVOKED` | unverifiable | A record or grant cites an authorisation that was revoked at the evaluated time (`effective_at <= recorded_at`; equality counts as revoked). |
+| `E_GRANT_REVOKED` | unverifiable | A record or grant cites an authorisation that was revoked at the evaluated time (`effective_at <= recorded_at`; equality counts as revoked). A revoked link anywhere in the chain gives this code even when a nearer link is outside its window (specification §5.5.2 step 6; S2-FIX6). |
 | `E_GRANT_EXPIRED` | unverifiable | A record or grant cites an authorisation that is outside its validity window at the evaluated time (expired or not yet valid). |
 | `E_GRANT_GRANTEE_MISMATCH` | invalid | A record's `actor.key` is not the `grantee.key` of the grant it cites for authorisation. |
 | `E_GRANT_NOT_APPLICABLE` | invalid | A record's kind or stage action is not covered by its cited authorisation. |
