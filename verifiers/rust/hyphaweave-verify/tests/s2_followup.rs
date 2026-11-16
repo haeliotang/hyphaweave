@@ -679,3 +679,69 @@ fn cosignature_cycle_supplies_no_material() {
     }
     assert_eq!(report.records.len(), 2);
 }
+
+/// §5.3 "Material for a signature check", §9.1 rule 3 (S2-FIX5, decision
+/// 2026-11-16 #9): an owner resolves only through a declaration that passes
+/// the structural group and whose other signatures all pass. human-2's only
+/// declaration is cosigned by key-old, which nothing declares, so it does
+/// not resolve as an owner: a device declaration naming it, signed by the
+/// device key alone, is unverifiable `E_KEY_UNKNOWN`. With human-2's
+/// declaration cosigned by human-1 (a keyset root) the owner resolves and
+/// the same device declaration is `E_KEY_DECLARED_NOT_COSIGNED`.
+#[test]
+fn owner_resolves_only_through_a_declaration_that_supplies_material() {
+    let device_declaration = || {
+        let mut body = Object::new();
+        body.insert("algorithm", "ed25519");
+        body.insert("key", key_id("device-1"));
+        body.insert("key_type", "device");
+        body.insert("owner", key_id("human-2"));
+        body.insert(
+            "public_key",
+            b64::encode(&ed25519::public_key_from_seed(&seed("device-1"))),
+        );
+        let mut origin = Object::new();
+        origin.insert("project", "example");
+        origin.insert("instance", key_id("device-1"));
+        let mut actor = Object::new();
+        actor.insert("key", key_id("device-1"));
+        actor.insert("type", "device");
+        let mut object = Object::new();
+        object.insert("actor", Value::Object(actor));
+        object.insert("body", Value::Object(body));
+        object.insert("format", "weave-record/1");
+        object.insert("id", "s2-fix5-owned-device");
+        object.insert("kind", "weave.key.declared");
+        object.insert("origin", Value::Object(origin));
+        object.insert("recorded_at", "2026-11-03T00:00:00.000Z");
+        object.insert("stage", "accepted");
+        signed(object, &["device-1"])
+    };
+    let mut options = VerifyOptions::new();
+    options.keyset.push(
+        fs::read(vectors_root().join("keys/keyset/key-declared-human-1.json")).expect("root"),
+    );
+    for (cosigner, expected) in [
+        ("key-old", e::KEY_UNKNOWN),
+        ("human-1", e::KEY_DECLARED_NOT_COSIGNED),
+    ] {
+        let owner = human_declaration(
+            "s2-fix5-owner",
+            "human-2",
+            "2026-11-02T00:00:00.000Z",
+            cosigner,
+        );
+        let files = l0_container(&[owner, device_declaration()]);
+        let report = verify_container(ContainerInput::Files(files), &options).expect("container");
+        let device = report
+            .records
+            .iter()
+            .find(|record| record.id.as_deref() == Some("s2-fix5-owned-device"))
+            .expect("device declaration");
+        assert_eq!(
+            device.errors,
+            vec![expected],
+            "owner cosigned by {cosigner}"
+        );
+    }
+}
