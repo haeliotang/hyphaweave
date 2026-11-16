@@ -91,6 +91,10 @@ class Mutation:
     #: this site *and* the co-sites together and requires the vectors to go red; that
     #: proves the semantic is pinned even though one redundant site is invisible alone.
     co_mutations: tuple[tuple[str, str, str], ...] = ()
+    #: S3-FIX1 (review A low-2): the vectors this mutation turns red must be
+    #: *exactly* ``pinned_by``, not merely some vector; a kill whose red set differs
+    #: (a vector missing, or one more) is a catalogue error.
+    exact_pinned: bool = False
 
 
 @dataclass
@@ -130,6 +134,7 @@ def _m(
     replace_all: bool = False,
     equivalent_reason: str = "",
     co_mutations: tuple[tuple[str, str, str], ...] = (),
+    exact_pinned: bool = False,
 ) -> Mutation:
     return Mutation(
         id=mid,
@@ -144,6 +149,7 @@ def _m(
         replace_all=replace_all,
         equivalent_reason=equivalent_reason,
         co_mutations=co_mutations,
+        exact_pinned=exact_pinned,
     )
 
 
@@ -2401,14 +2407,16 @@ def _build_s3_catalogue() -> None:
              "        if not encoding.is_digest_string(blob[\"digest\"]):\n",
              "        if False:  # ablation: digest-string grammar not checked\n",
              (_C + "blobs-listing-uppercase-hex", _C + "blobs-listing-digest-without-algorithm",
-              _C + "blobs-listing-algorithm-name-malformed", _C + "blobs-listing-hex-too-long")),
+              _C + "blobs-listing-algorithm-name-malformed", _C + "blobs-listing-hex-too-long"),
+             exact_pinned=True),
         _lit("s3-blob-unsupported-schema", "manifest.py", "s3.blob-listing-blob",
              "S3: report a well-formed non-sha256 blob digest as E_MANIFEST_SCHEMA",
              _S3_UNSUPPORTED,
              "        if not encoding.is_supported_digest(blob[\"digest\"]):\n"
              "            _fail(\"E_MANIFEST_SCHEMA\", \"ablation\")\n",
              (_C + "blobs-listing-unsupported-algorithm", _C + "blobs-listing-sha256-wrong-length",
-              _C + "blobs-listing-unsupported-then-malformed")),
+              _C + "blobs-listing-unsupported-then-malformed"),
+             exact_pinned=True),
         _lit("s3-blob-unsupported-after-entries", "manifest.py", "s3.blob-listing-order",
              "S3: check the sha256 form only after every entry is well-formed (two passes)",
              _S3_UNSUPPORTED
@@ -2417,7 +2425,8 @@ def _build_s3_catalogue() -> None:
              "    for blob_entry in blobs:\n"
              "        if not encoding.is_supported_digest(blob_entry.digest):\n"
              "            _fail(\"E_MANIFEST_BLOB\", \"ablation\")\n",
-             (_C + "blobs-listing-unsupported-then-malformed",)),
+             (_C + "blobs-listing-unsupported-then-malformed",),
+             exact_pinned=True),
         _lit("s3-blob-order-schema", "manifest.py", "s3.blob-listing-blob",
              "S3: report an out-of-order or repeated blob digest as E_MANIFEST_SCHEMA",
              "                \"E_MANIFEST_BLOB\",\n"
@@ -2426,7 +2435,8 @@ def _build_s3_catalogue() -> None:
              "                \"E_MANIFEST_SCHEMA\",\n"
              "                \"manifest.blobs must be sorted by digest ascending with unique "
              "digests\",\n",
-             (_C + "blobs-listing-out-of-order", _C + "blobs-listing-duplicate-digest")),
+             (_C + "blobs-listing-out-of-order", _C + "blobs-listing-duplicate-digest"),
+             exact_pinned=True),
         _lit("s3-blob-misnamed-files-ignored", "container.py", "s3.blob-files",
              "S3: ignore the files in blobs/ that are not blobs/sha256/<64 lowercase hex> "
              "when blobs are listed",
@@ -2436,18 +2446,149 @@ def _build_s3_catalogue() -> None:
              "",
              (_C + "blobs-extra-file-not-a-digest", _C + "blobs-extra-file-not-a-digest-zip",
               _C + "blobs-extra-file-hex-65", _C + "blobs-extra-file-at-blobs-root",
-              _C + "blobs-extra-file-uppercase-hex-zip")),
+              _C + "blobs-extra-file-uppercase-hex-zip"),
+             exact_pinned=True),
         _lit("s3-blob-tree-from-files-only", "container.py", "s3.blob-files",
              "S3: decide that blobs/ is present from streamed blobs and directory entries "
              "only (a zip without listing whose only blobs/ file is misnamed passes)",
              "        or bool(unstreamed)\n",
              "",
-             (_C + "blobs-no-listing-extra-file-zip",)),
+             (_C + "blobs-no-listing-extra-file-zip",),
+             exact_pinned=True),
+    )
+
+
+def _build_s3_fix1_catalogue() -> None:
+    """S3-FIX1 (decision 2026-11-17 #5): each Python change of the revision turned off.
+
+    Every entry is ``exact_pinned``: the vectors it turns red are exactly its
+    ``pinned_by`` (review A low-2). The H1 changes of the round are reverse-verified
+    on the Rust side (cp + touch + cmp), not here.
+    """
+    _add(
+        _lit("s3f-zip-directory-entries-layout", "container.py", "s3f.zip-directory",
+             "S3-FIX1/Z1: zip directory entries take part in the layout again (and make "
+             "blobs/ present through blobs/ itself), as before the fix",
+             "        is_zip=True,\n"
+             "        readable_present=readable_present,\n"
+             "        oversized_timestamps=oversized_timestamps,\n",
+             "        is_zip=True,\n"
+             "        readable_present=readable_present,\n"
+             "        directory_entries={e.name.rstrip(\"/\") for e in archive.entries"
+             " if e.is_directory},\n"
+             "        oversized_timestamps=oversized_timestamps,\n",
+             (_C + "zip-directory-entry-outside-layout",
+              _C + "blobs-directory-entry-unknown-listed-zip",
+              _C + "blobs-directory-entry-unknown-unlisted-zip",
+              _C + "blobs-directory-entry-sha256-subdirectory-listed-zip",
+              _C + "blobs-directory-entry-sha256-subdirectory-unlisted-zip",
+              _C + "blobs-directory-entries-empty-listing-zip"),
+             exact_pinned=True),
+        _lit("s3f-zip-directory-entry-blobs-presence", "container.py", "s3f.zip-directory",
+             "S3-FIX1/Z1 (review A low-3 X1): a zip directory entry below blobs/ makes blobs/ "
+             "present again (the S3 'directory.startswith(\"blobs/\")' reading), the layout "
+             "left as fixed",
+             "        is_zip=True,\n"
+             "        readable_present=readable_present,\n"
+             "        oversized_timestamps=oversized_timestamps,\n",
+             "        is_zip=True,\n"
+             "        readable_present=readable_present,\n"
+             "        directory_entries={\"blobs\"} if any(e.is_directory and "
+             "e.name.startswith(\"blobs/\") for e in archive.entries) else set(),\n"
+             "        oversized_timestamps=oversized_timestamps,\n",
+             (_C + "blobs-directory-entry-unknown-unlisted-zip",
+              _C + "blobs-directory-entry-sha256-subdirectory-unlisted-zip",
+              _C + "blobs-directory-entry-sha256-only-zip",
+              _C + "blobs-directory-entries-empty-listing-zip"),
+             exact_pinned=True),
+        _lit("s3f-zip-directory-entry-path-safety", "container.py", "s3f.zip-directory",
+             "S3-FIX1/Z2: directory entries skip the path-safety, symbolic-link and "
+             "duplicate-name checks again",
+             "                checked_name = entry.name[:-1] if entry.is_directory else entry.name\n",
+             "                if entry.is_directory:\n"
+             "                    continue\n"
+             "                checked_name = entry.name\n",
+             (_C + "zip-directory-entry-dotdot", _C + "zip-directory-entry-dotdot-nested",
+              _C + "zip-directory-entry-absolute"),
+             exact_pinned=True),
+        _lit("s3f-idempotency-actor-key", "container.py", "s3f.cross-record",
+             "S3-FIX1/R1: compare actor.key as well when pairing idempotency claims",
+             "            envelope.origin.instance,\n"
+             "            idempotency_key,\n"
+             "        )\n",
+             "            envelope.origin.instance,\n"
+             "            envelope.actor_key,\n"
+             "            idempotency_key,\n"
+             "        )\n",
+             ("actor/idempotency-duplicate-other-signer",),
+             exact_pinned=True),
+        _lit("s3f-idempotency-full-envelope", "container.py", "s3f.cross-record",
+             "S3-FIX1/R1: only records whose sigs also pass take part in the idempotency notice",
+             "        envelope = _structural_envelope(view)\n"
+             "        if envelope is None:\n"
+             "            continue\n",
+             "        envelope = view.envelope\n"
+             "        if envelope is None:\n"
+             "            continue\n",
+             ("actor/idempotency-duplicate-sigs-malformed",),
+             exact_pinned=True),
+        _lit("s3f-local-only-full-envelope", "container.py", "s3f.cross-record",
+             "S3-FIX1/R3: only records whose sigs also pass count for the local-only export rule",
+             "        envelope = _structural_envelope(view)\n"
+             "        if envelope is not None and envelope.sensitivity == \"local-only\":\n",
+             "        envelope = view.envelope\n"
+             "        if envelope is not None and envelope.sensitivity == \"local-only\":\n",
+             ("labels/local-only-exported-sigs-malformed",),
+             exact_pinned=True),
+        _lit("s3f-digest-algorithm-name", "encoding.py", "s3f.digest-grammar",
+             "S3-FIX1/D1: digest strings accept any non-empty algorithm name (no §2.7 "
+             "algorithm-name pattern, no 32-byte bound)",
+             "        and grammar.is_algorithm_name(algorithm)\n",
+             "        and bool(algorithm)\n",
+             (_C + "blobs-listing-algorithm-name-malformed",
+              "ref/digest-algorithm-name-malformed",
+              "erasure/placeholder-digest-algorithm-name-malformed"),
+             exact_pinned=True),
+        _lit("s3f-digest-hex-bound", "encoding.py", "s3f.digest-grammar",
+             "S3-FIX1/D1: digest strings accept more than 128 hexadecimal digits",
+             "DIGEST_HEX_PATTERN = re.compile(r\"[0-9a-f]{1,128}\")\n",
+             "DIGEST_HEX_PATTERN = re.compile(r\"[0-9a-f]+\")\n",
+             (_C + "blobs-listing-hex-too-long", "ref/digest-hex-too-long",
+              "erasure/placeholder-digest-hex-too-long"),
+             exact_pinned=True),
+        _lit("s3f-blob-count-after-entries", "manifest.py", "s3.blob-listing-order",
+             "S3 (review A ablation X3): check the MAX_BLOBS count only after every entry",
+             "    if len(blobs_value) > MAX_BLOBS:\n"
+             "        _fail(\"E_MANIFEST_SCHEMA\", \"manifest.blobs has too many entries\")\n"
+             "    blobs: list[BlobEntry] = []\n"
+             "    for blob in blobs_value:\n",
+             "    blobs: list[BlobEntry] = []\n"
+             "    for blob in [*blobs_value, None]:\n"
+             "        if blob is None:\n"
+             "            if len(blobs_value) > MAX_BLOBS:\n"
+             "                _fail(\"E_MANIFEST_SCHEMA\", \"manifest.blobs has too many entries\")\n"
+             "            break\n",
+             (_C + "blobs-listing-too-many-first-unsupported",),
+             exact_pinned=True),
+        _lit("s3f-blob-oversized-not-extra", "container.py", "s3.blob-files",
+             "S3 (review A low-3 X2): a blob file above MAX_BLOB_BYTES is not counted as a "
+             "file that is not a listed blob",
+             "        for path in (*container_input.files, *container_input.oversized)\n"
+             "        if path.startswith(\"blobs/\")\n",
+             "        for path in (*container_input.files,)\n"
+             "        if path.startswith(\"blobs/\")\n",
+             (),
+             equivalent_reason="MAX_BLOB_BYTES and MAX_CONTAINER_UNCOMPRESSED_BYTES are both "
+             "1 GiB (§13): a blob file above MAX_BLOB_BYTES also puts the container over the "
+             "container total, which entry enumeration reports first (E_CONTAINER_SIZE, step "
+             "(1), both forms), so an oversized blob never reaches the blob step; and no vector "
+             "can carry a file above 1 GiB"),
     )
 
 
 _build_s2_catalogue()
 _build_s3_catalogue()
+_build_s3_fix1_catalogue()
 
 
 # ----------------------------------------------------------------------------- runner
@@ -2602,10 +2743,12 @@ def run_mutation(mutation: Mutation, suite: Path) -> MutationResult:
                 report = None
         mismatched = 0
         mismatch_ids: list[str] = []
+        all_mismatch_ids: list[str] = []
         if report is not None:
             for case in report.get("cases") or []:
                 if not case.get("ok"):
                     mismatched += 1
+                    all_mismatch_ids.append(str(case.get("id")))
                     if len(mismatch_ids) < 5:
                         mismatch_ids.append(str(case.get("id")))
         # V2d: no gate counts a crash as a rejection or a kill. A mutation that
@@ -2625,6 +2768,22 @@ def run_mutation(mutation: Mutation, suite: Path) -> MutationResult:
                 exit_code=proc.returncode,
             )
         killed = proc.returncode != 0 or report.get("verdict") != "valid"
+        if killed and mutation.exact_pinned and set(all_mismatch_ids) != set(mutation.pinned_by):
+            # S3-FIX1 (review A low-2): the red vectors must be exactly pinned_by.
+            return MutationResult(
+                mutation,
+                "error",
+                detail="red vectors differ from pinned_by: not pinned %s, pinned but green %s"
+                % (
+                    sorted(set(all_mismatch_ids) - set(mutation.pinned_by)),
+                    sorted(set(mutation.pinned_by) - set(all_mismatch_ids)),
+                ),
+                imported_file=resolved,
+                exit_code=proc.returncode,
+                report_verdict=(report or {}).get("verdict"),
+                mismatched_cases=mismatched,
+                mismatched_case_ids=tuple(mismatch_ids),
+            )
         if killed:
             detail = "vectors no longer match (rc=%d, %d mismatched case(s))" % (
                 proc.returncode,
@@ -2856,6 +3015,7 @@ def main(argv: list[str] | None = None) -> int:
                 "review_a_survivor": item.mutation.review_a_survivor,
                 "equivalent_reason": item.mutation.equivalent_reason,
                 "co_mutations": len(item.mutation.co_mutations),
+                "exact_pinned": item.mutation.exact_pinned,
                 "status": item.status,
                 "detail": item.detail,
                 "imported_file": item.imported_file,

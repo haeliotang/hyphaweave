@@ -4368,6 +4368,176 @@ declare(
     "container.",
 )
 
+# ---------------------------------------------------------------------------
+# S3-FIX1 (decision 2026-11-17 #5): the idempotency notice and the local-only
+# export rule read every record whose envelope structure passes (§5.4, §8.5), and
+# a reference digest obeys the whole §2.7 grammar. The container and key cases of
+# the same round are in tools/gen_vectors_extra.py.
+# ---------------------------------------------------------------------------
+
+_S3F = "S3-FIX1 (decision 2026-11-17 #5)"
+
+
+def _s3f_idempotency_records(
+    *, second_key: str = "agent-1", malformed_sigs: bool = False
+) -> list[dict[str, Any]]:
+    """A grant and two agent notes of the same origin and idempotency key."""
+    grant = root_grant(grant_id="grant-s3f-1", actions=("propose",), kinds=("example.note",))
+
+    def note(record_id: str, key_name: str) -> dict[str, Any]:
+        actor = recordlib.agent_actor(
+            key_name, grant=grant_ref(grant), idempotency_key="idem-s3f-shared"
+        )
+        record = recordlib.build_record(
+            kind="example.note",
+            id=record_id,
+            actor=actor,
+            body={"text": "synthetic agent note"},
+            stage="proposed",
+            origin_instance=_kid("agent-1"),
+        )
+        return recordlib.signed(record, key_name)
+
+    second = note("s3f-idem-b", second_key)
+    if malformed_sigs:
+        second = {**second, "sigs": [{**second["sigs"][0], "key": 1000}]}
+    return [grant, note("s3f-idem-a", "agent-1"), second]
+
+
+declare(
+    "actor",
+    "idempotency-duplicate-sigs-malformed",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ENV_SIGS",),
+    build=lambda: build_container(_s3f_idempotency_records(malformed_sigs=True)),
+    args=("--keys", "@keyset"),
+    notices=("N_IDEMPOTENCY_DUPLICATE",),
+    records=(
+        {"id": "grant-s3f-1", "verdict": "valid", "errors": []},
+        {"id": "s3f-idem-a", "verdict": "valid", "errors": []},
+        {"id": "s3f-idem-b", "verdict": "invalid", "errors": ["E_ENV_SIGS"]},
+    ),
+    notes=_S3F + ", review A medium-3 R1: two agent notes of the same origin carry the same "
+    "actor.idempotency_key; the second one's sigs entry has the key 1000 (not a string), so "
+    "it fails record step (3) (E_ENV_SIGS). Its envelope structure (step (2)) passes, so it "
+    "still carries the claim, and the container reports N_IDEMPOTENCY_DUPLICATE (§5.4). The "
+    "Python verifier skipped such records before the fix.",
+)
+
+declare(
+    "actor",
+    "idempotency-duplicate-other-signer",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_GRANT_GRANTEE_MISMATCH",),
+    build=lambda: build_container(_s3f_idempotency_records(second_key="agent-2")),
+    args=("--keys", "@keyset"),
+    notices=("N_IDEMPOTENCY_DUPLICATE",),
+    records=(
+        {"id": "grant-s3f-1", "verdict": "valid", "errors": []},
+        {"id": "s3f-idem-a", "verdict": "valid", "errors": []},
+        {"id": "s3f-idem-b", "verdict": "invalid", "errors": ["E_GRANT_GRANTEE_MISMATCH"]},
+    ),
+    notes=_S3F + ", review A medium-3 R1b: two agent notes of the same origin carry the same "
+    "actor.idempotency_key; the second one is by agent-2, whom the grant does not name "
+    "(E_GRANT_GRANTEE_MISMATCH). The pair is decided by the origin and the idempotency key "
+    "alone, not by actor.key, so the container reports N_IDEMPOTENCY_DUPLICATE (§5.4). The "
+    "Python verifier also compared actor.key before the fix.",
+)
+
+declare(
+    "labels",
+    "local-only-exported-sigs-malformed",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_ENV_SIGS", "E_LABEL_LOCAL_ONLY_EXPORTED"),
+    build=lambda: build_container(
+        [
+            {
+                **recordlib.note(
+                    "s3f-local-only-1",
+                    labels={"sensitivity": "local-only"},
+                    salt=TEST_SALT,
+                ),
+                "sigs": [{"alg": "ed25519", "key": 1000, "value": ""}],
+            }
+        ]
+    ),
+    args=("--keys", "@keyset"),
+    expected_container={"errors": ["E_LABEL_LOCAL_ONLY_EXPORTED"]},
+    records=({"id": "s3f-local-only-1", "verdict": "invalid", "errors": ["E_ENV_SIGS"]},),
+    notes=_S3F + " (S3-FIX1/R3, the reading of R1): the container's only record carries "
+    "labels.sensitivity local-only and a sigs entry whose key is 1000 (E_ENV_SIGS at record "
+    "step (3)). Its envelope structure passes, so it is a record exported with the label and "
+    "the container is E_LABEL_LOCAL_ONLY_EXPORTED (§8.5). The Python verifier skipped such "
+    "records before the fix.",
+)
+
+
+def _s3f_note_with_reference(record_id: str, digest: str) -> dict[str, Any]:
+    return recordlib.note(
+        record_id,
+        refs=[
+            {
+                "rel": "derived_from",
+                "ref": recordlib.make_ref(_kid("human-1"), "future-record", digest),
+            }
+        ],
+    )
+
+
+for _s3f_name, _s3f_digest, _s3f_what in (
+    (
+        "digest-algorithm-name-malformed",
+        "sha--256:ab",
+        "the algorithm name 'sha--256' breaks the §2.7 algorithm-name grammar",
+    ),
+    (
+        "digest-hex-too-long",
+        "sha512:" + "0" * 129,
+        "the hexadecimal part has 129 digits; §2.7 allows at most 128",
+    ),
+):
+    declare(
+        "ref",
+        _s3f_name,
+        "record",
+        "record.json",
+        "invalid",
+        errors=("E_ENV_REFS",),
+        build=lambda name=_s3f_name, digest=_s3f_digest: rec(
+            _s3f_note_with_reference("s3f-" + name, digest)
+        ),
+        args=("--keys", "@keyset"),
+        notes=_S3F + ", review B medium-2: the record's reference digest is not a digest "
+        "string: " + _s3f_what + ". A malformed reference digest is E_ENV_REFS (§2.7, §6.1); "
+        "it is not an unknown algorithm (compare ref/unknown-digest-algorithm). The Python "
+        "verifier read this as an unsupported algorithm before the fix.",
+    )
+
+declare(
+    "ref",
+    "digest-sha256-wrong-length",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda: rec(
+        _s3f_note_with_reference("s3f-digest-sha256-wrong-length", "sha256:" + "0" * 63)
+    ),
+    args=("--keys", "@keyset"),
+    notices=("N_REF_UNVERIFIABLE",),
+    expected_resolution=("unverifiable",),
+    notes=_S3F + " (§2.7): the record's reference digest is 'sha256:' with 63 hex digits. "
+    "The 64 digits of sha256 are a requirement of that algorithm, not of the grammar, so this "
+    "is a well-formed digest string that the format cannot compute: the reference is "
+    "unverifiable like one with an unknown algorithm, and the record is not invalid.",
+)
+
+
 # === END CASE SECTIONS ===
 
 

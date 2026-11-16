@@ -16969,6 +16969,249 @@ for _s3_name, _s3_path, _s3_zip in (
     )
 
 
+# ---------------------------------------------------------------------------
+# S3-FIX1: zip directory entries, two older disagreements between the reference
+# verifiers, and the digest-string grammar (§2.7, §9.1, §11.1, §11.7, §11.9;
+# decision 2026-11-17 #5)
+# ---------------------------------------------------------------------------
+#
+# In the zip form a zero-data directory entry takes no part in the layout or in
+# whether blobs/ is present (§11.9 rule 4): blobs/ is present only through a file
+# entry. It still passes the path-safety, symbolic-link and duplicate-name checks,
+# so ../x/ or /abs/ is E_CONTAINER_ENTRY. A declaration signed only with unknown
+# algorithms whose owner resolves but is not trusted is E_KEY_UNTRUSTED, not the
+# step-5 E_SIG_UNVERIFIABLE. Every reader of a digest string applies the whole §2.7
+# grammar. The actor, labels and ref cases of the round (the idempotency notice and
+# the local-only rule over every record whose envelope structure passes, §5.4, §8.5;
+# reference digests) are in tools/gen_vectors.py, which owns those categories.
+
+_S3F = "S3-FIX1 (decision 2026-11-17 #5)"
+_S3F_DIRECTORY_ATTR = (0o40755 << 16) | 0x10
+
+
+def _s3f_zip_with_directories(files: dict[str, bytes], *directories: str) -> dict[str, bytes]:
+    """The zip form of *files* plus zero-data directory entries after the files."""
+    return {
+        "container.zip": _zip_entries(
+            files, extra=tuple((name, b"", 3, _S3F_DIRECTORY_ATTR) for name in directories)
+        )
+    }
+
+
+# -- Zero-data directory entries are ignored for the layout and for whether blobs/
+#    is present: valid (S3-FIX1/Z1).
+
+for _s3f_name, _s3f_listing, _s3f_directories, _s3f_what in (
+    (
+        "zip-directory-entry-outside-layout",
+        "absent",
+        ("foo/",),
+        "a zip without blobs holds one more entry, the zero-data directory entry foo/",
+    ),
+    (
+        "blobs-directory-entry-unknown-listed-zip",
+        "listed",
+        ("blobs/sha512/",),
+        "blob A is listed and stored, and the zip also holds the zero-data directory entry "
+        "blobs/sha512/",
+    ),
+    (
+        "blobs-directory-entry-unknown-unlisted-zip",
+        "absent",
+        ("blobs/sha512/",),
+        "a zip without manifest.blobs holds the zero-data directory entry blobs/sha512/ and "
+        "no file in blobs/",
+    ),
+    (
+        "blobs-directory-entry-sha256-subdirectory-listed-zip",
+        "listed",
+        ("blobs/sha256/sub/",),
+        "blob A is listed and stored, and the zip also holds the zero-data directory entry "
+        "blobs/sha256/sub/",
+    ),
+    (
+        "blobs-directory-entry-sha256-subdirectory-unlisted-zip",
+        "absent",
+        ("blobs/sha256/sub/",),
+        "a zip without manifest.blobs holds the zero-data directory entry blobs/sha256/sub/ "
+        "and no file in blobs/",
+    ),
+    (
+        "blobs-directory-entry-sha256-only-zip",
+        "absent",
+        ("blobs/sha256/",),
+        "a zip without manifest.blobs holds the zero-data directory entry blobs/sha256/ and "
+        "no file in blobs/ (review B low-3)",
+    ),
+    (
+        "blobs-directory-entries-empty-listing-zip",
+        "empty",
+        ("blobs/", "blobs/sha256/"),
+        "manifest.blobs is the empty array and the zip holds the zero-data directory entries "
+        "blobs/ and blobs/sha256/, and no file in blobs/",
+    ),
+):
+    declare(
+        "container",
+        _s3f_name,
+        "container",
+        "container.zip",
+        "valid",
+        build=lambda case_dir, listing=_s3f_listing, directories=_s3f_directories: (
+            _s3f_zip_with_directories(
+                _s3_container(_S3_BLOB_A)
+                if listing == "listed"
+                else (_s3_listing(_s3_container(), []) if listing == "empty" else _s3_container()),
+                *directories,
+            )
+        ),
+        args=("--keys", "@keyset"),
+        limitations=("L_OFFLINE_CONTEXT",),
+        expected_container={"level_claimed": "L0", "level_verified": "L0"},
+        records=_S3_RECORDS_VERIFIED,
+        notes=_S3F + ": " + _s3f_what + ". A zero-data directory entry of the zip form is "
+        "ignored for the layout of §11.1 and for whether blobs/ is present (§11.7 rule 3, "
+        "§11.9 rule 4): blobs/ is present only through a file entry. The directory form is "
+        "unchanged: a real directory outside the layout is E_CONTAINER_ENTRY, empty or not.",
+    )
+
+# -- A directory entry still passes the path-safety checks: E_CONTAINER_ENTRY
+#    (S3-FIX1/Z2; before the fix H1 skipped directory entries and accepted these).
+
+for _s3f_name, _s3f_directory in (
+    ("zip-directory-entry-dotdot", "../x/"),
+    ("zip-directory-entry-dotdot-nested", "a/../../x/"),
+    ("zip-directory-entry-absolute", "/abs/"),
+):
+    declare(
+        "container",
+        _s3f_name,
+        "container",
+        "container.zip",
+        "invalid",
+        errors=("E_CONTAINER_ENTRY",),
+        build=lambda case_dir, directory=_s3f_directory: _s3f_zip_with_directories(
+            _s3_container(), directory
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3F + ": a valid zip container also holds the zero-data directory entry "
+        + _s3f_directory
+        + ". A directory entry is ignored for the layout but not for path safety: its path, "
+        "the name without the final '/', has a '..' segment or is absolute, so the zip is "
+        "E_CONTAINER_ENTRY at entry enumeration (§11.9). The Rust verifier accepted this "
+        "zip before the fix.",
+    )
+
+
+# -- The MAX_BLOBS count is checked before any entry (§11.7 check order; review A
+#    ablation X3, which moved the count after the entries and stayed green).
+
+declare(
+    "container",
+    "blobs-listing-too-many-first-unsupported",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _s3_listing(
+        _s3_container(),
+        [{"digest": "sha512:" + "0" * 128, "size": 0}] + _s3_many_entries(10_000),
+    ),
+    args=("--keys", "@keyset"),
+    records=(),
+    notes=_S3F + ": manifest.blobs has 10,001 entries, one above MAX_BLOBS, and the first "
+    "one names a well-formed sha512 digest. The entry count is checked before any entry "
+    "(§11.7 check order), so the listing is E_MANIFEST_SCHEMA (§13, Q24), not the "
+    "E_MANIFEST_BLOB of the first entry; records is [].",
+)
+
+
+# -- §4.4 step 5 waits for the owner's trust (S3-FIX1/R2, review A medium-3 R2).
+
+
+def _s3f_owner_untrusted_records() -> list[dict[str, Any]]:
+    owner = _s2_declaration(
+        _FIX6_OWNER, record_id="key-declared-fix6-owner", key_type="human", owner=None,
+        recorded_at=recordlib.T0, cosigners=("agent-1",),
+    )
+    return [owner, _fix6_owned_device(unknown_algorithm=True)]
+
+
+declare(
+    "key-lifecycle",
+    "owner-untrusted-device-unknown-algorithm-only",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    build=lambda case_dir: container(_s3f_owner_untrusted_records()),
+    args=_S2_ARGS,
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {
+            "id": "key-declared-fix6-owned-device",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+            "sigs": [{"key": derived_key(_FIX6_DEVICE)[2], "state": "ignored"}],
+        },
+        {"id": "key-declared-fix6-owner", "verdict": "unverifiable", "errors": ["E_KEY_UNTRUSTED"]},
+    ),
+    notes=_S3F + ", review A medium-3 R2 (§9.1 rule 3, §4.4 step 5, §14.5): a device "
+    "declaration naming fix6-owner as its owner is signed only with the unknown algorithm "
+    "ed25519-x. The owner's only declaration is cosigned by agent-1, a declared key that is "
+    "not a trusted root: it supplies material, so the owner resolves, but it is not trusted "
+    "(E_KEY_UNTRUSTED). Whether the owner is trusted needs no signature of the device "
+    "declaration, so it is one of the other step-(7) rules and is reported instead of the "
+    "step-5 E_SIG_UNVERIFIABLE. The Rust verifier reported E_SIG_UNVERIFIABLE before the fix "
+    "(compare owner-resolves-device-unknown-algorithm-only, whose owner is trusted).",
+)
+
+
+# -- The whole §2.7 grammar wherever a digest string is read (S3-FIX1/D1, review B
+#    medium-2); the reference cases are in tools/gen_vectors.py.
+
+
+def _s3f_placeholder_with_digest(digest: str) -> list[dict[str, Any]]:
+    _original, attestation, placeholder = _fix3_org_erasure()
+    return [{**placeholder, "digest": digest}, attestation]
+
+
+for _s3f_name, _s3f_digest, _s3f_what in (
+    (
+        "placeholder-digest-algorithm-name-malformed",
+        "sha--256:" + "0" * 64,
+        "the algorithm name 'sha--256' breaks the §2.7 algorithm-name grammar",
+    ),
+    (
+        "placeholder-digest-hex-too-long",
+        "sha512:" + "0" * 129,
+        "the hexadecimal part has 129 digits; §2.7 allows at most 128",
+    ),
+):
+    declare(
+        "erasure",
+        _s3f_name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_ERASE_DIGEST_MISMATCH", "E_KIND_BODY_SCHEMA"),
+        build=lambda case_dir, digest=_s3f_digest: container(_s3f_placeholder_with_digest(digest)),
+        args=ERASURE_REVISION_ARGS,
+        expected_container={"errors": ["E_ERASE_DIGEST_MISMATCH"]},
+        records=(
+            {"id": "erasure-revision-original", "verdict": "invalid", "errors": ["E_KIND_BODY_SCHEMA"]},
+            {"id": "erasure-revision-attestation", "verdict": "valid", "errors": []},
+        ),
+        notes=_S3F + ", review B medium-2: the placeholder's digest is not a digest string: "
+        + _s3f_what
+        + ". The placeholder fails §4.5 (E_KIND_BODY_SCHEMA) and is not a placeholder for the "
+        "cross-checks, so the valid erasure record's erased reference resolves to no "
+        "placeholder: E_ERASE_DIGEST_MISMATCH (§10.3; as erasure/placeholder-malformed-only). "
+        "The Python verifier accepted the malformed digest before the fix.",
+    )
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,

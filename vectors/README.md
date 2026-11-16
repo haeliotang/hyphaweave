@@ -49,7 +49,7 @@ frozen candidate set is validated separately and is not part of the index).
 
 Authoritative source is `vectors/index.json`; regenerate with
 `tools/gen_index.py` after adding cases. At the time of writing (revision 3
-with the S1 rounds, the S2 round, S2-FIX1, S2-FIX2, S2-FIX2b and S2-FIX3 to S2-FIX6, and the S3 round, `weave-record/1` v0.1 draft, not
+with the S1 rounds, the S2 round, S2-FIX1, S2-FIX2, S2-FIX2b and S2-FIX3 to S2-FIX6, and the S3 round with S3-FIX1, `weave-record/1` v0.1 draft, not
 yet accepted by J1/J2):
 
 | category | cases |
@@ -57,18 +57,18 @@ yet accepted by J1/J2):
 | `jcs` | 35 |
 | `digest` | 5 |
 | `sig` | 49 |
-| `ref` | 15 |
+| `ref` | 18 |
 | `stage` | 18 |
-| `actor` | 33 |
-| `labels` | 42 |
-| `erasure` | 33 |
+| `actor` | 35 |
+| `labels` | 43 |
+| `erasure` | 35 |
 | `grant` | 56 |
-| `key-lifecycle` | 128 |
-| `container` | 180 |
+| `key-lifecycle` | 129 |
+| `container` | 191 |
 | `integrity-levels` | 183 |
-| **total** | **777** |
+| **total** | **797** |
 
-Verdict distribution: `valid` 151, `erased` 1, `invalid` 561, `unverifiable` 64.
+Verdict distribution: `valid` 159, `erased` 1, `invalid` 572, `unverifiable` 65.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
