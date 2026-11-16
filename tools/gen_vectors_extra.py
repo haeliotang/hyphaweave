@@ -16530,6 +16530,58 @@ for _variant in ("undeclared", "compromised"):
         )
 
 
+def _fix6_untrusted_window_records() -> list[dict[str, Any]]:
+    """Two self-attested human declarations of one derived key: D1 (T0, valid_until T1), D2 (T2)."""
+    private, public, key_id = derived_key("fix6-window-untrusted")
+    records = []
+    for suffix, recorded_at, valid_until in (("d1", recordlib.T0, recordlib.T1), ("d2", recordlib.T2, None)):
+        body: dict[str, Any] = {
+            "algorithm": "ed25519",
+            "key": key_id,
+            "key_type": "human",
+            "public_key": keyutil.b64url_encode(public),
+        }
+        if valid_until is not None:
+            body["valid_until"] = valid_until
+        record = recordlib.build_record(
+            kind="weave.key.declared", id="key-declared-fix6-window-untrusted-" + suffix,
+            actor={"type": "human", "key": key_id}, body=body, stage="accepted",
+            recorded_at=recorded_at, origin_instance=key_id,
+        )
+        records.append({**record, "sigs": [_derived_signature(private, key_id, record)]})
+    return records
+
+
+declare(
+    "key-lifecycle",
+    "window-not-from-untrusted-declaration",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    build=lambda case_dir: container(_fix6_untrusted_window_records()),
+    args=_S2_ARGS,
+    notices=("N_SELF_ATTESTED_ROOT_KEY",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=tuple(
+        {
+            "id": "key-declared-fix6-window-untrusted-" + suffix,
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+            "notices": ["N_SELF_ATTESTED_ROOT_KEY"],
+            "sigs": [{"key": derived_key("fix6-window-untrusted")[2], "state": "valid"}],
+        }
+        for suffix in ("d1", "d2")
+    ),
+    notes="S2-FIX6 (decision 2026-11-16 #13; §9.1 rule 4, §5.3 governing window; F87 of "
+    "the Rust follow-up): two self-attested human declarations of one key that no keyset "
+    "root reaches, D1 at T0 with valid_until T1 and D2 at T2 without a window. Both are "
+    "untrusted (E_KEY_UNTRUSTED, N_SELF_ATTESTED_ROOT_KEY). An untrusted declaration is not "
+    "semantically valid and \"MUST NOT make any other declaration invalid\", so D1 governs "
+    "no window: D2's self-signature is not E_KEY_EXPIRED.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,

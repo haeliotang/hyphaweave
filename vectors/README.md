@@ -63,10 +63,10 @@ yet accepted by J1/J2):
 | `labels` | 42 |
 | `erasure` | 33 |
 | `grant` | 56 |
-| `key-lifecycle` | 127 |
+| `key-lifecycle` | 128 |
 | `container` | 152 |
 | `integrity-levels` | 183 |
-| **total** | **748** |
+| **total** | **749** |
 
 Verdict distribution: `valid` 150, `erased` 1, `invalid` 527, `unverifiable` 53.
 All record-target positive cases carry a real signature by their `actor.key`
