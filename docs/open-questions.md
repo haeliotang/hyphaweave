@@ -1524,7 +1524,9 @@ overturn them. No error code is added and no frozen conclusion changes.
    declaration that is not semantically valid governs no window; a review found that the
    Rust verifier took the window from such a declaration. No text change. Vectors
    `key-lifecycle/window-not-from-invalid-declaration-undeclared`, `-compromised` and their
-   controls.
+   controls; and, for an untrusted declaration (§9.1 rule 4: "an untrusted declaration MUST
+   NOT make any other declaration invalid"; F87 of the Rust follow-up),
+   `key-lifecycle/window-not-from-untrusted-declaration`.
 6. **`E_GRANT_GRANTER`** no longer lists a parent outside its window or revoked (registry,
    `weave.grant.md`): §5.5.2 step 6 makes those `E_GRANT_EXPIRED` / `E_GRANT_REVOKED`.
 

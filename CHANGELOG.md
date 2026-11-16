@@ -48,7 +48,7 @@ added; the registry stays at revision 7. No conclusion of the frozen candidate s
 
 ### Vectors, tests and gates
 
-- **Vectors**: seventeen new main cases (731 → 748), no existing case changed:
+- **Vectors**: eighteen new main cases (731 → 749), no existing case changed:
   - material scope: `key-lifecycle/note-by-untrusted-declared-key-forged`,
     `cosignature-by-untrusted-declared-key-forged`,
     `container/manifest-signer-declaration-class-conflict`;
@@ -63,16 +63,18 @@ added; the registry stays at revision 7. No conclusion of the frozen candidate s
   - governing window (§5.3 text unchanged; a declaration that is not semantically valid
     governs no window): `key-lifecycle/window-not-from-invalid-declaration-undeclared`,
     `-compromised` and their controls `window-from-valid-declaration-undeclared-control`,
-    `-compromised-control`.
+    `-compromised-control`; and `key-lifecycle/window-not-from-untrusted-declaration`
+    (§9.1 rule 4: an untrusted declaration governs no window either; F87 of the Rust
+    follow-up).
 - **Ablation catalogue**: eight S2-FIX6 entries; `grant-parent-revoked`,
   `grant-parent-expired` and `fix5-grant-revoked-first` follow the chain-wide step 6 (the
   first two are now single sites, no longer documented equivalents), and
   `fix1-q5-walk-bounded` is now killed by the depth-9/10 step-6 vectors (no longer an
   equivalent mutant).
-- **Rust verifier**: not changed here. The four cases `grant/ancestor-revoked-cited-expired`,
-  `grant/sub-grant-record-ancestor-revoked-cited-expired`,
-  `key-lifecycle/window-not-from-invalid-declaration-undeclared` and `-compromised` are its
-  next increment.
+- **Rust verifier**: not changed here. Its follow-up binary (`r2/rust-s2`, `b714a70`, which
+  already takes no window from a declaration that is not admitted or not trusted) passes
+  747 of the 749 main cases; `grant/ancestor-revoked-cited-expired` and
+  `grant/sub-grant-record-ancestor-revoked-cited-expired` are its next increment.
 
 ## S2 round, revision 5 (S2-FIX5) — 2026-11-16 — DRAFT, UNRELEASED
 

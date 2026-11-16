@@ -47,9 +47,9 @@ Read this before using anything in this repository:
   list still lists the 37 report differences that the S2 Python corrections
   removed. Its follow-up branch closes those and found the differences that S2-FIX3
   (decision 2026-11-16 #1), S2-FIX4 and S2-FIX5 (decisions 2026-11-16 #4 and #9) settle;
-  that branch is not part of this snapshot, and its binary passes the candidate set and 744
-  of the 748 main cases of this snapshot (the four S2-FIX6 cases on the grant-chain order
-  and the governing window, decision 2026-11-16 #13, are still to be followed there). Passing the same vectors is necessary but not sufficient
+  that branch is not part of this snapshot, and its binary passes the candidate set and 747
+  of the 749 main cases of this snapshot (the two S2-FIX6 cases on the grant-chain order,
+  decision 2026-11-16 #13, are still to be followed there). Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
