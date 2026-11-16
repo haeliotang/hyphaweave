@@ -6,17 +6,87 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round, revision 6 (S2-FIX6) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #13 (decided by principle; the founder can overturn every item): the
+pre-merge reviews of the S2 round. The `format` identifier is unchanged; no error code is
+added; the registry stays at revision 7. No conclusion of the frozen candidate set changes.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **Where the S2-FIX5 material rule applies (§5.3, §9.4).** S2-FIX5 said a structurally
+  valid declaration supplies material "on another record"; it supplies material, without
+  trust, only for a cosignature on another declaration (an owner cosignature included),
+  for an owner lookup, for the manifest signature and for a supplied previous manifest's
+  signature. A signature on any other record needs a trusted or semantically valid
+  declaration; otherwise it is `unverified`, `E_KEY_UNKNOWN` with `N_KEY_UNDECLARED`. A
+  declaration that is invalid for another reason (for example `E_KEY_CLASS_CONFLICT`)
+  still supplies material in those places. The §5.3 semantic-validity sentence now covers
+  governing a window, establishing trust and rotation material only, and §9.4 no longer
+  says its rule "applies to manifest signatures as well" (it refers to §11.3 instead;
+  `docs/open-questions.md` §6 entry 33 is decided by this). The reference verifier already
+  behaved this way.
+- **Rooted material (§5.3).** A declaration's other signatures are verified only against
+  material that does not depend on the declaration itself (the least fixed point): two
+  declarations that only cosign each other supply no material. The reference verifier
+  already behaved this way.
+- **Owner lookup first (§9.1 rule 3, F85).** An owner that cannot be resolved is
+  `E_KEY_UNKNOWN` even when no `sigs` entry is by the owner key, before the owner
+  cosignature rule (`E_KEY_DECLARED_NOT_COSIGNED`) and before the §4.4 step 5 outcome
+  (§14.5). The reference verifier already behaved this way.
+- **Grant chain order (§5.5.2 step 6).** The whole chain is judged for revocation before
+  any link's window: a link revoked anywhere is `E_GRANT_REVOKED` even when a nearer link
+  (the cited grant included) is already outside its window. The reference verifier used to
+  judge link by link and reported `E_GRANT_EXPIRED`; it now walks the chain (steps 1–5)
+  first and then judges every link's revocation and every link's window.
+- **Registry.** `E_GRANT_GRANTER` (registry and `weave.grant.md`) no longer lists a parent
+  outside its window or revoked: those are `E_GRANT_EXPIRED` / `E_GRANT_REVOKED`
+  (§5.5.2 step 6). `E_GRANT_REVOKED` names the chain-wide order.
+- **Provenance.** S2-FIX5 is marked "decided by principle" (decision 2026-11-16 #9 was
+  decided by principle, the founder can overturn it), in the specification, this file and
+  `docs/open-questions.md`; §9.1 rule 3 also cites S2-FIX5.
+
+### Vectors, tests and gates
+
+- **Vectors**: seventeen new main cases (731 → 748), no existing case changed:
+  - material scope: `key-lifecycle/note-by-untrusted-declared-key-forged`,
+    `cosignature-by-untrusted-declared-key-forged`,
+    `container/manifest-signer-declaration-class-conflict`;
+  - rooted material: `container/manifest-signer-mutual-cosignature-cycle`;
+  - owner lookup first: `key-lifecycle/owner-unresolved-device-self-signed`,
+    `owner-unresolved-device-unknown-algorithm-only`, `owner-resolves-device-self-signed`,
+    `owner-resolves-device-unknown-algorithm-only`,
+    `owner-declaration-cosignature-fails-device-owner-cosigned`;
+  - grant chain order: `grant/ancestor-revoked-cited-expired`,
+    `sub-grant-record-ancestor-revoked-cited-expired` and their controls
+    `cited-expired-ancestor-not-revoked`, `sub-grant-record-cited-expired-ancestor-not-revoked`;
+  - governing window (§5.3 text unchanged; a declaration that is not semantically valid
+    governs no window): `key-lifecycle/window-not-from-invalid-declaration-undeclared`,
+    `-compromised` and their controls `window-from-valid-declaration-undeclared-control`,
+    `-compromised-control`.
+- **Ablation catalogue**: eight S2-FIX6 entries; `grant-parent-revoked`,
+  `grant-parent-expired` and `fix5-grant-revoked-first` follow the chain-wide step 6 (the
+  first two are now single sites, no longer documented equivalents), and
+  `fix1-q5-walk-bounded` is now killed by the depth-9/10 step-6 vectors (no longer an
+  equivalent mutant).
+- **Rust verifier**: not changed here. The four cases `grant/ancestor-revoked-cited-expired`,
+  `grant/sub-grant-record-ancestor-revoked-cited-expired`,
+  `key-lifecycle/window-not-from-invalid-declaration-undeclared` and `-compromised` are its
+  next increment.
+
 ## S2 round, revision 5 (S2-FIX5) — 2026-11-16 — DRAFT, UNRELEASED
 
-Decision 2026-11-16 #9 (decided by the founder): the two specification ambiguities the
-S2-FIX4 differential fuzzing left. The `format` identifier is unchanged; no error code is
+Decision 2026-11-16 #9 (decided by principle; the founder can overturn it): the two
+specification ambiguities the S2-FIX4 differential fuzzing left. The `format` identifier is unchanged; no error code is
 added; the registry stays at revision 7. No conclusion of the frozen candidate set changes.
 
 ### Wire-visible changes (specification and Python reference verifier)
 
 - **Which declarations supply verification material (§5.3).** A declaration supplies the
-  material a signature by its key is verified against (on another record, as a cosignature,
-  on the manifest or a supplied previous manifest) and resolves an owner only when it passes
+  material a cosignature on another declaration, the manifest signature or a supplied
+  previous manifest's signature by its key is verified against (S2-FIX6 narrowed the
+  wording "on another record": other records need a trusted or semantically valid
+  declaration) and resolves an owner only when it passes
   the §14.1 structural group and every signature other than its subject key's passes; trust
   is not required (T17/A-L8). A declaration without `sigs` or whose body fails its schema
   (a missing `key_type`) supplies none. The reference verifier used to verify cosignatures

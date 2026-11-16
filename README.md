@@ -47,9 +47,9 @@ Read this before using anything in this repository:
   list still lists the 37 report differences that the S2 Python corrections
   removed. Its follow-up branch closes those and found the differences that S2-FIX3
   (decision 2026-11-16 #1), S2-FIX4 and S2-FIX5 (decisions 2026-11-16 #4 and #9) settle;
-  that branch is not part of this snapshot, and its binary passes the candidate set and 728
-  of the 731 main cases of this snapshot (the three S2-FIX5 material cases are still to be
-  followed there). Passing the same vectors is necessary but not sufficient
+  that branch is not part of this snapshot, and its binary passes the candidate set and 744
+  of the 748 main cases of this snapshot (the four S2-FIX6 cases on the grant-chain order
+  and the governing window, decision 2026-11-16 #13, are still to be followed there). Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
 - **Public, still draft.** The repository is public now, but that does not make
   `weave-record/1` stable: it remains a draft, and v1.0 still depends on the
@@ -64,7 +64,9 @@ Read this before using anything in this repository:
   2026-11-10 #34), revision 2 (decision 2026-11-10 #42) and revision 3 (decision
   2026-11-11 #2) with its five follow-up rounds S1-FIX1 to S1-FIX5 (decisions
   2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1, #2 and #3) and the S2 round
-  (decision 2026-11-15 #8). Independent reviews found wire-semantics
+  (decision 2026-11-15 #8) with its revisions S2-FIX1 to S2-FIX6 and the supplement
+  S2-FIX2b (decisions 2026-11-15 #18, #22 and #32, and 2026-11-16 #1, #4, #9 and #13).
+  Independent reviews found wire-semantics
   defects, and the revisions changed the format rules, the error-code registry,
   the trust-root model, the resource limits, the verifier and the vectors.
   Revision 3 reacts to the review of the second (Rust) implementation, which
