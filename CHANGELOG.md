@@ -106,11 +106,13 @@ implementations now follow revision 3 including S2-FIX5: each passes the 731 mai
 
 ### Changed (Rust verifier)
 
-- **Material for a signature check** (§5.3, S2-FIX5): a `weave.key.declared` record
-  supplies material for record signatures, cosignatures, the manifest signature and a
-  supplied previous manifest's signature only when it passes the §14.1 structural group
-  (`sigs` present and well formed, the body schema); a declaration without `sigs` or
-  without `key_type` used to supply it. An owner resolves (§9.1 rule 3) only through a
+- **Material for a signature check** (§5.3, S2-FIX5, in the scope S2-FIX6 states): a
+  `weave.key.declared` record supplies material without trust — for a cosignature on
+  another declaration (an owner cosignature included), for an owner lookup, for the
+  manifest signature and for a supplied previous manifest's signature — only when it
+  passes the §14.1 structural group (`sigs` present and well formed, the body schema); a
+  declaration without `sigs` or without `key_type` used to supply it there. A signature on
+  any other record still needs a trusted declaration (unchanged). An owner resolves (§9.1 rule 3) only through a
   structural declaration whose signatures other than its subject key's all pass, also at
   §4.4 step 5 (`docs/h1-findings.md` F85: an owner declaration cosigned by an undeclared
   key used to resolve, giving `E_KEY_DECLARED_NOT_COSIGNED` instead of `E_KEY_UNKNOWN`).

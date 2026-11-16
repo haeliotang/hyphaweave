@@ -2213,8 +2213,8 @@ it in `772a8e4` (merged here as `0ee3b51`); the Python job then passed all 16 st
 
 The S2 workstream settled the differences that the H1-S2 differential fuzzing left
 against S2-FIX3 in two more revisions: S2-FIX4 (decision 2026-11-16 #4, decided by
-principle; F83, F84) and S2-FIX5 (decision 2026-11-16 #9, decided by the founder; the
-two ambiguities the S2-FIX4 fuzzing left). Branch `r2/rust-s2` merged
+principle; F83, F84) and S2-FIX5 (decision 2026-11-16 #9, decided by principle — the
+founder can overturn it; the two ambiguities the S2-FIX4 fuzzing left). Branch `r2/rust-s2` merged
 `s2/spec-revision` at `2120dde` (731 main cases, 202 frozen) as `c175106`; no
 specification, schema, vector, tool or Python change.
 
