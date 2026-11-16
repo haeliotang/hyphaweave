@@ -15975,6 +15975,561 @@ declare(
 )
 
 
+# ---------------------------------------------------------------------------
+# S2-FIX6 (decision 2026-11-16 #13): the pre-merge reviews of the S2 round. Every
+# expected conclusion below is hand-written from the specification text; the
+# shapes are the reviewers' probes (review A: P1, P4, P5, P5c, P8, P9b, w1, w2 and
+# their controls; review B: the class-conflict and mutual-cosignature shapes).
+# ---------------------------------------------------------------------------
+
+
+def _fix6_foreign_signature(record: dict[str, Any], signer: str) -> dict[str, Any]:
+    """*record* plus a well-formed signature by keyset *signer* over another record."""
+    entry = {
+        **recordlib.sig_entry(record, signer),
+        "value": recordlib.sig_entry(recordlib.note("fix6-foreign"), signer)["value"],
+    }
+    return {**record, "sigs": sorted(record["sigs"] + [entry], key=lambda e: e["key"])}
+
+
+# -- Material scope (§5.3 "Material for a signature check", §9.4): the S2-FIX5 rule
+#    covers cosignatures on declarations, owners and the manifest; a signature on any
+#    other record needs a trusted or semantically valid declaration.
+
+_FIX6_UNTRUSTED = "fix6-untrusted-human"
+
+
+def _fix6_untrusted_declaration() -> dict[str, Any]:
+    """A self-attested human declaration: structural, no other signature, untrusted."""
+    return _s2_declaration(
+        _FIX6_UNTRUSTED, record_id="key-declared-fix6-untrusted-human", key_type="human",
+        owner=None, recorded_at=recordlib.T0, cosigners=(),
+    )
+
+
+def _fix6_forged_by_untrusted(record_id: str) -> dict[str, Any]:
+    """A signature entry by the untrusted key whose equation fails on any other record."""
+    private, _public, key_id = derived_key(_FIX6_UNTRUSTED)
+    return _derived_signature(
+        private, key_id, _s2_derived_note(_FIX6_UNTRUSTED, record_id, recordlib.T3, key_type="human")
+    )
+
+
+def _fix6_forged_note_records() -> list[dict[str, Any]]:
+    note = _s2_derived_note(_FIX6_UNTRUSTED, "fix6-note-forged", recordlib.T2, key_type="human")
+    note = {**note, "sigs": [_fix6_forged_by_untrusted("fix6-other-note")]}
+    return [_fix6_untrusted_declaration(), note]
+
+
+declare(
+    "key-lifecycle",
+    "note-by-untrusted-declared-key-forged",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNKNOWN", "E_KEY_UNTRUSTED"),
+    build=lambda case_dir: container(_fix6_forged_note_records()),
+    args=_S2_ARGS,
+    notices=("N_KEY_UNDECLARED", "N_SELF_ATTESTED_ROOT_KEY"),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {
+            "id": "fix6-note-forged",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "notices": ["N_KEY_UNDECLARED"],
+            "sigs": [{"key": derived_key(_FIX6_UNTRUSTED)[2], "state": "unverified"}],
+        },
+        {"id": "key-declared-fix6-untrusted-human", "verdict": "unverifiable", "errors": ["E_KEY_UNTRUSTED"]},
+    ),
+    notes="S2-FIX6 (decision 2026-11-16 #13; §5.3, §9.4; review A probe P8): the only "
+    "declaration of a human key is self-attested (structural, no other signature, "
+    "untrusted). A note signed by that key with a signature whose equation fails is not "
+    "verified against that declaration's material: a signature on a record other than a "
+    "declaration or the manifest needs a trusted or semantically valid declaration, so the "
+    "signature is unverified and the note unverifiable E_KEY_UNKNOWN with N_KEY_UNDECLARED, "
+    "not invalid E_SIG_INVALID.",
+)
+
+
+def _fix6_forged_cosignature_records() -> list[dict[str, Any]]:
+    declaration = _s2_declaration(
+        "fix6-cosigned-human", record_id="key-declared-fix6-cosigned-human", key_type="human",
+        owner=None, recorded_at=recordlib.T1, cosigners=(),
+    )
+    declaration = {
+        **declaration,
+        "sigs": sorted(
+            declaration["sigs"] + [_fix6_forged_by_untrusted("fix6-foreign-note")],
+            key=lambda e: e["key"],
+        ),
+    }
+    return [_fix6_untrusted_declaration(), declaration]
+
+
+declare(
+    "key-lifecycle",
+    "cosignature-by-untrusted-declared-key-forged",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_SIG_INVALID", "E_KEY_UNTRUSTED"),
+    build=lambda case_dir: container(_fix6_forged_cosignature_records()),
+    args=_S2_ARGS,
+    notices=("N_SELF_ATTESTED_ROOT_KEY",),
+    notices_absent=("N_KEY_UNDECLARED",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {
+            "id": "key-declared-fix6-cosigned-human",
+            "verdict": "invalid",
+            "errors": ["E_SIG_INVALID"],
+            "sigs": _s2_sigs(
+                _fix6_forged_cosignature_records()[1],
+                {derived_key("fix6-cosigned-human")[2]: "valid", derived_key(_FIX6_UNTRUSTED)[2]: "invalid"},
+            ),
+        },
+        {"id": "key-declared-fix6-untrusted-human", "verdict": "unverifiable", "errors": ["E_KEY_UNTRUSTED"]},
+    ),
+    notes="S2-FIX6 (decision 2026-11-16 #13; §5.3; review A probe P9b): the same untrusted "
+    "self-attested declaration, and a second human declaration carrying a cosignature by "
+    "that key whose equation fails. A cosignature on a declaration is one of the places "
+    "where a structural declaration supplies material without trust, so the cosignature "
+    "is checked and fails: invalid E_SIG_INVALID (not E_KEY_UNKNOWN). Compare "
+    "key-lifecycle/note-by-untrusted-declared-key-forged.",
+)
+
+_FIX6_CONFLICT = "fix6-class-conflict"
+
+
+def _fix6_class_conflict_files() -> dict[str, bytes]:
+    """D1 (device, T0) with a failing human-2 cosignature; D2 (human, T1) of the same key."""
+    device = _fix6_foreign_signature(
+        _s2_declaration(
+            _FIX6_CONFLICT, record_id="key-declared-fix6-conflict-device", key_type="device",
+            owner="human-1", recorded_at=recordlib.T0, cosigners=("human-1",),
+        ),
+        "human-2",
+    )
+    human = _s2_declaration(
+        _FIX6_CONFLICT, record_id="key-declared-fix6-conflict-human", key_type="human",
+        owner=None, recorded_at=recordlib.T1, cosigners=("human-1",),
+    )
+    files = recordlib.build_container([device, human], manifest_signers=("human-1",))
+    return _wrap_internal(_w1_sign_manifest_with_derived(files, _FIX6_CONFLICT))
+
+
+declare(
+    "container",
+    "manifest-signer-declaration-class-conflict",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_CLASS_CONFLICT", "E_SIG_INVALID"),
+    build=lambda case_dir: _fix6_class_conflict_files(),
+    args=("--keys", "@keyset"),
+    notices_absent=("N_KEY_UNDECLARED",),
+    limitations=("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT"),
+    records=(
+        {"id": "key-declared-fix6-conflict-device", "verdict": "invalid", "errors": ["E_SIG_INVALID"]},
+        {"id": "key-declared-fix6-conflict-human", "verdict": "invalid", "errors": ["E_KEY_CLASS_CONFLICT"]},
+    ),
+    notes="S2-FIX6 (decision 2026-11-16 #13; §5.3, §11.3; review B high-1): the first "
+    "declaration of the key (device, T0) carries a human-2 cosignature whose equation fails, "
+    "so it supplies no material but still governs the class (§14.1 structural group). The "
+    "second declaration (human, T1, cosigned by human-1) is invalid E_KEY_CLASS_CONFLICT, "
+    "yet it passes the structural group and its other signature passes, so it supplies the "
+    "material for the manifest signature (trust and semantic validity are not required "
+    "there): the manifest entry verifies with context material (L_KEY_TRUST_TOFU) and the "
+    "container reports no E_KEY_UNKNOWN.",
+)
+
+# -- Rooted material (§5.3): the least fixed point.
+
+
+def _fix6_cycle_records() -> list[dict[str, Any]]:
+    return [
+        _fix3_cosigned_human("fix6-cycle-a", "key-declared-fix6-cycle-a", recordlib.T0, "fix6-cycle-b"),
+        _fix3_cosigned_human("fix6-cycle-b", "key-declared-fix6-cycle-b", recordlib.T0, "fix6-cycle-a"),
+    ]
+
+
+def _fix6_cycle_files() -> dict[str, bytes]:
+    files = recordlib.build_container(_fix6_cycle_records(), manifest_signers=("human-1",))
+    return _wrap_internal(_w1_sign_manifest_with_derived(files, "fix6-cycle-a"))
+
+
+declare(
+    "container",
+    "manifest-signer-mutual-cosignature-cycle",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNKNOWN",),
+    build=lambda case_dir: _fix6_cycle_files(),
+    args=("--keys", "@keyset"),
+    notices=("N_KEY_UNDECLARED",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=tuple(
+        {
+            "id": record["id"],
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "notices": ["N_KEY_UNDECLARED"],
+            "sigs": _s2_sigs(record, {derived_key(own)[2]: "valid", derived_key(other)[2]: "unverified"}),
+        }
+        for record, own, other in zip(
+            _fix6_cycle_records(), ("fix6-cycle-a", "fix6-cycle-b"), ("fix6-cycle-b", "fix6-cycle-a")
+        )
+    ),
+    notes="S2-FIX6 (decision 2026-11-16 #13; §5.3 rooted material; review B medium-3): two "
+    "human declarations, each self-signed and cosigned only by the other's key; the "
+    "manifest is signed by the first key alone. Material is the least fixed point: a "
+    "declaration's other signature is verified only against material that does not depend "
+    "on the declaration itself, so neither supplies material, both cosignatures are "
+    "unverified (E_KEY_UNKNOWN, N_KEY_UNDECLARED) and the manifest entry is an undeclared "
+    "key's: E_KEY_UNKNOWN. Assuming both supply material would verify every signature.",
+)
+
+# -- Owner lookup first (§9.1 rule 3, §14.5; F85): an owner that cannot be resolved is
+#    E_KEY_UNKNOWN before the owner-cosignature rule and before the §4.4 step 5 outcome.
+
+_FIX6_OWNER = "fix6-owner"
+_FIX6_DEVICE = "fix6-owned-device"
+
+
+def _fix6_owner_declaration(shape: str) -> dict[str, Any]:
+    """The owner's only declaration: ``clean`` (cosigned by human-1), ``undeclared``
+    (also cosigned by an undeclared key) or ``failing`` (also a failing human-2 entry)."""
+    declaration = _s2_declaration(
+        _FIX6_OWNER, record_id="key-declared-fix6-owner", key_type="human", owner=None,
+        recorded_at=recordlib.T0, cosigners=("human-1",),
+    )
+    if shape == "undeclared":
+        private, _public, key_id = derived_key("fix6-undeclared")
+        extra = _derived_signature(private, key_id, declaration)
+        return {**declaration, "sigs": sorted(declaration["sigs"] + [extra], key=lambda e: e["key"])}
+    if shape == "failing":
+        return _fix6_foreign_signature(declaration, "human-2")
+    return declaration
+
+
+def _fix6_owned_device(*, unknown_algorithm: bool = False, owner_cosigns: bool = False) -> dict[str, Any]:
+    """A device declaration owned by fix6-owner, self-signed (and optionally owner-cosigned)."""
+    declaration = _s2_declaration(
+        _FIX6_DEVICE, record_id="key-declared-fix6-owned-device", key_type="device", owner=None,
+        recorded_at=recordlib.T1, cosigners=(),
+    )
+    unsigned = {name: value for name, value in declaration.items() if name != "sigs"}
+    unsigned["body"] = {**unsigned["body"], "owner": derived_key(_FIX6_OWNER)[2]}
+    signers = [_FIX6_DEVICE] + ([_FIX6_OWNER] if owner_cosigns else [])
+    signatures = []
+    for name in signers:
+        private, _public, key_id = derived_key(name)
+        signatures.append(_derived_signature(private, key_id, unsigned))
+    if unknown_algorithm:
+        signatures = [{**entry, "alg": "ed25519-x"} for entry in signatures]
+    return {**unsigned, "sigs": sorted(signatures, key=lambda e: e["key"])}
+
+
+for _resolves in (False, True):
+    for _unknown in (False, True):
+        _owner_shape = "clean" if _resolves else "undeclared"
+        _device_code = (
+            ("E_SIG_UNVERIFIABLE" if _unknown else "E_KEY_DECLARED_NOT_COSIGNED")
+            if _resolves
+            else "E_KEY_UNKNOWN"
+        )
+        _owner_entry: dict[str, Any] = (
+            {"id": "key-declared-fix6-owner", "verdict": "valid", "errors": []}
+            if _resolves
+            else {
+                "id": "key-declared-fix6-owner",
+                "verdict": "unverifiable",
+                "errors": ["E_KEY_UNKNOWN"],
+                "notices": ["N_KEY_UNDECLARED"],
+            }
+        )
+        _errors = tuple(sorted({_device_code} | ({"E_KEY_UNKNOWN"} if not _resolves else set())))
+        declare(
+            "key-lifecycle",
+            "owner-%s-device-%s"
+            % ("resolves" if _resolves else "unresolved", "unknown-algorithm-only" if _unknown else "self-signed"),
+            "container",
+            "container",
+            "invalid" if _device_code == "E_KEY_DECLARED_NOT_COSIGNED" else "unverifiable",
+            errors=_errors,
+            build=lambda case_dir, _s=_owner_shape, _u=_unknown: container(
+                [_fix6_owner_declaration(_s), _fix6_owned_device(unknown_algorithm=_u)]
+            ),
+            args=_S2_ARGS,
+            limitations=("L_OFFLINE_CONTEXT",),
+            records=(
+                {
+                    "id": "key-declared-fix6-owned-device",
+                    "verdict": "invalid" if _device_code == "E_KEY_DECLARED_NOT_COSIGNED" else "unverifiable",
+                    "errors": [_device_code],
+                    "sigs": [
+                        {"key": derived_key(_FIX6_DEVICE)[2], "state": "ignored" if _unknown else "valid"}
+                    ],
+                },
+                _owner_entry,
+            ),
+            notes="S2-FIX6 (decision 2026-11-16 #13; §9.1 rule 3, §14.5; F85, review A probes "
+            + ("P5c" if _resolves else "P5")
+            + ", review B medium-2): a device declaration naming fix6-owner as its owner is "
+            + ("signed only with the unknown algorithm ed25519-x (§4.4 step 5)" if _unknown
+               else "self-signed with ed25519 and carries no owner cosignature")
+            + ". The owner's only declaration is cosigned by human-1"
+            + (", so the owner resolves: "
+               + ("the step-5 outcome E_SIG_UNVERIFIABLE (the signer key is declared)." if _unknown
+                  else "the missing owner cosignature is E_KEY_DECLARED_NOT_COSIGNED (invalid).")
+               if _resolves else
+               " and by an undeclared key, so it supplies no material and the owner cannot be "
+               "resolved: the owner lookup comes first, E_KEY_UNKNOWN, "
+               + ("not the step-5 outcome." if _unknown
+                  else "not E_KEY_DECLARED_NOT_COSIGNED, although no sigs entry is by the owner key.")),
+        )
+
+
+def _fix6_owner_cosigned_records() -> list[dict[str, Any]]:
+    return [_fix6_owner_declaration("failing"), _fix6_owned_device(owner_cosigns=True)]
+
+
+declare(
+    "key-lifecycle",
+    "owner-declaration-cosignature-fails-device-owner-cosigned",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_SIG_INVALID"),
+    build=lambda case_dir: container(_fix6_owner_cosigned_records()),
+    args=_S2_ARGS,
+    notices=("N_KEY_UNDECLARED",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {
+            "id": "key-declared-fix6-owned-device",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "notices": ["N_KEY_UNDECLARED"],
+            "sigs": _s2_sigs(
+                _fix6_owner_cosigned_records()[1],
+                {derived_key(_FIX6_DEVICE)[2]: "valid", derived_key(_FIX6_OWNER)[2]: "unverified"},
+            ),
+        },
+        {"id": "key-declared-fix6-owner", "verdict": "invalid", "errors": ["E_SIG_INVALID"]},
+    ),
+    notes="S2-FIX6 (decision 2026-11-16 #13; §5.3, §9.1 rule 3; F85, review A probe P4): the "
+    "owner's only declaration carries a human-2 entry whose equation fails (invalid "
+    "E_SIG_INVALID), so it supplies no material and the owner does not resolve. The device "
+    "declaration is self-signed and cosigned by the owner key with a signature that would "
+    "verify; that cosignature has no material (unverified, N_KEY_UNDECLARED) and the device "
+    "declaration is unverifiable E_KEY_UNKNOWN.",
+)
+
+# -- Grant chain order (§5.5.2 step 6): revocation over the whole chain before any
+#    window.
+
+
+def _fix6_grant_chain(*, revoked: bool, grant_record: bool) -> dict[str, bytes]:
+    """Root (T0-T9) revoked at T2 or not; a sub-grant to agent-2 valid T1-T3; at T4 an
+    agent note citing it, or (``grant_record``) a further sub-grant recorded under it."""
+    root = root_grant(
+        record_id="grant-root-fix6", kinds=("weave.grant", "example.note"),
+        actions=("propose", "accept", "grant"), transferable=True,
+        valid_from=recordlib.T0, valid_until=recordlib.T9,
+    )
+    sub = delegated_grant(
+        root, record_id="grant-sub-fix6", grantee="agent-2",
+        kinds=("weave.grant", "example.note") if grant_record else ("example.note",),
+        actions=("propose", "grant") if grant_record else ("propose",),
+        valid_from=recordlib.T1, valid_until=recordlib.T3, recorded_at=recordlib.T1,
+        transferable=grant_record,
+    )
+    if grant_record:
+        last = delegated_grant(
+            sub, record_id="grant-subsub-fix6", sub_granter="agent-2", grantee="agent-1",
+            kinds=("example.note",), actions=("propose",),
+            valid_from=recordlib.T1, valid_until=recordlib.T3, recorded_at=recordlib.T4,
+        )
+    else:
+        last = agent_action(
+            sub, record_id="agent-note-fix6", key_name="agent-2", stage="proposed",
+            recorded_at=recordlib.T4,
+        )
+    records = [root, sub, last]
+    if revoked:
+        records.insert(1, grant_revocation(root, record_id="grant-root-fix6-revoke", effective_at=recordlib.T2))
+    return container(records)
+
+
+for _grant_record in (False, True):
+    for _revoked in (True, False):
+        _last_id = "grant-subsub-fix6" if _grant_record else "agent-note-fix6"
+        _code = "E_GRANT_REVOKED" if _revoked else "E_GRANT_EXPIRED"
+        declare(
+            "grant",
+            ("sub-grant-record-" if _grant_record else "")
+            + ("ancestor-revoked-cited-expired" if _revoked else "cited-expired-ancestor-not-revoked"),
+            "container",
+            "container",
+            "unverifiable",
+            errors=(_code,),
+            build=lambda case_dir, _r=_revoked, _g=_grant_record: _fix6_grant_chain(revoked=_r, grant_record=_g),
+            args=GRANT_ARGS,
+            records=(
+                {"id": _last_id, "verdict": "unverifiable", "errors": [_code]},
+                {"id": "grant-sub-fix6", "verdict": "valid", "errors": []},
+                {"id": "grant-root-fix6", "verdict": "valid", "errors": []},
+            ),
+            notes="S2-FIX6 (decision 2026-11-16 #13; §5.5.2 step 6; review A medium-3 probe P1, "
+            "review B low-3): root grant valid T0-T9, "
+            + ("revoked at T2; " if _revoked else "not revoked; ")
+            + "the sub-grant to agent-2 is valid T1-T3. At T4 "
+            + ("a further sub-grant by agent-2 (a weave.grant record, judged at its own "
+               "recorded_at) is recorded under it" if _grant_record
+               else "an agent-2 note cites it")
+            + ": the nearer link is expired"
+            + (" and the root is revoked. Revocation is judged over the whole chain before any "
+               "window, so the chain is E_GRANT_REVOKED, not E_GRANT_EXPIRED."
+               if _revoked else
+               " and nothing is revoked: E_GRANT_EXPIRED (the control of the "
+               + ("sub-grant-record-" if _grant_record else "")
+               + "ancestor-revoked-cited-expired case)."),
+        )
+
+# -- Governing window (§5.3): a declaration that is not semantically valid governs no
+#    window (review A high 1, review B high-2; the specification text is unchanged).
+
+
+def _fix6_window_device(
+    name: str, record_id: str, owner: str, recorded_at: str, *, valid_until: str | None = None,
+    cosigners: Sequence[str] = (), undeclared_cosigner: str | None = None,
+) -> dict[str, Any]:
+    private, public, key_id = derived_key(name)
+    body: dict[str, Any] = {
+        "algorithm": "ed25519",
+        "key": key_id,
+        "key_type": "device",
+        "owner": kid(owner),
+        "public_key": keyutil.b64url_encode(public),
+    }
+    if valid_until is not None:
+        body["valid_until"] = valid_until
+    record = recordlib.build_record(
+        kind="weave.key.declared", id=record_id, actor={"type": "device", "key": key_id},
+        body=body, stage="accepted", recorded_at=recorded_at, origin_instance=key_id,
+    )
+    signatures = [_derived_signature(private, key_id, record)]
+    signatures += [recordlib.sig_entry(record, cosigner) for cosigner in cosigners]
+    if undeclared_cosigner is not None:
+        extra_private, _extra_public, extra_id = derived_key(undeclared_cosigner)
+        signatures.append(_derived_signature(extra_private, extra_id, record))
+    return {**record, "sigs": sorted(signatures, key=lambda e: e["key"])}
+
+
+def _fix6_window_records(variant: str, *, clean: bool) -> list[dict[str, Any]]:
+    """D1 (T0, valid_until T1), D2 (T2, no window), a note by the device key at T3.
+
+    ``undeclared``: D1 also carries a cosignature by an undeclared key. ``compromised``:
+    D1 is owned and cosigned by human-2, compromised at T1 (L0, no receipt). ``clean``
+    gives the control in which D1 is semantically valid.
+    """
+    name = "fix6-window-" + variant
+    records: list[dict[str, Any]] = []
+    if variant == "compromised":
+        records.append(
+            recordlib.key_revocation(
+                "human-2", reason="key-compromise", effective_at=recordlib.T1,
+                signer_name="human-1", record_id="key-revoked-fix6-window-human-2",
+            )
+        )
+    owner = "human-2" if variant == "compromised" and not clean else "human-1"
+    records.append(
+        _fix6_window_device(
+            name, "key-declared-" + name + "-d1", owner, recordlib.T0, valid_until=recordlib.T1,
+            cosigners=(owner,),
+            undeclared_cosigner="fix6-window-extra-cosigner" if variant == "undeclared" and not clean else None,
+        )
+    )
+    records.append(
+        _fix6_window_device(name, "key-declared-" + name + "-d2", "human-1", recordlib.T2, cosigners=("human-1",))
+    )
+    records.append(_s2_derived_note(name, "fix6-window-" + variant + "-note", recordlib.T3, key_type="device"))
+    return records
+
+
+for _variant in ("undeclared", "compromised"):
+    for _clean in (False, True):
+        _name = "fix6-window-" + _variant
+        _d1_entry: dict[str, Any] = {"id": "key-declared-" + _name + "-d1", "verdict": "valid", "errors": []}
+        if not _clean:
+            _d1_entry = (
+                {"id": "key-declared-" + _name + "-d1", "verdict": "unverifiable", "errors": ["E_KEY_UNKNOWN"]}
+                if _variant == "undeclared"
+                else {"id": "key-declared-" + _name + "-d1", "verdict": "invalid", "errors": ["E_KEY_COMPROMISED"]}
+            )
+        _records = [
+            _d1_entry,
+            (
+                {"id": "key-declared-" + _name + "-d2", "verdict": "invalid", "errors": ["E_KEY_EXPIRED"]}
+                if _clean
+                else {"id": "key-declared-" + _name + "-d2", "verdict": "valid", "errors": []}
+            ),
+            (
+                {"id": _name + "-note", "verdict": "invalid", "errors": ["E_KEY_EXPIRED"],
+                 "sigs": [{"key": derived_key(_name)[2], "state": "unverified"}]}
+                if _clean
+                else {"id": _name + "-note", "verdict": "valid", "errors": [],
+                      "notices": ["N_KEY_TOFU", "N_KIND_UNKNOWN_OPAQUE"],
+                      "sigs": [{"key": derived_key(_name)[2], "state": "valid"}]}
+            ),
+        ]
+        if _variant == "compromised":
+            _records.append({"id": "key-revoked-fix6-window-human-2", "verdict": "valid", "errors": []})
+        if _clean:
+            _verdict, _errors = "invalid", ("E_KEY_EXPIRED",)
+        elif _variant == "undeclared":
+            _verdict, _errors = "unverifiable", ("E_KEY_UNKNOWN",)
+        else:
+            _verdict, _errors = "invalid", ("E_KEY_COMPROMISED",)
+        declare(
+            "key-lifecycle",
+            ("window-from-valid-declaration-" + _variant + "-control")
+            if _clean else ("window-not-from-invalid-declaration-" + _variant),
+            "container",
+            "container",
+            _verdict,
+            errors=_errors,
+            build=lambda case_dir, _v=_variant, _c=_clean: container(_fix6_window_records(_v, clean=_c)),
+            args=_S2_ARGS,
+            notices=("N_KEY_TOFU",),
+            limitations=(
+                ("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT")
+                if _clean
+                else ("L_KEY_TRUST_TOFU", "L_OFFLINE_CONTEXT", "L_UNKNOWN_KIND_OPAQUE")
+            ),
+            records=tuple(_records),
+            notes="S2-FIX6 (decision 2026-11-16 #13; §5.3 governing window; review A high 1 "
+            + ("control w1c" if _clean and _variant == "undeclared" else
+               "control w2c" if _clean else "w1" if _variant == "undeclared" else "w2")
+            + ", review B high-2): two declarations of one device key, D1 at T0 with "
+            "valid_until T1 and D2 at T2 without a window, both cosigned by their owner; a "
+            "note by the device key at T3. "
+            + ("D1 is semantically valid and governs the window, so D2 and the note are "
+               "signed after valid_until: E_KEY_EXPIRED."
+               if _clean else
+               ("D1 also carries a cosignature by an undeclared key (unverifiable "
+                "E_KEY_UNKNOWN)" if _variant == "undeclared" else
+                "D1 is owned and cosigned by human-2, compromised at T1 with no receipt "
+                "(invalid E_KEY_COMPROMISED)")
+               + ", so it is not semantically valid and governs no window: D2 governs, D2 "
+               "and the note are valid (the note with N_KEY_TOFU). Taking the window from D1 "
+               "would make both E_KEY_EXPIRED."),
+        )
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
