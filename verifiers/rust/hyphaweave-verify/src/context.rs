@@ -24,6 +24,7 @@
 //! are ordered, and memoised record evaluation is recursive over digest
 //! references, which cannot form cycles (§6.4).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::digest;
@@ -167,12 +168,10 @@ pub(crate) struct TrustedKey {
     pub class: String,
     /// Raw public key.
     pub public_key: [u8; 32],
-    /// Validity window start.
-    pub valid_from: Option<Timestamp>,
-    /// Validity window end.
-    pub valid_until: Option<Timestamp>,
     /// True when the keyset declares this key id: its class, window and
-    /// material come from the local keyset (not TOFU, §14.9).
+    /// material come from the local keyset (not TOFU, §14.9). The window of
+    /// a key the keyset does not declare is decided where material is used
+    /// ([`World::governing_window`]), because it needs §5.3 admission.
     pub from_keyset: bool,
     /// The declaration slot that made the key trusted.
     pub source: usize,
@@ -356,6 +355,41 @@ pub struct World {
     pub(crate) exempt_subject: Option<usize>,
     /// Declarations whose admission is being decided (cycle guard).
     pub(crate) admitting: Vec<usize>,
+    /// Settled §5.3 admission of each declaration slot (memo, H1-S4).
+    pub(crate) admission_final: Vec<Option<bool>>,
+    /// Whether the admission pass over the whole context has run.
+    pub(crate) admission_phase: AdmissionPhase,
+    /// Members of the strongly connected component of the cosignature graph
+    /// the admission pass is settling.
+    pub(crate) admission_scc: Vec<bool>,
+    /// Set when an admission computation read an unsettled member of that
+    /// component (taken as not admitted).
+    pub(crate) admission_scc_unknown: bool,
+    /// Set when an admission computation read a provisional answer of a
+    /// cycle guard (a declaration or record already being decided further
+    /// up); such a result depends on its caller and is not memoised.
+    pub(crate) admission_provisional: bool,
+    /// Records whose evaluation is in progress.
+    pub(crate) running: usize,
+    /// Memoised Ed25519 equations by (public key, signature, message): the
+    /// trust closure re-checks the same signatures on every pass, so a long
+    /// cosignature chain in an unfavourable order cost a quadratic number of
+    /// curve operations (H1-S4).
+    pub(crate) equations: RefCell<HashMap<EquationKey, Result<(), Code>>>,
+}
+
+/// Key of [`World::equations`].
+type EquationKey = ([u8; 32], Vec<u8>, Vec<u8>);
+
+/// Progress of the admission pass ([`World::settle_admissions`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdmissionPhase {
+    /// Not run yet.
+    Pending,
+    /// Running.
+    Running,
+    /// Done: every declaration slot is settled.
+    Done,
 }
 
 impl World {
@@ -418,6 +452,13 @@ impl World {
             container_context: false,
             exempt_subject: None,
             admitting: Vec::new(),
+            admission_final: Vec::new(),
+            admission_phase: AdmissionPhase::Pending,
+            admission_scc: Vec::new(),
+            admission_scc_unknown: false,
+            admission_provisional: false,
+            running: 0,
+            equations: RefCell::new(HashMap::new()),
         };
         for result in results {
             let slot = match result {
@@ -449,6 +490,8 @@ impl World {
         }
         world.compute_digests_and_bodies()?;
         world.build_trust()?;
+        world.admission_final = vec![None; world.slots.len()];
+        world.admission_scc = vec![false; world.slots.len()];
         Ok(world)
     }
 
@@ -526,6 +569,7 @@ impl World {
             EvalState::Running => {
                 // Not constructible from a conforming digest-reference graph;
                 // never panic on hostile input.
+                self.admission_provisional = true;
                 let mut report = self.empty_report(index);
                 report.verdict = Verdict::Unverifiable;
                 report.errors.push(e::SIG_UNVERIFIABLE);
@@ -533,8 +577,11 @@ impl World {
             }
             EvalState::Pending => {}
         }
+        self.settle_admissions_if_clean();
         self.slots[index].eval = EvalState::Running;
+        self.running += 1;
         let report = crate::record::evaluate_normalized(self, index);
+        self.running -= 1;
         self.slots[index].eval = EvalState::Done(Box::new(report.clone()));
         report
     }
@@ -718,9 +765,11 @@ impl World {
     ///    through a trusted owner's cosignature; target human/organization
     ///    declarations are valid when their key is already trusted or when a
     ///    trusted human/organization key cosigns them (R2).
-    /// 4. The governing validity window is the keyset declaration's when the
-    ///    keyset declares the key id, otherwise that of the semantically valid
-    ///    context declaration with the smallest `(recorded_at, digest)` (S1).
+    /// 4. The keyset is the material source of a key it declares. The
+    ///    governing validity window (the keyset declaration's, otherwise that
+    ///    of the semantically valid context declaration with the smallest
+    ///    `(recorded_at, digest)`, S1) needs §5.3 admission and is decided
+    ///    where material is used ([`World::governing_window`], H1-S4).
     ///
     /// # Errors
     /// Two structurally valid keyset declarations for one key id with a
@@ -847,43 +896,17 @@ impl World {
             self.try_trust_candidate(index);
         }
 
-        // (4) Governing validity window and material for every trusted key.
-        let trusted_keys: Vec<String> = self.trusted.keys().cloned().collect();
-        for key in trusted_keys {
-            let mut window: Option<(OrderKey, Option<Timestamp>, Option<Timestamp>)> = None;
-            if let Some(pin) = self.keyset_pins.get(&key) {
-                let pin_window = (pin.valid_from, pin.valid_until);
-                if let Some(entry) = self.trusted.get_mut(&key) {
-                    entry.valid_from = pin_window.0;
-                    entry.valid_until = pin_window.1;
-                    entry.from_keyset = true;
-                }
-                continue;
-            }
-            for &index in &candidates {
-                if self.slots[index].decl_issue != DeclIssue::None
-                    || self.decl_key(index).as_deref() != Some(key.as_str())
-                {
-                    continue;
-                }
-                let Some(order) = self.order_key(index) else {
-                    continue;
-                };
-                let Some(info) = self.slots[index].decl.as_ref() else {
-                    continue;
-                };
-                let replace = match &window {
-                    None => true,
-                    Some((current, _, _)) => order_less(&order, current),
-                };
-                if replace {
-                    window = Some((order, info.valid_from, info.valid_until));
-                }
-            }
-            if let (Some((_, from, until)), Some(entry)) = (window, self.trusted.get_mut(&key)) {
-                entry.valid_from = from;
-                entry.valid_until = until;
-                entry.from_keyset = false;
+        // (4) Material source of every trusted key: the keyset when it declares
+        // the key id. The governing validity window needs §5.3 admission,
+        // which needs §9.4 and so record evaluation; it is decided where
+        // material is used (`governing_window`, H1-S4), as admission is.
+        let pinned: Vec<String> = self.keyset_pins.keys().cloned().collect();
+        for entry in self.trusted.values_mut() {
+            entry.from_keyset = false;
+        }
+        for key in pinned {
+            if let Some(entry) = self.trusted.get_mut(&key) {
+                entry.from_keyset = true;
             }
         }
         self.collect_rotation_candidates();
@@ -932,8 +955,6 @@ impl World {
                 TrustedKey {
                     class,
                     public_key: decl.public_key,
-                    valid_from: decl.valid_from,
-                    valid_until: decl.valid_until,
                     from_keyset: self.slots[index].source == SlotSource::Keyset,
                     source: index,
                 },
@@ -959,7 +980,7 @@ impl World {
         };
         let message = digest::record_signature_message(digest_string);
         // Rule 2: a valid self-signature (unknown-algorithm entries ignored).
-        if !signed_by(record, &key, &decl.public_key, &message) {
+        if !signed_by(self, record, &key, &decl.public_key, &message) {
             return DeclIssue::SelfSignature;
         }
         let is_keyset = self.slots[index].source == SlotSource::Keyset;
@@ -993,7 +1014,7 @@ impl World {
                         .map(|material| material.public_key)
                 });
             let cosigned = owner_material
-                .is_some_and(|material| signed_by(record, owner, &material, &message));
+                .is_some_and(|material| signed_by(self, record, owner, &material, &message));
             if !cosigned {
                 return DeclIssue::NotCosigned;
             }
@@ -1062,7 +1083,8 @@ impl World {
                 && entry.key != own_key
                 && self.trusted.get(&entry.key).is_some_and(|trusted| {
                     matches!(trusted.class.as_str(), "human" | "organization")
-                        && ed25519::verify(&trusted.public_key, &entry.decoded_value, message)
+                        && self
+                            .verify_equation(&trusted.public_key, &entry.decoded_value, message)
                             .is_ok()
                 })
         })
@@ -1152,10 +1174,168 @@ impl World {
     /// already being decided further up (a cosignature cycle) is not
     /// admitted: material must be grounded outside the cycle (§5.3,
     /// S2-FIX3/F72: a signature counts only when its key resolves).
+    ///
+    /// Settled answers are memoised (H1-S4): without that, a context in which
+    /// every declaration is cosigned by the two before it took time
+    /// exponential in its length. [`World::settle_admissions`] settles every
+    /// declaration once, before the first record is evaluated; a call made
+    /// while it runs either reads a settled answer, takes an unsettled
+    /// member of the component being settled as not admitted (marked, so
+    /// the pass decides it), or computes the answer and memoises it when it
+    /// read no provisional answer.
     pub(crate) fn declaration_admitted(&mut self, index: usize) -> bool {
-        if self.admitting.contains(&index) {
+        if let Some(admitted) = self.admission_final[index] {
+            return admitted;
+        }
+        self.settle_admissions_if_clean();
+        if let Some(admitted) = self.admission_final[index] {
+            return admitted;
+        }
+        if self.admission_scc[index] {
+            self.admission_scc_unknown = true;
             return false;
         }
+        if self.admitting.contains(&index) {
+            self.admission_provisional = true;
+            return false;
+        }
+        let outer_unknown = std::mem::replace(&mut self.admission_scc_unknown, false);
+        let outer_provisional = std::mem::replace(&mut self.admission_provisional, false);
+        let admitted = self.compute_admission(index);
+        if !self.admission_scc_unknown && !self.admission_provisional {
+            self.admission_final[index] = Some(admitted);
+        }
+        self.admission_scc_unknown |= outer_unknown;
+        self.admission_provisional |= outer_provisional;
+        admitted
+    }
+
+    /// Runs [`World::settle_admissions`] once, when no declaration and no
+    /// record is being decided (so no cycle guard can give it a provisional
+    /// answer).
+    fn settle_admissions_if_clean(&mut self) {
+        if self.admission_phase == AdmissionPhase::Pending
+            && self.running == 0
+            && self.admitting.is_empty()
+            && self.exempt_subject.is_none()
+        {
+            self.settle_admissions();
+        }
+    }
+
+    /// Settles the §5.3 admission of every declaration slot without
+    /// recursion along cosignature chains (H1-S4). The cosignature graph — a
+    /// declaration depends on every declaration of a key that makes one of
+    /// its other signatures — is split into strongly connected components,
+    /// settled dependencies first (iterative Tarjan), so a chain of any length
+    /// is decided one link at a time. Inside a component, the least fixed
+    /// point (S2-FIX3/F72: material must be grounded outside a cycle) is
+    /// reached with a worklist: a member is computed with the unsettled
+    /// members taken as not admitted; `true` settles it, and so does `false`
+    /// when it read no unsettled member; a settled member puts the members
+    /// that depend on it back on the list; what is left at the end is not
+    /// admitted. Each member is computed at most once per settled
+    /// dependency. Dependencies that only record evaluation reveals (a
+    /// rotation's or a revocation's signer) are computed on demand.
+    pub(crate) fn settle_admissions(&mut self) {
+        self.admission_phase = AdmissionPhase::Running;
+        let count = self.slots.len();
+        let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut members: Vec<usize> = Vec::new();
+        for (index, slot) in self.slots.iter().enumerate() {
+            let Some(envelope) = slot.record.as_ref().and_then(RecordFile::envelope) else {
+                continue;
+            };
+            if envelope.kind != "weave.key.declared" {
+                continue;
+            }
+            members.push(index);
+            if let Some(key) = envelope.body.get_str("key") {
+                by_key.entry(key.to_owned()).or_default().push(index);
+            }
+        }
+        let mut depends: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for &index in &members {
+            let Some(record) = self.slots[index].record.as_ref() else {
+                continue;
+            };
+            let Some(envelope) = record.envelope() else {
+                continue;
+            };
+            let subject = envelope.body.get_str("key");
+            let Ok(Some(entries)) = envelope::parse_sigs(&record.object) else {
+                continue;
+            };
+            let mut targets: Vec<usize> = entries
+                .iter()
+                .filter(|entry| entry.known_algorithm && Some(entry.key.as_str()) != subject)
+                .filter_map(|entry| by_key.get(&entry.key))
+                .flatten()
+                .copied()
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            depends[index] = targets;
+        }
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for &index in &members {
+            for &target in &depends[index] {
+                dependents[target].push(index);
+            }
+        }
+        for component in strongly_connected_components(&members, &depends) {
+            for &member in &component {
+                self.admission_scc[member] = true;
+            }
+            let mut queued = vec![false; count];
+            let mut provisional = vec![false; count];
+            let mut work: std::collections::VecDeque<usize> = component.iter().copied().collect();
+            for &member in &component {
+                queued[member] = true;
+            }
+            while let Some(member) = work.pop_front() {
+                queued[member] = false;
+                if self.admission_final[member].is_some() {
+                    continue;
+                }
+                self.admission_scc_unknown = false;
+                self.admission_provisional = false;
+                let admitted = self.compute_admission(member);
+                provisional[member] = self.admission_provisional;
+                if self.admission_provisional || (!admitted && self.admission_scc_unknown) {
+                    continue;
+                }
+                self.admission_final[member] = Some(admitted);
+                for &dependent in &dependents[member] {
+                    if self.admission_scc[dependent]
+                        && self.admission_final[dependent].is_none()
+                        && !queued[dependent]
+                    {
+                        queued[dependent] = true;
+                        work.push_back(dependent);
+                    }
+                }
+            }
+            for &member in &component {
+                self.admission_scc[member] = false;
+            }
+            // Only unsettled members kept each other out: none is grounded.
+            // A member whose answer was provisional is left for on-demand
+            // computation.
+            for &member in &component {
+                if self.admission_final[member].is_none() && !provisional[member] {
+                    self.admission_final[member] = Some(false);
+                }
+            }
+        }
+        self.admission_scc_unknown = false;
+        self.admission_provisional = false;
+        self.admission_phase = AdmissionPhase::Done;
+    }
+
+    /// The §5.3 admission of one declaration, computed (see
+    /// [`World::declaration_admitted`] for the memo around it).
+    fn compute_admission(&mut self, index: usize) -> bool {
         let Some(record) = self.slots[index].record.clone() else {
             return true;
         };
@@ -1299,14 +1479,20 @@ impl World {
             return true;
         }
         if let Some(admitted) = self.slots[index].admission {
+            if self.exempt_subject == Some(index) {
+                // Re-entry while the exempt evaluation runs.
+                self.admission_provisional = true;
+            }
             return admitted;
         }
         let Some(KindBody::KeyRotated(body)) = self.slots[index].body.clone() else {
             return false;
         };
-        if self.exempt_subject.is_some()
-            || !self.slots[index].lifecycle_failed.contains(&body.new_key)
-        {
+        if self.exempt_subject.is_some() {
+            self.admission_provisional = true;
+            return false;
+        }
+        if !self.slots[index].lifecycle_failed.contains(&body.new_key) {
             return false;
         }
         // Guard against re-entry while the exempt evaluation runs.
@@ -1322,6 +1508,7 @@ impl World {
     /// True when the record in `index` evaluates to `valid`.
     pub(crate) fn slot_is_valid(&mut self, index: usize) -> bool {
         if matches!(self.slots[index].eval, EvalState::Running) {
+            self.admission_provisional = true;
             return false;
         }
         self.evaluate(index).verdict == Verdict::Valid
@@ -1337,6 +1524,66 @@ impl World {
     }
 }
 
+/// Strongly connected components of the graph `depends` restricted to
+/// `nodes`, each component after every component it depends on (Tarjan's
+/// algorithm with an explicit stack, so a long chain cannot exhaust the call
+/// stack).
+fn strongly_connected_components(nodes: &[usize], depends: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    const UNSEEN: usize = usize::MAX;
+    let count = depends.len();
+    let mut number = vec![UNSEEN; count];
+    let mut low = vec![0usize; count];
+    let mut on_stack = vec![false; count];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    let mut next = 0usize;
+    for &root in nodes {
+        if number[root] != UNSEEN {
+            continue;
+        }
+        // (node, index of the next dependency to visit)
+        let mut frames: Vec<(usize, usize)> = vec![(root, 0)];
+        number[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(&mut (node, ref mut position)) = frames.last_mut() {
+            if let Some(&target) = depends[node].get(*position) {
+                *position += 1;
+                if number[target] == UNSEEN {
+                    number[target] = next;
+                    low[target] = next;
+                    next += 1;
+                    stack.push(target);
+                    on_stack[target] = true;
+                    frames.push((target, 0));
+                } else if on_stack[target] {
+                    low[node] = low[node].min(number[target]);
+                }
+                continue;
+            }
+            frames.pop();
+            if let Some(&(parent, _)) = frames.last() {
+                low[parent] = low[parent].min(low[node]);
+            }
+            if low[node] == number[node] {
+                let mut component = Vec::new();
+                while let Some(member) = stack.pop() {
+                    on_stack[member] = false;
+                    component.push(member);
+                    if member == node {
+                        break;
+                    }
+                }
+                component.sort_unstable();
+                components.push(component);
+            }
+        }
+    }
+    components
+}
+
 /// True when `left` precedes `right` in the declaration-resolution order.
 pub(crate) fn order_less(left: &OrderKey, right: &OrderKey) -> bool {
     match left.0.cmp(&right.0) {
@@ -1348,15 +1595,41 @@ pub(crate) fn order_less(left: &OrderKey, right: &OrderKey) -> bool {
 
 /// True when the record carries a valid `ed25519` signature by `key` made with
 /// `public_key` over `message` (unknown-algorithm entries are ignored, §3.6).
-fn signed_by(record: &RecordFile, key: &str, public_key: &[u8; 32], message: &[u8]) -> bool {
+fn signed_by(
+    world: &World,
+    record: &RecordFile,
+    key: &str,
+    public_key: &[u8; 32],
+    message: &[u8],
+) -> bool {
     let Ok(Some(entries)) = envelope::parse_sigs(&record.object) else {
         return false;
     };
     entries.iter().any(|entry| {
         entry.known_algorithm
             && entry.key == key
-            && ed25519::verify(public_key, &entry.decoded_value, message).is_ok()
+            && world
+                .verify_equation(public_key, &entry.decoded_value, message)
+                .is_ok()
     })
+}
+
+impl World {
+    /// [`ed25519::verify`], memoised in [`World::equations`].
+    pub(crate) fn verify_equation(
+        &self,
+        public_key: &[u8; 32],
+        signature: &[u8],
+        message: &[u8],
+    ) -> Result<(), Code> {
+        let key: EquationKey = (*public_key, signature.to_vec(), message.to_vec());
+        if let Some(outcome) = self.equations.borrow().get(&key) {
+            return *outcome;
+        }
+        let outcome = ed25519::verify(public_key, signature, message);
+        self.equations.borrow_mut().insert(key, outcome);
+        outcome
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1433,7 +1706,7 @@ impl World {
             return Some(SignatureMaterial {
                 public_key: trusted.public_key,
                 class: Some(trusted.class.clone()),
-                window: Some((trusted.valid_from, trusted.valid_until)),
+                window: self.governing_window(key_id),
                 source: MaterialSource::TrustedDeclaration,
                 context_trusted: !trusted.from_keyset,
             });
@@ -1463,44 +1736,45 @@ impl World {
         None
     }
 
-    /// The governing validity window of a key id without trust (§5.3): the
-    /// keyset pin, else the earliest semantically valid context declaration.
+    /// The governing validity window of a key id (§5.3): the keyset pin,
+    /// else the window of the earliest semantically valid context
+    /// declaration. A declaration that is not semantically valid "governs no
+    /// window": one that §5.3 does not admit (a signature other than the
+    /// subject key's does not pass, §9.4 included), and an untrusted one
+    /// ("an untrusted declaration MUST NOT make any other declaration
+    /// invalid", §9.1 rule 4) (H1-S4). Admission needs §9.4, so this is
+    /// decided where material is used, as admission is (F72).
     pub(crate) fn governing_window(
-        &self,
+        &mut self,
         key: &str,
     ) -> Option<(Option<Timestamp>, Option<Timestamp>)> {
         if let Some(pin) = self.keyset_pins.get(key) {
             return Some((pin.valid_from, pin.valid_until));
         }
-        if let Some(trusted) = self.trusted.get(key) {
-            return Some((trusted.valid_from, trusted.valid_until));
-        }
-        let mut best: Option<(OrderKey, Option<Timestamp>, Option<Timestamp>)> = None;
-        for index in 0..self.slots.len() {
-            if self.slots[index].decl_issue != DeclIssue::None
-                && self.slots[index].decl_issue != DeclIssue::UntrustedSelfAttested
-                && self.slots[index].decl_issue != DeclIssue::OwnerUntrusted
-            {
-                continue;
+        let mut candidates: Vec<(OrderKey, usize)> = (0..self.slots.len())
+            .filter(|&index| {
+                self.slots[index].decl_issue == DeclIssue::None
+                    && self.slots[index].decl.is_some()
+                    && self.decl_key(index).as_deref() == Some(key)
+            })
+            .filter_map(|index| self.order_key(index).map(|order| (order, index)))
+            .collect();
+        candidates.sort_by(|left, right| {
+            if order_less(&left.0, &right.0) {
+                std::cmp::Ordering::Less
+            } else if order_less(&right.0, &left.0) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
             }
-            let Some(info) = self.slots[index].decl.as_ref() else {
-                continue;
-            };
-            if self.decl_key(index).as_deref() != Some(key) {
-                continue;
-            }
-            let Some(order) = self.order_key(index) else {
-                continue;
-            };
-            let replace = match &best {
-                None => true,
-                Some((current, _, _)) => order_less(&order, current),
-            };
-            if replace {
-                best = Some((order, info.valid_from, info.valid_until));
+        });
+        for (_, index) in candidates {
+            if self.declaration_admitted(index) {
+                let info = self.slots[index].decl.as_ref()?;
+                return Some((info.valid_from, info.valid_until));
             }
         }
-        best.map(|(_, from, until)| (from, until))
+        None
     }
 
     /// Checks one signature through the context: key resolution, the §3.4
@@ -1530,7 +1804,9 @@ impl World {
             material_source: Some(material.source),
             material_from_context: material.context_trusted,
         };
-        if let Err(code) = ed25519::verify(&material.public_key, check.signature, check.message) {
+        if let Err(code) =
+            self.verify_equation(&material.public_key, check.signature, check.message)
+        {
             let mapped = if check.manifest {
                 e::MANIFEST_SIG_INVALID
             } else {
@@ -1818,7 +2094,11 @@ impl World {
                 crate::envelope::ParsedRecord::Normal(_)
                 | crate::envelope::ParsedRecord::Invalid(_) => record.digest() == reference.digest,
             };
-            if matches && !matches!(self.slots[index].eval, EvalState::Running) {
+            if matches {
+                if matches!(self.slots[index].eval, EvalState::Running) {
+                    self.admission_provisional = true;
+                    continue;
+                }
                 return self.evaluate(index).verdict == Verdict::Invalid;
             }
         }
@@ -2207,7 +2487,10 @@ impl World {
                 all_ok = false;
                 continue;
             };
-            if ed25519::verify(&public_key, &entry.decoded_value, &message).is_err() {
+            if self
+                .verify_equation(&public_key, &entry.decoded_value, &message)
+                .is_err()
+            {
                 all_ok = false;
                 continue;
             }
