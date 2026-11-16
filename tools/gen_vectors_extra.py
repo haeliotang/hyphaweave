@@ -14941,6 +14941,7 @@ declare(
     errors=("E_KEY_UNKNOWN", "E_SIG_REQUIRED"),
     build=lambda case_dir: container(_fix3_owner_sigs_absent_records()),
     args=_S2_ARGS,
+    notices=("N_KEY_UNDECLARED",),
     records=(
         {"id": "key-declared-fix3-owner", "verdict": "invalid", "errors": ["E_SIG_REQUIRED"], "sigs": []},
         {
@@ -14949,7 +14950,7 @@ declare(
             "errors": ["E_KEY_UNKNOWN"],
             "sigs": _s2_sigs(
                 _fix3_owner_sigs_absent_records()[1],
-                {derived_key("fix3-owner")[2]: "valid", derived_key("fix3-owned-device")[2]: "valid"},
+                {derived_key("fix3-owner")[2]: "unverified", derived_key("fix3-owned-device")[2]: "valid"},
             ),
         },
     ),
@@ -14959,8 +14960,9 @@ declare(
     "A declaration that fails the §14.1 structural group (sigs presence included) never "
     "takes part in class determination, so the owner cannot be resolved: the device "
     "declaration is unverifiable E_KEY_UNKNOWN, not E_KEY_UNTRUSTED (an owner that "
-    "resolves but is not trusted). The owner's cosignature still verifies against the "
-    "material its record states (sigs state valid).",
+    "resolves but is not trusted). S2-FIX5 (decision 2026-11-16 #9; §5.3): that "
+    "declaration supplies no material either, so the owner's cosignature on the device "
+    "declaration is unverified (N_KEY_UNDECLARED); it was valid before S2-FIX5.",
 )
 
 
@@ -15762,6 +15764,214 @@ declare(
     "declaration's material, but a cosignature never takes part in the TOFU predicate "
     "on a key-lifecycle record, and the device key's own signature uses the material "
     "the record states for it: no N_KEY_TOFU, no L_KEY_TRUST_TOFU.",
+)
+
+
+# ---------------------------------------------------------------------------
+# S2-FIX5 (decision 2026-11-16 #9): the two specification ambiguities the S2-FIX4
+# differential fuzzing left. Every expected conclusion below is hand-written from
+# the specification text.
+# ---------------------------------------------------------------------------
+
+# -- Material (§5.3): a declaration supplies verification material only when it
+#    passes the §14.1 structural group and its other signatures pass; trust is not
+#    required.
+
+_FIX5_KEY = "fix5-unstructured-human"
+
+
+def _fix5_unstructured_declaration(defect: str) -> dict[str, Any]:
+    """A human declaration (cosigned by human-1) failing the structural group by *defect*.
+
+    ``key_type``: the body has no ``key_type``, re-signed so both equations hold.
+    ``sigs``: the record has no ``sigs`` member.
+    """
+    declaration = _s2_declaration(
+        _FIX5_KEY, record_id="key-declared-fix5-" + defect + "-absent", key_type="human",
+        owner=None, recorded_at=recordlib.T0, cosigners=("human-1",),
+    )
+    unsigned = {name: value for name, value in declaration.items() if name != "sigs"}
+    if defect == "sigs":
+        return unsigned
+    unsigned["body"] = {name: value for name, value in declaration["body"].items() if name != "key_type"}
+    private, _public, key_id = derived_key(_FIX5_KEY)
+    signatures = [_derived_signature(private, key_id, unsigned), recordlib.sig_entry(unsigned, "human-1")]
+    return {**unsigned, "sigs": sorted(signatures, key=lambda entry: entry["key"])}
+
+
+for _defect, _code, _decl_sigs in (
+    ("key-type", "E_KIND_BODY_SCHEMA", "valid"),
+    ("sigs", "E_SIG_REQUIRED", None),
+):
+    def _fix5_note_files(_defect: str = _defect) -> dict[str, bytes]:
+        declaration = _fix5_unstructured_declaration(_defect)
+        note = _s2_derived_note(_FIX5_KEY, "fix5-note-by-unstructured-key", recordlib.T2, key_type="human")
+        return container([declaration, note])
+
+    def _fix5_note_expected(_defect: str = _defect, _code: str = _code, _decl_sigs: Any = _decl_sigs):
+        declaration = _fix5_unstructured_declaration(_defect)
+        key_id = derived_key(_FIX5_KEY)[2]
+        entry: dict[str, Any] = {
+            "id": declaration["id"], "verdict": "invalid", "errors": [_code],
+        }
+        if _decl_sigs is None:
+            entry["sigs"] = []
+        else:
+            entry["sigs"] = _s2_sigs(declaration, {kid("human-1"): "valid", key_id: "valid"})
+        return (
+            entry,
+            {
+                "id": "fix5-note-by-unstructured-key",
+                "verdict": "unverifiable",
+                "errors": ["E_KEY_UNKNOWN"],
+                "notices": ["N_KEY_UNDECLARED"],
+                "sigs": [{"key": key_id, "state": "unverified"}],
+            },
+        )
+
+    declare(
+        "key-lifecycle",
+        "declaration-" + _defect + "-absent-supplies-no-material",
+        "container",
+        "container",
+        "invalid",
+        errors=(_code, "E_KEY_UNKNOWN"),
+        build=lambda case_dir, _f=_fix5_note_files: _f(),
+        args=_S2_ARGS,
+        notices=("N_KEY_UNDECLARED",),
+        notices_absent=("N_KEY_TOFU",),
+        limitations=("L_OFFLINE_CONTEXT",),
+        records=_fix5_note_expected(),
+        notes="S2-FIX5 (decision 2026-11-16 #9; §5.3): the only declaration of a human key "
+        "(cosigned by the keyset root human-1) fails the §14.1 structural group — "
+        + ("its body has no key_type (E_KIND_BODY_SCHEMA; re-signed, so both of its "
+           "equations hold against the material it states for its own key)"
+           if _defect == "key-type" else "it has no sigs member (E_SIG_REQUIRED)")
+        + ". A declaration supplies verification material only when it passes the "
+        "structural group and its other signatures pass, so a note signed by that key at T2 "
+        "has no material: unverifiable E_KEY_UNKNOWN, N_KEY_UNDECLARED, and no TOFU.",
+    )
+
+
+def _fix5_cosigned_by_unstructured() -> list[dict[str, Any]]:
+    """A human declaration cosigned by the key whose only declaration has no key_type."""
+    return [
+        _fix5_unstructured_declaration("key-type"),
+        _fix3_cosigned_human(
+            "fix5-cosigned-human", "key-declared-fix5-cosigned-human", recordlib.T1, _FIX5_KEY
+        ),
+    ]
+
+
+declare(
+    "key-lifecycle",
+    "cosigner-declaration-key-type-absent",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KIND_BODY_SCHEMA", "E_KEY_UNKNOWN"),
+    build=lambda case_dir: container(_fix5_cosigned_by_unstructured()),
+    args=_S2_ARGS,
+    notices=("N_KEY_UNDECLARED",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {"id": "key-declared-fix5-key-type-absent", "verdict": "invalid", "errors": ["E_KIND_BODY_SCHEMA"]},
+        {
+            "id": "key-declared-fix5-cosigned-human",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNKNOWN"],
+            "sigs": _s2_sigs(
+                _fix5_cosigned_by_unstructured()[1],
+                {derived_key(_FIX5_KEY)[2]: "unverified", derived_key("fix5-cosigned-human")[2]: "valid"},
+            ),
+        },
+    ),
+    notes="S2-FIX5 (decision 2026-11-16 #9; §5.3; the S2-FIX4 diff_fuzz shape "
+    "151115/76065081092255476 as a cosignature): the cosigner's only declaration has no "
+    "key_type (E_KIND_BODY_SCHEMA; both of its signatures verify), so it fails the §14.1 "
+    "structural group and supplies no material: the cosignature on the second human "
+    "declaration is unverified and that declaration is unverifiable E_KEY_UNKNOWN (not "
+    "E_KEY_UNTRUSTED through a cosignature verified against that material). The "
+    "key-lifecycle/owner-declaration-sigs-absent case is the sigs-absent form.",
+)
+
+
+def _fix5_manifest_signer_files() -> dict[str, bytes]:
+    files = recordlib.build_container([_fix5_unstructured_declaration("key-type")], manifest_signers=("human-1",))
+    return _wrap_internal(_w1_sign_manifest_with_derived(files, _FIX5_KEY))
+
+
+declare(
+    "container",
+    "manifest-signer-declaration-not-structural",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_UNKNOWN", "E_KIND_BODY_SCHEMA"),
+    build=lambda case_dir: _fix5_manifest_signer_files(),
+    args=("--keys", "@keyset"),
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {"id": "key-declared-fix5-key-type-absent", "verdict": "invalid", "errors": ["E_KIND_BODY_SCHEMA"]},
+    ),
+    notes="S2-FIX5 (decision 2026-11-16 #9; §5.3, §11.3): the manifest is signed by a key "
+    "whose only declaration has no key_type (E_KIND_BODY_SCHEMA; both of its signatures "
+    "verify). It fails the §14.1 structural group, so it supplies no material for the "
+    "manifest signature either: the entry is judged as an undeclared key's, E_KEY_UNKNOWN "
+    "(unverifiable, the pipeline goes on), and no check used context material.",
+)
+
+# -- Grant order (§5.4, §5.5.2 step 6): a grant both revoked and outside its window
+#    at the evaluated time is E_GRANT_REVOKED.
+
+declare(
+    "grant",
+    "revoked-and-expired",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_GRANT_REVOKED",),
+    build=lambda case_dir: (
+        lambda grant: container(
+            [
+                grant,
+                grant_revocation(grant, record_id="grant-revoke-fix5", effective_at=recordlib.T2),
+                agent_action(grant, record_id="agent-revoked-and-expired", recorded_at=recordlib.T4),
+            ]
+        )
+    )(
+        root_grant(record_id="grant-root-fix5-revoked-expired", valid_from=recordlib.T0, valid_until=recordlib.T3)
+    ),
+    args=GRANT_ARGS,
+    records=(
+        {"id": "agent-revoked-and-expired", "verdict": "unverifiable", "errors": ["E_GRANT_REVOKED"]},
+    ),
+    notes="S2-FIX5 (decision 2026-11-16 #9; §5.4, §5.5.2 step 6): the cited grant's window "
+    "ends at T3 and its revocation is effective at T2; the agent record is recorded at T4, "
+    "when the grant is both revoked and expired. Revocation is listed first and is the "
+    "more specific fact: E_GRANT_REVOKED, not E_GRANT_EXPIRED.",
+)
+
+declare(
+    "erasure",
+    "actor-program-basis-revoked-and-expired",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_GRANT_REVOKED",),
+    build=lambda case_dir: _fix2_erasure_basis_files(
+        signer="program-1", grant_kwargs=dict(valid_until=recordlib.T3), revoke_at=recordlib.T3
+    ),
+    args=ERASURE_REVISION_ARGS,
+    records=(
+        {"id": "erasure-revision-attestation", "verdict": "unverifiable", "errors": ["E_GRANT_REVOKED"]},
+        {"id": "erasure-basis-grant", "verdict": "valid", "errors": []},
+        {"id": "erasure-basis-grant-revoked", "verdict": "valid", "errors": []},
+    ),
+    notes="S2-FIX5 (decision 2026-11-16 #9; §5.4, §5.5.2 step 6, weave.erasure signer "
+    "rules): erasure/actor-program-basis-revoked with the basis grant's window also ending "
+    "at T3 (the S2-FIX4 diff_fuzz shape 777001/3039271972030761147). At the erasure's "
+    "recorded_at T4 the basis is both revoked and expired: E_GRANT_REVOKED.",
 )
 
 

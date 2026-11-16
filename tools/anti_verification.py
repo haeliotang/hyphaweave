@@ -2142,7 +2142,11 @@ def _build_s2_catalogue() -> None:
              "F73: resolve an owner through a declaration that fails the structural group",
              "        owner_material = context.owner_declaration(owner)\n",
              "        owner_material = context.declaration_material(owner)\n",
-             (_KL + "owner-declaration-sigs-absent",)),
+             (_KL + "owner-declaration-sigs-absent",),
+             equivalent_reason="S2-FIX5 (decision 2026-11-16 #9) made every declared material "
+             "come from a structurally valid declaration, so the owner lookup and the "
+             "signature lookup read the same map; the structural rule itself is pinned by "
+             "fix5-material-structural"),
         _lit("fix3-f74-missing-new-public-key", "keys.py", "fix3.f74.rotation",
              "F74: let a rotation without new_public_key reach the signature layer",
              "    new_key = body.get(\"new_key\")\n    try:\n",
@@ -2278,6 +2282,29 @@ def _build_s2_catalogue() -> None:
              "        if source is not None:\n            return False\n",
              (_KL + "declaration-body-key-absent-actor-tofu",
               _KL + "declaration-body-key-absent-actor-tofu-equation-fails")),
+        # S2-FIX5 (decision 2026-11-16 #9): material precondition, grant code order.
+        _lit("fix5-material-structural", "verifier.py", "fix5.material",
+             "S2-FIX5: let a declaration that fails the §14.1 structural group supply "
+             "verification material",
+             "        if _structural_declaration_class(view) is None:\n            return\n"
+             "        try:\n",
+             "        if False:\n            return\n        try:\n",
+             (_KL + "owner-declaration-sigs-absent", _KL + "cosigner-declaration-key-type-absent")),
+        _lit("fix5-manifest-structural", "container.py", "fix5.material",
+             "S2-FIX5: let a declaration that fails the structural group supply manifest "
+             "material",
+             "                if verifier._structural_declaration_class(verifier.RecordView(loaded=record)) is None:\n",
+             "                if False:\n",
+             ("container/manifest-signer-declaration-not-structural",)),
+        _lit("fix5-grant-revoked-first", "grants.py", "fix5.grant-order",
+             "S2-FIX5: report E_GRANT_EXPIRED for a grant that is both revoked and expired",
+             "        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:\n"
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n"
+             "        _check_window(grant, at_time)\n",
+             "        _check_window(grant, at_time)\n"
+             "        if context.grant_state.revocation_as_of(grant.digest, at_time) is not None:\n"
+             "            raise WeaveError(\"E_GRANT_REVOKED\", \"grant is revoked\")\n",
+             ("grant/revoked-and-expired", "erasure/actor-program-basis-revoked-and-expired")),
     )
 
 
