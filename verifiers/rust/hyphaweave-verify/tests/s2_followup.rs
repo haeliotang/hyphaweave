@@ -687,10 +687,13 @@ fn cosignature_cycle_supplies_no_material() {
 /// not resolve as an owner: a device declaration naming it, signed by the
 /// device key alone, is unverifiable `E_KEY_UNKNOWN`. With human-2's
 /// declaration cosigned by human-1 (a keyset root) the owner resolves and
-/// the same device declaration is `E_KEY_DECLARED_NOT_COSIGNED`.
+/// the same device declaration is `E_KEY_DECLARED_NOT_COSIGNED`. The same
+/// rule applies at §4.4 step 5 (S2-FIX1/Q3): signed only with an unknown
+/// algorithm, the device declaration is `E_KEY_UNKNOWN` with the
+/// unresolvable owner and `E_SIG_UNVERIFIABLE` with the resolvable one.
 #[test]
 fn owner_resolves_only_through_a_declaration_that_supplies_material() {
-    let device_declaration = || {
+    let device_declaration = |unknown_algorithm_only: bool| {
         let mut body = Object::new();
         body.insert("algorithm", "ed25519");
         body.insert("key", key_id("device-1"));
@@ -715,15 +718,29 @@ fn owner_resolves_only_through_a_declaration_that_supplies_material() {
         object.insert("origin", Value::Object(origin));
         object.insert("recorded_at", "2026-11-03T00:00:00.000Z");
         object.insert("stage", "accepted");
-        signed(object, &["device-1"])
+        let bytes = signed(object, &["device-1"]);
+        if !unknown_algorithm_only {
+            return bytes;
+        }
+        let mut object = json::parse_object(&bytes)
+            .expect("declaration")
+            .without("sigs");
+        let mut entry = Object::new();
+        entry.insert("alg", "x-unknown-alg");
+        entry.insert("key", key_id("device-1"));
+        entry.insert("value", b64::encode(&[0u8; 64]));
+        object.insert("sigs", Value::Array(vec![Value::Object(entry)]));
+        json::canonical_object_bytes(&object)
     };
     let mut options = VerifyOptions::new();
     options.keyset.push(
         fs::read(vectors_root().join("keys/keyset/key-declared-human-1.json")).expect("root"),
     );
-    for (cosigner, expected) in [
-        ("key-old", e::KEY_UNKNOWN),
-        ("human-1", e::KEY_DECLARED_NOT_COSIGNED),
+    for (cosigner, unknown_algorithm_only, expected) in [
+        ("key-old", false, e::KEY_UNKNOWN),
+        ("human-1", false, e::KEY_DECLARED_NOT_COSIGNED),
+        ("key-old", true, e::KEY_UNKNOWN),
+        ("human-1", true, e::SIG_UNVERIFIABLE),
     ] {
         let owner = human_declaration(
             "s2-fix5-owner",
@@ -731,7 +748,18 @@ fn owner_resolves_only_through_a_declaration_that_supplies_material() {
             "2026-11-02T00:00:00.000Z",
             cosigner,
         );
-        let files = l0_container(&[owner, device_declaration()]);
+        let files = l0_container(&[owner, device_declaration(unknown_algorithm_only)]);
+        if let Some(directory) = std::env::var_os("H1_S2_DUMP_DIR") {
+            // Probe aid: write each container out for the reference black box.
+            let directory = PathBuf::from(directory).join(format!(
+                "owner-{cosigner}-unknown-alg-{unknown_algorithm_only}"
+            ));
+            for (path, bytes) in &files {
+                let target = directory.join(path);
+                fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+                fs::write(target, bytes).expect("write");
+            }
+        }
         let report = verify_container(ContainerInput::Files(files), &options).expect("container");
         let device = report
             .records
@@ -741,7 +769,7 @@ fn owner_resolves_only_through_a_declaration_that_supplies_material() {
         assert_eq!(
             device.errors,
             vec![expected],
-            "owner cosigned by {cosigner}"
+            "owner cosigned by {cosigner}, unknown algorithm only: {unknown_algorithm_only}"
         );
     }
 }
