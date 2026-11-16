@@ -6,6 +6,42 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S2 round, revision 5 (S2-FIX5) — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #9 (decided by the founder): the two specification ambiguities the
+S2-FIX4 differential fuzzing left. The `format` identifier is unchanged; no error code is
+added; the registry stays at revision 7. No conclusion of the frozen candidate set changes.
+
+### Wire-visible changes (specification and Python reference verifier)
+
+- **Which declarations supply verification material (§5.3).** A declaration supplies the
+  material a signature by its key is verified against (on another record, as a cosignature,
+  on the manifest or a supplied previous manifest) and resolves an owner only when it passes
+  the §14.1 structural group and every signature other than its subject key's passes; trust
+  is not required (T17/A-L8). A declaration without `sigs` or whose body fails its schema
+  (a missing `key_type`) supplies none. The reference verifier used to verify cosignatures
+  and the manifest signature against such declarations (it already refused a missing
+  `key_type` for cosignatures).
+- **A grant both revoked and outside its window (§5.4).** `E_GRANT_REVOKED`, not
+  `E_GRANT_EXPIRED`: §5.4 now lists the revocation rule first, as §5.5.2 step 6 and the
+  grant kind page do (order only).
+
+### Vectors, tests and gates
+
+- **Vectors**: six new main cases (725 → 731): `key-lifecycle/declaration-key-type-absent-supplies-no-material`,
+  `declaration-sigs-absent-supplies-no-material`, `cosigner-declaration-key-type-absent`,
+  `container/manifest-signer-declaration-not-structural`, `grant/revoked-and-expired`,
+  `erasure/actor-program-basis-revoked-and-expired`. One existing main case changes by the
+  ruling: `key-lifecycle/owner-declaration-sigs-absent` (S2-FIX3) — the owner's cosignature
+  on the device declaration is now `unverified` with `N_KEY_UNDECLARED` (its conclusion,
+  unverifiable `E_KEY_UNKNOWN`, is unchanged).
+- **Ablation catalogue**: three S2-FIX5 entries; `fix3-f73-owner-structural` is now a
+  documented equivalent (owner and signature lookups read one map).
+- **Rust verifier**: not changed here. The Rust follow-up binary (`r2/rust-s2`, `dcaffa2`)
+  passes the frozen set and 728 of the 731 main cases; the three others
+  (`key-lifecycle/owner-declaration-sigs-absent`, `cosigner-declaration-key-type-absent`,
+  `container/manifest-signer-declaration-not-structural`) are its next increment.
+
 ## S2 round, revision 4 (S2-FIX4) — 2026-11-16 — DRAFT, UNRELEASED
 
 Decision 2026-11-16 #4 (decided by principle — the specification's own text; the founder

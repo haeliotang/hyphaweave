@@ -1456,3 +1456,24 @@ candidate set changes.
    `-equation-fails`, `key-lifecycle/revocation-context-cosignature-not-tofu`,
    `device-declaration-context-owner-cosignature-not-tofu`. The Rust verifier needs no
    change for either.
+
+### 7.8 S2-FIX5 (decision 2026-11-16 #9)
+
+The differential fuzzing of S2-FIX4 left two specification ambiguities; the founder decided
+both.
+
+1. **Verification material (§5.3).** §5.3 asked for semantic validity of a declaration that
+   supplies material, while §11.3 (T17/A-L8) let a declared but untrusted key verify an
+   equation; neither said whether a declaration that fails the §14.1 structural group
+   counts. Ruling: a declaration supplies verification material, and resolves an owner,
+   only when it passes the structural group and every signature other than its subject
+   key's passes; trust is not required — the F73 owner rule applied to all material.
+   Vectors `key-lifecycle/declaration-key-type-absent-supplies-no-material`,
+   `declaration-sigs-absent-supplies-no-material`, `cosigner-declaration-key-type-absent`,
+   `container/manifest-signer-declaration-not-structural`; `key-lifecycle/owner-declaration-sigs-absent`
+   changes (the owner cosignature is `unverified`).
+2. **A grant both revoked and expired (§5.4).** §5.4 listed the window before the
+   revocation, §5.5.2 step 6 and `weave.grant.md` the other way round. Ruling:
+   `E_GRANT_REVOKED` (the more specific, stronger fact); §5.4 takes the order of §5.5.2.
+   Vectors `grant/revoked-and-expired`, `erasure/actor-program-basis-revoked-and-expired`.
+
