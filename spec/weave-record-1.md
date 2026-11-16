@@ -985,6 +985,19 @@ further down that chain.
 a declaration never keeps itself trusted [S2-FIX3/F72] decided by principle (Inceptless decision 2026-11-16 #1). This is declaration resolution, not root selection [Q12] decided (Inceptless decision
 2026-11-10 #34; Q12).
 
+**Material for a signature check.** A `weave.key.declared` record supplies the material a
+signature by its key is verified against — on another record, as a cosignature on another
+declaration, on the manifest or on a supplied previous manifest — and resolves its key as
+an owner (§9.1 rule 3) exactly when it passes the §14.1 structural group (the same group
+the governing class is taken from) **and** every signature other than its subject key's
+passes in the sense above. It does not have to be trusted for that (§11.3, T17/A-L8);
+governing a window and establishing trust still need semantic validity as defined above. A
+declaration that fails the structural group — no `sigs` member, a body that fails its
+schema such as a missing `key_type` — supplies no material, so a signature whose key has
+no other source is `unverified` with `E_KEY_UNKNOWN` (the declaration's own signatures are
+still checked against the key it states for itself) [S2-FIX5] decided (Inceptless decision
+2026-11-16 #9; as S2-FIX3/F73 for owners).
+
 ### 5.4 Agent authorisation: every agent record needs a covering grant
 
 An agent's output is never self-authorised. Every record whose `actor.type` is `agent`
@@ -1009,12 +1022,14 @@ revocation state (unverifiable) [S2/F69] decided by principle (Inceptless decisi
   contain the action mapped from the record's stage — `proposed → propose`,
   `accepted → accept`, `rejected → reject`, `withdrawn → withdraw`,
   `superseded → supersede`; otherwise `E_GRANT_NOT_APPLICABLE`, invalid;
-- at the record's claimed `recorded_at` the grant MUST be inside its validity window
+- at the record's claimed `recorded_at` the grant MUST NOT be revoked: a `weave.grant`
+  revocation of this grant with `effective_at <= recorded_at` gives `E_GRANT_REVOKED`
+  (unverifiable); the boundary belongs to revocation (equal counts as revoked);
+- at that time the grant MUST be inside its validity window
   (`valid_from <= recorded_at <= valid_until`, `null` meaning unbounded); otherwise
-  `E_GRANT_EXPIRED` (unverifiable, including the not-yet-valid case);
-- at that time the grant MUST NOT be revoked: a `weave.grant` revocation of this grant with
-  `effective_at <= recorded_at` gives `E_GRANT_REVOKED` (unverifiable); the boundary
-  belongs to revocation (equal counts as revoked);
+  `E_GRANT_EXPIRED` (unverifiable, including the not-yet-valid case). The two bullets are
+  in the order of §5.5.2 step 6: a grant that is both revoked and outside its window is
+  `E_GRANT_REVOKED` [S2-FIX5] decided (Inceptless decision 2026-11-16 #9);
 - the whole grant chain, including all ancestors, is judged at the claimed `recorded_at`
   of the record being verified (and, when the record being verified is itself a
   `weave.grant`, at that grant's own claimed `recorded_at`), per §5.5.2 step 6
@@ -3993,6 +4008,15 @@ text); the founder can overturn them.
 |---|---|---|
 | S2-FIX4/F83 | a declaration that supplies no material under §5.3, and a rotation that is not semantically valid, supply none for the manifest signature or a supplied previous container's manifest signature either: such an entry is judged as an undeclared key's (`E_KEY_UNKNOWN`) | §5.3, §11.3 |
 | S2-FIX4/F84 | on a key-lifecycle record only the `actor.key` signature takes part in the TOFU predicate: context-trusted when its material came from a context record other than the record itself, even if its equation fails; cosignatures never count | §14.9 |
+
+The following rows are fixed by Inceptless decision **2026-11-16 #9** (S2-FIX5, the fifth
+revision of the S2 round): the two specification ambiguities the S2-FIX4 differential
+fuzzing left; the founder decided them.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S2-FIX5 (material) | a declaration supplies verification material, and resolves an owner, only when it passes the §14.1 structural group and every signature other than its subject key's passes; trust is not required | §5.3 |
+| S2-FIX5 (grant order) | a grant both revoked and outside its window at the evaluated time is `E_GRANT_REVOKED`; §5.4 lists the revocation rule first, as §5.5.2 step 6 does | §5.4 |
 
 ### A.2 PROVISIONAL implementation shapes
 
