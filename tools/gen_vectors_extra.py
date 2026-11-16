@@ -17243,9 +17243,14 @@ def freeze_cases(
         verdict = row["expected"]["verdict"]
         verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
 
+    # The two header lines below are text written into the frozen README, not this
+    # file's own licence statement; the markers keep REUSE (5.x and 6.x) from
+    # reading them as one.
+    # REUSE-IgnoreStart
     lines = [
         "<!-- SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com> -->",
         "<!-- SPDX-License-Identifier: Apache-2.0 -->",
+        # REUSE-IgnoreEnd
         "",
         "# Candidate frozen conformance vectors, %s" % FREEZE_VERSION,
         "",
