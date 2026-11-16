@@ -14,9 +14,10 @@ Every helper is pure: no clock, no environment, no I/O.
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
-from . import canonical
+from . import canonical, grammar
 from .errors import WeaveError
 
 #: Domain-separation prefixes (ASCII, each ends with one LF, spec §2.1).
@@ -136,27 +137,30 @@ def sha256_digest(data: bytes) -> str:
     return "sha256:" + sha256_hex(data)
 
 
-def is_digest_string(value: Any) -> bool:
-    """Structural digest-string check (unknown algorithms are structurally valid).
+#: The hexadecimal part of a §2.7 digest string: 1-128 lowercase hex characters.
+DIGEST_HEX_PATTERN = re.compile(r"[0-9a-f]{1,128}")
 
-    The profile grammar is ``<alg>:<lowercase hex>``. For H0 the only
-    *supported* algorithm is ``sha256`` with 64 hex digits; callers that need
-    support decide via :func:`digest_algorithm`.
+
+def is_digest_string(value: Any) -> bool:
+    """The §2.7 digest-string grammar: ``<alg>:<lowercase hex>``.
+
+    The algorithm name follows the §2.7 algorithm-name grammar
+    (``^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$``, at most 32 bytes) and the
+    hexadecimal part has 1-128 lowercase hex characters. A string of this shape
+    whose algorithm is not implemented, or ``sha256`` with another number of
+    digits, is structurally valid but unsupported, not malformed (§2.7);
+    callers that need support decide via :func:`is_supported_digest`. Every
+    reader of a digest string (references, placeholders, ``manifest.blobs``)
+    uses this one check (FIX1, decision 2026-11-16 #50).
     """
     if not isinstance(value, str):
         return False
-    if ":" not in value:
-        return False
-    algorithm, _, hex_digits = value.partition(":")
-    if not algorithm or not hex_digits:
-        return False
-    for character in algorithm:
-        if not ("a" <= character <= "z" or "0" <= character <= "9" or character == "-"):
-            return False
-    for character in hex_digits:
-        if not ("0" <= character <= "9" or "a" <= character <= "f"):
-            return False
-    return True
+    algorithm, colon, hex_digits = value.partition(":")
+    return (
+        colon == ":"
+        and grammar.is_algorithm_name(algorithm)
+        and DIGEST_HEX_PATTERN.fullmatch(hex_digits) is not None
+    )
 
 
 def digest_algorithm(value: str) -> str:

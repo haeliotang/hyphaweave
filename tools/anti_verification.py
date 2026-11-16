@@ -2398,16 +2398,10 @@ def _build_s3_catalogue() -> None:
         _lit("s3-blob-digest-grammar", "manifest.py", "s3.blob-listing-schema",
              "S3: drop the §2.7 digest-string grammar check of manifest.blobs (a malformed "
              "digest falls through to the sha256 form, E_MANIFEST_BLOB)",
-             "        if not _is_digest_string(blob[\"digest\"]):\n",
+             "        if not encoding.is_digest_string(blob[\"digest\"]):\n",
              "        if False:  # ablation: digest-string grammar not checked\n",
              (_C + "blobs-listing-uppercase-hex", _C + "blobs-listing-digest-without-algorithm",
               _C + "blobs-listing-algorithm-name-malformed", _C + "blobs-listing-hex-too-long")),
-        _lit("s3-blob-digest-grammar-lax", "manifest.py", "s3.blob-listing-schema",
-             "S3: use the laxer encoding.is_digest_string (no algorithm-name grammar, no "
-             "128-digit bound) for manifest.blobs digests",
-             "        if not _is_digest_string(blob[\"digest\"]):\n",
-             "        if not encoding.is_digest_string(blob[\"digest\"]):\n",
-             (_C + "blobs-listing-algorithm-name-malformed", _C + "blobs-listing-hex-too-long")),
         _lit("s3-blob-unsupported-schema", "manifest.py", "s3.blob-listing-blob",
              "S3: report a well-formed non-sha256 blob digest as E_MANIFEST_SCHEMA",
              _S3_UNSUPPORTED,

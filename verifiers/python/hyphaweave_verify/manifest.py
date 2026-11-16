@@ -58,8 +58,6 @@ BLOB_ENTRY_MEMBERS = ("digest", "size")
 
 LEVELS = ("L0", "L1", "L2")
 TIMESTAMP_PATH_PATTERN = re.compile(r"^signatures/timestamp-[1-9][0-9]*\.tsr$")
-#: The hexadecimal part of a §2.7 digest string: 1-128 lowercase hex characters.
-DIGEST_HEX_PATTERN = re.compile(r"[0-9a-f]{1,128}")
 
 
 @dataclass(frozen=True)
@@ -125,24 +123,6 @@ class ManifestAttestation:
 
 def _fail(code: str, detail: str) -> None:
     raise WeaveError(code, detail)
-
-
-def _is_digest_string(value: Any) -> bool:
-    """The §2.7 digest-string grammar: ``<alg>:<lowercase hex>``.
-
-    The algorithm name follows the §2.7 algorithm-name grammar (at most 32
-    bytes) and the hexadecimal part has 1-128 lowercase hex characters. A
-    string of this shape with an algorithm other than sha256 is structurally
-    valid but unsupported, not malformed (§2.7).
-    """
-    if not isinstance(value, str):
-        return False
-    algorithm, colon, hex_digits = value.partition(":")
-    return (
-        colon == ":"
-        and grammar.is_algorithm_name(algorithm)
-        and DIGEST_HEX_PATTERN.fullmatch(hex_digits) is not None
-    )
 
 
 def validate_manifest(value: Any) -> Manifest:
@@ -271,7 +251,7 @@ def validate_manifest(value: Any) -> Manifest:
                 _fail("E_MANIFEST_SCHEMA", "unknown member in manifest.blobs entry")
         if "digest" not in blob or "size" not in blob:
             _fail("E_MANIFEST_SCHEMA", "manifest.blobs entry is missing a member")
-        if not _is_digest_string(blob["digest"]):
+        if not encoding.is_digest_string(blob["digest"]):
             _fail("E_MANIFEST_SCHEMA", "manifest.blobs digest is not a digest string")
         size = blob["size"]
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
