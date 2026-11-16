@@ -427,7 +427,9 @@ mod tests {
     fn hex(text: &str) -> Vec<u8> {
         assert_eq!(text.len() % 2, 0, "hex string has an even length");
         text.as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (hex_digit(pair[0]) << 4) | hex_digit(pair[1]))
             .collect()
     }
