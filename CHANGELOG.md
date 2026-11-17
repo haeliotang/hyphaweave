@@ -8,13 +8,14 @@ draft and may be replaced before the first public release.
 
 ## S3-FIX2: second revision of the S3 round — 2026-11-18 — DRAFT, UNRELEASED
 
-Decision 2026-11-18 #2 (the founder can overturn every item; the rules are **decided by
-principle**). The narrow review of S3-FIX1 found that the Rust verifier took a zero-data zip
+Decisions 2026-11-18 #2 and #3 (the founder can overturn every item; the rules are
+**decided by principle**). The narrow review of S3-FIX1 found that the Rust verifier took a zero-data zip
 entry that carries the DOS directory attribute but whose name does not end with `/` for a
 directory entry. S3-FIX1 had made directory entries leave the question whether `blobs/` is
 present, so a zip without a blob listing that held such an entry `blobs/sha256` became
 `valid` in H1 (high-1); the same reading had always let H1 accept such an entry named `foo`,
-`blobs` or `records/x` (medium-1, N1). This revision fixes that one reading. The `format`
+`blobs` or `records/x` (medium-1, N1). This revision fixes that reading and, by decision
+#3, one more disagreement of the same loop that the review recorded (medium-2, N2). The `format`
 identifier is unchanged; no error code is added; the registry stays at revision 8. No
 conclusion of the frozen candidate set changes and no existing main vector changes.
 
@@ -32,6 +33,16 @@ conclusion of the frozen candidate set changes and no existing main vector chang
   final `/` alone, everywhere; the attribute is read only by the rule-4 check that an entry
   carrying it with data is `E_CONTAINER_ZIP`. Python already read rule 4 this way.
   Embedders of an earlier H1 should treat such archives as their codes say.
+- **`N_READABLE_PRESENT` does not depend on the order of the central directory (§11.8,
+  S3-FIX2/N2).** H1 stopped the zip entry checks at the first entry that failed them, so
+  when an unsafe entry such as `../x` or `../x/` came before `readable/a`, the zip was
+  `E_CONTAINER_ENTRY` (as it should be) but the notice was missing. H1 now checks every
+  entry, as §11.8 already required ("whatever fails afterwards", read together with "the
+  `readable/` entries that passed their own checks") and as Python did; verdicts and error
+  codes do not change. It also remembers the name of every entry it has seen, a failing one
+  included, so a later entry of the same name is a duplicate (Python already did; without
+  this the full loop would have taken a regular `readable/a` after a symbolic link
+  `readable/a` for the first of its name and reported the notice).
 
 ### Wire-visible changes (specification and the Python verifier)
 
@@ -48,12 +59,14 @@ conclusion of the frozen candidate set changes and no existing main vector chang
   members of a supplied previous zip); the W7 phase-3 sentence, the §11.5 sentence on the
   previous zip (which read "a directory entry or a DOS directory-attribute entry carrying
   data") and `spec/error-codes.md` (`E_CONTAINER_ZIP`, `E_CONTAINER_ENTRY`,
-  `E_MANIFEST_BLOB`) say the same; Appendix A lists the S3-FIX2 rulings; Q23 in
+  `E_MANIFEST_BLOB`) say the same; §11.8 and the `N_READABLE_PRESENT` row say that the
+  notice holds regardless of the entries' order in the central directory; Appendix A lists
+  the S3-FIX2 rulings; Q23 in
   `docs/open-questions.md` and `verifiers/rust/ARCHITECTURE.md` are updated.
 
 ### Vectors, tests and gates
 
-- **Vectors**: 11 new main cases (797 → 808), all in `container/`. No existing case changes.
+- **Vectors**: 15 new main cases (797 → 812), all in `container/`. No existing case changes.
   - the attribute (0x10, made by MS-DOS) on a zero-data entry without a final `/`:
     `zip-dos-attribute-blobs-sha256-unlisted`, `-blobs-file-unlisted` (`E_MANIFEST_BLOB`),
     `-outside-layout` (`foo`), `-blobs-root-file` (`blobs`) (`E_CONTAINER_ENTRY`),
@@ -63,16 +76,22 @@ conclusion of the frozen candidate set changes and no existing main vector chang
   - a final `/` without the attribute is a directory entry: `zip-directory-entry-no-dos-attribute`
     (`foo/`, attributes 0) and `blobs-directory-entry-no-dos-attribute-zip` (`blobs/sha256/`,
     a Unix directory mode without the DOS bit), both valid;
-  - `zip-dos-attribute-deflated-empty` (`E_CONTAINER_ZIP`, S3-FIX2/N1d).
+  - `zip-dos-attribute-deflated-empty` (`E_CONTAINER_ZIP`, S3-FIX2/N1d);
+  - `E_CONTAINER_ENTRY` with `N_READABLE_PRESENT` (S3-FIX2/N2):
+    `readable-notice-after-unsafe-file-zip` (`../x` first), `-after-unsafe-directory-zip`
+    (`../x/` first) and the control `readable-notice-before-unsafe-file-zip`; and
+    `readable-duplicate-after-symlink-zip` (`E_CONTAINER_ENTRY`, the notice absent).
   The S3-FIX1 directory-entry cases all carried the attribute *and* a final `/`, so neither
   of the two mixed shapes was covered (narrow review low-3).
-- **Ablation catalogue**: three `exact_pinned` S3-FIX2 entries in `tools/anti_verification.py`
+- **Ablation catalogue**: five `exact_pinned` S3-FIX2 entries in `tools/anti_verification.py`
   turn the Python reading off: the attribute makes a directory entry again (the eight
   attribute cases above go red), a final `/` needs the attribute as well (the two cases
   without it, and the older `zip-slash-name-with-data` and
   `previous-zip-rule4-directory-with-data`), and the attribute rejects only a non-zero
-  uncompressed size (`zip-dos-attribute-deflated-empty`). The anchor of the older
-  `zip-dos-directory-data` entry follows the changed Python line.
+  uncompressed size (`zip-dos-attribute-deflated-empty`). Two more turn N2 off in Python:
+  the entry checks stop at the first failing entry (the two `readable-notice-after-*` cases
+  go red), and a failing entry's name is forgotten (`readable-duplicate-after-symlink-zip`).
+  The anchor of the older `zip-dos-directory-data` entry follows the changed Python line.
 
 ## S3-FIX1: revision of the S3 round — 2026-11-17 — DRAFT, UNRELEASED
 

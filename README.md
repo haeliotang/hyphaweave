@@ -44,7 +44,7 @@ Read this before using anything in this repository:
   which both verifiers now implement (the Rust follow-ups H1-S2 to H1-S5, decisions
   2026-11-15 #20 and 2026-11-16 #10, #13 and #14), and the S3 round on blob error codes
   (decision 2026-11-16 #44) with its revisions S3-FIX1 and S3-FIX2 (decisions 2026-11-17
-  #5 and 2026-11-18 #2): each passes all 808 main vectors and the
+  #5 and 2026-11-18 #2 and #3): each passes all 812 main vectors and the
   202 candidate regression vectors, and their reports are byte-identical on every case (the
   gate-3 allow list is empty). Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
@@ -64,7 +64,8 @@ Read this before using anything in this repository:
   (decision 2026-11-15 #8) with its revisions S2-FIX1 to S2-FIX6 and the supplement
   S2-FIX2b (decisions 2026-11-15 #18, #22 and #32, and 2026-11-16 #1, #4, #9 and #13),
   and the S3 round on blob error codes with its revisions S3-FIX1 and S3-FIX2 (decisions
-  2026-11-16 #44, 2026-11-17 #5 and 2026-11-18 #2). Independent reviews found wire-semantics
+  2026-11-16 #44, 2026-11-17 #5 and 2026-11-18 #2 and #3). Independent reviews found
+  wire-semantics
   defects, and the revisions changed the format rules, the error-code registry,
   the trust-root model, the resource limits, the verifier and the vectors.
   Revision 3 reacts to the review of the second (Rust) implementation, which
@@ -80,7 +81,8 @@ Read this before using anything in this repository:
   container was accepted), and S3-FIX2 closed one more that the narrow review of S3-FIX1
   found (the Rust verifier took a zero-data entry with the DOS directory attribute and no
   final `/` for a directory entry, and accepted a zip that held `blobs/sha256` without a
-  blob listing). The regression set is a **candidate**
+  blob listing) and made `N_READABLE_PRESENT` independent of the order of the zip central
+  directory, as the reference verifier already had it. The regression set is a **candidate**
   (`vectors/frozen/v0.1-candidate/`); official freeze begins only after J1/J2
   acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
 
