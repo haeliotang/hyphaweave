@@ -17216,6 +17216,257 @@ for _s3f_name, _s3f_digest, _s3f_what in (
     )
 
 
+# ---------------------------------------------------------------------------
+# S3-FIX2 (decision 2026-11-18 #2): only a name ending '/' makes a directory entry
+# ---------------------------------------------------------------------------
+#
+# The DOS directory attribute (external attributes bit 4) does not make a zip
+# entry a directory entry (§11.9 rule 4): a zero-data entry that carries it and
+# whose name does not end with '/' is a zero-byte file for the layout, for whether
+# blobs/ is present, for the §13 declared total and for the members of a supplied
+# previous zip. The attribute matters to one rule only: an entry carrying it with
+# data (a non-zero compressed or uncompressed size) is E_CONTAINER_ZIP. Before the
+# fix the Rust verifier called such an entry a directory entry and accepted the
+# blobs/sha256, blobs/x, foo, blobs and records/x zips below (narrow review high-1
+# and medium-1 N1).
+
+_S3F2 = "S3-FIX2 (decision 2026-11-18 #2)"
+_S3F2_DOS_DIRECTORY = 0x10
+
+
+def _s3f2_zip_with_dos_entry(name: str) -> dict[str, bytes]:
+    """A valid zip container without manifest.blobs plus one zero-data entry *name*
+    that carries only the DOS directory attribute (made by MS-DOS, no Unix mode)."""
+    return {
+        "container.zip": _zip_entries(
+            _s3_container(), extra=((name, b"", 0, _S3F2_DOS_DIRECTORY),)
+        )
+    }
+
+
+def _s3f2_declared_zip(extra: tuple[str, bytes, int, int, int, int]) -> dict[str, bytes]:
+    """The stored entries of a valid container plus one caller-declared entry."""
+    files = _s3_container()
+    return {
+        "container.zip": _zip_declared_entries(
+            [_stored_entry(name, files[name]) for name in sorted(files)] + [extra]
+        )
+    }
+
+
+def _s3f2_deflated_empty() -> bytes:
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return compressor.compress(b"") + compressor.flush()
+
+
+# -- A zero-data entry with the DOS directory attribute and no final '/' is a file.
+
+for _s3f2_name, _s3f2_entry, _s3f2_errors, _s3f2_records, _s3f2_what in (
+    (
+        "zip-dos-attribute-blobs-sha256-unlisted",
+        "blobs/sha256",
+        ("E_MANIFEST_BLOB",),
+        _S3_RECORDS_VERIFIED,
+        "blobs/sha256 is a zero-byte file directly in blobs/, so blobs/ is present while "
+        "no blob is listed, and the file is an extra blob file (§11.1, §11.7 rule 3): "
+        "E_MANIFEST_BLOB at the blob step (9) (narrow review high-1)",
+    ),
+    (
+        "zip-dos-attribute-blobs-file-unlisted",
+        "blobs/x",
+        ("E_MANIFEST_BLOB",),
+        _S3_RECORDS_VERIFIED,
+        "blobs/x is a zero-byte file directly in blobs/, so blobs/ is present while no "
+        "blob is listed, and the file is an extra blob file (§11.1, §11.7 rule 3): "
+        "E_MANIFEST_BLOB at the blob step (9) (narrow review high-1)",
+    ),
+    (
+        "zip-dos-attribute-outside-layout",
+        "foo",
+        ("E_CONTAINER_ENTRY",),
+        (),
+        "foo is a zero-byte root file the layout does not list (§11.1): E_CONTAINER_ENTRY "
+        "at entry enumeration (narrow review medium-1 N1)",
+    ),
+    (
+        "zip-dos-attribute-blobs-root-file",
+        "blobs",
+        ("E_CONTAINER_ENTRY",),
+        (),
+        "blobs is a zero-byte root file the layout does not list (the blobs/ directory is "
+        "not a file, §11.1): E_CONTAINER_ENTRY at entry enumeration (narrow review "
+        "medium-1 N1)",
+    ),
+    (
+        "zip-dos-attribute-records-extra",
+        "records/x",
+        ("E_MANIFEST_RECORD_EXTRA",),
+        (),
+        "records/x is a zero-byte file in records/ that manifest.records does not list "
+        "(§11.6): E_MANIFEST_RECORD_EXTRA at the records listing, records is [] (narrow "
+        "review medium-1 N1)",
+    ),
+):
+    declare(
+        "container",
+        _s3f2_name,
+        "container",
+        "container.zip",
+        "invalid",
+        errors=_s3f2_errors,
+        build=lambda case_dir, entry=_s3f2_entry: _s3f2_zip_with_dos_entry(entry),
+        args=("--keys", "@keyset"),
+        records=_s3f2_records,
+        notes=_S3F2 + ": a valid zip container without manifest.blobs also holds the "
+        "zero-data entry " + _s3f2_entry + ", which carries the DOS directory attribute "
+        "(0x10) and whose name does not end with '/'. Only the final '/' makes a directory "
+        "entry (§11.9 rule 4), so " + _s3f2_what + ". The Rust verifier called the entry a "
+        "directory entry and accepted this zip before the fix.",
+    )
+
+declare(
+    "container",
+    "zip-dos-attribute-readable-file",
+    "container",
+    "container.zip",
+    "valid",
+    build=lambda case_dir: _s3f2_zip_with_dos_entry("readable/x"),
+    args=("--keys", "@keyset"),
+    notices=("N_READABLE_PRESENT",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    expected_container={"level_claimed": "L0", "level_verified": "L0"},
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3F2 + ": a valid zip container also holds the zero-data entry readable/x, "
+    "which carries the DOS directory attribute (0x10) and whose name does not end with "
+    "'/'. Only the final '/' makes a directory entry (§11.9 rule 4), so readable/x is a "
+    "readable/ file that passed its entry checks: the container is valid and reports "
+    "N_READABLE_PRESENT (§11.8, §14.6). The Rust verifier called the entry a directory "
+    "entry and did not report the notice before the fix.",
+)
+
+# -- A name ending '/' is a directory entry without the DOS directory attribute too.
+
+for _s3f2_name, _s3f2_directory, _s3f2_system, _s3f2_attr, _s3f2_what in (
+    (
+        "zip-directory-entry-no-dos-attribute",
+        "foo/",
+        0,
+        0,
+        "external attributes 0, made by MS-DOS",
+    ),
+    (
+        "blobs-directory-entry-no-dos-attribute-zip",
+        "blobs/sha256/",
+        3,
+        0o40755 << 16,
+        "a Unix directory mode without the DOS bit, made by Unix",
+    ),
+):
+    declare(
+        "container",
+        _s3f2_name,
+        "container",
+        "container.zip",
+        "valid",
+        build=lambda case_dir, directory=_s3f2_directory, system=_s3f2_system,
+        attr=_s3f2_attr: {
+            "container.zip": _zip_entries(
+                _s3_container(), extra=((directory, b"", system, attr),)
+            )
+        },
+        args=("--keys", "@keyset"),
+        limitations=("L_OFFLINE_CONTEXT",),
+        expected_container={"level_claimed": "L0", "level_verified": "L0"},
+        records=_S3_RECORDS_VERIFIED,
+        notes=_S3F2 + ": a valid zip container without manifest.blobs also holds the "
+        "zero-data directory entry " + _s3f2_directory + " with no DOS directory attribute ("
+        + _s3f2_what + "). The final '/' alone makes a directory entry (§11.9 rule 4), and "
+        "a zero-data directory entry takes no part in the layout or in whether blobs/ is "
+        "present: valid.",
+    )
+
+# -- The DOS directory attribute without a final '/' does not take an entry out of
+#    the §13 declared total.
+
+declare(
+    "container",
+    "zip-dos-attribute-declared-total-over-limit",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_SIZE",),
+    build=lambda case_dir: _s3f2_declared_zip(
+        ("foo", _deflated_tiny_payload(), 8, _READABLE_BIG_DECLARED, 0, _S3F2_DOS_DIRECTORY)
+    ),
+    records=[],
+    notes=_S3F2 + ": a valid zip container also holds the entry foo, which carries the DOS "
+    "directory attribute (0x10), whose name does not end with '/' and which declares "
+    "1,073,741,825 uncompressed bytes. Only directory entries (names ending '/') and "
+    "readable/** are left out of the declared total (§11.9 W7 phase 3, §13), so the total "
+    "is above MAX_CONTAINER_UNCOMPRESSED_BYTES: E_CONTAINER_SIZE in phase 3, before the "
+    "phase-4 E_CONTAINER_ZIP that the attribute with data would give. The Rust verifier "
+    "left the entry out of the total and reported E_CONTAINER_ZIP before the fix.",
+)
+
+# -- "Carries data" is a non-zero compressed or uncompressed size, for the DOS
+#    directory attribute as for a name ending '/' (S3-FIX2/N1d).
+
+declare(
+    "container",
+    "zip-dos-attribute-deflated-empty",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _s3f2_declared_zip(
+        ("readable/x", _s3f2_deflated_empty(), 8, 0, 0, _S3F2_DOS_DIRECTORY)
+    ),
+    records=[],
+    notes=_S3F2 + ", S3-FIX2/N1d: a valid zip container also holds the entry readable/x, "
+    "deflated from zero bytes (two compressed bytes, uncompressed size 0), which carries "
+    "the DOS directory attribute (0x10). An entry carries data when its compressed or "
+    "uncompressed size is not zero, the same test as for a name ending '/', so this is "
+    "E_CONTAINER_ZIP (§11.9 rule 4, checked for readable/ entries too). The Python "
+    "reference verifier looked at the uncompressed size only and accepted this zip before "
+    "the fix.",
+)
+
+# -- The two members of a supplied previous zip: an entry with the DOS directory
+#    attribute and no final '/' is a member like any other.
+
+declare(
+    "container",
+    "previous-zip-dos-attribute-duplicate-member",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: {
+        **_chain_container(Path("."), mismatch=False),
+        "previous-container.zip": _zip_declared_entries(
+            [
+                _stored_entry(name, data)
+                for name, data in sorted(_previous_container_internal().items())
+            ]
+            + [("manifest.json", b"", 0, 0, 0, _S3F2_DOS_DIRECTORY)]
+        ),
+    },
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container={
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "previous_manifest_digest": _chain_previous_digest(),
+    },
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes=_S3F2 + ": the supplied previous zip is container/previous-zip-valid's previous "
+    "plus a second, zero-data entry manifest.json that carries the DOS directory "
+    "attribute (0x10). Its name does not end with '/', so it is not a directory entry "
+    "(§11.9 rule 4) and the archive holds two non-directory manifest.json entries: a "
+    "duplicate member, E_MANIFEST_CHAIN (§11.5). The Rust verifier skipped the entry as a "
+    "directory entry and linked the previous before the fix.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,

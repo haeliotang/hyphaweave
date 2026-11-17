@@ -835,7 +835,8 @@ def _build_catalogue() -> None:
            r'    if entry\.external_attr & 0x10 and \(entry\.uncompressed_size or entry\.compressed_size\):',
            '    if False:  # ablation: DOS directory attribute on a data entry accepted',
            ("container/zip-dos-directory-attribute-with-data",
-            "container/previous-zip-rule4-dos-directory-attribute")),
+            "container/previous-zip-rule4-dos-directory-attribute",
+            "container/zip-dos-attribute-deflated-empty")),
         _m("previous-null-chain", "container.py", "container.chain.previous-null",
            "accept --previous when previous_manifest is null",
            r'raise WeaveError\(\n\s*"E_MANIFEST_CHAIN",\n\s*"a previous container was supplied but previous_manifest is null",\n\s*\)',
@@ -2586,9 +2587,55 @@ def _build_s3_fix1_catalogue() -> None:
     )
 
 
+def _build_s3_fix2_catalogue() -> None:
+    """S3-FIX2 (decision 2026-11-18 #2): only a name ending "/" makes a zip directory entry.
+
+    Every entry is ``exact_pinned``. The H1 change of the round (``zip.rs``, the DOS
+    directory attribute no longer making a directory entry) is reverse-verified on
+    the Rust side (cp + touch + cmp); these entries pin the same reading in the
+    reference verifier, so the two sides cannot drift apart again unseen.
+    """
+    _add(
+        _lit("s3f2-dos-attribute-makes-directory", "zipread.py", "s3f2.zip-directory",
+             "S3-FIX2/N1: the DOS directory attribute makes a zero-data entry a directory "
+             "entry again (the H1 reading before the fix: layout, blobs/ presence, "
+             "readable/ notice, declared total and previous members all skip it)",
+             "        is_directory = raw_name.endswith(b\"/\")\n",
+             "        is_directory = raw_name.endswith(b\"/\") or bool(external_attr & 0x10)\n",
+             (_C + "previous-zip-dos-attribute-duplicate-member",
+              _C + "zip-dos-attribute-blobs-file-unlisted",
+              _C + "zip-dos-attribute-blobs-root-file",
+              _C + "zip-dos-attribute-blobs-sha256-unlisted",
+              _C + "zip-dos-attribute-declared-total-over-limit",
+              _C + "zip-dos-attribute-outside-layout",
+              _C + "zip-dos-attribute-readable-file",
+              _C + "zip-dos-attribute-records-extra"),
+             exact_pinned=True),
+        _lit("s3f2-directory-needs-dos-attribute", "zipread.py", "s3f2.zip-directory",
+             "S3-FIX2/N1: a name ending \"/\" is a directory entry only with the DOS "
+             "directory attribute as well",
+             "        is_directory = raw_name.endswith(b\"/\")\n",
+             "        is_directory = raw_name.endswith(b\"/\") and bool(external_attr & 0x10)\n",
+             (_C + "blobs-directory-entry-no-dos-attribute-zip",
+              _C + "previous-zip-rule4-directory-with-data",
+              _C + "zip-directory-entry-no-dos-attribute",
+              _C + "zip-slash-name-with-data"),
+             exact_pinned=True),
+        _lit("s3f2-dos-attribute-data-uncompressed-only", "zipread.py", "s3f2.zip-directory",
+             "S3-FIX2/N1d: the DOS directory attribute rejects only a non-zero uncompressed "
+             "size (a deflated empty member passes), as before the fix",
+             "    if entry.external_attr & 0x10 and (entry.uncompressed_size or "
+             "entry.compressed_size):\n",
+             "    if entry.external_attr & 0x10 and entry.uncompressed_size:\n",
+             (_C + "zip-dos-attribute-deflated-empty",),
+             exact_pinned=True),
+    )
+
+
 _build_s2_catalogue()
 _build_s3_catalogue()
 _build_s3_fix1_catalogue()
+_build_s3_fix2_catalogue()
 
 
 # ----------------------------------------------------------------------------- runner
