@@ -16940,8 +16940,10 @@ declare(
     "step (9).",
 )
 
-# -- A directory below blobs/ other than blobs/sha256/ is outside the layout:
-#    E_CONTAINER_ENTRY at entry enumeration (step 1), in both container forms.
+# -- A file inside a directory below blobs/ other than blobs/sha256/, or inside
+#    a subdirectory of blobs/sha256/, is outside the layout: E_CONTAINER_ENTRY at
+#    entry enumeration (step 1), in both container forms. These cases hold a
+#    file there; a zero-data zip directory entry alone is ignored (S3-FIX1/Z1).
 
 for _s3_name, _s3_path, _s3_zip in (
     ("blobs-unknown-directory", "blobs/sha512/" + "0" * 128, False),
@@ -16963,9 +16965,11 @@ for _s3_name, _s3_path, _s3_zip in (
         notes=_S3 + ": blob A is listed and stored; the container also holds "
         + _s3_path
         + (", in the zip form" if _s3_zip else "")
-        + ". A directory below blobs/ other than blobs/sha256/, or inside blobs/sha256/, is "
-        "a directory the layout does not list (§11.1): E_CONTAINER_ENTRY at entry "
-        "enumeration, in the directory and the zip form alike (§11.9).",
+        + ". A file inside a directory below blobs/ other than blobs/sha256/, or inside "
+        "a subdirectory of blobs/sha256/, is at a path the layout does not list (§11.1): "
+        "E_CONTAINER_ENTRY at entry enumeration, in the directory and the zip form alike. "
+        "It is the file that is rejected: in the zip form a zero-data directory entry on "
+        "its own takes no part in the layout (§11.9 rule 4, S3-FIX1/Z1).",
     )
 
 
