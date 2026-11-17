@@ -529,17 +529,21 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
     // rule 4), but it passes the path-safety, symbolic-link and duplicate-name
     // checks like any other entry (FIX1): `../x/` and `/abs/` are
     // E_CONTAINER_ENTRY. Its path is its name without the final `/`. A
-    // `readable/` entry is "observed" once it passed its own checks, before
-    // any failing entry (§11.8, T12).
+    // `readable/` entry is "observed" when it passed its own checks, whatever
+    // other entry fails and wherever that entry stands in the central
+    // directory (§11.8, T12; FIX2/N2): every entry is checked, none stops the
+    // loop. Every name is remembered, a failing one included, so a later entry
+    // of the same name is a duplicate.
     for entry in &archive.entries {
         let checked_name = if entry.is_directory {
             entry.name.strip_suffix('/').unwrap_or(&entry.name)
         } else {
             entry.name.as_str()
         };
-        if !is_safe_relative_path(checked_name) || entry.is_symlink || !seen.insert(&entry.name) {
+        let first_of_its_name = seen.insert(&entry.name);
+        if !is_safe_relative_path(checked_name) || entry.is_symlink || !first_of_its_name {
             codes.insert(e::CONTAINER_ENTRY);
-            break;
+            continue;
         }
         if entry.is_directory {
             continue;
