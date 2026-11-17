@@ -580,9 +580,30 @@ impl World {
         self.settle_admissions_if_clean();
         self.slots[index].eval = EvalState::Running;
         self.running += 1;
+        // §9.4 (S2-FIX3/F79) and §5.3: the internal computation order never
+        // decides an outcome. While the admission pass settles a strongly
+        // connected component, a record evaluated on its behalf (a revocation
+        // whose signer a declaration's cosignature check needs) may read a
+        // member of that component that is not settled yet, taken as not
+        // admitted; such a report depends on the pass, so it is handed back
+        // but not memoised, and the record is evaluated again when it is next
+        // needed. Before this (S4), a container whose manifest key was the
+        // subject of a revocation signed by a key whose declaration that
+        // manifest key cosigns (as its owner) kept the revocation's
+        // `E_KEY_UNKNOWN` from the pass. A cycle guard's provisional answer is
+        // deliberately not treated the same way: re-evaluating such reports
+        // was tried and turned outcomes that agreed with the reference
+        // verifier into disagreements.
+        let outer_unknown = std::mem::replace(&mut self.admission_scc_unknown, false);
         let report = crate::record::evaluate_normalized(self, index);
+        let tentative = self.admission_scc_unknown;
+        self.admission_scc_unknown |= outer_unknown;
         self.running -= 1;
-        self.slots[index].eval = EvalState::Done(Box::new(report.clone()));
+        self.slots[index].eval = if tentative {
+            EvalState::Pending
+        } else {
+            EvalState::Done(Box::new(report.clone()))
+        };
         report
     }
 
