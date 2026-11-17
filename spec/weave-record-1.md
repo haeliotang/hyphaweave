@@ -790,6 +790,15 @@ required-signature check makes the record `unverifiable` (`E_KEY_UNKNOWN` or
 `E_SIG_UNVERIFIABLE`, step 5) or when the record is invalid for any other reason, that
 outcome is reported instead and the notice is not [S8⑭][S16/F6] decided (Inceptless
 decision 2026-11-11 #2; S8/F6).
+A key is "declared `human`" here when its governing class (§5.3) is `human`: the class is
+taken from the structurally valid declarations of the verification context, **including
+the record being verified** (the definition of a declared key in step 5 above), so a
+`weave.key.declared` record verified as a record target whose own key is declared `human`
+by that record, and whose self-signature is valid, has a valid signature by a key declared
+`human` and does not carry the notice; whether that declaration, or any other declaration
+of the key, is trusted is not part of the test, and the explicit public key of a
+`weave.key.rotated` record is not a declaration [S4/H1] decided by principle (Inceptless
+decision 2026-11-18 #4).
 
 ### 4.5 `weave.erased` placeholder — special shape
 
@@ -4216,6 +4225,17 @@ share, and is marked here so that it can be overturned on its own.
 | S3-FIX2/N1 | in the zip form only a name ending `/` makes a directory entry; the DOS directory attribute does not, so a zero-data entry carrying it whose name does not end with `/` (`blobs/sha256`, `blobs/x`, `foo`, `records/x`, `readable/x`) is a zero-byte file for the layout of §11.1, for whether `blobs/` is present (§11.7 rule 3), for the declared total of §13 and for the two members of a supplied previous zip (§11.5) | §11.5, §11.9 |
 | S3-FIX2/N1d | an entry carries data, for both halves of §11.9 rule 4 (a name ending `/`, the DOS directory attribute), when its compressed or uncompressed size in the central directory is not zero: a deflated empty member with the DOS directory attribute is `E_CONTAINER_ZIP` | §11.9 |
 | S3-FIX2/N2 | `N_READABLE_PRESENT` after the zip entry checks does not depend on the order of the central directory: it is reported when some `readable/` entry passed its own checks, whether a failing entry (`E_CONTAINER_ENTRY`) stands before or after it; every entry is checked, and every name seen, a failing entry's included, makes a later entry of that name a duplicate | §11.8, §11.9 |
+
+The following row is fixed under Inceptless decision **2026-11-18 #4** (the S4 round: two
+older disagreements between the reference verifiers in the signature layer that the
+differential fuzz found), **decided by principle**; the founder can overturn it. The other
+disagreement of the round needs no ruling: the text already decides it (§9.4, "not the
+internal computation order"; §5.3, the least fixed point), and only the Rust verifier
+changed.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S4/H1 | "declared `human`" in the `N_NO_HUMAN_SIGNATURE` condition is the key's governing class (§5.3), taken from the structurally valid declarations of the verification context including the record being verified; trust is not part of the test, and rotation material is not a declaration | §4.4, registry |
 
 ### A.2 PROVISIONAL implementation shapes
 

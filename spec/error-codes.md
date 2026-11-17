@@ -85,6 +85,9 @@
 > attribute matters only to `E_CONTAINER_ZIP` for an entry that carries data (a non-zero
 > compressed or uncompressed size); and `N_READABLE_PRESENT` after the zip entry checks
 > does not depend on the order of the central directory (decision 2026-11-18 #3).
+> Decision 2026-11-18 #4 (S4, decided by principle) adds no code and keeps revision 8: it
+> states that "declared `human`" in the `N_NO_HUMAN_SIGNATURE` condition is the governing
+> class of the key, the record being verified included (S4/H1).
 
 > Every code is a fixed ASCII identifier. Human-readable messages are not part of the
 > format and MUST NOT be used for machine decisions (they may change without a format
@@ -259,7 +262,7 @@ as `valid`.
 | `N_KEY_UNDECLARED` | A signing key has no declaration in the verification context; the signature could not be checked (paired with `E_KEY_UNKNOWN` when it makes the unit unverifiable). |
 | `N_KEY_TOFU` | Per-record form of the TOFU predicate (specification §14.9): at least one of this record's signature checks was context-trusted — the verifying key material came from a context `weave.key.declared` declaration **or** from the explicit `old_public_key`/`new_public_key` of a context `weave.key.rotated` record, rather than from the local keyset — even if that signature or the record later fails. For the three key-lifecycle kinds only the actor-key signature counts. The manifest signature never produces this notice (it contributes to `L_KEY_TRUST_TOFU`) (T10, U6). |
 | `N_SELF_ATTESTED_ROOT_KEY` | A `human`/`organization` declaration in a container or record target is self-signed only and cannot be chained to a trusted root supplied by the local keyset; it is `unverifiable` (`E_KEY_UNTRUSTED`) and is never a root. Keyset declarations never produce this notice. |
-| `N_NO_HUMAN_SIGNATURE` | An `accepted` record whose verdict is `valid` has no valid signature made by a key declared `human` in the verification context. The notice is not reported on a record made `unverifiable` by the required-signature check or invalid for another reason (F6). |
+| `N_NO_HUMAN_SIGNATURE` | An `accepted` record whose verdict is `valid` has no valid signature made by a key declared `human` in the verification context: a key whose governing class (§5.3) is `human`, taken from the structurally valid declarations of the context including the record being verified, trusted or not (§4.4, S4/H1). The notice is not reported on a record made `unverifiable` by the required-signature check or invalid for another reason (F6). |
 | `N_REF_MISSING` | A reference resolved to `missing`. |
 | `N_REF_MOVED` | A reference resolved to `moved` (the object was located through hints with a matching digest). An offline verifier without hint resolution never emits this. |
 | `N_REF_UNVERIFIABLE` | A reference resolved to `unverifiable` (target present but not valid, digest mismatch, unsupported digest algorithm, or an undecidable non-digest dependency). |
