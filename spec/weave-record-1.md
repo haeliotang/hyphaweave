@@ -2573,7 +2573,13 @@ directory. Once the phases have passed and the entries have been enumerated, the
 follows the `readable/` entries that passed their own checks (T6), whatever fails
 afterwards: an archive whose entry checks fail (`E_CONTAINER_ENTRY`), or one in which a
 member then fails as it is read (a CRC-32 mismatch, a decompression failure, the
-actual-size total of §13), still reports it. This narrows S2-FIX1's reading, under which
+actual-size total of §13), still reports it. This holds regardless of the entries' order
+in the central directory: every entry passes or fails its own checks, an entry that fails
+them (before or after a `readable/` entry) does not stop the others from being checked,
+and "observed" above is not a position in that order. A name is remembered once it is
+seen, even by an entry that fails, so a later entry of the same name is a duplicate and
+fails its own checks [S3-FIX2/N2] decided by principle (Inceptless decision 2026-11-18
+#3). This narrows S2-FIX1's reading, under which
 every `E_CONTAINER_ZIP` (a member CRC included) suppressed the notice [S2-FIX2/U7] decided
 by principle (Inceptless decision 2026-11-15 #22). `readable` is a **directory** of the
 layout: a regular file named `readable` at the container root (directory or zip form) is
@@ -4199,8 +4205,8 @@ is marked here so that it can be overturned on its own.
 | S3-FIX1/R3 | `E_LABEL_LOCAL_ONLY_EXPORTED` counts every record whose envelope structure passes, whatever its verdict, as R1 does | §8.5 |
 | S3-FIX1/D1 | every reader of a digest string applies the whole §2.7 grammar (algorithm-name pattern, 32-byte bound, 1–128 lowercase hexadecimal digits); the 64 digits of `sha256` are a requirement of that algorithm, not of the grammar | §2.7 |
 
-The following rows are fixed by Inceptless decision **2026-11-18 #2** (the second revision
-of the S3 round, after the narrow review of the first), **decided by principle**; the
+The following rows are fixed by Inceptless decisions **2026-11-18 #2 and #3** (the second
+revision of the S3 round, after the narrow review of the first), **decided by principle**; the
 founder can overturn them. S3-FIX2/N1d is not named by that decision: it settles the one
 remaining reading of the DOS directory attribute that the two reference verifiers did not
 share, and is marked here so that it can be overturned on its own.
@@ -4209,6 +4215,7 @@ share, and is marked here so that it can be overturned on its own.
 |---|---|---|
 | S3-FIX2/N1 | in the zip form only a name ending `/` makes a directory entry; the DOS directory attribute does not, so a zero-data entry carrying it whose name does not end with `/` (`blobs/sha256`, `blobs/x`, `foo`, `records/x`, `readable/x`) is a zero-byte file for the layout of §11.1, for whether `blobs/` is present (§11.7 rule 3), for the declared total of §13 and for the two members of a supplied previous zip (§11.5) | §11.5, §11.9 |
 | S3-FIX2/N1d | an entry carries data, for both halves of §11.9 rule 4 (a name ending `/`, the DOS directory attribute), when its compressed or uncompressed size in the central directory is not zero: a deflated empty member with the DOS directory attribute is `E_CONTAINER_ZIP` | §11.9 |
+| S3-FIX2/N2 | `N_READABLE_PRESENT` after the zip entry checks does not depend on the order of the central directory: it is reported when some `readable/` entry passed its own checks, whether a failing entry (`E_CONTAINER_ENTRY`) stands before or after it; every entry is checked, and every name seen, a failing entry's included, makes a later entry of that name a duplicate | §11.8, §11.9 |
 
 ### A.2 PROVISIONAL implementation shapes
 

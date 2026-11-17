@@ -83,7 +83,8 @@
 > Its second revision (FIX2, Inceptless decision 2026-11-18 #2, decided by principle) adds
 > no code: only a name ending `/` makes a zip directory entry, and the DOS directory
 > attribute matters only to `E_CONTAINER_ZIP` for an entry that carries data (a non-zero
-> compressed or uncompressed size).
+> compressed or uncompressed size); and `N_READABLE_PRESENT` after the zip entry checks
+> does not depend on the order of the central directory (decision 2026-11-18 #3).
 
 > Every code is a fixed ASCII identifier. Human-readable messages are not part of the
 > format and MUST NOT be used for machine decisions (they may change without a format
@@ -267,7 +268,7 @@ as `valid`.
 | `N_CONSENT_UNRESOLVED` | `labels.consent` is a reference that could not be resolved. |
 | `N_PREVIOUS_SIG_UNVERIFIED` | The embedded previous manifest's own signature was not re-verified; reported if and only if `previous_manifest` is non-null and the signature was not re-verified, including when a later container check fails. Not reported when the manifest cannot be parsed and the previous manifest is not reachable; also not reported when a supplied `--previous` container's manifest signature verifies, because that previous manifest's signature then counts as re-verified (`L_PREVIOUS_CONTENT_UNVERIFIED` is reported instead) (T12, V3). |
 | `N_IDEMPOTENCY_DUPLICATE` | A container contains two records with the same `origin` and `actor.idempotency_key` (claimed as the same action). Nothing else is compared (not `actor.key`), and every record whose envelope structure passes takes part, whatever its verdict, a record whose `sigs` fail included (specification §5.4; FIX1 R1). |
-| `N_READABLE_PRESENT` | The container has a `readable/` view; it is unsigned and was not used. Reported if and only if an enumerated container contains a `readable/` entry, including when a later container check fails; not reported when entry enumeration fails before the entry is observed (T12), in particular when the archive fails in phases 1–4 of the §11.9 zip check order (no entry is enumerated, S2-FIX1); reported when a member fails after the entries were enumerated (CRC-32, decompression, the actual-size total; S2-FIX2 U7); a regular file named `readable` at the root is not a `readable/` entry (`E_CONTAINER_ENTRY`, S2-FIX1 T8). |
+| `N_READABLE_PRESENT` | The container has a `readable/` view; it is unsigned and was not used. Reported if and only if an enumerated container contains a `readable/` entry, including when a later container check fails; not reported when entry enumeration fails before the entry is observed (T12), in particular when the archive fails in phases 1–4 of the §11.9 zip check order (no entry is enumerated, S2-FIX1); reported when a member fails after the entries were enumerated (CRC-32, decompression, the actual-size total; S2-FIX2 U7); reported when a `readable/` entry passed its own entry checks while another entry fails them, before or after it in the central directory (the order does not matter, S3-FIX2 N2); a regular file named `readable` at the root is not a `readable/` entry (`E_CONTAINER_ENTRY`, S2-FIX1 T8). |
 
 ## Limitation identifiers (`L_*`, closed list, report `limitations` only)
 
