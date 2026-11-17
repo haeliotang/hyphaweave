@@ -43,8 +43,8 @@ Read this before using anything in this repository:
   2026-11-16 #1, and S2-FIX4, S2-FIX5 and S2-FIX6, decisions 2026-11-16 #4, #9 and #13),
   which both verifiers now implement (the Rust follow-ups H1-S2 to H1-S5, decisions
   2026-11-15 #20 and 2026-11-16 #10, #13 and #14), and the S3 round on blob error codes
-  (decision 2026-11-16 #44) with its revision S3-FIX1 (decision 2026-11-17 #5): each
-  passes all 797 main vectors and the
+  (decision 2026-11-16 #44) with its revisions S3-FIX1 and S3-FIX2 (decisions 2026-11-17
+  #5 and 2026-11-18 #2): each passes all 808 main vectors and the
   202 candidate regression vectors, and their reports are byte-identical on every case (the
   gate-3 allow list is empty). Passing the same vectors is necessary but not sufficient
   evidence that the format is implementable from the text alone.
@@ -63,8 +63,8 @@ Read this before using anything in this repository:
   2026-11-11 #5, #12, #14 and #16, and 2026-11-12 #1, #2 and #3) and the S2 round
   (decision 2026-11-15 #8) with its revisions S2-FIX1 to S2-FIX6 and the supplement
   S2-FIX2b (decisions 2026-11-15 #18, #22 and #32, and 2026-11-16 #1, #4, #9 and #13),
-  and the S3 round on blob error codes with its revision S3-FIX1 (decisions 2026-11-16 #44
-  and 2026-11-17 #5). Independent reviews found wire-semantics
+  and the S3 round on blob error codes with its revisions S3-FIX1 and S3-FIX2 (decisions
+  2026-11-16 #44, 2026-11-17 #5 and 2026-11-18 #2). Independent reviews found wire-semantics
   defects, and the revisions changed the format rules, the error-code registry,
   the trust-root model, the resource limits, the verifier and the vectors.
   Revision 3 reacts to the review of the second (Rust) implementation, which
@@ -77,7 +77,10 @@ Read this before using anything in this repository:
   S3-FIX1 closed the remaining disagreements between the two verifiers that its reviews
   and the differential fuzz found (among them a security defect in the Rust verifier: a
   zip directory entry named `../x/` or `/abs/` skipped the path-safety check and the
-  container was accepted). The regression set is a **candidate**
+  container was accepted), and S3-FIX2 closed one more that the narrow review of S3-FIX1
+  found (the Rust verifier took a zero-data entry with the DOS directory attribute and no
+  final `/` for a directory entry, and accepted a zip that held `blobs/sha256` without a
+  blob listing). The regression set is a **candidate**
   (`vectors/frozen/v0.1-candidate/`); official freeze begins only after J1/J2
   acceptance. See [`CHANGELOG.md`](CHANGELOG.md).
 

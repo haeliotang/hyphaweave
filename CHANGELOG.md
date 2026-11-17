@@ -6,6 +6,74 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S3-FIX2: second revision of the S3 round — 2026-11-18 — DRAFT, UNRELEASED
+
+Decision 2026-11-18 #2 (the founder can overturn every item; the rules are **decided by
+principle**). The narrow review of S3-FIX1 found that the Rust verifier took a zero-data zip
+entry that carries the DOS directory attribute but whose name does not end with `/` for a
+directory entry. S3-FIX1 had made directory entries leave the question whether `blobs/` is
+present, so a zip without a blob listing that held such an entry `blobs/sha256` became
+`valid` in H1 (high-1); the same reading had always let H1 accept such an entry named `foo`,
+`blobs` or `records/x` (medium-1, N1). This revision fixes that one reading. The `format`
+identifier is unchanged; no error code is added; the registry stays at revision 8. No
+conclusion of the frozen candidate set changes and no existing main vector changes.
+
+### Fix (Rust verifier)
+
+- **Only a final `/` makes a zip directory entry (§11.9 rule 4, S3-FIX2/N1).** H1 judged a
+  directory entry by `name ends with "/" or DOS directory attribute`, and so **accepted**
+  (verdict `valid`) a zip container that also held a zero-data entry with the attribute
+  named `blobs/sha256` or `blobs/x` without a blob listing (`E_MANIFEST_BLOB`), `foo` or
+  `blobs` (`E_CONTAINER_ENTRY`), or `records/x` (`E_MANIFEST_RECORD_EXTRA`); it did not report
+  `N_READABLE_PRESENT` for such an entry `readable/x`; it left such an entry out of the §13
+  declared total (`E_CONTAINER_ZIP` instead of `E_CONTAINER_SIZE` above the limit); and it
+  did not count such an entry `manifest.json` as a member of a supplied previous zip (a
+  duplicate member, `E_MANIFEST_CHAIN`, was linked). H1 now judges a directory entry by the
+  final `/` alone, everywhere; the attribute is read only by the rule-4 check that an entry
+  carrying it with data is `E_CONTAINER_ZIP`. Python already read rule 4 this way.
+  Embedders of an earlier H1 should treat such archives as their codes say.
+
+### Wire-visible changes (specification and the Python verifier)
+
+- **"Carries data" is one test in rule 4 (§11.9, S3-FIX2/N1d).** An entry carries data when
+  its compressed or its uncompressed size in the central directory is not zero, for a name
+  ending `/` and for the DOS directory attribute alike, so a deflated empty member (two
+  compressed bytes, uncompressed size 0) with the attribute is `E_CONTAINER_ZIP`. **Python
+  changed:** for the attribute it looked at the uncompressed size only and took such a
+  member for a zero-byte file (H1 already rejected it). The decision did not name this item;
+  it settles the one remaining reading of the attribute the two verifiers did not share, and
+  it can be overturned on its own.
+- **Text only:** §11.9 rule 4 says that the attribute does not make a directory entry and
+  where that matters (the layout, the presence of `blobs/`, the §13 declared total, the
+  members of a supplied previous zip); the W7 phase-3 sentence, the §11.5 sentence on the
+  previous zip (which read "a directory entry or a DOS directory-attribute entry carrying
+  data") and `spec/error-codes.md` (`E_CONTAINER_ZIP`, `E_CONTAINER_ENTRY`,
+  `E_MANIFEST_BLOB`) say the same; Appendix A lists the S3-FIX2 rulings; Q23 in
+  `docs/open-questions.md` and `verifiers/rust/ARCHITECTURE.md` are updated.
+
+### Vectors, tests and gates
+
+- **Vectors**: 11 new main cases (797 → 808), all in `container/`. No existing case changes.
+  - the attribute (0x10, made by MS-DOS) on a zero-data entry without a final `/`:
+    `zip-dos-attribute-blobs-sha256-unlisted`, `-blobs-file-unlisted` (`E_MANIFEST_BLOB`),
+    `-outside-layout` (`foo`), `-blobs-root-file` (`blobs`) (`E_CONTAINER_ENTRY`),
+    `-records-extra` (`E_MANIFEST_RECORD_EXTRA`), `-readable-file` (valid,
+    `N_READABLE_PRESENT`), `-declared-total-over-limit` (`E_CONTAINER_SIZE`), and
+    `previous-zip-dos-attribute-duplicate-member` (`E_MANIFEST_CHAIN`);
+  - a final `/` without the attribute is a directory entry: `zip-directory-entry-no-dos-attribute`
+    (`foo/`, attributes 0) and `blobs-directory-entry-no-dos-attribute-zip` (`blobs/sha256/`,
+    a Unix directory mode without the DOS bit), both valid;
+  - `zip-dos-attribute-deflated-empty` (`E_CONTAINER_ZIP`, S3-FIX2/N1d).
+  The S3-FIX1 directory-entry cases all carried the attribute *and* a final `/`, so neither
+  of the two mixed shapes was covered (narrow review low-3).
+- **Ablation catalogue**: three `exact_pinned` S3-FIX2 entries in `tools/anti_verification.py`
+  turn the Python reading off: the attribute makes a directory entry again (the eight
+  attribute cases above go red), a final `/` needs the attribute as well (the two cases
+  without it, and the older `zip-slash-name-with-data` and
+  `previous-zip-rule4-directory-with-data`), and the attribute rejects only a non-zero
+  uncompressed size (`zip-dos-attribute-deflated-empty`). The anchor of the older
+  `zip-dos-directory-data` entry follows the changed Python line.
+
 ## S3-FIX1: revision of the S3 round — 2026-11-17 — DRAFT, UNRELEASED
 
 Decision 2026-11-17 #5 (the founder can overturn every item; the rules are **decided by
