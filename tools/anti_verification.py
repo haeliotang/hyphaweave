@@ -832,7 +832,7 @@ def _build_catalogue() -> None:
            ("container/zip-trailing",)),
         _m("zip-dos-directory-data", "zipread.py", "container.zip.dos-directory",
            "accept a DOS-directory-attribute entry that carries data (rule 4, every entry, W2)",
-           r'    if entry\.external_attr & 0x10 and entry\.uncompressed_size:',
+           r'    if entry\.external_attr & 0x10 and \(entry\.uncompressed_size or entry\.compressed_size\):',
            '    if False:  # ablation: DOS directory attribute on a data entry accepted',
            ("container/zip-dos-directory-attribute-with-data",
             "container/previous-zip-rule4-dos-directory-attribute")),
