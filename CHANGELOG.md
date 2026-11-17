@@ -6,6 +6,64 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S4: two disagreements in the signature layer — 2026-11-18 — DRAFT, UNRELEASED
+
+Decision 2026-11-18 #4 (the founder can overturn every item; the ruling is **decided by
+principle**). The differential fuzz of the S3-FIX2 round (`sigs` class) found two mutants on
+which the reference verifiers concluded differently; both disagreements are older than the
+S3 round. This round settles them. The `format` identifier is unchanged; no error code is
+added; the registry stays at revision 8. No conclusion of the frozen candidate set changes
+and no existing main vector changes.
+
+### Fix (Rust verifier)
+
+- **A revocation's outcome no longer depends on the order in which H1 computes the key
+  state (§9.4, S2-FIX3/F79; §5.3; S4/H2).** A container whose manifest is signed by
+  `human-1` and whose record is a `retired` revocation of `human-1` signed by `agent-1`
+  (whose keyset declaration `human-1` cosigns as its owner) was `unverifiable`
+  `E_KEY_UNKNOWN` with `N_KEY_UNDECLARED` in H1, and `invalid` `E_KEY_REVOKE_SIGNER` in
+  Python. The manifest check started H1's admission pass; settling `agent-1`'s declaration
+  checked `human-1`'s cosignature under §9.4, which evaluated the revocation, whose
+  signer's admission was that same unsettled declaration; the revocation's report was kept
+  from that moment. As a record target, or with `program-1` as the signer, the same
+  revocation was already `E_KEY_REVOKE_SIGNER`. H1 now evaluates such a record again once
+  it is needed outside the pass. The text needs no change: §9.4 already says that the
+  internal computation order does not govern, and §5.3 that material is the least fixed
+  point. Embedders of an earlier H1 may have seen `E_KEY_UNKNOWN` (unverifiable) where the
+  answer is invalid.
+
+### Wire-visible changes (specification and the Python verifier)
+
+- **"Declared `human`" in the `N_NO_HUMAN_SIGNATURE` condition is the governing class
+  (§4.4, §5.3, registry; S4/H1).** The notice is reported for an `accepted`, valid record
+  without a valid signature by a key declared `human`. §4.4 now says which declarations
+  count: the key's governing class, taken from the structurally valid declarations of the
+  verification context **including the record being verified** (the definition of a
+  declared key in §4.4 step 5), trusted or not; rotation material is not a declaration.
+  **Python changed:** it read the class of the declarations that entered its key state, so
+  it reported the notice on a record target that declares its own key `human` and is
+  cosigned only by an organization key (the target is not part of its own key state), and
+  on a valid declaration cosigned by a key whose only declaration is untrusted. H1 already
+  read the governing class. The reading, its "trusted or not" half included, is ruling
+  S4/H1 in Appendix A and can be overturned.
+
+### Vectors, tests and gates
+
+- **Vectors**: 3 new main cases (812 → 815). No existing case changes.
+  - `key-lifecycle/declared-human-org-cosigned-own-key-is-human` (record target, valid,
+    `N_NO_HUMAN_SIGNATURE` absent): a fresh key declared `human`, self-signed and cosigned
+    by `org-1` only;
+  - `key-lifecycle/declared-org-cosigned-untrusted-human-container` (unverifiable
+    `E_KEY_UNTRUSTED` from the untrusted declaration; the organization declaration valid,
+    `N_NO_HUMAN_SIGNATURE` absent);
+  - `container/revocation-by-key-owned-by-manifest-key` (invalid `E_KEY_REVOKE_SIGNER`;
+    the manifest signature stays valid).
+- **Ablation catalogue**: three `exact_pinned` S4 entries in `tools/anti_verification.py`:
+  a record target's own declaration no longer counts (the first case goes red), only
+  declarations in the key state count (the second), and an automated key whose owner is
+  the revoked key has no material for a signature on that revocation — the outcome H1 kept
+  before the fix (the third). The H1 change is reverse-verified on the Rust side.
+
 ## S3-FIX2: second revision of the S3 round — 2026-11-18 — DRAFT, UNRELEASED
 
 Decisions 2026-11-18 #2 and #3 (the founder can overturn every item; the rules are
