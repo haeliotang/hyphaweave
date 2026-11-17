@@ -523,9 +523,10 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
     let mut content = Content::default();
     let mut codes: BTreeSet<Code> = BTreeSet::new();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    // Entry checks in central-directory order. A zero-data directory entry is
-    // ignored for the layout and for whether `blobs/` is present (§11.9 rule
-    // 4), but it passes the path-safety, symbolic-link and duplicate-name
+    // Entry checks in central-directory order. A zero-data directory entry
+    // (a name ending `/`; the DOS directory attribute does not make one, FIX2)
+    // is ignored for the layout and for whether `blobs/` is present (§11.9
+    // rule 4), but it passes the path-safety, symbolic-link and duplicate-name
     // checks like any other entry (FIX1): `../x/` and `/abs/` are
     // E_CONTAINER_ENTRY. Its path is its name without the final `/`. A
     // `readable/` entry is "observed" once it passed its own checks, before
@@ -558,6 +559,8 @@ fn enumerate_zip(bytes: &[u8]) -> Result<Content, EnumerationFailure> {
         // §11.7 rule 3 with §11.9 rule 4 (FIX1): in the zip form `blobs/` is
         // present when a file lies in it; a zero-data directory entry (such
         // as `blobs/sha256/`) takes no part in the layout or in that question.
+        // A zero-data `blobs/sha256` without the final `/` is a file, with or
+        // without the DOS directory attribute (FIX2).
         if entry.is_directory {
             continue;
         }

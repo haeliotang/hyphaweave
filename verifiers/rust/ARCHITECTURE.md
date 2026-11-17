@@ -191,7 +191,13 @@ Then follow the container check order exactly; the key rules:
    the layout and for whether `blobs/` is present (`blobs_dir_present` counts
    file entries only), but it passes `is_safe_relative_path` (name without the
    final `/`), the symlink and the duplicate-name checks like every entry, so
-   `../x/` or `/abs/` → `E_CONTAINER_ENTRY` (§11.9 rule 4, FIX1).
+   `../x/` or `/abs/` → `E_CONTAINER_ENTRY` (§11.9 rule 4, FIX1). Only the
+   final `/` makes a directory entry (`zip::is_directory_record`, which also
+   decides the phase-3 declared total and the members of a supplied previous
+   zip); the DOS directory attribute is read by phase 4 only, where it makes
+   an entry that carries data (a non-zero compressed or uncompressed size)
+   `E_CONTAINER_ZIP`. A zero-data `blobs/sha256` or `foo` carrying the
+   attribute is a zero-byte file (FIX2).
 2. `manifest.json` missing → `E_MANIFEST_MISSING`; parse with
    `json::parse_canonical_object(.., limits::MAX_MANIFEST_BYTES)` (JSON codes
    pass through).
