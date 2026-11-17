@@ -92,6 +92,11 @@ conclusion of the frozen candidate set changes and no existing main vector chang
   the entry checks stop at the first failing entry (the two `readable-notice-after-*` cases
   go red), and a failing entry's name is forgotten (`readable-duplicate-after-symlink-zip`).
   The anchor of the older `zip-dos-directory-data` entry follows the changed Python line.
+  Four older `exact_pinned` entries now also turn new cases red, and their `pinned_by`
+  grows accordingly: `s3-blob-tree-from-files-only` (the two zero-data `blobs/` files with
+  the attribute), `s3f-zip-directory-entries-layout` (`foo/` without it),
+  `s3f-zip-directory-entry-blobs-presence` (`blobs/sha256/` without it) and
+  `s3f-zip-directory-entry-path-safety` (`../x/` before `readable/a`).
 
 ## S3-FIX1: revision of the S3 round — 2026-11-17 — DRAFT, UNRELEASED
 
