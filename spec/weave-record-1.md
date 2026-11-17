@@ -2421,13 +2421,13 @@ target per-case layout remains implementation-defined (Appendix A P7)
     current manifest's `previous_manifest.digest`;
   - in a **directory** previous, both member paths MUST be regular files: a symbolic link,
     a non-regular file or a missing member is `E_MANIFEST_CHAIN`; in a **zip** previous the
-    archive MUST contain exactly one non-directory entry for each of the two paths, and a
-    duplicate or missing member is `E_MANIFEST_CHAIN`. **Rules 1–4 of §11.9 and the §13
+    archive MUST contain exactly one non-directory entry (a name not ending `/`, §11.9 rule
+    4) for each of the two paths, and a duplicate or missing member is `E_MANIFEST_CHAIN`. **Rules 1–4 of §11.9 and the §13
     limits apply to the framing of the whole previous archive, in the §11.9 order, exactly
     as for a target zip** (W2): local headers against the central directory, byte coverage,
-    counts and single volume, and the entry classes of rule 4 (a directory entry or a DOS
-    directory-attribute entry carrying data, an encrypted entry, an unsupported compression
-    method) are checked for **every** entry, read or not. Only these rules are **not**
+    counts and single volume, and the entry classes of rule 4 (an entry carrying data whose
+    name ends with `/` or that carries the DOS directory attribute, an encrypted entry, an
+    unsupported compression method) are checked for **every** entry, read or not. Only these rules are **not**
     applied to the members other than the two read ones, because those members are not
     verified: entry-name safety, duplicate names, CRC (the other members are never
     decompressed) and the `readable/` rules (V1, W2) decided (Inceptless decision
@@ -2637,9 +2637,18 @@ stated otherwise (T6):
    path-safety, symbolic-link and duplicate-name checks at the head of this section like
    every other entry, its path being its name without the final `/`, so `../x/`,
    `a/../../x/` and `/abs/` are `E_CONTAINER_ENTRY` [S3-FIX1/Z1][S3-FIX1/Z2] decided by principle
-   (Inceptless decision 2026-11-17 #5). An entry whose name ends with `/` but carries data is
-   `E_CONTAINER_ZIP`, with or without the DOS directory attribute; an entry carrying the DOS
-   directory attribute but non-zero data is likewise `E_CONTAINER_ZIP` (U12/L6). Encrypted
+   (Inceptless decision 2026-11-17 #5). Only the final `/` makes a directory entry: the DOS
+   directory attribute does not, so a zero-data entry that carries it and whose name does
+   not end with `/` (such as `blobs/sha256`, `foo` or `records/x`) is a zero-byte **file**
+   for the layout, for whether `blobs/` is present, for the declared total of §13 and for
+   the members of a supplied previous zip [S3-FIX2/N1] decided by principle (Inceptless
+   decision 2026-11-18 #2). The attribute matters to one rule only: an entry whose name
+   ends with `/` but carries data is `E_CONTAINER_ZIP`, with or without the DOS directory
+   attribute; an entry carrying the DOS directory attribute but non-zero data is likewise
+   `E_CONTAINER_ZIP` (U12/L6). An entry carries data, in both halves of that rule, when its
+   compressed or its uncompressed size in the central directory is not zero, so a deflated
+   empty member (two compressed bytes) with the attribute is `E_CONTAINER_ZIP`
+   [S3-FIX2/N1d] decided by principle (Inceptless decision 2026-11-18 #2). Encrypted
    entries and unsupported compression methods are rejected [Q25]. This rule is checked for
    every entry, including `readable/` entries and the unread members of a supplied previous
    zip (W2).
@@ -2667,8 +2676,9 @@ first phase that fails decides the code:
    parsing equals the number of parsed records). Failure: `E_CONTAINER_ZIP`.
 3. **The §13 limits.** The number of parsed entries above `MAX_CONTAINER_ENTRIES`
    (`readable/**` included) or the sum of the declared uncompressed sizes above
-   `MAX_CONTAINER_UNCOMPRESSED_BYTES` (`readable/**` and directory entries excluded) is
-   `E_CONTAINER_SIZE`, and **nothing after this phase is checked**.
+   `MAX_CONTAINER_UNCOMPRESSED_BYTES` (`readable/**` and directory entries, names ending
+   `/`, excluded; an entry with the DOS directory attribute whose name does not end with
+   `/` counts, rule 4) is `E_CONTAINER_SIZE`, and **nothing after this phase is checked**.
 4. **Every remaining structural rule** of this section: a non-empty archive comment; the
    single-volume disk-number fields, the second EOCD count and the EOCD/ZIP64 consistency
    of rule 3; per entry the "version needed to extract", the "disk number start", the
@@ -4188,6 +4198,17 @@ is marked here so that it can be overturned on its own.
 | S3-FIX1/R2 | whether a resolving owner is trusted is one of the other step-(7) rules of a declaration at §4.4 step 5: `E_KEY_UNTRUSTED` (unverifiable) is reported instead of the step-5 `E_SIG_UNVERIFIABLE` | §9.1, §4.4 |
 | S3-FIX1/R3 | `E_LABEL_LOCAL_ONLY_EXPORTED` counts every record whose envelope structure passes, whatever its verdict, as R1 does | §8.5 |
 | S3-FIX1/D1 | every reader of a digest string applies the whole §2.7 grammar (algorithm-name pattern, 32-byte bound, 1–128 lowercase hexadecimal digits); the 64 digits of `sha256` are a requirement of that algorithm, not of the grammar | §2.7 |
+
+The following rows are fixed by Inceptless decision **2026-11-18 #2** (the second revision
+of the S3 round, after the narrow review of the first), **decided by principle**; the
+founder can overturn them. S3-FIX2/N1d is not named by that decision: it settles the one
+remaining reading of the DOS directory attribute that the two reference verifiers did not
+share, and is marked here so that it can be overturned on its own.
+
+| ruling | topic | normative location |
+|---|---|---|
+| S3-FIX2/N1 | in the zip form only a name ending `/` makes a directory entry; the DOS directory attribute does not, so a zero-data entry carrying it whose name does not end with `/` (`blobs/sha256`, `blobs/x`, `foo`, `records/x`, `readable/x`) is a zero-byte file for the layout of §11.1, for whether `blobs/` is present (§11.7 rule 3), for the declared total of §13 and for the two members of a supplied previous zip (§11.5) | §11.5, §11.9 |
+| S3-FIX2/N1d | an entry carries data, for both halves of §11.9 rule 4 (a name ending `/`, the DOS directory attribute), when its compressed or uncompressed size in the central directory is not zero: a deflated empty member with the DOS directory attribute is `E_CONTAINER_ZIP` | §11.9 |
 
 ### A.2 PROVISIONAL implementation shapes
 

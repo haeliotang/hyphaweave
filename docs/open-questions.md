@@ -409,6 +409,12 @@ otherwise.
   entry lies in it, and a zip whose only extra entry is `blobs/sha512/` or
   `blobs/sha256/sub/` is not a layout violation. The directory form is unchanged: a
   real directory outside the layout is `E_CONTAINER_ENTRY`, empty or not.
+- **Refined (FIX2 of the S3 round, Inceptless decision 2026-11-18 #2, decided by
+  principle).** Only a name ending `/` makes a zip directory entry: a zero-data
+  `blobs/sha256` that carries the DOS directory attribute is a file, so without a
+  listing it is `E_MANIFEST_BLOB` (the Rust verifier had called it a directory entry
+  and the zip valid). The attribute matters only to `E_CONTAINER_ZIP` for an entry that
+  carries data.
 - **Reasoning.** Blobs are content-addressed attachments; H0 needs no agility
   there. Each violation has exactly one code, chosen by what is needed to see it: the
   listing alone (`E_MANIFEST_SCHEMA` when it is malformed, `E_MANIFEST_BLOB` when it is
