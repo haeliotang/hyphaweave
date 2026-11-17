@@ -15,7 +15,8 @@ path-safety check for zip directory entries, and that the differential fuzz stil
 older disagreements between the reference verifiers. This revision settles all of them and
 the review's low items. The `format` identifier is unchanged; no error code is added; the
 registry stays at revision 8. No conclusion of the frozen candidate set changes and no
-existing main vector changes.
+existing main vector changes its input, verdict or codes (the notes of three S3 cases are
+reworded).
 
 ### Security fix (Rust verifier)
 
@@ -72,7 +73,11 @@ existing main vector changes.
 
 ### Vectors, tests and gates
 
-- **Vectors**: 20 new main cases (777 → 797), no existing case changed:
+- **Vectors**: 20 new main cases (777 → 797). No existing case changes its input, verdict
+  or codes; the notes of `container/blobs-unknown-directory`, `-unknown-directory-zip` and
+  `blobs-sha256-subdirectory-zip` are reworded: the *file* below `blobs/` is what is
+  rejected, and a zero-data zip directory entry on its own is ignored (review B medium-1).
+  The new cases:
   - `container/` (11): valid `zip-directory-entry-outside-layout`,
     `blobs-directory-entry-unknown-listed-zip`, `-unknown-unlisted-zip`,
     `-sha256-subdirectory-listed-zip`, `-sha256-subdirectory-unlisted-zip`,
