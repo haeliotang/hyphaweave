@@ -2454,7 +2454,10 @@ def _build_s3_catalogue() -> None:
              "only (a zip without listing whose only blobs/ file is misnamed passes)",
              "        or bool(unstreamed)\n",
              "",
-             (_C + "blobs-no-listing-extra-file-zip",),
+             (_C + "blobs-no-listing-extra-file-zip",
+              # S3-FIX2: a zero-data blobs/ file with the DOS directory attribute.
+              _C + "zip-dos-attribute-blobs-file-unlisted",
+              _C + "zip-dos-attribute-blobs-sha256-unlisted"),
              exact_pinned=True),
     )
 
@@ -2483,7 +2486,9 @@ def _build_s3_fix1_catalogue() -> None:
               _C + "blobs-directory-entry-unknown-unlisted-zip",
               _C + "blobs-directory-entry-sha256-subdirectory-listed-zip",
               _C + "blobs-directory-entry-sha256-subdirectory-unlisted-zip",
-              _C + "blobs-directory-entries-empty-listing-zip"),
+              _C + "blobs-directory-entries-empty-listing-zip",
+              # S3-FIX2: foo/ without the DOS directory attribute.
+              _C + "zip-directory-entry-no-dos-attribute"),
              exact_pinned=True),
         _lit("s3f-zip-directory-entry-blobs-presence", "container.py", "s3f.zip-directory",
              "S3-FIX1/Z1 (review A low-3 X1): a zip directory entry below blobs/ makes blobs/ "
@@ -2500,7 +2505,9 @@ def _build_s3_fix1_catalogue() -> None:
              (_C + "blobs-directory-entry-unknown-unlisted-zip",
               _C + "blobs-directory-entry-sha256-subdirectory-unlisted-zip",
               _C + "blobs-directory-entry-sha256-only-zip",
-              _C + "blobs-directory-entries-empty-listing-zip"),
+              _C + "blobs-directory-entries-empty-listing-zip",
+              # S3-FIX2: blobs/sha256/ without the DOS directory attribute.
+              _C + "blobs-directory-entry-no-dos-attribute-zip"),
              exact_pinned=True),
         _lit("s3f-zip-directory-entry-path-safety", "container.py", "s3f.zip-directory",
              "S3-FIX1/Z2: directory entries skip the path-safety, symbolic-link and "
@@ -2510,7 +2517,9 @@ def _build_s3_fix1_catalogue() -> None:
              "                    continue\n"
              "                checked_name = entry.name\n",
              (_C + "zip-directory-entry-dotdot", _C + "zip-directory-entry-dotdot-nested",
-              _C + "zip-directory-entry-absolute"),
+              _C + "zip-directory-entry-absolute",
+              # S3-FIX2/N2: ../x/ before readable/a (skipped, so no E_CONTAINER_ENTRY).
+              _C + "readable-notice-after-unsafe-directory-zip"),
              exact_pinned=True),
         _lit("s3f-idempotency-actor-key", "container.py", "s3f.cross-record",
              "S3-FIX1/R1: compare actor.key as well when pairing idempotency claims",
