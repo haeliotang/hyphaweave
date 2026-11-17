@@ -2588,11 +2588,14 @@ def _build_s3_fix1_catalogue() -> None:
 
 
 def _build_s3_fix2_catalogue() -> None:
-    """S3-FIX2 (decision 2026-11-18 #2): only a name ending "/" makes a zip directory entry.
+    """S3-FIX2 (decisions 2026-11-18 #2 and #3): only a name ending "/" makes a zip
+    directory entry (N1, N1d), and N_READABLE_PRESENT does not depend on the order of
+    the central directory (N2).
 
-    Every entry is ``exact_pinned``. The H1 change of the round (``zip.rs``, the DOS
-    directory attribute no longer making a directory entry) is reverse-verified on
-    the Rust side (cp + touch + cmp); these entries pin the same reading in the
+    Every entry is ``exact_pinned``. The H1 changes of the round (``zip.rs``, the DOS
+    directory attribute no longer making a directory entry; ``container.rs``, the
+    entry checks no longer stopping at the first failing entry) are reverse-verified
+    on the Rust side (cp + touch + cmp); these entries pin the same readings in the
     reference verifier, so the two sides cannot drift apart again unseen.
     """
     _add(
@@ -2628,6 +2631,27 @@ def _build_s3_fix2_catalogue() -> None:
              "entry.compressed_size):\n",
              "    if entry.external_attr & 0x10 and entry.uncompressed_size:\n",
              (_C + "zip-dos-attribute-deflated-empty",),
+             exact_pinned=True),
+        _lit("s3f2-readable-notice-stops-at-first-failure", "container.py",
+             "s3f2.readable-notice",
+             "S3-FIX2/N2: the zip entry checks stop at the first failing entry, so a "
+             "readable/ entry after it is not observed (the H1 reading before the fix)",
+             "                    precheck_names.add(entry.name)\n"
+             "                    continue\n",
+             "                    precheck_names.add(entry.name)\n"
+             "                    break\n",
+             (_C + "readable-notice-after-unsafe-directory-zip",
+              _C + "readable-notice-after-unsafe-file-zip"),
+             exact_pinned=True),
+        _lit("s3f2-failing-entry-name-forgotten", "container.py", "s3f2.readable-notice",
+             "S3-FIX2/N2: the name of an entry that fails its checks is not remembered, so "
+             "a later entry of the same name is not a duplicate",
+             "                    entry_error = \"E_CONTAINER_ENTRY\"\n"
+             "                    precheck_names.add(entry.name)\n"
+             "                    continue\n",
+             "                    entry_error = \"E_CONTAINER_ENTRY\"\n"
+             "                    continue\n",
+             (_C + "readable-duplicate-after-symlink-zip",),
              exact_pinned=True),
     )
 

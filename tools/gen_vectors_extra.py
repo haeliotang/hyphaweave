@@ -46,6 +46,7 @@ import os
 import shutil
 import struct
 import sys
+import warnings
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -17464,6 +17465,106 @@ declare(
     "(§11.9 rule 4) and the archive holds two non-directory manifest.json entries: a "
     "duplicate member, E_MANIFEST_CHAIN (§11.5). The Rust verifier skipped the entry as a "
     "directory entry and linked the previous before the fix.",
+)
+
+
+# -- N_READABLE_PRESENT does not depend on the order of the central directory
+#    (S3-FIX2/N2, decision 2026-11-18 #3; narrow review medium-2). Before the fix
+#    the Rust verifier stopped at the first entry that failed its checks and did
+#    not report the notice for a readable/ entry after it.
+
+
+def _s3f2_zip_ordered(
+    before: Sequence[tuple[str, bytes, int]], after: Sequence[tuple[str, bytes, int]] = ()
+) -> dict[str, bytes]:
+    """A valid container's files in zip form, *before* entries first, *after* last;
+    each extra entry is ``(name, data, external attributes)`` made by Unix. A repeated
+    name is written as asked (zipfile's duplicate-name warning is silenced)."""
+    buffer = io.BytesIO()
+    with warnings.catch_warnings(), zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        warnings.simplefilter("ignore", UserWarning)
+
+        def add(name: str, data: bytes, attr: int) -> None:
+            info = zipfile.ZipInfo(name, date_time=(2026, 11, 10, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = attr
+            archive.writestr(info, data)
+
+        for name, data, attr in before:
+            add(name, data, attr)
+        files = _s3_container()
+        for path in sorted(files):
+            add(path, files[path], _STANDARD_ATTR)
+        for name, data, attr in after:
+            add(name, data, attr)
+    return {"container.zip": buffer.getvalue()}
+
+
+_S3F2_READABLE = ("readable/a", b"readable view\n", _STANDARD_ATTR)
+
+for _s3f2_name, _s3f2_before, _s3f2_after, _s3f2_what in (
+    (
+        "readable-notice-after-unsafe-file-zip",
+        (("../x", b"z", _STANDARD_ATTR), _S3F2_READABLE),
+        (),
+        "the file entry ../x comes first in the central directory and readable/a after it",
+    ),
+    (
+        "readable-notice-after-unsafe-directory-zip",
+        (("../x/", b"", _S3F_DIRECTORY_ATTR), _S3F2_READABLE),
+        (),
+        "the zero-data directory entry ../x/ comes first in the central directory and "
+        "readable/a after it",
+    ),
+    (
+        "readable-notice-before-unsafe-file-zip",
+        (_S3F2_READABLE,),
+        (("../x", b"z", _STANDARD_ATTR),),
+        "readable/a comes first in the central directory and the file entry ../x last",
+    ),
+):
+    declare(
+        "container",
+        _s3f2_name,
+        "container",
+        "container.zip",
+        "invalid",
+        errors=("E_CONTAINER_ENTRY",),
+        notices=("N_READABLE_PRESENT",),
+        build=lambda case_dir, before=_s3f2_before, after=_s3f2_after: _s3f2_zip_ordered(
+            before, after
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3F2 + ", S3-FIX2/N2 (decision 2026-11-18 #3): a valid zip container also "
+        "holds readable/a and an entry whose path has a '..' segment; "
+        + _s3f2_what
+        + ". The unsafe entry is E_CONTAINER_ENTRY (§11.9), and readable/a passed its own "
+        "entry checks, so N_READABLE_PRESENT is reported (§11.8) regardless of the "
+        "entries' order in the central directory. The Rust verifier stopped at the first "
+        "failing entry and did not report the notice when the unsafe entry came first.",
+    )
+
+declare(
+    "container",
+    "readable-duplicate-after-symlink-zip",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY",),
+    build=lambda case_dir: _s3f2_zip_ordered(
+        (("readable/a", b"target", _SYMLINK_ATTR), _S3F2_READABLE)
+    ),
+    args=("--keys", "@keyset"),
+    records=(),
+    notices_absent=("N_READABLE_PRESENT",),
+    notes=_S3F2 + ", S3-FIX2/N2 (decision 2026-11-18 #3): a valid zip container also "
+    "holds readable/a twice, first as a Unix symbolic link, then as a regular file. The "
+    "link fails its own checks (§11.9), and its name is remembered all the same, so the "
+    "regular file is a duplicate name and fails its checks too: E_CONTAINER_ENTRY, and no "
+    "readable/ entry passed its own checks, so N_READABLE_PRESENT is not reported (§11.8). "
+    "A verifier that checks every entry but forgets the names of failing ones would take "
+    "the second readable/a for the first of its name and report the notice.",
 )
 
 

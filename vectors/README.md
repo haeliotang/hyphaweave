@@ -64,11 +64,11 @@ yet accepted by J1/J2):
 | `erasure` | 35 |
 | `grant` | 56 |
 | `key-lifecycle` | 129 |
-| `container` | 202 |
+| `container` | 206 |
 | `integrity-levels` | 183 |
-| **total** | **808** |
+| **total** | **812** |
 
-Verdict distribution: `valid` 162, `erased` 1, `invalid` 580, `unverifiable` 65.
+Verdict distribution: `valid` 162, `erased` 1, `invalid` 584, `unverifiable` 65.
 All record-target positive cases carry a real signature by their `actor.key`
 except the documented exceptions in
 [`GATE-3-EXCEPTIONS.md`](GATE-3-EXCEPTIONS.md); container-target positives are
