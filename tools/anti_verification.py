@@ -2665,10 +2665,60 @@ def _build_s3_fix2_catalogue() -> None:
     )
 
 
+def _build_s4_catalogue() -> None:
+    """S4 (decision 2026-11-18 #4): two older disagreements of the signature layer.
+
+    Every entry is ``exact_pinned``. H1 changed the Python verifier: the first two
+    entries restore, one at a time, the two halves of its old reading of "declared
+    ``human``" in the N_NO_HUMAN_SIGNATURE condition (a record target's own declaration
+    not counted; only trusted declarations counted). H2 changed the Rust verifier
+    (``context.rs``, a record evaluated while the admission pass settles is not
+    memoised when it read an unsettled answer), reverse-verified on the Rust side
+    (cp + touch + cmp); the third entry gives the reference verifier the outcome the
+    Rust verifier kept — the revocation's signer taken as without material because its
+    declaration's owner is the revoked key — so the two sides cannot drift apart again
+    unseen.
+    """
+    _add(
+        _lit("s4-human-notice-own-declaration-ignored", "verifier.py", "s4.human-notice",
+             "S4/H1: a record target's own declaration does not make its key declared "
+             "human (the Python reading before the fix)",
+             "        if key_class is None and own is not None and own[0] == key:\n"
+             "            key_class = own[1]\n",
+             "",
+             (_KL + "declared-human-org-cosigned-own-key-is-human",),
+             exact_pinned=True),
+        _lit("s4-human-notice-trusted-declarations-only", "verifier.py", "s4.human-notice",
+             "S4/H1: only a declaration that entered the key state (trusted) makes a key "
+             "declared human (the Python reading before the fix)",
+             "        key_class = context.governing_class(key, view.digest or \"\")\n",
+             "        key_class = context.key_state.key_type(key)\n",
+             (_KL + "declared-org-cosigned-untrusted-human-container",),
+             exact_pinned=True),
+        _lit("s4-revocation-by-owned-automated-key-unknown", "verifier.py",
+             "s4.revocation-signer",
+             "S4/H2: an automated key (agent, program, device) whose owner is the revoked "
+             "key has no material for a signature on that revocation (the outcome the Rust "
+             "verifier kept before the fix)",
+             "    material = context.key_state.public_key(key)\n"
+             "    if material is not None:\n",
+             "    material = context.key_state.public_key(key)\n"
+             "    owned = context.key_state.declarations.get(key)\n"
+             "    if (envelope.kind == kinds.KIND_REVOKED and owned is not None\n"
+             "            and owned.key_type in (\"agent\", \"program\", \"device\")\n"
+             "            and owned.owner == body.get(\"key\")):\n"
+             "        material = None\n"
+             "    if material is not None:\n",
+             (_C + "revocation-by-key-owned-by-manifest-key",),
+             exact_pinned=True),
+    )
+
+
 _build_s2_catalogue()
 _build_s3_catalogue()
 _build_s3_fix1_catalogue()
 _build_s3_fix2_catalogue()
+_build_s4_catalogue()
 
 
 # ----------------------------------------------------------------------------- runner

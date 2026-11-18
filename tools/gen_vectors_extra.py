@@ -17568,6 +17568,135 @@ declare(
 )
 
 
+# -- S4 (decision 2026-11-18 #4): two older disagreements of the signature layer that
+#    the differential fuzz found (sigs class). H1: "declared human" in the
+#    N_NO_HUMAN_SIGNATURE condition is the governing class, the record being verified
+#    included, trusted or not (the Python verifier did not count a record target's own
+#    declaration, nor an untrusted declaration). H2: a revocation signed by a key whose
+#    declaration the revoked key cosigns is judged on that key's settled material (the
+#    Rust verifier kept a provisional E_KEY_UNKNOWN when the revoked key signed the
+#    manifest).
+
+_S4 = "S4 (decision 2026-11-18 #4, decided by principle)"
+
+declare(
+    "key-lifecycle",
+    "declared-human-org-cosigned-own-key-is-human",
+    "record",
+    "record.json",
+    "valid",
+    build=lambda case_dir: {
+        "record.json": canonical(
+            derived_declaration(
+                record_id="key-declared-human-org-cosigned",
+                key_name="human-org-cosigned",
+                key_type="human",
+                cosigners=("org-1",),
+            )
+        )
+    },
+    args=LIFECYCLE_ARGS,
+    expected_digest=True,
+    notices_absent=("N_NO_HUMAN_SIGNATURE",),
+    notes=_S4 + ", S4/H1 (§4.4, §5.3): a record target that declares a fresh key as "
+    "human, self-signed and cosigned by org-1 (a trusted organization key of the keyset); "
+    "no human key of the keyset signs it. The declaration is valid. The record being "
+    "verified is part of the verification context, so its own key is declared human (its "
+    "governing class) and the valid self-signature is a valid signature by a key declared "
+    "human: N_NO_HUMAN_SIGNATURE is not reported. The Python verifier did not register a "
+    "record target in its own context and reported the notice.",
+)
+
+
+def _s4_untrusted_human_cosign_files() -> dict[str, bytes]:
+    untrusted = derived_declaration(
+        record_id="key-declared-human-untrusted",
+        key_name="human-untrusted-cosigner",
+        key_type="human",
+        cosigners=(),
+    )
+    organization = derived_declaration(
+        record_id="key-declared-org-cosigned-untrusted-human",
+        key_name="org-cosigned-untrusted-human",
+        key_type="organization",
+        cosigners=("org-1",),
+        recorded_at=recordlib.T1,
+    )
+    private, _public, key_id = derived_key("human-untrusted-cosigner")
+    organization["sigs"].append(_derived_signature(private, key_id, organization))
+    organization["sigs"].sort(key=lambda entry: entry["key"])
+    return _wrap_internal(
+        recordlib.build_container([untrusted, organization], created_at=recordlib.T3)
+    )
+
+
+declare(
+    "key-lifecycle",
+    "declared-org-cosigned-untrusted-human-container",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    notices=("N_SELF_ATTESTED_ROOT_KEY",),
+    build=lambda case_dir: _s4_untrusted_human_cosign_files(),
+    args=("--keys", "@keyset"),
+    records=[
+        {"id": "key-declared-human-untrusted", "verdict": "unverifiable",
+         "errors": ["E_KEY_UNTRUSTED"]},
+        {"id": "key-declared-org-cosigned-untrusted-human", "verdict": "valid",
+         "errors": []},
+    ],
+    notices_absent=("N_NO_HUMAN_SIGNATURE",),
+    notes=_S4 + ", S4/H1 (§4.4, §5.3): a container with two declarations of fresh keys. "
+    "The first declares a key as human and is signed by that key only: untrusted "
+    "(E_KEY_UNTRUSTED, N_SELF_ATTESTED_ROOT_KEY), but it passes the §14.1 structural "
+    "group and has no other signature, so it supplies material for a cosignature on "
+    "another declaration and governs its key's class. The second declares a key as "
+    "organization, self-signed, cosigned by org-1 (trusted) and by the first key: valid. "
+    "Its cosignature by the first key is a valid signature by a key declared human (trust "
+    "is not part of the test), so N_NO_HUMAN_SIGNATURE is not reported. The Python "
+    "verifier read the class of trusted declarations only and reported the notice.",
+)
+
+
+def _s4_revocation_by_owned_key_files() -> dict[str, bytes]:
+    revocation = recordlib.key_revocation(
+        "human-1",
+        reason="retired",
+        effective_at=recordlib.T2,
+        recorded_at=recordlib.T2,
+        signer_name="agent-1",
+    )
+    return _wrap_internal(recordlib.build_container([revocation], created_at=recordlib.T3))
+
+
+declare(
+    "container",
+    "revocation-by-key-owned-by-manifest-key",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_KEY_REVOKE_SIGNER",),
+    build=lambda case_dir: _s4_revocation_by_owned_key_files(),
+    args=("--keys", "@keyset"),
+    records=[
+        {"id": "key-revoked-human-1-retired", "verdict": "invalid",
+         "errors": ["E_KEY_REVOKE_SIGNER"]},
+    ],
+    notes=_S4 + ", S4/H2 (§9.3, §9.4, §9.5, §5.3): the manifest is signed by human-1 "
+    "with created_at T3; the container's only record is a 'retired' revocation of human-1, "
+    "effective at T2, made and signed by agent-1, whose keyset declaration human-1 cosigns "
+    "as its owner. agent-1 is neither the revoked key nor a human/organization key, so the "
+    "revocation is invalid (E_KEY_REVOKE_SIGNER) and revokes nothing: the manifest "
+    "signature stays valid and the record pipeline runs. agent-1's declaration supplies "
+    "its material whatever the revocation's outcome (its owner cosignature, recorded "
+    "before T2, passes §9.4 either way), so the signature is valid, not E_KEY_UNKNOWN. The "
+    "Rust verifier evaluated the revocation while it settled agent-1's declaration for "
+    "the manifest signature check and kept that provisional E_KEY_UNKNOWN "
+    "(N_KEY_UNDECLARED).",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,

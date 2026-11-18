@@ -1373,9 +1373,22 @@ def _attempt_record_pass(view: RecordView, context: Context, *, own_effects: boo
 
 
 def _has_human_signature(view: RecordView, context: Context) -> bool:
-    """Whether some valid signature was made by a declared human key."""
+    """Whether some valid signature was made by a key declared ``human``.
+
+    §4.4 (S4): "declared ``human`` in the verification context" is the key's
+    governing class (§5.3), taken from the structurally valid declarations of
+    the context *including the record being verified* (the §4.4 step 5
+    definition of a declared key); trust is not part of it, and explicit
+    rotation material is not a declaration. A record target is not registered
+    in its own context, so a target that declares the key itself, and that
+    the keyset does not declare, supplies the class.
+    """
+    own = _structural_declaration_class(view)
     for key in view.verified_keys:
-        if context.key_state.key_type(key) == "human":
+        key_class = context.governing_class(key, view.digest or "")
+        if key_class is None and own is not None and own[0] == key:
+            key_class = own[1]
+        if key_class == "human":
             return True
     return False
 
