@@ -108,6 +108,20 @@ def test_digest_string_rules() -> None:
     assert not encoding.is_supported_digest(unknown)
     for malformed in ("sha256", "sha256:", ":abc", "sha256:" + "AB" * 32, ""):
         assert not encoding.is_digest_string(malformed)
+    # FIX1 (§2.7): the algorithm-name grammar and the 1-128 hex digits.
+    assert encoding.is_digest_string("sha512:" + "0" * 128)
+    assert encoding.is_digest_string("a" * 32 + ":0")
+    assert encoding.is_digest_string("sha256:" + "0" * 63)
+    for malformed in (
+        "sha--256:ab",
+        "-sha:ab",
+        "sha-:ab",
+        "2sha:ab",
+        "a" * 33 + ":0",
+        "sha512:" + "0" * 129,
+        "sha256:ab:cd",
+    ):
+        assert not encoding.is_digest_string(malformed)
 
 
 def test_record_digest_excludes_sigs() -> None:

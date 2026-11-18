@@ -230,6 +230,13 @@ def validate_manifest(value: Any) -> Manifest:
             _fail("E_MANIFEST_SCHEMA", "manifest.chain.head is not a supported digest")
         chain = {"algorithm": "sha256", "head": chain_value["head"]}
 
+    # manifest.blobs (§11.7, S3): the listing is checked here, at the
+    # manifest-structure step, in a fixed order whose first failing check
+    # decides: the array, the MAX_BLOBS count (§13), then every entry in array
+    # order -- its closed {digest,size} shape, the §2.7 digest-string grammar
+    # and the size (all E_MANIFEST_SCHEMA: the listing is malformed), then the
+    # sha256 form (E_MANIFEST_BLOB: well-formed but unsupported) -- and last the
+    # strictly ascending order (E_MANIFEST_BLOB). An empty array lists no blobs.
     blobs_value = value.get("blobs", [])
     if not isinstance(blobs_value, list):
         _fail("E_MANIFEST_SCHEMA", "manifest.blobs must be an array")
@@ -244,16 +251,18 @@ def validate_manifest(value: Any) -> Manifest:
                 _fail("E_MANIFEST_SCHEMA", "unknown member in manifest.blobs entry")
         if "digest" not in blob or "size" not in blob:
             _fail("E_MANIFEST_SCHEMA", "manifest.blobs entry is missing a member")
-        if not encoding.is_supported_digest(blob["digest"]):
-            _fail("E_MANIFEST_SCHEMA", "manifest.blobs digest is not a supported digest")
+        if not encoding.is_digest_string(blob["digest"]):
+            _fail("E_MANIFEST_SCHEMA", "manifest.blobs digest is not a digest string")
         size = blob["size"]
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             _fail("E_MANIFEST_SCHEMA", "manifest.blobs size is invalid")
+        if not encoding.is_supported_digest(blob["digest"]):
+            _fail("E_MANIFEST_BLOB", "manifest.blobs digest is not sha256:<64 lowercase hex>")
         blobs.append(BlobEntry(digest=blob["digest"], size=size))
     for previous, current in zip(blobs, blobs[1:]):
         if previous.digest >= current.digest:
             _fail(
-                "E_MANIFEST_SCHEMA",
+                "E_MANIFEST_BLOB",
                 "manifest.blobs must be sorted by digest ascending with unique digests",
             )
 

@@ -183,14 +183,30 @@ Then follow the container check order exactly; the key rules:
 1. Entry safety/layout (`E_CONTAINER_ENTRY`; unknown top-level entries, bad
    paths, duplicate names, unknown files under `signatures/`/`previous/`;
    `readable/` is ignored entirely and never parsed/hashed). Extra file in
-   `records/` → `E_MANIFEST_RECORD_EXTRA`; extra file in `blobs/` →
-   `E_MANIFEST_BLOB`.
+   `records/` → `E_MANIFEST_RECORD_EXTRA`; extra file in `blobs/` or
+   `blobs/sha256/`, whatever its name → `E_MANIFEST_BLOB` at step 10 of this
+   list (the spec's blob step (9), §14.5); a file below any other directory
+   inside `blobs/` → `E_CONTAINER_ENTRY`, in the directory and zip forms alike
+   (`classify_path`, S3 B3/B4). A zero-data zip directory entry is ignored for
+   the layout and for whether `blobs/` is present (`blobs_dir_present` counts
+   file entries only), but it passes `is_safe_relative_path` (name without the
+   final `/`), the symlink and the duplicate-name checks like every entry, so
+   `../x/` or `/abs/` → `E_CONTAINER_ENTRY` (§11.9 rule 4, FIX1). Only the
+   final `/` makes a directory entry (`zip::is_directory_record`, which also
+   decides the phase-3 declared total and the members of a supplied previous
+   zip); the DOS directory attribute is read by phase 4 only, where it makes
+   an entry that carries data (a non-zero compressed or uncompressed size)
+   `E_CONTAINER_ZIP`. A zero-data `blobs/sha256` or `foo` carrying the
+   attribute is a zero-byte file (FIX2).
 2. `manifest.json` missing → `E_MANIFEST_MISSING`; parse with
    `json::parse_canonical_object(.., limits::MAX_MANIFEST_BYTES)` (JSON codes
    pass through).
 3. Manifest schema (`E_MANIFEST_SCHEMA`, `E_MANIFEST_FORMAT`,
    `E_MANIFEST_VERSION`, `E_MANIFEST_LEVEL`, `E_MANIFEST_RECORDS`; details in
-   §11.2/§11.2.1). Manifest structure invalid before records → container
+   §11.2/§11.2.1). `manifest.blobs` is checked here too (`parse_blobs`, §11.7
+   rules 1–2, S3 B1): array, `MAX_BLOBS`, each entry's shape, digest grammar
+   and size (`E_MANIFEST_SCHEMA`) then its sha256 form, and last the order
+   (`E_MANIFEST_BLOB`). Manifest structure invalid before records → container
    invalid, `records: []`, exactly one container error (§14.5).
 4. Manifest digest = `digest::manifest_digest(canonical manifest bytes without
    LF)`; compare with `signatures/manifest.sig.json.digest` → `E_MANIFEST_DIGEST`
@@ -235,7 +251,7 @@ Then follow the container check order exactly; the key rules:
    `world.container_cross_checks()` (§10.3 erasure, §8.5 local-only export,
    §5.4 idempotency duplicate); merge `record_errors`/`record_notices` into the
    reports (an error makes a `valid` record `invalid`; sort and dedupe).
-10. Blobs (§11.7) `E_MANIFEST_BLOB`.
+10. Blobs (§11.7 rule 3; the spec's step (9) of §14.5) `E_MANIFEST_BLOB`.
 11. Previous-manifest chain (§11.5) `E_MANIFEST_CHAIN_MISSING`,
     `E_MANIFEST_CHAIN_UNEXPECTED`, `E_MANIFEST_CHAIN`, and `--previous`
     (`options.previous`): recompute that container's manifest digest and

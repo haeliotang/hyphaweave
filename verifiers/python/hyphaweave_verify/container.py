@@ -99,6 +99,9 @@ class ContainerInput:
     input_size: int | None = None
     is_zip: bool = False
     readable_present: bool = False
+    #: The directories of a directory container (§11.1 layout, §11.7 presence of
+    #: blobs/). A zip container has none: its zero-data directory entries take
+    #: no part in the layout or in whether blobs/ is present (§11.9 rule 4, FIX1).
     directory_entries: set[str] = field(default_factory=set)
     oversized_timestamps: frozenset[str] = frozenset()
     #: S2-FIX3 F75 (§11.9, §14.5): further step-(1) violations found together
@@ -377,7 +380,6 @@ def _read_zip_container(path: Path) -> ContainerInput:
     files: dict[str, bytes] = {}
     blobs: dict[str, tuple[str, int]] = {}
     oversized: dict[str, str] = {}
-    directory_entries: set[str] = set()
     seen_names: set[str] = set()
     readable_present = False
     error: str | None = None
@@ -401,17 +403,23 @@ def _read_zip_container(path: Path) -> ContainerInput:
             entry_error: str | None = None
             precheck_names: set[str] = set()
             for entry in archive.entries:
-                if entry.is_directory:
-                    continue
+                # §11.9 rule 4 (FIX1): a zero-data directory entry is ignored for
+                # the layout of §11.1 and for whether blobs/ is present (§11.7),
+                # but it passes the path-safety, symbolic-link and duplicate-name
+                # checks like any other entry (``../x/`` and ``/abs/`` are
+                # E_CONTAINER_ENTRY); its path is its name without the final "/".
+                checked_name = entry.name[:-1] if entry.is_directory else entry.name
                 if (
                     stat.S_ISLNK(entry.unix_mode)
-                    or not _is_safe_relative_path(entry.name)
+                    or not _is_safe_relative_path(checked_name)
                     or entry.name in precheck_names
                 ):
                     entry_error = "E_CONTAINER_ENTRY"
                     precheck_names.add(entry.name)
                     continue
                 precheck_names.add(entry.name)
+                if entry.is_directory:
+                    continue
                 # §14.6 N_READABLE_PRESENT: only an entry that passed its own
                 # entry checks is an observed readable/ entry (T6, F32).
                 if entry.name.startswith("readable/"):
@@ -430,8 +438,9 @@ def _read_zip_container(path: Path) -> ContainerInput:
                 name = entry.name
                 if entry.is_directory:
                     # W2: §11.9 rule 4 (entry classes) is enforced by the shared
-                    # parser for every entry, target and previous alike.
-                    directory_entries.add(name.rstrip("/"))
+                    # parser for every entry, target and previous alike. A
+                    # zero-data directory entry takes no part in the layout or in
+                    # whether blobs/ is present (FIX1); its entry checks ran above.
                     continue
                 if stat.S_ISLNK(entry.unix_mode):
                     error = error or "E_CONTAINER_ENTRY"
@@ -502,11 +511,9 @@ def _read_zip_container(path: Path) -> ContainerInput:
         # violation of the same step, and both are reported together.
         extra: tuple[str, ...] = ()
         if enumerated is not None:
+            # A zero-data directory entry takes no part in the layout (FIX1).
             names = ContainerInput(
                 files={entry.name: b"" for entry in enumerated if not entry.is_directory},
-                directory_entries={
-                    entry.name.rstrip("/") for entry in enumerated if entry.is_directory
-                },
             )
             try:
                 _validate_layout(names)
@@ -538,7 +545,6 @@ def _read_zip_container(path: Path) -> ContainerInput:
         input_size=archive_size,
         is_zip=True,
         readable_present=readable_present,
-        directory_entries=directory_entries,
         oversized_timestamps=oversized_timestamps,
     )
 
@@ -1668,12 +1674,38 @@ def _check_records_listing(
 
 
 def _check_blobs(manifest: manifest_module.Manifest, container_input: ContainerInput) -> None:
+    """§14.5 step (9): ``blobs/`` must agree exactly with ``manifest.blobs`` (§11.7).
+
+    Every file in ``blobs/`` or ``blobs/sha256/`` that is not a listed blob is an
+    extra file, whatever its name (§11.1, S3). Only ``blobs/sha256/<64 lowercase
+    hex>`` files are streamed into ``blobs``; any other file there is held as a
+    presence marker in ``files``, and a blob above ``MAX_BLOB_BYTES`` is held in
+    ``oversized``, so both are counted here as files that are not listed blobs.
+    A deeper directory below ``blobs/`` never reaches this step: entry
+    enumeration rejects it (``E_CONTAINER_ENTRY``). ``blobs/`` is present when
+    a file lies in it, or, in the directory form, when the directory exists
+    (an empty ``blobs/`` included). In the zip form only files count: a
+    zero-data directory entry such as ``blobs/sha256/`` does not make
+    ``blobs/`` present (§11.7 rule 3, §11.9 rule 4, FIX1).
+    """
     blob_files = dict(container_input.blobs)
+    unstreamed = sorted(
+        path
+        for path in (*container_input.files, *container_input.oversized)
+        if path.startswith("blobs/")
+    )
+    tree_present = (
+        bool(blob_files)
+        or bool(unstreamed)
+        or "blobs" in container_input.directory_entries
+    )
     listed = {blob.digest: blob for blob in manifest.blobs}
     if not listed:
-        if blob_files or "blobs" in container_input.directory_entries:
+        if tree_present:
             raise WeaveError("E_MANIFEST_BLOB", "blobs directory present without listed blobs")
         return
+    if unstreamed:
+        raise WeaveError("E_MANIFEST_BLOB", "blobs/ holds a file that is not a listed blob")
     for digest, blob in listed.items():
         expected_path = "blobs/sha256/%s" % digest.partition(":")[2]
         streamed = blob_files.pop(expected_path, None)
@@ -2088,22 +2120,50 @@ def _read_previous_regular_file(path: Path) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _structural_envelope(
+    view: verifier.RecordView,
+) -> "verifier.envelope_module.Envelope | None":
+    """The envelope of a record that passes the §4 envelope structure.
+
+    Record check (2) only: a record whose ``sigs`` fail check (3), or that
+    fails any later check, still has one; an erased placeholder, a record that
+    is not canonical JSON and a record whose envelope structure fails have none
+    (§5.4 idempotency, FIX1 R1).
+    """
+    if view.envelope is not None:
+        return view.envelope
+    value = view.loaded.value
+    if not isinstance(value, dict) or verifier.erase.looks_like_placeholder(value):
+        return None
+    try:
+        return verifier.envelope_module.validate_envelope(value, check_sigs=False)
+    except WeaveError:
+        return None
+
+
 def _cross_record_checks(
     record_views: list[verifier.RecordView],
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     notices: list[str] = []
 
-    # local-only must never be exported.
+    # local-only must never be exported (§8.5): any record whose envelope
+    # structure passes counts, a record whose ``sigs`` fail included (FIX1, the
+    # same reading as the idempotency notice below).
     for view in record_views:
-        if view.envelope is not None and view.envelope.sensitivity == "local-only":
+        envelope = _structural_envelope(view)
+        if envelope is not None and envelope.sensitivity == "local-only":
             errors.append("E_LABEL_LOCAL_ONLY_EXPORTED")
             break
 
-    # idempotency duplicates are a notice, not an error (Q17).
-    seen_idempotency: set[tuple[str, str, str, str]] = set()
+    # idempotency duplicates are a notice, not an error (Q17). §5.4 (FIX1 R1):
+    # the same origin and the same actor.idempotency_key, nothing else (the
+    # actor key is not compared); every record whose envelope structure passes
+    # (record check (2)) takes part, whatever its later checks report, a
+    # failing ``sigs`` (check (3)) included.
+    seen_idempotency: set[tuple[str, str, str]] = set()
     for view in record_views:
-        envelope = view.envelope
+        envelope = _structural_envelope(view)
         if envelope is None:
             continue
         idempotency_key = envelope.raw.get("actor", {}).get("idempotency_key")
@@ -2112,7 +2172,6 @@ def _cross_record_checks(
         identity = (
             envelope.origin.project,
             envelope.origin.instance,
-            envelope.actor_key,
             idempotency_key,
         )
         if identity in seen_idempotency:

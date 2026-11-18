@@ -16,8 +16,8 @@
 //!    decodable name, records filling the declared size exactly and matching
 //!    the EOCD entry count) — `E_CONTAINER_ZIP`;
 //! 3. the §13 limits: entry count (all entries) and the sum of the declared
-//!    uncompressed sizes (`readable/**` and directory entries excluded) —
-//!    `E_CONTAINER_SIZE`, and nothing later is checked;
+//!    uncompressed sizes (`readable/**` and directory entries, names ending
+//!    `/`, excluded) — `E_CONTAINER_SIZE`, and nothing later is checked;
 //! 4. every remaining structural rule: archive comment, single volume, EOCD
 //!    and ZIP64 consistency, per-entry version needed, disk start, method,
 //!    encryption and entry classes, local headers and data descriptors against
@@ -54,8 +54,12 @@ const ZIP64_EXTRA_ID: u16 = 0x0001;
 pub struct ZipEntry {
     /// The decoded entry name.
     pub name: String,
-    /// True for a directory entry (name ending `/`, or the DOS directory
-    /// attribute) with zero data; ignored by the layout (§11.9 rule 4).
+    /// True for a directory entry: a name ending `/` (§11.9 rule 4). Phase 4
+    /// has already rejected such an entry if it carries data, so it is a
+    /// zero-data directory entry, ignored by the layout and by whether
+    /// `blobs/` is present. The DOS directory attribute does not make an entry
+    /// a directory entry: a zero-data entry `blobs/sha256` that carries it is
+    /// a zero-byte file (FIX2).
     pub is_directory: bool,
     /// True for a Unix symbolic-link entry.
     pub is_symlink: bool,
@@ -389,8 +393,18 @@ fn is_readable(name: &str) -> bool {
     name.starts_with("readable/")
 }
 
+/// A directory entry of §11.9 rule 4: the name ends with `/`. This alone
+/// decides the §13 declared total, the layout and whether `blobs/` is present.
 fn is_directory_record(record: &CentralRecord) -> bool {
-    record.name.ends_with('/') || record.external_attributes & 0x10 != 0
+    record.name.ends_with('/')
+}
+
+/// The DOS directory attribute (bit 4 of the external attributes). It matters
+/// only to rule 4's "an entry carrying it with data is `E_CONTAINER_ZIP`"; an
+/// entry that carries it without data and whose name does not end with `/` is
+/// a file (FIX2).
+fn has_dos_directory_attribute(record: &CentralRecord) -> bool {
+    record.external_attributes & 0x10 != 0
 }
 
 /// Parses an archive through phases 1–4 of §11.9 (W7).
@@ -475,7 +489,7 @@ fn remaining_rules(
         }
         let carries_data = record.compressed_size != 0 || record.uncompressed_size != 0;
         let is_directory = is_directory_record(record);
-        if is_directory && carries_data {
+        if (is_directory || has_dos_directory_attribute(record)) && carries_data {
             return Err(e::CONTAINER_ZIP);
         }
         let (data_start, span_end) = check_local_header(bytes, record)?;

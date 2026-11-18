@@ -394,10 +394,35 @@ otherwise.
   problems?
 - **Decision.** Only `sha256` (the path is `blobs/sha256/<hex>`); an unsupported
   algorithm, a size mismatch or a set mismatch is `E_MANIFEST_BLOB` (invalid).
+- **Refined (S3 round, Inceptless decision 2026-11-16 #44, decided by principle).**
+  A malformed `manifest.blobs` (not an array, more than `MAX_BLOBS` entries, an entry
+  that is not a closed `{digest,size}` object, a digest without the §2.7 grammar, a
+  size that is not a non-negative integer) is `E_MANIFEST_SCHEMA` (§11.2, §13, Q24);
+  a well-formed digest other than `sha256:<64 lowercase hex>`, digests out of order or
+  repeated, and every disagreement with the files are `E_MANIFEST_BLOB`; any file in
+  `blobs/` or `blobs/sha256/` that is not a listed blob is extra, whatever its name;
+  a file below a deeper directory is `E_CONTAINER_ENTRY`. The order of the checks is
+  in §11.7.
+- **Refined (FIX1 of the S3 round, Inceptless decision 2026-11-17 #5, decided by
+  principle).** In the zip form a zero-data directory entry is ignored for the layout
+  and for whether `blobs/` is present (§11.9 rule 4): `blobs/` is present when a file
+  entry lies in it, and a zip whose only extra entry is `blobs/sha512/` or
+  `blobs/sha256/sub/` is not a layout violation. The directory form is unchanged: a
+  real directory outside the layout is `E_CONTAINER_ENTRY`, empty or not.
+- **Refined (FIX2 of the S3 round, Inceptless decision 2026-11-18 #2, decided by
+  principle).** Only a name ending `/` makes a zip directory entry: a zero-data
+  `blobs/sha256` that carries the DOS directory attribute is a file, so without a
+  listing it is `E_MANIFEST_BLOB` (the Rust verifier had called it a directory entry
+  and the zip valid). The attribute matters only to `E_CONTAINER_ZIP` for an entry that
+  carries data.
 - **Reasoning.** Blobs are content-addressed attachments; H0 needs no agility
-  there, and one code keeps negative vectors deterministic.
-- **Where.** `spec/weave-record-1.md` §11.7; `vectors/container/`; verifier
-  `container.py`.
+  there. Each violation has exactly one code, chosen by what is needed to see it: the
+  listing alone (`E_MANIFEST_SCHEMA` when it is malformed, `E_MANIFEST_BLOB` when it is
+  well-formed but breaks §11.7), the files (`E_MANIFEST_BLOB`) or the layout
+  (`E_CONTAINER_ENTRY`), so every negative vector has one deterministic code.
+- **Where.** `spec/weave-record-1.md` §11.1, §11.2, §11.7, §11.9; `spec/error-codes.md`;
+  `vectors/container/`; verifiers `manifest.py` and `container.py` (Python),
+  `container.rs` (H1).
 
 ### Q24. Error-code mapping for size limits
 

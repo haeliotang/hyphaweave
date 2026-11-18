@@ -336,8 +336,13 @@ class Envelope:
         return SENSITIVITY_RANK[self.sensitivity]
 
 
-def validate_envelope(record: Any) -> Envelope:
-    """Validate a normal record envelope and return its parsed representation."""
+def validate_envelope(record: Any, *, check_sigs: bool = True) -> Envelope:
+    """Validate a normal record envelope and return its parsed representation.
+
+    ``check_sigs=False`` leaves ``sigs`` out (the envelope structure of §4 only,
+    record check (2) without check (3)); the returned envelope then carries no
+    signature entries. The §5.4 idempotency notice uses it (FIX1 R1).
+    """
     if not isinstance(record, dict):
         raise WeaveError("E_JSON_INVALID", "record must be a JSON object")
     for member in REQUIRED_MEMBERS:
@@ -393,7 +398,7 @@ def validate_envelope(record: Any) -> Envelope:
         raise WeaveError("E_ENV_BODY", "body must be a JSON object")
 
     sigs: tuple[Signature, ...] = ()
-    if "sigs" in record:
+    if check_sigs and "sigs" in record:
         sigs = _validate_sigs(record["sigs"])
 
     return Envelope(

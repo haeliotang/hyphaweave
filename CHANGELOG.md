@@ -6,6 +6,278 @@
 All notable changes to this repository are recorded here. The format is a
 draft and may be replaced before the first public release.
 
+## S3-FIX2: second revision of the S3 round — 2026-11-18 — DRAFT, UNRELEASED
+
+Decisions 2026-11-18 #2 and #3 (the founder can overturn every item; the rules are
+**decided by principle**). The narrow review of S3-FIX1 found that the Rust verifier took a zero-data zip
+entry that carries the DOS directory attribute but whose name does not end with `/` for a
+directory entry. S3-FIX1 had made directory entries leave the question whether `blobs/` is
+present, so a zip without a blob listing that held such an entry `blobs/sha256` became
+`valid` in H1 (high-1); the same reading had always let H1 accept such an entry named `foo`,
+`blobs` or `records/x` (medium-1, N1). This revision fixes that reading and, by decision
+#3, one more disagreement of the same loop that the review recorded (medium-2, N2). The `format`
+identifier is unchanged; no error code is added; the registry stays at revision 8. No
+conclusion of the frozen candidate set changes and no existing main vector changes.
+
+### Fix (Rust verifier)
+
+- **Only a final `/` makes a zip directory entry (§11.9 rule 4, S3-FIX2/N1).** H1 judged a
+  directory entry by `name ends with "/" or DOS directory attribute`, and so **accepted**
+  (verdict `valid`) a zip container that also held a zero-data entry with the attribute
+  named `blobs/sha256` or `blobs/x` without a blob listing (`E_MANIFEST_BLOB`), `foo` or
+  `blobs` (`E_CONTAINER_ENTRY`), or `records/x` (`E_MANIFEST_RECORD_EXTRA`); it did not report
+  `N_READABLE_PRESENT` for such an entry `readable/x`; it left such an entry out of the §13
+  declared total (`E_CONTAINER_ZIP` instead of `E_CONTAINER_SIZE` above the limit); and it
+  did not count such an entry `manifest.json` as a member of a supplied previous zip (a
+  duplicate member, `E_MANIFEST_CHAIN`, was linked). H1 now judges a directory entry by the
+  final `/` alone, everywhere; the attribute is read only by the rule-4 check that an entry
+  carrying it with data is `E_CONTAINER_ZIP`. Python already read rule 4 this way.
+  Embedders of an earlier H1 should treat such archives as their codes say.
+- **`N_READABLE_PRESENT` does not depend on the order of the central directory (§11.8,
+  S3-FIX2/N2).** H1 stopped the zip entry checks at the first entry that failed them, so
+  when an unsafe entry such as `../x` or `../x/` came before `readable/a`, the zip was
+  `E_CONTAINER_ENTRY` (as it should be) but the notice was missing. H1 now checks every
+  entry, as §11.8 already required ("whatever fails afterwards", read together with "the
+  `readable/` entries that passed their own checks") and as Python did; verdicts and error
+  codes do not change. It also remembers the name of every entry it has seen, a failing one
+  included, so a later entry of the same name is a duplicate (Python already did; without
+  this the full loop would have taken a regular `readable/a` after a symbolic link
+  `readable/a` for the first of its name and reported the notice).
+
+### Wire-visible changes (specification and the Python verifier)
+
+- **"Carries data" is one test in rule 4 (§11.9, S3-FIX2/N1d).** An entry carries data when
+  its compressed or its uncompressed size in the central directory is not zero, for a name
+  ending `/` and for the DOS directory attribute alike, so a deflated empty member (two
+  compressed bytes, uncompressed size 0) with the attribute is `E_CONTAINER_ZIP`. **Python
+  changed:** for the attribute it looked at the uncompressed size only and took such a
+  member for a zero-byte file (H1 already rejected it). The decision did not name this item;
+  it settles the one remaining reading of the attribute the two verifiers did not share, and
+  it can be overturned on its own.
+- **Text only:** §11.9 rule 4 says that the attribute does not make a directory entry and
+  where that matters (the layout, the presence of `blobs/`, the §13 declared total, the
+  members of a supplied previous zip); the W7 phase-3 sentence, the §11.5 sentence on the
+  previous zip (which read "a directory entry or a DOS directory-attribute entry carrying
+  data") and `spec/error-codes.md` (`E_CONTAINER_ZIP`, `E_CONTAINER_ENTRY`,
+  `E_MANIFEST_BLOB`) say the same; §11.8 and the `N_READABLE_PRESENT` row say that the
+  notice holds regardless of the entries' order in the central directory; Appendix A lists
+  the S3-FIX2 rulings; Q23 in
+  `docs/open-questions.md` and `verifiers/rust/ARCHITECTURE.md` are updated.
+
+### Vectors, tests and gates
+
+- **Vectors**: 15 new main cases (797 → 812), all in `container/`. No existing case changes.
+  - the attribute (0x10, made by MS-DOS) on a zero-data entry without a final `/`:
+    `zip-dos-attribute-blobs-sha256-unlisted`, `-blobs-file-unlisted` (`E_MANIFEST_BLOB`),
+    `-outside-layout` (`foo`), `-blobs-root-file` (`blobs`) (`E_CONTAINER_ENTRY`),
+    `-records-extra` (`E_MANIFEST_RECORD_EXTRA`), `-readable-file` (valid,
+    `N_READABLE_PRESENT`), `-declared-total-over-limit` (`E_CONTAINER_SIZE`), and
+    `previous-zip-dos-attribute-duplicate-member` (`E_MANIFEST_CHAIN`);
+  - a final `/` without the attribute is a directory entry: `zip-directory-entry-no-dos-attribute`
+    (`foo/`, attributes 0) and `blobs-directory-entry-no-dos-attribute-zip` (`blobs/sha256/`,
+    a Unix directory mode without the DOS bit), both valid;
+  - `zip-dos-attribute-deflated-empty` (`E_CONTAINER_ZIP`, S3-FIX2/N1d);
+  - `E_CONTAINER_ENTRY` with `N_READABLE_PRESENT` (S3-FIX2/N2):
+    `readable-notice-after-unsafe-file-zip` (`../x` first), `-after-unsafe-directory-zip`
+    (`../x/` first) and the control `readable-notice-before-unsafe-file-zip`; and
+    `readable-duplicate-after-symlink-zip` (`E_CONTAINER_ENTRY`, the notice absent).
+  The S3-FIX1 directory-entry cases all carried the attribute *and* a final `/`, so neither
+  of the two mixed shapes was covered (narrow review low-3).
+- **Ablation catalogue**: five `exact_pinned` S3-FIX2 entries in `tools/anti_verification.py`
+  turn the Python reading off: the attribute makes a directory entry again (the eight
+  attribute cases above go red), a final `/` needs the attribute as well (the two cases
+  without it, and the older `zip-slash-name-with-data` and
+  `previous-zip-rule4-directory-with-data`), and the attribute rejects only a non-zero
+  uncompressed size (`zip-dos-attribute-deflated-empty`). Two more turn N2 off in Python:
+  the entry checks stop at the first failing entry (the two `readable-notice-after-*` cases
+  go red), and a failing entry's name is forgotten (`readable-duplicate-after-symlink-zip`).
+  The anchor of the older `zip-dos-directory-data` entry follows the changed Python line.
+  Four older `exact_pinned` entries now also turn new cases red, and their `pinned_by`
+  grows accordingly: `s3-blob-tree-from-files-only` (the two zero-data `blobs/` files with
+  the attribute), `s3f-zip-directory-entries-layout` (`foo/` without it),
+  `s3f-zip-directory-entry-blobs-presence` (`blobs/sha256/` without it) and
+  `s3f-zip-directory-entry-path-safety` (`../x/` before `readable/a`).
+
+## S3-FIX1: revision of the S3 round — 2026-11-17 — DRAFT, UNRELEASED
+
+Decision 2026-11-17 #5 (the founder can overturn every item; the rules are **decided by
+principle**). The two reviews of the S3 round found that the round's own §11.7 sentence on
+directories below `blobs/` contradicted §11.9 rule 4, that the Rust verifier skipped the
+path-safety check for zip directory entries, and that the differential fuzz still had two
+older disagreements between the reference verifiers. This revision settles all of them and
+the review's low items. The `format` identifier is unchanged; no error code is added; the
+registry stays at revision 8. No conclusion of the frozen candidate set changes and no
+existing main vector changes its input, verdict or codes (the notes of three S3 cases are
+reworded).
+
+### Security fix (Rust verifier)
+
+- **Zip directory entries now pass the path-safety check (§11.9, S3-FIX1/Z2).** H1 skipped
+  zero-data directory entries *before* the path-safety, symbolic-link and duplicate-name
+  checks, so it **accepted** a zip container that also held a directory entry such as
+  `../x/`, `a/../../x/` or `/abs/` (verdict `valid`), although §11.9 forbids `..` segments
+  and absolute paths in every entry. It now reports `E_CONTAINER_ENTRY`, as Python did.
+  Embedders of an earlier H1 should treat such archives as invalid.
+
+### Wire-visible changes (specification and both verifiers)
+
+- **Zip directory entries take no part in the layout (§11.1, §11.7, §11.9 rule 4,
+  S3-FIX1/Z1).** In the zip form a zero-data directory entry is ignored for the layout and
+  for whether `blobs/` is present: `blobs/` is present only through a file entry. A zip
+  whose only extra entry is `foo/`, `blobs/sha512/` or `blobs/sha256/sub/` is valid, with or
+  without a blob listing, and so is a zip without a listing whose only `blobs/` entry is the
+  directory entry `blobs/sha256/`. The S3 sentence that called a directory below `blobs/` a
+  layout violation now speaks of a **file** below it. The directory form is unchanged: a real
+  directory outside the layout is `E_CONTAINER_ENTRY`, empty or not. **Python changed:** it
+  judged such zips `E_CONTAINER_ENTRY` (and, from the S3 round, a zip whose only `blobs/`
+  entry was a directory entry `E_MANIFEST_BLOB`). **H1 changed:** without a listing it
+  reported `E_MANIFEST_BLOB` for a zip with a directory entry below `blobs/`.
+- **`N_IDEMPOTENCY_DUPLICATE` (§5.4, S3-FIX1/R1).** A pair is two records with the same
+  `origin` and `actor.idempotency_key`, nothing else (not `actor.key`), and every record
+  whose envelope structure passes takes part, whatever its verdict (a record whose `sigs`
+  fail included). **Python changed:** it also compared `actor.key`, and it skipped records
+  whose `sigs` failed.
+- **`E_LABEL_LOCAL_ONLY_EXPORTED` (§8.5, S3-FIX1/R3).** Read over the same records as R1: a
+  `local-only` record whose `sigs` fail is still an exported `local-only` record. **Python
+  changed:** it skipped such records. This item applies the reading of R1 to the only other
+  cross-record rule that read fully parsed envelopes only; the decision did not name it, and
+  it can be overturned on its own.
+- **§4.4 step 5 waits for the owner's trust (§9.1 rule 3, S3-FIX1/R2).** A declaration of an
+  `agent`/`program`/`device` key signed only with unknown algorithms, whose owner resolves
+  but is not trusted, is `unverifiable` with `E_KEY_UNTRUSTED`, not with the step-5
+  `E_SIG_UNVERIFIABLE`. **H1 changed** (Python already did this).
+- **The digest-string grammar everywhere (§2.7, S3-FIX1/D1).** Every reader of a digest
+  string applies the whole grammar: the algorithm-name pattern, its 32-byte bound and 1–128
+  lowercase hexadecimal digits. The 64 digits of `sha256` are a requirement of the
+  algorithm, not of the grammar. **Python changed:** references and erased placeholders used
+  a laxer check (any `[a-z0-9-]` algorithm name, any length), so a reference digest
+  `sha--256:ab` or one with 129 hex digits was an unsupported algorithm (the reference
+  `unverifiable`) instead of `E_ENV_REFS`, and such a placeholder digest was accepted instead
+  of `E_KIND_BODY_SCHEMA`; the one strict check now lives in `encoding.is_digest_string`
+  (the private copy in `manifest.py` is gone). **H1 changed:** a reference digest `sha256:`
+  with another number of digits than 64 resolved like a sha256 digest (`missing` when the
+  target is absent); it is now `unverifiable`, like an unsupported algorithm, as in Python.
+- **Text only:** §11.7 says why step (3) reports one code while §14.5 lets a failing stage
+  report every violation it finds, and that `blobs` is the last member checked; a listed
+  `size` above `MAX_BLOB_BYTES` is rule 3 although it can be seen in `manifest.json`; Q23
+  (reasoning and locations) and `verifiers/rust/ARCHITECTURE.md` (its step 10 is the spec's
+  step (9)) are corrected; Appendix A lists the S3-FIX1 rulings.
+
+### Vectors, tests and gates
+
+- **Vectors**: 20 new main cases (777 → 797). No existing case changes its input, verdict
+  or codes; the notes of `container/blobs-unknown-directory`, `-unknown-directory-zip` and
+  `blobs-sha256-subdirectory-zip` are reworded: the *file* below `blobs/` is what is
+  rejected, and a zero-data zip directory entry on its own is ignored (review B medium-1).
+  The new cases:
+  - `container/` (11): valid `zip-directory-entry-outside-layout`,
+    `blobs-directory-entry-unknown-listed-zip`, `-unknown-unlisted-zip`,
+    `-sha256-subdirectory-listed-zip`, `-sha256-subdirectory-unlisted-zip`,
+    `-sha256-only-zip`, `blobs-directory-entries-empty-listing-zip`; `E_CONTAINER_ENTRY`
+    `zip-directory-entry-dotdot`, `-dotdot-nested`, `-absolute`; `E_MANIFEST_SCHEMA`
+    `blobs-listing-too-many-first-unsupported` (the count is checked before any entry);
+  - `actor/` (2): `idempotency-duplicate-sigs-malformed` (review A R1),
+    `idempotency-duplicate-other-signer` (R1b);
+  - `labels/` (1): `local-only-exported-sigs-malformed`;
+  - `key-lifecycle/` (1): `owner-untrusted-device-unknown-algorithm-only` (review A R2);
+  - `ref/` (3): `digest-algorithm-name-malformed`, `digest-hex-too-long` (`E_ENV_REFS`),
+    `digest-sha256-wrong-length` (valid, the reference unverifiable);
+  - `erasure/` (2): `placeholder-digest-algorithm-name-malformed`,
+    `placeholder-digest-hex-too-long`.
+- **Ablation catalogue**: `tools/anti_verification.py` gains `exact_pinned`: for every S3 and
+  S3-FIX1 entry the vectors a mutation turns red must be exactly its `pinned_by`, or the
+  entry is a catalogue error. Nine S3-FIX1 entries turn the Python changes off one by one
+  (directory entries in the layout, in the presence of `blobs/` and in the path check; the
+  idempotency key, the idempotency and local-only record sets; the algorithm-name pattern and
+  the 128-digit bound; the `MAX_BLOBS` count before the entries); the S3 entry that used the
+  old lax `encoding.is_digest_string` is replaced by the two grammar entries. One more entry
+  (an oversized blob file not counted as an extra file) is a documented equivalent mutant:
+  `MAX_BLOB_BYTES` equals `MAX_CONTAINER_UNCOMPRESSED_BYTES`, so such a file is reported as
+  `E_CONTAINER_SIZE` at step (1) first.
+- **Schema**: `schemas/ref.json` `$defs.digest` is one pattern with the whole §2.7 grammar
+  (it accepted any number of hex digits for another algorithm and rejected `sha256:` with
+  another number of digits than 64); `tools/check_schemas.py` failed on the new `ref/`
+  vectors without it.
+- **REUSE**: the two SPDX lines that `tools/gen_vectors_extra.py` writes into the frozen
+  README are wrapped in `REUSE-IgnoreStart` / `REUSE-IgnoreEnd`, so REUSE 6.x passes as well
+  as the 5.0.2 that CI pins.
+
+## S3 round: blob error codes — 2026-11-16 — DRAFT, UNRELEASED
+
+Decision 2026-11-16 #44 (the founder asked for this round; its rules are **decided by
+principle** and the founder can overturn every item). The two MW2 reviews (Mnemoweave blob
+writer) found that the two reference verifiers gave different codes, and sometimes different
+verdicts, for blob listings and blob files that no main vector covered, and that §11.2,
+§11.7 and §13 contradicted each other on the codes: §11.7 said "at most 10,000 blobs … all
+violations … `E_MANIFEST_BLOB`", §13 fixed `MAX_BLOBS` to `E_MANIFEST_SCHEMA` (Q24), and
+§11.2 said a malformed `blobs` is `E_MANIFEST_SCHEMA`. The `format` identifier is unchanged;
+no error code is added; the registry moves to revision 8. No conclusion of the frozen
+candidate set changes and no existing main vector changes.
+
+### Wire-visible changes (specification and both verifiers)
+
+- **One rule for the listing codes (§11.2, §11.7, S3/B1).** A malformed `manifest.blobs` is
+  `E_MANIFEST_SCHEMA`: not an array (`null` included), more than `MAX_BLOBS` entries, an
+  entry that is not a closed `{digest,size}` object, a digest without the §2.7 digest-string
+  grammar (uppercase hex, no `:`, a malformed algorithm name, an empty or over-long
+  hexadecimal part), a size that is not a non-negative integer. A well-formed listing that
+  names a digest other than `sha256:<64 lowercase hex>` (an unsupported algorithm, which
+  §2.7 calls structurally valid, or `sha256` with another number of digits), or whose
+  digests are not strictly ascending (a repeated digest included), is `E_MANIFEST_BLOB`.
+  Both are decided at the manifest-structure step (`records: []`) in a fixed order: the
+  array, the count, each entry in array order (shape, grammar and size, then the sha256
+  form), then the order. An empty array means no blobs, like an absent member. **Python
+  changed:** it reported `E_MANIFEST_SCHEMA` for an unsupported algorithm, a wrong-length
+  sha256 digest, an out-of-order listing and a repeated digest; H1 already reported
+  `E_MANIFEST_BLOB` in this order. The Python digest check for blobs now uses the full §2.7
+  grammar (algorithm-name grammar, at most 128 hex digits), as H1 does.
+- **`MAX_BLOBS` stays `E_MANIFEST_SCHEMA` (§11.7, §13, S3/B2).** The §13 table is fixed by
+  Q24; §11.7 no longer claims that every blob violation is `E_MANIFEST_BLOB`. Both verifiers
+  already behaved this way.
+- **Extra blob files whatever their names (§11.1, §11.7, S3/B3).** Every file directly in
+  `blobs/` or `blobs/sha256/` that is not a listed blob is an extra file, `E_MANIFEST_BLOB` at
+  the blob step, in both container forms; `blobs/` is present in the zip form when some
+  entry name starts with `blobs/`. **Python changed:** it judged a container **valid** when
+  `blobs/` held a file whose name is not `blobs/sha256/<64 lowercase hex>` (for example
+  `blobs/stray`, `blobs/sha256/not-a-digest`, 65 hex digits, uppercase hex) next to a
+  non-empty listing, and in the zip form also without a listing; it now reports
+  `E_MANIFEST_BLOB`, as H1 did.
+- **Deeper directories in `blobs/` (§11.1, S3/B4).** A file below a directory inside `blobs/`
+  other than `blobs/sha256/`, or below a directory inside `blobs/sha256/`, is
+  `E_CONTAINER_ENTRY` at entry enumeration in both forms. **H1 changed:** in the zip form
+  (and for an in-memory file map) it reported such a file as an extra blob file,
+  `E_MANIFEST_BLOB`, although its directory walk already reported `E_CONTAINER_ENTRY`;
+  Python already reported `E_CONTAINER_ENTRY`. This is the only H1 change; embedders of an
+  older H1 differ from this revision only on such zip containers (invalid either way).
+- **Registry.** `E_MANIFEST_SCHEMA` lists the malformed listing, `E_MANIFEST_BLOB` the
+  well-formed listing violations and the extra files whatever their names,
+  `E_CONTAINER_ENTRY` the deeper directories in `blobs/`.
+
+### Vectors, tests and gates
+
+- **Vectors**: 28 new main cases under `container/` (749 → 777), no existing case changed:
+  - `E_MANIFEST_SCHEMA` at the manifest-structure step: `blobs-listing-null`,
+    `-entry-unknown-member`, `-size-string`, `-size-negative`, `-uppercase-hex`,
+    `-digest-without-algorithm`, `-algorithm-name-malformed`, `-hex-too-long`,
+    `-too-many` (10,001 entries), and the order cases `-malformed-then-unsupported`,
+    `-malformed-and-out-of-order`;
+  - `E_MANIFEST_BLOB` at the manifest-structure step: `blobs-listing-unsupported-algorithm`,
+    `-sha256-wrong-length`, `-out-of-order`, `-duplicate-digest`,
+    `-unsupported-then-malformed`;
+  - the blob step: `blobs-listing-at-limit-files-missing` (exactly 10,000 entries, the
+    boundary of `-too-many`), `blobs-listing-empty-array` (valid),
+    `blobs-listing-empty-array-with-blob-file`, `blobs-extra-file-not-a-digest` and its zip
+    form, `blobs-extra-file-hex-65`, `blobs-extra-file-at-blobs-root`,
+    `blobs-extra-file-uppercase-hex-zip`, `blobs-no-listing-extra-file-zip`;
+  - `E_CONTAINER_ENTRY`: `blobs-unknown-directory` and its zip form,
+    `blobs-sha256-subdirectory-zip`.
+- **Ablation catalogue**: seven S3 entries in `tools/anti_verification.py` (the Python
+  changes turned off one by one, each killed by the vectors it names).
+- **Rust probe**: `blob_tree_paths_are_judged_alike_in_every_input_form` judges seven blob
+  paths in the in-memory, zip and directory forms.
+- `vectors/README.md`: the counts, and the verdict distribution, which had not been
+  updated since 731 cases.
+
 ## Rust verifier MSRV 1.88 — 2026-11-16 — DRAFT, UNRELEASED
 
 The Rust verifier declared `rust-version = "1.87"`, but its locked dependency `sha2` 0.11.1

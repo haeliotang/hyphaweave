@@ -46,6 +46,7 @@ import os
 import shutil
 import struct
 import sys
+import warnings
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -16582,6 +16583,991 @@ declare(
 )
 
 
+# ---------------------------------------------------------------------------
+# S3 round: blob listing and blob file codes (§11.1, §11.2, §11.7, §13, §14.5)
+# ---------------------------------------------------------------------------
+#
+# A malformed manifest.blobs (not an array, more than MAX_BLOBS entries, an entry
+# that is not a closed {digest,size} object, a digest without the §2.7 digest-string
+# grammar, a size that is not a non-negative integer) is E_MANIFEST_SCHEMA. A
+# well-formed listing that names a digest other than sha256:<64 lowercase hex>, or
+# whose digests are not strictly ascending, is E_MANIFEST_BLOB. Both are decided at
+# the manifest-structure step, in a fixed order (the array, the count, then each
+# entry in array order: shape, digest grammar and size, then the sha256 form; then
+# the order), so the report carries records: []. The comparison with the files is
+# step (9): every file in blobs/ or blobs/sha256/ that is not a listed blob,
+# whatever its name, is E_MANIFEST_BLOB, in both container forms. A directory below
+# blobs/ other than blobs/sha256/, or inside blobs/sha256/, is outside the layout:
+# E_CONTAINER_ENTRY at step (1), in both forms.
+
+_S3 = "S3 (blob codes; decision 2026-11-16 #44; MW2 reviews A and B)"
+_S3_BLOB_A = b"s3 blob a\n"
+_S3_BLOB_B = b"s3 blob b\n"
+_S3_ABSENT = object()
+_S3_RECORDS_VERIFIED = ({"id": "key-declared-human-1", "verdict": "valid", "errors": []},)
+
+
+def _s3_entry(data: bytes) -> dict[str, Any]:
+    return {"digest": recordlib.blob_digest(data), "size": len(data)}
+
+
+def _s3_hex_digest(index: int) -> str:
+    """A well-formed sha256 digest string; ascending with ``index``."""
+    return "sha256:%064x" % index
+
+
+def _s3_container(*blobs: bytes) -> dict[str, bytes]:
+    """A sealed L0 container of SIMPLE_RECORDS whose blobs are listed and stored."""
+    return recordlib.build_container(
+        SIMPLE_RECORDS(), blobs=[(data, b"") for data in blobs] or None
+    )
+
+
+def _s3_listing(files: dict[str, bytes], listing: Any) -> dict[str, bytes]:
+    """Set manifest.blobs to *listing* (``_S3_ABSENT`` removes it) and re-seal."""
+
+    def mutator(manifest: dict[str, Any]) -> dict[str, Any]:
+        result = dict(manifest)
+        if listing is _S3_ABSENT:
+            result.pop("blobs", None)
+        else:
+            result["blobs"] = listing
+        return result
+
+    return mutate(files, mutator)
+
+
+def _s3_listed_a_plus(path: str, data: bytes) -> dict[str, bytes]:
+    """Blob A listed and stored, plus one more file at *path* (not listed)."""
+    files = _s3_container(_S3_BLOB_A)
+    files[path] = data
+    return files
+
+
+def _s3_hex_a() -> str:
+    return recordlib.blob_digest(_S3_BLOB_A)[len("sha256:") :]
+
+
+def _s3_form(as_zip_form: bool) -> Callable[[dict[str, bytes]], dict[str, bytes]]:
+    return zip_wrap if as_zip_form else (lambda files: files)
+
+
+# -- Malformed listings: E_MANIFEST_SCHEMA at the manifest-structure step.
+
+for _s3_name, _s3_listing_value, _s3_what in (
+    ("blobs-listing-null", None, "manifest.blobs is null, which is not an array"),
+    (
+        "blobs-listing-entry-unknown-member",
+        [{**_s3_entry(_S3_BLOB_A), "media_type": "text/plain"}],
+        "the entry carries a third member (an entry is a closed {digest,size} object)",
+    ),
+    (
+        "blobs-listing-size-string",
+        [{"digest": recordlib.blob_digest(_S3_BLOB_A), "size": str(len(_S3_BLOB_A))}],
+        "size is a string, not an integer",
+    ),
+    (
+        "blobs-listing-size-negative",
+        [{"digest": recordlib.blob_digest(_S3_BLOB_A), "size": -1}],
+        "size is negative",
+    ),
+    (
+        "blobs-listing-uppercase-hex",
+        [{"digest": "sha256:" + _s3_hex_a().upper(), "size": len(_S3_BLOB_A)}],
+        "the digest has uppercase hex digits, so it is not a digest string (§2.7 requires "
+        "lowercase hex): a malformed value, not an unsupported algorithm",
+    ),
+    (
+        "blobs-listing-digest-without-algorithm",
+        [{"digest": _s3_hex_a(), "size": len(_S3_BLOB_A)}],
+        "the digest is bare hex without '<alg>:', so it is not a digest string (§2.7)",
+    ),
+    (
+        "blobs-listing-algorithm-name-malformed",
+        [{"digest": "sha--256:" + _s3_hex_a(), "size": len(_S3_BLOB_A)}],
+        "the algorithm name 'sha--256' does not match the §2.7 algorithm-name grammar "
+        "(a hyphen is followed by at least one letter or digit)",
+    ),
+    (
+        "blobs-listing-hex-too-long",
+        [{"digest": "sha512:" + "0" * 129, "size": 0}],
+        "the hexadecimal part has 129 characters; §2.7 allows at most 128, so this is not "
+        "a digest string (a well-formed sha512 digest is E_MANIFEST_BLOB, see "
+        "blobs-listing-unsupported-algorithm)",
+    ),
+    (
+        "blobs-listing-malformed-then-unsupported",
+        [
+            {"digest": recordlib.blob_digest(_S3_BLOB_A), "size": "1"},
+            {"digest": "sha512:" + "0" * 128, "size": 0},
+        ],
+        "the first entry's size is a string and the second entry names sha512: the entries "
+        "are checked in array order and the first failing check decides (the converse is "
+        "blobs-listing-unsupported-then-malformed)",
+    ),
+    (
+        "blobs-listing-malformed-and-out-of-order",
+        [
+            {"digest": _s3_hex_digest(2), "size": 0},
+            {"digest": _s3_hex_digest(1), "size": -1},
+        ],
+        "the digests are descending and the second entry's size is negative: the order is "
+        "checked only after every entry",
+    ),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_SCHEMA",),
+        build=lambda case_dir, listing=_s3_listing_value: _s3_listing(
+            _s3_container(), listing
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3 + ": " + _s3_what + ". A malformed manifest.blobs is E_MANIFEST_SCHEMA "
+        "(§11.2, §11.7), decided at the manifest-structure step, so records is [].",
+    )
+
+
+def _s3_many_entries(count: int) -> list[dict[str, Any]]:
+    return [{"digest": _s3_hex_digest(index), "size": 0} for index in range(count)]
+
+
+declare(
+    "container",
+    "blobs-listing-too-many",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _s3_listing(_s3_container(), _s3_many_entries(10_001)),
+    args=("--keys", "@keyset"),
+    records=(),
+    notes=_S3 + ": manifest.blobs has 10,001 well-formed, ascending, unique sha256 "
+    "entries, one above MAX_BLOBS. The §13 table fixes MAX_BLOBS to E_MANIFEST_SCHEMA "
+    "(Q24); the count is checked before any entry, at the manifest-structure step, so "
+    "records is []. The boundary is blobs-listing-at-limit-files-missing.",
+)
+
+declare(
+    "container",
+    "blobs-listing-at-limit-files-missing",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: _s3_listing(_s3_container(), _s3_many_entries(10_000)),
+    args=("--keys", "@keyset"),
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": manifest.blobs has exactly MAX_BLOBS (10,000) well-formed, ascending, "
+    "unique sha256 entries, so the listing passes the manifest-structure step; none of "
+    "the listed files exists, which the blob step (9) reports as E_MANIFEST_BLOB after "
+    "the records were verified. The boundary of blobs-listing-too-many.",
+)
+
+# -- Well-formed listings that break §11.7: E_MANIFEST_BLOB at the manifest-structure step.
+
+for _s3_name, _s3_build, _s3_what in (
+    (
+        "blobs-listing-unsupported-algorithm",
+        lambda: _s3_listing(
+            _s3_container(), [{"digest": "sha512:" + "0" * 128, "size": 0}]
+        ),
+        "the only entry names a well-formed sha512 digest string: structurally valid but "
+        "unsupported (§2.7), and H0 blobs are sha256-only (§11.7, Q23)",
+    ),
+    (
+        "blobs-listing-sha256-wrong-length",
+        lambda: _s3_listing(
+            _s3_container(), [{"digest": "sha256:" + "0" * 63, "size": 0}]
+        ),
+        "the only entry is a well-formed digest string 'sha256:' with 63 hex digits, which "
+        "is not sha256:<64 lowercase hex> (§11.7)",
+    ),
+    (
+        "blobs-listing-out-of-order",
+        lambda: _s3_listing(
+            _s3_container(_S3_BLOB_A, _S3_BLOB_B),
+            sorted(
+                [_s3_entry(_S3_BLOB_A), _s3_entry(_S3_BLOB_B)],
+                key=lambda entry: entry["digest"],
+                reverse=True,
+            ),
+        ),
+        "two listed and stored blobs, listed in descending digest order",
+    ),
+    (
+        "blobs-listing-duplicate-digest",
+        lambda: _s3_listing(
+            _s3_container(_S3_BLOB_A), [_s3_entry(_S3_BLOB_A), _s3_entry(_S3_BLOB_A)]
+        ),
+        "one stored blob listed twice: the digests are not unique (not strictly ascending)",
+    ),
+    (
+        "blobs-listing-unsupported-then-malformed",
+        lambda: _s3_listing(
+            _s3_container(),
+            [
+                {"digest": "sha512:" + "0" * 128, "size": 0},
+                {"digest": "sha512:" + "1" * 128, "size": "0"},
+            ],
+        ),
+        "the first entry names sha512 and the second entry's size is a string: the entries "
+        "are checked in array order (shape, digest grammar and size, then the sha256 form) "
+        "and the first failing check decides",
+    ),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_MANIFEST_BLOB",),
+        build=lambda case_dir, build=_s3_build: build(),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3 + ": " + _s3_what + ". A well-formed manifest.blobs that breaks a §11.7 "
+        "rule is E_MANIFEST_BLOB, decided at the manifest-structure step, so records is [].",
+    )
+
+# -- The empty listing means no blobs.
+
+declare(
+    "container",
+    "blobs-listing-empty-array",
+    "container",
+    "container",
+    "valid",
+    build=lambda case_dir: _s3_listing(_s3_container(), []),
+    args=("--keys", "@keyset"),
+    limitations=("L_OFFLINE_CONTEXT",),
+    expected_container={"level_claimed": "L0", "level_verified": "L0"},
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": manifest.blobs is the empty array and the container has no blobs/: an "
+    "empty listing means no blobs, like an absent member (§11.2, §11.7).",
+)
+
+declare(
+    "container",
+    "blobs-listing-empty-array-with-blob-file",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: _s3_listing(_s3_container(_S3_BLOB_A), []),
+    args=("--keys", "@keyset"),
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": manifest.blobs is the empty array while blobs/sha256/ holds a blob: a "
+    "present blobs/ requires a non-empty listing (§11.7), reported by the blob step (9).",
+)
+
+# -- Files in blobs/ that are not listed blobs, whatever their names: E_MANIFEST_BLOB at
+#    the blob step (9), in both container forms.
+
+for _s3_name, _s3_path, _s3_zip, _s3_what in (
+    (
+        "blobs-extra-file-not-a-digest",
+        "blobs/sha256/not-a-digest",
+        False,
+        "blobs/sha256/not-a-digest",
+    ),
+    (
+        "blobs-extra-file-not-a-digest-zip",
+        "blobs/sha256/not-a-digest",
+        True,
+        "blobs/sha256/not-a-digest, in the zip form",
+    ),
+    (
+        "blobs-extra-file-hex-65",
+        "blobs/sha256/" + "a" * 65,
+        False,
+        "a blobs/sha256/ file named by 65 hex digits",
+    ),
+    (
+        "blobs-extra-file-at-blobs-root",
+        "blobs/stray",
+        False,
+        "a file directly in blobs/ (blobs/stray)",
+    ),
+    (
+        "blobs-extra-file-uppercase-hex-zip",
+        None,
+        True,
+        "a copy of the listed blob under its name in uppercase hex, in the zip form (the "
+        "directory form cannot hold both names on a case-insensitive file system)",
+    ),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container.zip" if _s3_zip else "container",
+        "invalid",
+        errors=("E_MANIFEST_BLOB",),
+        build=lambda case_dir, path=_s3_path, as_zip_form=_s3_zip: _s3_form(as_zip_form)(
+            _s3_listed_a_plus(
+                path if path is not None else "blobs/sha256/" + _s3_hex_a().upper(),
+                b"not listed\n" if path is not None else _S3_BLOB_A,
+            )
+        ),
+        args=("--keys", "@keyset"),
+        records=_S3_RECORDS_VERIFIED,
+        notes=_S3 + ": blob A is listed and stored; the container also holds "
+        + _s3_what
+        + ". Every file in blobs/ or blobs/sha256/ that is not a listed blob is an extra "
+        "file, whatever its name (§11.1), and the blob step (9) reports it as "
+        "E_MANIFEST_BLOB after the records were verified.",
+    )
+
+declare(
+    "container",
+    "blobs-no-listing-extra-file-zip",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_MANIFEST_BLOB",),
+    build=lambda case_dir: zip_wrap(
+        {**_s3_container(), "blobs/sha256/not-a-digest": b"not listed\n"}
+    ),
+    args=("--keys", "@keyset"),
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3 + ": a zip container without manifest.blobs and without directory entries "
+    "holds blobs/sha256/not-a-digest. blobs/ is present (the file is in it) while no blob "
+    "is listed, and the file is an extra file (§11.1, §11.7): E_MANIFEST_BLOB at the blob "
+    "step (9).",
+)
+
+# -- A file inside a directory below blobs/ other than blobs/sha256/, or inside
+#    a subdirectory of blobs/sha256/, is outside the layout: E_CONTAINER_ENTRY at
+#    entry enumeration (step 1), in both container forms. These cases hold a
+#    file there; a zero-data zip directory entry alone is ignored (S3-FIX1/Z1).
+
+for _s3_name, _s3_path, _s3_zip in (
+    ("blobs-unknown-directory", "blobs/sha512/" + "0" * 128, False),
+    ("blobs-unknown-directory-zip", "blobs/sha512/" + "0" * 128, True),
+    ("blobs-sha256-subdirectory-zip", "blobs/sha256/sub/" + "0" * 64, True),
+):
+    declare(
+        "container",
+        _s3_name,
+        "container",
+        "container.zip" if _s3_zip else "container",
+        "invalid",
+        errors=("E_CONTAINER_ENTRY",),
+        build=lambda case_dir, path=_s3_path, as_zip_form=_s3_zip: _s3_form(as_zip_form)(
+            _s3_listed_a_plus(path, b"not listed\n")
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3 + ": blob A is listed and stored; the container also holds "
+        + _s3_path
+        + (", in the zip form" if _s3_zip else "")
+        + ". A file inside a directory below blobs/ other than blobs/sha256/, or inside "
+        "a subdirectory of blobs/sha256/, is at a path the layout does not list (§11.1): "
+        "E_CONTAINER_ENTRY at entry enumeration, in the directory and the zip form alike. "
+        "It is the file that is rejected: in the zip form a zero-data directory entry on "
+        "its own takes no part in the layout (§11.9 rule 4, S3-FIX1/Z1).",
+    )
+
+
+# ---------------------------------------------------------------------------
+# S3-FIX1: zip directory entries, two older disagreements between the reference
+# verifiers, and the digest-string grammar (§2.7, §9.1, §11.1, §11.7, §11.9;
+# decision 2026-11-17 #5)
+# ---------------------------------------------------------------------------
+#
+# In the zip form a zero-data directory entry takes no part in the layout or in
+# whether blobs/ is present (§11.9 rule 4): blobs/ is present only through a file
+# entry. It still passes the path-safety, symbolic-link and duplicate-name checks,
+# so ../x/ or /abs/ is E_CONTAINER_ENTRY. A declaration signed only with unknown
+# algorithms whose owner resolves but is not trusted is E_KEY_UNTRUSTED, not the
+# step-5 E_SIG_UNVERIFIABLE. Every reader of a digest string applies the whole §2.7
+# grammar. The actor, labels and ref cases of the round (the idempotency notice and
+# the local-only rule over every record whose envelope structure passes, §5.4, §8.5;
+# reference digests) are in tools/gen_vectors.py, which owns those categories.
+
+_S3F = "S3-FIX1 (decision 2026-11-17 #5)"
+_S3F_DIRECTORY_ATTR = (0o40755 << 16) | 0x10
+
+
+def _s3f_zip_with_directories(files: dict[str, bytes], *directories: str) -> dict[str, bytes]:
+    """The zip form of *files* plus zero-data directory entries after the files."""
+    return {
+        "container.zip": _zip_entries(
+            files, extra=tuple((name, b"", 3, _S3F_DIRECTORY_ATTR) for name in directories)
+        )
+    }
+
+
+# -- Zero-data directory entries are ignored for the layout and for whether blobs/
+#    is present: valid (S3-FIX1/Z1).
+
+for _s3f_name, _s3f_listing, _s3f_directories, _s3f_what in (
+    (
+        "zip-directory-entry-outside-layout",
+        "absent",
+        ("foo/",),
+        "a zip without blobs holds one more entry, the zero-data directory entry foo/",
+    ),
+    (
+        "blobs-directory-entry-unknown-listed-zip",
+        "listed",
+        ("blobs/sha512/",),
+        "blob A is listed and stored, and the zip also holds the zero-data directory entry "
+        "blobs/sha512/",
+    ),
+    (
+        "blobs-directory-entry-unknown-unlisted-zip",
+        "absent",
+        ("blobs/sha512/",),
+        "a zip without manifest.blobs holds the zero-data directory entry blobs/sha512/ and "
+        "no file in blobs/",
+    ),
+    (
+        "blobs-directory-entry-sha256-subdirectory-listed-zip",
+        "listed",
+        ("blobs/sha256/sub/",),
+        "blob A is listed and stored, and the zip also holds the zero-data directory entry "
+        "blobs/sha256/sub/",
+    ),
+    (
+        "blobs-directory-entry-sha256-subdirectory-unlisted-zip",
+        "absent",
+        ("blobs/sha256/sub/",),
+        "a zip without manifest.blobs holds the zero-data directory entry blobs/sha256/sub/ "
+        "and no file in blobs/",
+    ),
+    (
+        "blobs-directory-entry-sha256-only-zip",
+        "absent",
+        ("blobs/sha256/",),
+        "a zip without manifest.blobs holds the zero-data directory entry blobs/sha256/ and "
+        "no file in blobs/ (review B low-3)",
+    ),
+    (
+        "blobs-directory-entries-empty-listing-zip",
+        "empty",
+        ("blobs/", "blobs/sha256/"),
+        "manifest.blobs is the empty array and the zip holds the zero-data directory entries "
+        "blobs/ and blobs/sha256/, and no file in blobs/",
+    ),
+):
+    declare(
+        "container",
+        _s3f_name,
+        "container",
+        "container.zip",
+        "valid",
+        build=lambda case_dir, listing=_s3f_listing, directories=_s3f_directories: (
+            _s3f_zip_with_directories(
+                _s3_container(_S3_BLOB_A)
+                if listing == "listed"
+                else (_s3_listing(_s3_container(), []) if listing == "empty" else _s3_container()),
+                *directories,
+            )
+        ),
+        args=("--keys", "@keyset"),
+        limitations=("L_OFFLINE_CONTEXT",),
+        expected_container={"level_claimed": "L0", "level_verified": "L0"},
+        records=_S3_RECORDS_VERIFIED,
+        notes=_S3F + ": " + _s3f_what + ". A zero-data directory entry of the zip form is "
+        "ignored for the layout of §11.1 and for whether blobs/ is present (§11.7 rule 3, "
+        "§11.9 rule 4): blobs/ is present only through a file entry. The directory form is "
+        "unchanged: a real directory outside the layout is E_CONTAINER_ENTRY, empty or not.",
+    )
+
+# -- A directory entry still passes the path-safety checks: E_CONTAINER_ENTRY
+#    (S3-FIX1/Z2; before the fix H1 skipped directory entries and accepted these).
+
+for _s3f_name, _s3f_directory in (
+    ("zip-directory-entry-dotdot", "../x/"),
+    ("zip-directory-entry-dotdot-nested", "a/../../x/"),
+    ("zip-directory-entry-absolute", "/abs/"),
+):
+    declare(
+        "container",
+        _s3f_name,
+        "container",
+        "container.zip",
+        "invalid",
+        errors=("E_CONTAINER_ENTRY",),
+        build=lambda case_dir, directory=_s3f_directory: _s3f_zip_with_directories(
+            _s3_container(), directory
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3F + ": a valid zip container also holds the zero-data directory entry "
+        + _s3f_directory
+        + ". A directory entry is ignored for the layout but not for path safety: its path, "
+        "the name without the final '/', has a '..' segment or is absolute, so the zip is "
+        "E_CONTAINER_ENTRY at entry enumeration (§11.9). The Rust verifier accepted this "
+        "zip before the fix.",
+    )
+
+
+# -- The MAX_BLOBS count is checked before any entry (§11.7 check order; review A
+#    ablation X3, which moved the count after the entries and stayed green).
+
+declare(
+    "container",
+    "blobs-listing-too-many-first-unsupported",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_SCHEMA",),
+    build=lambda case_dir: _s3_listing(
+        _s3_container(),
+        [{"digest": "sha512:" + "0" * 128, "size": 0}] + _s3_many_entries(10_000),
+    ),
+    args=("--keys", "@keyset"),
+    records=(),
+    notes=_S3F + ": manifest.blobs has 10,001 entries, one above MAX_BLOBS, and the first "
+    "one names a well-formed sha512 digest. The entry count is checked before any entry "
+    "(§11.7 check order), so the listing is E_MANIFEST_SCHEMA (§13, Q24), not the "
+    "E_MANIFEST_BLOB of the first entry; records is [].",
+)
+
+
+# -- §4.4 step 5 waits for the owner's trust (S3-FIX1/R2, review A medium-3 R2).
+
+
+def _s3f_owner_untrusted_records() -> list[dict[str, Any]]:
+    owner = _s2_declaration(
+        _FIX6_OWNER, record_id="key-declared-fix6-owner", key_type="human", owner=None,
+        recorded_at=recordlib.T0, cosigners=("agent-1",),
+    )
+    return [owner, _fix6_owned_device(unknown_algorithm=True)]
+
+
+declare(
+    "key-lifecycle",
+    "owner-untrusted-device-unknown-algorithm-only",
+    "container",
+    "container",
+    "unverifiable",
+    errors=("E_KEY_UNTRUSTED",),
+    build=lambda case_dir: container(_s3f_owner_untrusted_records()),
+    args=_S2_ARGS,
+    limitations=("L_OFFLINE_CONTEXT",),
+    records=(
+        {
+            "id": "key-declared-fix6-owned-device",
+            "verdict": "unverifiable",
+            "errors": ["E_KEY_UNTRUSTED"],
+            "sigs": [{"key": derived_key(_FIX6_DEVICE)[2], "state": "ignored"}],
+        },
+        {"id": "key-declared-fix6-owner", "verdict": "unverifiable", "errors": ["E_KEY_UNTRUSTED"]},
+    ),
+    notes=_S3F + ", review A medium-3 R2 (§9.1 rule 3, §4.4 step 5, §14.5): a device "
+    "declaration naming fix6-owner as its owner is signed only with the unknown algorithm "
+    "ed25519-x. The owner's only declaration is cosigned by agent-1, a declared key that is "
+    "not a trusted root: it supplies material, so the owner resolves, but it is not trusted "
+    "(E_KEY_UNTRUSTED). Whether the owner is trusted needs no signature of the device "
+    "declaration, so it is one of the other step-(7) rules and is reported instead of the "
+    "step-5 E_SIG_UNVERIFIABLE. The Rust verifier reported E_SIG_UNVERIFIABLE before the fix "
+    "(compare owner-resolves-device-unknown-algorithm-only, whose owner is trusted).",
+)
+
+
+# -- The whole §2.7 grammar wherever a digest string is read (S3-FIX1/D1, review B
+#    medium-2); the reference cases are in tools/gen_vectors.py.
+
+
+def _s3f_placeholder_with_digest(digest: str) -> list[dict[str, Any]]:
+    _original, attestation, placeholder = _fix3_org_erasure()
+    return [{**placeholder, "digest": digest}, attestation]
+
+
+for _s3f_name, _s3f_digest, _s3f_what in (
+    (
+        "placeholder-digest-algorithm-name-malformed",
+        "sha--256:" + "0" * 64,
+        "the algorithm name 'sha--256' breaks the §2.7 algorithm-name grammar",
+    ),
+    (
+        "placeholder-digest-hex-too-long",
+        "sha512:" + "0" * 129,
+        "the hexadecimal part has 129 digits; §2.7 allows at most 128",
+    ),
+):
+    declare(
+        "erasure",
+        _s3f_name,
+        "container",
+        "container",
+        "invalid",
+        errors=("E_ERASE_DIGEST_MISMATCH", "E_KIND_BODY_SCHEMA"),
+        build=lambda case_dir, digest=_s3f_digest: container(_s3f_placeholder_with_digest(digest)),
+        args=ERASURE_REVISION_ARGS,
+        expected_container={"errors": ["E_ERASE_DIGEST_MISMATCH"]},
+        records=(
+            {"id": "erasure-revision-original", "verdict": "invalid", "errors": ["E_KIND_BODY_SCHEMA"]},
+            {"id": "erasure-revision-attestation", "verdict": "valid", "errors": []},
+        ),
+        notes=_S3F + ", review B medium-2: the placeholder's digest is not a digest string: "
+        + _s3f_what
+        + ". The placeholder fails §4.5 (E_KIND_BODY_SCHEMA) and is not a placeholder for the "
+        "cross-checks, so the valid erasure record's erased reference resolves to no "
+        "placeholder: E_ERASE_DIGEST_MISMATCH (§10.3; as erasure/placeholder-malformed-only). "
+        "The Python verifier accepted the malformed digest before the fix.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# S3-FIX2 (decision 2026-11-18 #2): only a name ending '/' makes a directory entry
+# ---------------------------------------------------------------------------
+#
+# The DOS directory attribute (external attributes bit 4) does not make a zip
+# entry a directory entry (§11.9 rule 4): a zero-data entry that carries it and
+# whose name does not end with '/' is a zero-byte file for the layout, for whether
+# blobs/ is present, for the §13 declared total and for the members of a supplied
+# previous zip. The attribute matters to one rule only: an entry carrying it with
+# data (a non-zero compressed or uncompressed size) is E_CONTAINER_ZIP. Before the
+# fix the Rust verifier called such an entry a directory entry and accepted the
+# blobs/sha256, blobs/x, foo, blobs and records/x zips below (narrow review high-1
+# and medium-1 N1).
+
+_S3F2 = "S3-FIX2 (decision 2026-11-18 #2)"
+_S3F2_DOS_DIRECTORY = 0x10
+
+
+def _s3f2_zip_with_dos_entry(name: str) -> dict[str, bytes]:
+    """A valid zip container without manifest.blobs plus one zero-data entry *name*
+    that carries only the DOS directory attribute (made by MS-DOS, no Unix mode)."""
+    return {
+        "container.zip": _zip_entries(
+            _s3_container(), extra=((name, b"", 0, _S3F2_DOS_DIRECTORY),)
+        )
+    }
+
+
+def _s3f2_declared_zip(extra: tuple[str, bytes, int, int, int, int]) -> dict[str, bytes]:
+    """The stored entries of a valid container plus one caller-declared entry."""
+    files = _s3_container()
+    return {
+        "container.zip": _zip_declared_entries(
+            [_stored_entry(name, files[name]) for name in sorted(files)] + [extra]
+        )
+    }
+
+
+def _s3f2_deflated_empty() -> bytes:
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return compressor.compress(b"") + compressor.flush()
+
+
+# -- A zero-data entry with the DOS directory attribute and no final '/' is a file.
+
+for _s3f2_name, _s3f2_entry, _s3f2_errors, _s3f2_records, _s3f2_what in (
+    (
+        "zip-dos-attribute-blobs-sha256-unlisted",
+        "blobs/sha256",
+        ("E_MANIFEST_BLOB",),
+        _S3_RECORDS_VERIFIED,
+        "blobs/sha256 is a zero-byte file directly in blobs/, so blobs/ is present while "
+        "no blob is listed, and the file is an extra blob file (§11.1, §11.7 rule 3): "
+        "E_MANIFEST_BLOB at the blob step (9) (narrow review high-1)",
+    ),
+    (
+        "zip-dos-attribute-blobs-file-unlisted",
+        "blobs/x",
+        ("E_MANIFEST_BLOB",),
+        _S3_RECORDS_VERIFIED,
+        "blobs/x is a zero-byte file directly in blobs/, so blobs/ is present while no "
+        "blob is listed, and the file is an extra blob file (§11.1, §11.7 rule 3): "
+        "E_MANIFEST_BLOB at the blob step (9) (narrow review high-1)",
+    ),
+    (
+        "zip-dos-attribute-outside-layout",
+        "foo",
+        ("E_CONTAINER_ENTRY",),
+        (),
+        "foo is a zero-byte root file the layout does not list (§11.1): E_CONTAINER_ENTRY "
+        "at entry enumeration (narrow review medium-1 N1)",
+    ),
+    (
+        "zip-dos-attribute-blobs-root-file",
+        "blobs",
+        ("E_CONTAINER_ENTRY",),
+        (),
+        "blobs is a zero-byte root file the layout does not list (the blobs/ directory is "
+        "not a file, §11.1): E_CONTAINER_ENTRY at entry enumeration (narrow review "
+        "medium-1 N1)",
+    ),
+    (
+        "zip-dos-attribute-records-extra",
+        "records/x",
+        ("E_MANIFEST_RECORD_EXTRA",),
+        (),
+        "records/x is a zero-byte file in records/ that manifest.records does not list "
+        "(§11.6): E_MANIFEST_RECORD_EXTRA at the records listing, records is [] (narrow "
+        "review medium-1 N1)",
+    ),
+):
+    declare(
+        "container",
+        _s3f2_name,
+        "container",
+        "container.zip",
+        "invalid",
+        errors=_s3f2_errors,
+        build=lambda case_dir, entry=_s3f2_entry: _s3f2_zip_with_dos_entry(entry),
+        args=("--keys", "@keyset"),
+        records=_s3f2_records,
+        notes=_S3F2 + ": a valid zip container without manifest.blobs also holds the "
+        "zero-data entry " + _s3f2_entry + ", which carries the DOS directory attribute "
+        "(0x10) and whose name does not end with '/'. Only the final '/' makes a directory "
+        "entry (§11.9 rule 4), so " + _s3f2_what + ". The Rust verifier called the entry a "
+        "directory entry and accepted this zip before the fix.",
+    )
+
+declare(
+    "container",
+    "zip-dos-attribute-readable-file",
+    "container",
+    "container.zip",
+    "valid",
+    build=lambda case_dir: _s3f2_zip_with_dos_entry("readable/x"),
+    args=("--keys", "@keyset"),
+    notices=("N_READABLE_PRESENT",),
+    limitations=("L_OFFLINE_CONTEXT",),
+    expected_container={"level_claimed": "L0", "level_verified": "L0"},
+    records=_S3_RECORDS_VERIFIED,
+    notes=_S3F2 + ": a valid zip container also holds the zero-data entry readable/x, "
+    "which carries the DOS directory attribute (0x10) and whose name does not end with "
+    "'/'. Only the final '/' makes a directory entry (§11.9 rule 4), so readable/x is a "
+    "readable/ file that passed its entry checks: the container is valid and reports "
+    "N_READABLE_PRESENT (§11.8, §14.6). The Rust verifier called the entry a directory "
+    "entry and did not report the notice before the fix.",
+)
+
+# -- A name ending '/' is a directory entry without the DOS directory attribute too.
+
+for _s3f2_name, _s3f2_directory, _s3f2_system, _s3f2_attr, _s3f2_what in (
+    (
+        "zip-directory-entry-no-dos-attribute",
+        "foo/",
+        0,
+        0,
+        "external attributes 0, made by MS-DOS",
+    ),
+    (
+        "blobs-directory-entry-no-dos-attribute-zip",
+        "blobs/sha256/",
+        3,
+        0o40755 << 16,
+        "a Unix directory mode without the DOS bit, made by Unix",
+    ),
+):
+    declare(
+        "container",
+        _s3f2_name,
+        "container",
+        "container.zip",
+        "valid",
+        build=lambda case_dir, directory=_s3f2_directory, system=_s3f2_system,
+        attr=_s3f2_attr: {
+            "container.zip": _zip_entries(
+                _s3_container(), extra=((directory, b"", system, attr),)
+            )
+        },
+        args=("--keys", "@keyset"),
+        limitations=("L_OFFLINE_CONTEXT",),
+        expected_container={"level_claimed": "L0", "level_verified": "L0"},
+        records=_S3_RECORDS_VERIFIED,
+        notes=_S3F2 + ": a valid zip container without manifest.blobs also holds the "
+        "zero-data directory entry " + _s3f2_directory + " with no DOS directory attribute ("
+        + _s3f2_what + "). The final '/' alone makes a directory entry (§11.9 rule 4), and "
+        "a zero-data directory entry takes no part in the layout or in whether blobs/ is "
+        "present: valid.",
+    )
+
+# -- The DOS directory attribute without a final '/' does not take an entry out of
+#    the §13 declared total.
+
+declare(
+    "container",
+    "zip-dos-attribute-declared-total-over-limit",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_SIZE",),
+    build=lambda case_dir: _s3f2_declared_zip(
+        ("foo", _deflated_tiny_payload(), 8, _READABLE_BIG_DECLARED, 0, _S3F2_DOS_DIRECTORY)
+    ),
+    records=[],
+    notes=_S3F2 + ": a valid zip container also holds the entry foo, which carries the DOS "
+    "directory attribute (0x10), whose name does not end with '/' and which declares "
+    "1,073,741,825 uncompressed bytes. Only directory entries (names ending '/') and "
+    "readable/** are left out of the declared total (§11.9 W7 phase 3, §13), so the total "
+    "is above MAX_CONTAINER_UNCOMPRESSED_BYTES: E_CONTAINER_SIZE in phase 3, before the "
+    "phase-4 E_CONTAINER_ZIP that the attribute with data would give. The Rust verifier "
+    "left the entry out of the total and reported E_CONTAINER_ZIP before the fix.",
+)
+
+# -- "Carries data" is a non-zero compressed or uncompressed size, for the DOS
+#    directory attribute as for a name ending '/' (S3-FIX2/N1d).
+
+declare(
+    "container",
+    "zip-dos-attribute-deflated-empty",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ZIP",),
+    build=lambda case_dir: _s3f2_declared_zip(
+        ("readable/x", _s3f2_deflated_empty(), 8, 0, 0, _S3F2_DOS_DIRECTORY)
+    ),
+    records=[],
+    notes=_S3F2 + ", S3-FIX2/N1d: a valid zip container also holds the entry readable/x, "
+    "deflated from zero bytes (two compressed bytes, uncompressed size 0), which carries "
+    "the DOS directory attribute (0x10). An entry carries data when its compressed or "
+    "uncompressed size is not zero, the same test as for a name ending '/', so this is "
+    "E_CONTAINER_ZIP (§11.9 rule 4, checked for readable/ entries too). The Python "
+    "reference verifier looked at the uncompressed size only and accepted this zip before "
+    "the fix.",
+)
+
+# -- The two members of a supplied previous zip: an entry with the DOS directory
+#    attribute and no final '/' is a member like any other.
+
+declare(
+    "container",
+    "previous-zip-dos-attribute-duplicate-member",
+    "container",
+    "container",
+    "invalid",
+    errors=("E_MANIFEST_CHAIN",),
+    build=lambda case_dir: {
+        **_chain_container(Path("."), mismatch=False),
+        "previous-container.zip": _zip_declared_entries(
+            [
+                _stored_entry(name, data)
+                for name, data in sorted(_previous_container_internal().items())
+            ]
+            + [("manifest.json", b"", 0, 0, 0, _S3F2_DOS_DIRECTORY)]
+        ),
+    },
+    args=("--keys", "@keyset", "--previous", "previous-container.zip"),
+    expected_container={
+        "level_claimed": "L0",
+        "level_verified": "L0",
+        "previous_manifest_digest": _chain_previous_digest(),
+    },
+    records=({"id": "key-declared-human-1", "verdict": "valid", "errors": []},),
+    notes=_S3F2 + ": the supplied previous zip is container/previous-zip-valid's previous "
+    "plus a second, zero-data entry manifest.json that carries the DOS directory "
+    "attribute (0x10). Its name does not end with '/', so it is not a directory entry "
+    "(§11.9 rule 4) and the archive holds two non-directory manifest.json entries: a "
+    "duplicate member, E_MANIFEST_CHAIN (§11.5). The Rust verifier skipped the entry as a "
+    "directory entry and linked the previous before the fix.",
+)
+
+
+# -- N_READABLE_PRESENT does not depend on the order of the central directory
+#    (S3-FIX2/N2, decision 2026-11-18 #3; narrow review medium-2). Before the fix
+#    the Rust verifier stopped at the first entry that failed its checks and did
+#    not report the notice for a readable/ entry after it.
+
+
+def _s3f2_zip_ordered(
+    before: Sequence[tuple[str, bytes, int]], after: Sequence[tuple[str, bytes, int]] = ()
+) -> dict[str, bytes]:
+    """A valid container's files in zip form, *before* entries first, *after* last;
+    each extra entry is ``(name, data, external attributes)`` made by Unix. A repeated
+    name is written as asked (zipfile's duplicate-name warning is silenced)."""
+    buffer = io.BytesIO()
+    with warnings.catch_warnings(), zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        warnings.simplefilter("ignore", UserWarning)
+
+        def add(name: str, data: bytes, attr: int) -> None:
+            info = zipfile.ZipInfo(name, date_time=(2026, 11, 10, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = attr
+            archive.writestr(info, data)
+
+        for name, data, attr in before:
+            add(name, data, attr)
+        files = _s3_container()
+        for path in sorted(files):
+            add(path, files[path], _STANDARD_ATTR)
+        for name, data, attr in after:
+            add(name, data, attr)
+    return {"container.zip": buffer.getvalue()}
+
+
+_S3F2_READABLE = ("readable/a", b"readable view\n", _STANDARD_ATTR)
+
+for _s3f2_name, _s3f2_before, _s3f2_after, _s3f2_what in (
+    (
+        "readable-notice-after-unsafe-file-zip",
+        (("../x", b"z", _STANDARD_ATTR), _S3F2_READABLE),
+        (),
+        "the file entry ../x comes first in the central directory and readable/a after it",
+    ),
+    (
+        "readable-notice-after-unsafe-directory-zip",
+        (("../x/", b"", _S3F_DIRECTORY_ATTR), _S3F2_READABLE),
+        (),
+        "the zero-data directory entry ../x/ comes first in the central directory and "
+        "readable/a after it",
+    ),
+    (
+        "readable-notice-before-unsafe-file-zip",
+        (_S3F2_READABLE,),
+        (("../x", b"z", _STANDARD_ATTR),),
+        "readable/a comes first in the central directory and the file entry ../x last",
+    ),
+):
+    declare(
+        "container",
+        _s3f2_name,
+        "container",
+        "container.zip",
+        "invalid",
+        errors=("E_CONTAINER_ENTRY",),
+        notices=("N_READABLE_PRESENT",),
+        build=lambda case_dir, before=_s3f2_before, after=_s3f2_after: _s3f2_zip_ordered(
+            before, after
+        ),
+        args=("--keys", "@keyset"),
+        records=(),
+        notes=_S3F2 + ", S3-FIX2/N2 (decision 2026-11-18 #3): a valid zip container also "
+        "holds readable/a and an entry whose path has a '..' segment; "
+        + _s3f2_what
+        + ". The unsafe entry is E_CONTAINER_ENTRY (§11.9), and readable/a passed its own "
+        "entry checks, so N_READABLE_PRESENT is reported (§11.8) regardless of the "
+        "entries' order in the central directory. The Rust verifier stopped at the first "
+        "failing entry and did not report the notice when the unsafe entry came first.",
+    )
+
+declare(
+    "container",
+    "readable-duplicate-after-symlink-zip",
+    "container",
+    "container.zip",
+    "invalid",
+    errors=("E_CONTAINER_ENTRY",),
+    build=lambda case_dir: _s3f2_zip_ordered(
+        (("readable/a", b"target", _SYMLINK_ATTR), _S3F2_READABLE)
+    ),
+    args=("--keys", "@keyset"),
+    records=(),
+    notices_absent=("N_READABLE_PRESENT",),
+    notes=_S3F2 + ", S3-FIX2/N2 (decision 2026-11-18 #3): a valid zip container also "
+    "holds readable/a twice, first as a Unix symbolic link, then as a regular file. The "
+    "link fails its own checks (§11.9), and its name is remembered all the same, so the "
+    "regular file is a duplicate name and fails its checks too: E_CONTAINER_ENTRY, and no "
+    "readable/ entry passed its own checks, so N_READABLE_PRESENT is not reported (§11.8). "
+    "A verifier that checks every entry but forgets the names of failing ones would take "
+    "the second readable/a for the first of its name and report the notice.",
+)
+
+
 def build_expected(case: Case, files: dict[str, bytes]) -> dict[str, Any]:
     expected: dict[str, Any] = {
         "id": case.id,
@@ -16856,9 +17842,14 @@ def freeze_cases(
         verdict = row["expected"]["verdict"]
         verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
 
+    # The two header lines below are text written into the frozen README, not this
+    # file's own licence statement; the markers keep REUSE (5.x and 6.x) from
+    # reading them as one.
+    # REUSE-IgnoreStart
     lines = [
         "<!-- SPDX-FileCopyrightText: 2026 Inceptless <support@inceptless.com> -->",
         "<!-- SPDX-License-Identifier: Apache-2.0 -->",
+        # REUSE-IgnoreEnd
         "",
         "# Candidate frozen conformance vectors, %s" % FREEZE_VERSION,
         "",

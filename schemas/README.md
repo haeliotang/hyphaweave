@@ -143,9 +143,11 @@ structure; the verifier decides what it can verify.
 - If a record requires a per-record signature and every available signature entry is
   either unverifiable (unknown algorithm) or by a key that is not the required key,
   the record becomes `unverifiable` (`E_SIG_UNVERIFIABLE`), never silently valid.
-- Reference digest strings follow the same idea: a syntactically well-formed
-  `<algorithm>:<lowercase hex>` digest with an algorithm the verifier does not
-  implement resolves to `unverifiable` and is not a record error. Container
+- Reference digest strings follow the same idea: a digest with the whole §2.7
+  grammar (an algorithm-name token of at most 32 bytes, `:`, 1–128 lowercase hex
+  digits) whose algorithm the verifier does not implement, or `sha256` with another
+  number of digits than 64, resolves to `unverifiable` and is not a record error; a
+  string that breaks the grammar is `E_ENV_REFS` (S3-FIX1). Container
   positions (`manifest.records[].digest`, `previous_manifest`, `chain.head`,
   `blobs`, attestation `digest`) require `sha256` in H0.
 

@@ -90,6 +90,8 @@ class ZipEntry:
     data_offset: int
     entry_end: int
     external_attr: int
+    #: §11.9 rule 4: a directory entry is a name ending "/". The DOS directory
+    #: attribute does not make one; it only makes data ``E_CONTAINER_ZIP`` (FIX2).
     is_directory: bool
     has_data_descriptor: bool
     #: W7: central-directory fields judged in phase 4 (after the §13 limits).
@@ -433,8 +435,11 @@ def _check_entry_rules(entry: ZipEntry) -> None:
         raise ZipStructureError("unsupported compression method")
     if entry.is_directory and (entry.uncompressed_size or entry.compressed_size):
         raise ZipStructureError("a directory entry carries data")
-    if entry.external_attr & 0x10 and entry.uncompressed_size:
-        # DOS directory attribute on an entry that carries data (T6).
+    if entry.external_attr & 0x10 and (entry.uncompressed_size or entry.compressed_size):
+        # DOS directory attribute on an entry that carries data (T6). "Carries
+        # data" is the same test as for a name ending "/" just above: a non-zero
+        # compressed or uncompressed size, so a deflated empty member (two
+        # compressed bytes) with the attribute is rejected too (FIX2, as H1).
         raise ZipStructureError("a DOS directory-attribute entry carries data")
 
 
